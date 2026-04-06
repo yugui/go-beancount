@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "syntax",
     srcs = [
+        "scanner.go",
         "token.go",
         "token_kind.go",
         "trivia.go",
@@ -14,6 +15,7 @@ go_library(
 go_test(
     name = "syntax_test",
     srcs = [
+        "scanner_test.go",
         "token_kind_test.go",
         "token_test.go",
     ],
