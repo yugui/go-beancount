@@ -308,15 +308,15 @@ func TestBareHashAndCaret(t *testing.T) {
 }
 
 func TestIllegalCharacter(t *testing.T) {
-	tokens := collectTokens("a")
+	tokens := collectTokens("$")
 	if len(tokens) != 2 {
 		t.Fatalf("expected 2 tokens, got %d", len(tokens))
 	}
 	if tokens[0].Kind != ILLEGAL {
 		t.Errorf("expected ILLEGAL, got %s", tokens[0].Kind)
 	}
-	if tokens[0].Raw != "a" {
-		t.Errorf("expected Raw=%q, got %q", "a", tokens[0].Raw)
+	if tokens[0].Raw != "$" {
+		t.Errorf("expected Raw=%q, got %q", "$", tokens[0].Raw)
 	}
 }
 
@@ -542,5 +542,238 @@ func TestMixedDateNumberString(t *testing.T) {
 	}
 	if tokens[2].Raw != "\"hello\"" {
 		t.Errorf("token[2]: expected Raw=%q, got %q", "\"hello\"", tokens[2].Raw)
+	}
+}
+
+func TestAccountTokens(t *testing.T) {
+	tests := []struct {
+		input string
+		raw   string
+	}{
+		{"Assets:Bank:Checking", "Assets:Bank:Checking"},
+		{"Expenses:Food", "Expenses:Food"},
+		{"Liabilities:CreditCard", "Liabilities:CreditCard"},
+		{"Income:Salary", "Income:Salary"},
+		{"Equity:Opening-Balances", "Equity:Opening-Balances"},
+		{"Assets:US:BofA:Checking", "Assets:US:BofA:Checking"},
+		{"Income:Salary:Base", "Income:Salary:Base"},
+		{"Assets:Bank:1stAccount", "Assets:Bank:1stAccount"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			if len(tokens) != 2 {
+				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+			}
+			tok := tokens[0]
+			if tok.Kind != ACCOUNT {
+				t.Errorf("expected ACCOUNT, got %s", tok.Kind)
+			}
+			if tok.Raw != tt.raw {
+				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestCurrencyTokens(t *testing.T) {
+	tests := []struct {
+		input string
+		raw   string
+	}{
+		{"USD", "USD"},
+		{"HOOL", "HOOL"},
+		{"VWCE.DE", "VWCE.DE"},
+		{"NT.TO", "NT.TO"},
+		{"IVV", "IVV"},
+		{"A", "A"},
+		{"GLD", "GLD"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			if len(tokens) != 2 {
+				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+			}
+			tok := tokens[0]
+			if tok.Kind != CURRENCY {
+				t.Errorf("expected CURRENCY, got %s", tok.Kind)
+			}
+			if tok.Raw != tt.raw {
+				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestIdentTokens(t *testing.T) {
+	tests := []struct {
+		input string
+		raw   string
+	}{
+		{"open", "open"},
+		{"close", "close"},
+		{"txn", "txn"},
+		{"some-key", "some-key"},
+		{"option", "option"},
+		{"pushtag", "pushtag"},
+		{"filename", "filename"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			if len(tokens) != 2 {
+				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+			}
+			tok := tokens[0]
+			if tok.Kind != IDENT {
+				t.Errorf("expected IDENT, got %s", tok.Kind)
+			}
+			if tok.Raw != tt.raw {
+				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestUppercaseNonCurrencyAsIdent(t *testing.T) {
+	// "Assets" alone (titlecase, not all uppercase) without ':' -> IDENT
+	tokens := collectTokens("Assets")
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+	}
+	if tokens[0].Kind != IDENT {
+		t.Errorf("expected IDENT for 'Assets' alone, got %s", tokens[0].Kind)
+	}
+	if tokens[0].Raw != "Assets" {
+		t.Errorf("expected Raw=%q, got %q", "Assets", tokens[0].Raw)
+	}
+}
+
+func TestTagTokens(t *testing.T) {
+	tests := []struct {
+		input string
+		kind  TokenKind
+		raw   string
+	}{
+		{"#trip", TAG, "#trip"},
+		{"#tax-2024", TAG, "#tax-2024"},
+		{"#some_tag", TAG, "#some_tag"},
+		{"#", HASH, "#"},
+		{"# ", HASH, "#"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			tok := tokens[0]
+			if tok.Kind != tt.kind {
+				t.Errorf("expected %s, got %s", tt.kind, tok.Kind)
+			}
+			if tok.Raw != tt.raw {
+				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestLinkTokens(t *testing.T) {
+	tests := []struct {
+		input string
+		kind  TokenKind
+		raw   string
+	}{
+		{"^invoice-123", LINK, "^invoice-123"},
+		{"^ref", LINK, "^ref"},
+		{"^ref001", LINK, "^ref001"},
+		{"^", CARET, "^"},
+		{"^ ", CARET, "^"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			tok := tokens[0]
+			if tok.Kind != tt.kind {
+				t.Errorf("expected %s, got %s", tt.kind, tok.Kind)
+			}
+			if tok.Raw != tt.raw {
+				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestDisambiguation(t *testing.T) {
+	// "Assets:Bank 100 USD" → ACCOUNT, NUMBER, CURRENCY
+	tokens := collectTokens("Assets:Bank 100 USD")
+	if len(tokens) != 4 {
+		t.Fatalf("expected 4 tokens, got %d", len(tokens))
+	}
+	if tokens[0].Kind != ACCOUNT {
+		t.Errorf("token[0]: expected ACCOUNT, got %s", tokens[0].Kind)
+	}
+	if tokens[0].Raw != "Assets:Bank" {
+		t.Errorf("token[0]: expected Raw=%q, got %q", "Assets:Bank", tokens[0].Raw)
+	}
+	if tokens[1].Kind != NUMBER {
+		t.Errorf("token[1]: expected NUMBER, got %s", tokens[1].Kind)
+	}
+	if tokens[2].Kind != CURRENCY {
+		t.Errorf("token[2]: expected CURRENCY, got %s", tokens[2].Kind)
+	}
+}
+
+func TestFullLineDisambiguation(t *testing.T) {
+	// "2024-01-15 open Assets:Bank USD" → DATE, IDENT, ACCOUNT, CURRENCY
+	tokens := collectTokens("2024-01-15 open Assets:Bank USD")
+	if len(tokens) != 5 {
+		t.Fatalf("expected 5 tokens, got %d", len(tokens))
+	}
+	if tokens[0].Kind != DATE {
+		t.Errorf("token[0]: expected DATE, got %s", tokens[0].Kind)
+	}
+	if tokens[1].Kind != IDENT {
+		t.Errorf("token[1]: expected IDENT, got %s", tokens[1].Kind)
+	}
+	if tokens[1].Raw != "open" {
+		t.Errorf("token[1]: expected Raw=%q, got %q", "open", tokens[1].Raw)
+	}
+	if tokens[2].Kind != ACCOUNT {
+		t.Errorf("token[2]: expected ACCOUNT, got %s", tokens[2].Kind)
+	}
+	if tokens[2].Raw != "Assets:Bank" {
+		t.Errorf("token[2]: expected Raw=%q, got %q", "Assets:Bank", tokens[2].Raw)
+	}
+	if tokens[3].Kind != CURRENCY {
+		t.Errorf("token[3]: expected CURRENCY, got %s", tokens[3].Kind)
+	}
+	if tokens[3].Raw != "USD" {
+		t.Errorf("token[3]: expected Raw=%q, got %q", "USD", tokens[3].Raw)
+	}
+}
+
+func TestRoundTripAccountsCurrenciesIdents(t *testing.T) {
+	inputs := []string{
+		"Assets:Bank:Checking",
+		"Expenses:Food",
+		"USD",
+		"VWCE.DE",
+		"open",
+		"close",
+		"#trip-2024",
+		"^invoice-123",
+		"Assets",
+		"2024-01-15 open Assets:Bank USD",
+		"Assets:Bank 100 USD",
+		"#trip ^ref",
+		"# ^",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			tokens := collectTokens(input)
+			got := roundTrip(tokens)
+			if got != input {
+				t.Errorf("round-trip mismatch:\n  input: %q\n  got:   %q", input, got)
+			}
+		})
 	}
 }
