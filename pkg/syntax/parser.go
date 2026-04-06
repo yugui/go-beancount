@@ -131,6 +131,75 @@ func (p *parser) parseTopLevel() *Node {
 	}
 }
 
+// isIndented reports whether the current token is indented
+// (has whitespace after the last newline in leading trivia).
+func (p *parser) isIndented() bool {
+	trivia := p.tok.LeadingTrivia
+	sawNewline := false
+	for _, t := range trivia {
+		if t.Kind == NewlineTrivia {
+			sawNewline = true
+		} else if t.Kind == WhitespaceTrivia && sawNewline {
+			return true
+		}
+	}
+	return false
+}
+
+// parseMetadata consumes indented metadata lines and adds them as children of the given node.
+func (p *parser) parseMetadata(parent *Node) {
+	for p.isAtNextLine() && p.isIndented() {
+		// Check if this looks like a metadata line: IDENT followed by COLON
+		if p.peek() == IDENT {
+			meta := p.tryParseMetadataLine()
+			if meta != nil {
+				parent.AddNode(meta)
+				continue
+			}
+		}
+		break
+	}
+}
+
+// tryParseMetadataLine parses a metadata line: IDENT COLON value.
+// On error (e.g. missing colon), it returns a partial node containing
+// the tokens consumed so far, so trivia is preserved for round-tripping.
+func (p *parser) tryParseMetadataLine() *Node {
+	node := &Node{Kind: MetadataLineNode}
+	key := p.advance() // consume IDENT (the metadata key)
+	node.AddToken(&key)
+
+	if p.peek() != COLON {
+		p.errorf("expected ':' after metadata key %q", key.Raw)
+		return node
+	}
+
+	colon := p.advance() // consume COLON
+	node.AddToken(&colon)
+
+	// Parse the value — can be various types, all on the same line
+	if !p.isAtNextLine() && p.peek() != EOF {
+		val := p.parseMetaValue()
+		if val != nil {
+			node.AddToken(val)
+		}
+	}
+
+	return node
+}
+
+// parseMetaValue parses a metadata value token.
+func (p *parser) parseMetaValue() *Token {
+	switch p.peek() {
+	case STRING, NUMBER, DATE, ACCOUNT, CURRENCY, TAG, LINK, IDENT:
+		tok := p.advance()
+		return &tok
+	default:
+		p.errorf("expected metadata value, got %s", p.tok.Kind)
+		return nil
+	}
+}
+
 func (p *parser) parseOption() *Node {
 	// option "key" "value"
 	node := &Node{Kind: OptionDirective}
@@ -140,6 +209,7 @@ func (p *parser) parseOption() *Node {
 	node.AddToken(&key)
 	val := p.expect(STRING)
 	node.AddToken(&val)
+	p.parseMetadata(node)
 	return node
 }
 
@@ -154,6 +224,7 @@ func (p *parser) parsePlugin() *Node {
 		config := p.advance()
 		node.AddToken(&config)
 	}
+	p.parseMetadata(node)
 	return node
 }
 
@@ -164,6 +235,7 @@ func (p *parser) parseInclude() *Node {
 	node.AddToken(&kw)
 	path := p.expect(STRING)
 	node.AddToken(&path)
+	p.parseMetadata(node)
 	return node
 }
 
@@ -240,6 +312,7 @@ func (p *parser) parseClose(date *Token) *Node {
 	node.AddToken(&kw)
 	acct := p.expect(ACCOUNT)
 	node.AddToken(&acct)
+	p.parseMetadata(node)
 	return node
 }
 
@@ -251,6 +324,7 @@ func (p *parser) parseCommodity(date *Token) *Node {
 	node.AddToken(&kw)
 	cur := p.expect(CURRENCY)
 	node.AddToken(&cur)
+	p.parseMetadata(node)
 	return node
 }
 
@@ -264,6 +338,7 @@ func (p *parser) parseNote(date *Token) *Node {
 	node.AddToken(&acct)
 	desc := p.expect(STRING)
 	node.AddToken(&desc)
+	p.parseMetadata(node)
 	return node
 }
 
@@ -277,6 +352,7 @@ func (p *parser) parseDocument(date *Token) *Node {
 	node.AddToken(&acct)
 	path := p.expect(STRING)
 	node.AddToken(&path)
+	p.parseMetadata(node)
 	return node
 }
 
@@ -290,6 +366,7 @@ func (p *parser) parseEvent(date *Token) *Node {
 	node.AddToken(&name)
 	val := p.expect(STRING)
 	node.AddToken(&val)
+	p.parseMetadata(node)
 	return node
 }
 
@@ -303,6 +380,7 @@ func (p *parser) parseQuery(date *Token) *Node {
 	node.AddToken(&name)
 	sql := p.expect(STRING)
 	node.AddToken(&sql)
+	p.parseMetadata(node)
 	return node
 }
 
@@ -315,6 +393,7 @@ func (p *parser) parsePrice(date *Token) *Node {
 	commodity := p.expect(CURRENCY)
 	node.AddToken(&commodity)
 	node.AddNode(p.parseAmount())
+	p.parseMetadata(node)
 	return node
 }
 
