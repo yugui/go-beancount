@@ -190,30 +190,19 @@ func (p *parser) parsePoptag() *Node {
 func (p *parser) parseDatedDirective() *Node {
 	date := p.advance() // consume DATE
 
-	if p.peek() != IDENT && p.peek() != STAR && p.peek() != BANG {
-		// Not a valid directive after date
-		node := &Node{Kind: UnrecognizedLineNode}
-		node.AddToken(&date)
-		for p.peek() != EOF && !p.isAtNextLine() {
-			tok := p.advance()
-			node.AddToken(&tok)
-		}
-		return node
+	if p.peek() == STAR || p.peek() == BANG {
+		// Transaction — will be handled in Step 11
+		return p.parseDatedUnrecognized(&date)
+	}
+	if p.peek() != IDENT {
+		return p.parseDatedUnrecognized(&date)
 	}
 
-	// For transactions (STAR, BANG, or "txn") — handle in Step 11
-	if p.peek() == STAR || p.peek() == BANG || (p.peek() == IDENT && p.tok.Raw == "txn") {
-		node := &Node{Kind: UnrecognizedLineNode}
-		node.AddToken(&date)
-		for p.peek() != EOF && !p.isAtNextLine() {
-			tok := p.advance()
-			node.AddToken(&tok)
-		}
-		return node
-	}
-
-	// Must be IDENT — dispatch by keyword
+	// Now p.peek() == IDENT for certain
 	switch p.tok.Raw {
+	case "txn":
+		// Transaction — will be handled in Step 11
+		return p.parseDatedUnrecognized(&date)
 	case "close":
 		return p.parseClose(&date)
 	case "commodity":
@@ -228,16 +217,19 @@ func (p *parser) parseDatedDirective() *Node {
 		return p.parseQuery(&date)
 	case "price":
 		return p.parsePrice(&date)
-	// open, balance, pad, custom — will be handled in later steps
 	default:
-		node := &Node{Kind: UnrecognizedLineNode}
-		node.AddToken(&date)
-		for p.peek() != EOF && !p.isAtNextLine() {
-			tok := p.advance()
-			node.AddToken(&tok)
-		}
-		return node
+		return p.parseDatedUnrecognized(&date)
 	}
+}
+
+func (p *parser) parseDatedUnrecognized(date *Token) *Node {
+	node := &Node{Kind: UnrecognizedLineNode}
+	node.AddToken(date)
+	for p.peek() != EOF && !p.isAtNextLine() {
+		tok := p.advance()
+		node.AddToken(&tok)
+	}
+	return node
 }
 
 func (p *parser) parseClose(date *Token) *Node {
