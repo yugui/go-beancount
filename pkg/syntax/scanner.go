@@ -161,9 +161,15 @@ func (s *scanner) scanToken() Token {
 		s.offset++
 		return Token{Kind: BANG, Pos: pos, Raw: s.src[pos:s.offset]}
 	case '#':
+		if s.offset+1 < len(s.src) && isTagLinkChar(s.src[s.offset+1]) {
+			return s.scanTag()
+		}
 		s.offset++
 		return Token{Kind: HASH, Pos: pos, Raw: s.src[pos:s.offset]}
 	case '^':
+		if s.offset+1 < len(s.src) && isTagLinkChar(s.src[s.offset+1]) {
+			return s.scanLink()
+		}
 		s.offset++
 		return Token{Kind: CARET, Pos: pos, Raw: s.src[pos:s.offset]}
 	default:
@@ -174,6 +180,10 @@ func (s *scanner) scanToken() Token {
 			return s.scanDateOrNumber()
 		case ch == '.' && s.offset+1 < len(s.src) && s.src[s.offset+1] >= '0' && s.src[s.offset+1] <= '9':
 			return s.scanNumber()
+		case ch >= 'A' && ch <= 'Z':
+			return s.scanUpperWord()
+		case ch >= 'a' && ch <= 'z':
+			return s.scanIdent()
 		default:
 			// Unrecognized character — emit ILLEGAL for a single byte
 			s.offset++
@@ -237,6 +247,141 @@ func (s *scanner) scanNumber() Token {
 	}
 
 	return Token{Kind: NUMBER, Pos: pos, Raw: s.src[pos:s.offset]}
+}
+
+// isTagLinkChar reports whether ch is valid in a tag or link body: [A-Za-z0-9_-].
+func isTagLinkChar(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'
+}
+
+// isUpperWordChar reports whether ch is valid in an uppercase-starting word
+// (superset of currency and account component chars): [A-Za-z0-9'._-].
+func isUpperWordChar(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '\'' || ch == '.' || ch == '_' || ch == '-'
+}
+
+// isIdentChar reports whether ch is valid in an identifier: [A-Za-z0-9_-].
+func isIdentChar(ch byte) bool {
+	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'
+}
+
+// isAccountRoot reports whether word is a beancount account root type.
+func isAccountRoot(word string) bool {
+	switch word {
+	case "Assets", "Liabilities", "Equity", "Income", "Expenses":
+		return true
+	}
+	return false
+}
+
+// isCurrency reports whether word matches the currency pattern:
+// 1-24 chars, all [A-Z0-9'._-], starts and ends with [A-Z0-9].
+func isCurrency(word string) bool {
+	if len(word) == 0 || len(word) > 24 {
+		return false
+	}
+	first := word[0]
+	if !((first >= 'A' && first <= 'Z') || (first >= '0' && first <= '9')) {
+		return false
+	}
+	last := word[len(word)-1]
+	if !((last >= 'A' && last <= 'Z') || (last >= '0' && last <= '9')) {
+		return false
+	}
+	for i := 1; i < len(word)-1; i++ {
+		ch := word[i]
+		if !((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '\'' || ch == '.' || ch == '_' || ch == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// scanUpperWord scans a token starting with an uppercase letter [A-Z].
+// It may produce ACCOUNT, CURRENCY, or IDENT.
+func (s *scanner) scanUpperWord() Token {
+	pos := s.offset
+
+	// Consume the initial word: [A-Za-z0-9'._-]+
+	s.offset++
+	for s.offset < len(s.src) && isUpperWordChar(s.src[s.offset]) {
+		s.offset++
+	}
+	word := s.src[pos:s.offset]
+
+	// Check for account: root type followed by ':'
+	if isAccountRoot(word) && s.offset < len(s.src) && s.src[s.offset] == ':' {
+		// Try to scan account components: (:Component)+
+		// Each component: ':' then [A-Z0-9] then [A-Za-z0-9-]*
+		saved := s.offset
+		componentCount := 0
+		for s.offset < len(s.src) && s.src[s.offset] == ':' {
+			next := s.offset + 1
+			if next >= len(s.src) {
+				break
+			}
+			ch := s.src[next]
+			if !((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) {
+				break
+			}
+			// Consume ':' and the component
+			s.offset = next + 1
+			for s.offset < len(s.src) {
+				c := s.src[s.offset]
+				if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
+					s.offset++
+				} else {
+					break
+				}
+			}
+			componentCount++
+		}
+		if componentCount > 0 {
+			return Token{Kind: ACCOUNT, Pos: pos, Raw: s.src[pos:s.offset]}
+		}
+		// No valid components found; restore offset
+		s.offset = saved
+	}
+
+	// Check if it's a currency
+	if isCurrency(word) {
+		return Token{Kind: CURRENCY, Pos: pos, Raw: s.src[pos:s.offset]}
+	}
+
+	// Otherwise it's an identifier (e.g. titlecase words like "Assets" alone)
+	return Token{Kind: IDENT, Pos: pos, Raw: s.src[pos:s.offset]}
+}
+
+// scanIdent scans a lowercase-starting identifier: [a-z][A-Za-z0-9_-]*
+func (s *scanner) scanIdent() Token {
+	pos := s.offset
+	s.offset++
+	for s.offset < len(s.src) && isIdentChar(s.src[s.offset]) {
+		s.offset++
+	}
+	return Token{Kind: IDENT, Pos: pos, Raw: s.src[pos:s.offset]}
+}
+
+// scanTag scans a tag token: '#' followed by [A-Za-z0-9_-]+.
+// Called when '#' is followed by a valid tag/link char.
+func (s *scanner) scanTag() Token {
+	pos := s.offset
+	s.offset++ // consume '#'
+	for s.offset < len(s.src) && isTagLinkChar(s.src[s.offset]) {
+		s.offset++
+	}
+	return Token{Kind: TAG, Pos: pos, Raw: s.src[pos:s.offset]}
+}
+
+// scanLink scans a link token: '^' followed by [A-Za-z0-9_-]+.
+// Called when '^' is followed by a valid tag/link char.
+func (s *scanner) scanLink() Token {
+	pos := s.offset
+	s.offset++ // consume '^'
+	for s.offset < len(s.src) && isTagLinkChar(s.src[s.offset]) {
+		s.offset++
+	}
+	return Token{Kind: LINK, Pos: pos, Raw: s.src[pos:s.offset]}
 }
 
 // scanString consumes a double-quoted string token. Called when current byte is '"'.
