@@ -1,0 +1,150 @@
+(version 1)
+
+(allow default)
+(debug deny)
+
+(deny file-write*)
+(deny file-read*
+  (subpath "/.vol")
+  (subpath "/cores")
+  (subpath "/dev")
+  (subpath "/etc")
+  (subpath "/opt")
+  (subpath "/private")
+  (subpath "/System")
+  (subpath "/Users")
+  (subpath "/var")
+  (subpath "/Volumes")
+  (subpath "/usr")
+)
+
+(allow file-read-metadata)
+(allow file-read*
+     (subpath "/opt/homebrew")
+     (subpath "/opt/local/lib")
+     (subpath "/usr/lib")
+     (subpath "/usr/local/lib")
+     (subpath "/Library")
+     (subpath "/private/etc")
+     (subpath "/private/var")
+     (subpath (param "TARGET_DIR"))
+     (subpath (param "TMP_DIR"))
+     (subpath (string-append (param "HOME_DIR") "/.claude"))
+     (literal (string-append (param "HOME_DIR") "/.claude.json"))
+     (subpath (string-append (param "HOME_DIR") "/.local/share/claude"))
+     (subpath (string-append (param "HOME_DIR") "/.local/state/claude"))
+     (subpath (string-append (param "HOME_DIR") "/Library/Application Support"))
+     (subpath (string-append (param "HOME_DIR") "/Library/Caches"))
+     (subpath (string-append (param "HOME_DIR") "/.npm"))
+     (subpath (string-append (param "HOME_DIR") "/.cache"))
+     (subpath (string-append (param "HOME_DIR") "/.gitconfig"))
+     (subpath (string-append (param "HOME_DIR") "/Library/Caches/pip-tools"))
+     (subpath "/bin")
+     (subpath "/sbin")
+     (subpath "/Applications")
+     (literal "/dev/stdin")
+     (literal "/dev/null")
+     (literal "/dev/random")
+     (literal "/dev/urandom")
+     (literal "/Library/Keychains/System.keychain")
+     (subpath "/System/Library/Keychains")
+     (subpath "/System/Library/Security")
+    (subpath (string-append (param "HOME_DIR") "/Library/Keychains"))
+)
+(allow process-info* (target self))
+
+(allow mach-lookup (global-name-regex #"^com\.apple\."))
+
+; Keychainサービスへのアクセス
+(allow mach-lookup
+    (global-name "com.apple.SecurityServer")
+    (global-name "com.apple.security.syspolicy")
+    (global-name "com.apple.authd"))
+
+
+;; allow exec/fork (children inherit policy)
+(allow process-exec)
+(allow process-fork)
+
+
+;; allow signals to self, e.g. SIGPIPE on write to closed pipe
+(allow signal (target self))
+
+;; allow read access to specific information about system
+;; from https://source.chromium.org/chromium/chromium/src/+/main:sandbox/policy/mac/common.sb;l=273-319;drc=7b3962fe2e5fc9e2ee58000dc8fbf3429d84d3bd
+(allow sysctl-read
+  (sysctl-name "hw.activecpu")
+  (sysctl-name "hw.busfrequency_compat")
+  (sysctl-name "hw.byteorder")
+  (sysctl-name "hw.cacheconfig")
+  (sysctl-name "hw.cachelinesize_compat")
+  (sysctl-name "hw.cpufamily")
+  (sysctl-name "hw.cpufrequency_compat")
+  (sysctl-name "hw.cputype")
+  (sysctl-name "hw.l1dcachesize_compat")
+  (sysctl-name "hw.l1icachesize_compat")
+  (sysctl-name "hw.l2cachesize_compat")
+  (sysctl-name "hw.l3cachesize_compat")
+  (sysctl-name "hw.logicalcpu_max")
+  (sysctl-name "hw.machine")
+  (sysctl-name "hw.ncpu")
+  (sysctl-name "hw.nperflevels")
+  (sysctl-name "hw.optional.arm.FEAT_BF16")
+  (sysctl-name "hw.optional.arm.FEAT_DotProd")
+  (sysctl-name "hw.optional.arm.FEAT_FCMA")
+  (sysctl-name "hw.optional.arm.FEAT_FHM")
+  (sysctl-name "hw.optional.arm.FEAT_FP16")
+  (sysctl-name "hw.optional.arm.FEAT_I8MM")
+  (sysctl-name "hw.optional.arm.FEAT_JSCVT")
+  (sysctl-name "hw.optional.arm.FEAT_LSE")
+  (sysctl-name "hw.optional.arm.FEAT_RDM")
+  (sysctl-name "hw.optional.arm.FEAT_SHA512")
+  (sysctl-name "hw.optional.armv8_2_sha512")
+  (sysctl-name "hw.packages")
+  (sysctl-name "hw.pagesize_compat")
+  (sysctl-name "hw.physicalcpu_max")
+  (sysctl-name "hw.tbfrequency_compat")
+  (sysctl-name "hw.vectorunit")
+  (sysctl-name "kern.hostname")
+  (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.osproductversion")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.ostype")
+  (sysctl-name "kern.osvariant_status")
+  (sysctl-name "kern.osversion")
+  (sysctl-name "kern.secure_kernel")
+  (sysctl-name "kern.usrstack64")
+  (sysctl-name "kern.version")
+  (sysctl-name "sysctl.proc_cputype")
+  (sysctl-name-prefix "hw.perflevel")
+)
+
+(allow file-write*
+    ;; (param "NAME") には、起動時に -D NAME=VALUE として渡した値が反映される
+
+    ;; プロジェクトディレクトリを TARGET_DIR として指定する
+    (subpath (param "TARGET_DIR"))
+
+    ;; プロジェクトディレクトリ以外に書き込みを許可する場所
+    ;; Claude Code関係
+    (subpath (string-append (param "HOME_DIR") "/.claude"))
+    (literal (string-append (param "HOME_DIR") "/.claude.json"))
+
+    ;; 一時ファイル関連
+    (subpath "/tmp")
+    (subpath "/private/var/folders/")
+    (subpath "/var/folders/sv")
+    (subpath "/private/var/tmp")
+    (subpath (param "TMP_DIR"))
+    (subpath (string-append (param "HOME_DIR") "/.cache"))
+    (subpath (string-append (param "HOME_DIR") "/Library/Caches"))
+
+    ;; その他のツール関連。ご利用のツールに合わせて調整してください
+    (subpath (string-append (param "HOME_DIR") "/.npm"))
+
+    ;; STDINとか
+    (literal "/dev/stdout")
+    (literal "/dev/stderr")
+    (literal "/dev/null")
+    (subpath (string-append (param "HOME_DIR") "/Library/Keychains"))
+)
