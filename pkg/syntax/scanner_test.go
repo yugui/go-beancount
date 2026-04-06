@@ -360,3 +360,187 @@ func TestTrailingWhitespaceBeforeNewline(t *testing.T) {
 		t.Errorf("expected NewlineTrivia, got %s", tokens[1].LeadingTrivia[0].Kind)
 	}
 }
+
+func TestDateTokens(t *testing.T) {
+	tests := []struct {
+		input string
+		raw   string
+	}{
+		{"2024-01-15", "2024-01-15"},
+		{"2024/01/15", "2024/01/15"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			if len(tokens) != 2 {
+				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+			}
+			tok := tokens[0]
+			if tok.Kind != DATE {
+				t.Errorf("expected DATE, got %s", tok.Kind)
+			}
+			if tok.Raw != tt.raw {
+				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestNumberTokens(t *testing.T) {
+	tests := []struct {
+		input string
+		raw   string
+	}{
+		{"1234", "1234"},
+		{"1234.56", "1234.56"},
+		{"1,234.56", "1,234.56"},
+		{".56", ".56"},
+		{"1234.", "1234."},
+		{"0", "0"},
+		{"1,234,567.89", "1,234,567.89"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			if len(tokens) != 2 {
+				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+			}
+			tok := tokens[0]
+			if tok.Kind != NUMBER {
+				t.Errorf("expected NUMBER, got %s", tok.Kind)
+			}
+			if tok.Raw != tt.raw {
+				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestStringTokens(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		raw   string
+	}{
+		{"simple", `"hello"`, `"hello"`},
+		{"multiline", "\"multi\nline\"", "\"multi\nline\""},
+		{"escaped_quote", `"escaped \"quote\""`, `"escaped \"quote\""`},
+		{"empty_string", `""`, `""`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			if len(tokens) != 2 {
+				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+			}
+			tok := tokens[0]
+			if tok.Kind != STRING {
+				t.Errorf("expected STRING, got %s", tok.Kind)
+			}
+			if tok.Raw != tt.raw {
+				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestDateVsNumberDisambiguation(t *testing.T) {
+	// "2024" alone is a NUMBER (no separator follows)
+	tokens := collectTokens("2024")
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+	}
+	if tokens[0].Kind != NUMBER {
+		t.Errorf("expected NUMBER for '2024', got %s", tokens[0].Kind)
+	}
+	if tokens[0].Raw != "2024" {
+		t.Errorf("expected Raw=%q, got %q", "2024", tokens[0].Raw)
+	}
+
+	// "2024-01-15 1234" → DATE then NUMBER
+	tokens = collectTokens("2024-01-15 1234")
+	if len(tokens) != 3 {
+		t.Fatalf("expected 3 tokens, got %d", len(tokens))
+	}
+	if tokens[0].Kind != DATE {
+		t.Errorf("expected DATE, got %s", tokens[0].Kind)
+	}
+	if tokens[0].Raw != "2024-01-15" {
+		t.Errorf("expected Raw=%q, got %q", "2024-01-15", tokens[0].Raw)
+	}
+	if tokens[1].Kind != NUMBER {
+		t.Errorf("expected NUMBER, got %s", tokens[1].Kind)
+	}
+	if tokens[1].Raw != "1234" {
+		t.Errorf("expected Raw=%q, got %q", "1234", tokens[1].Raw)
+	}
+}
+
+func TestStringAtEOF(t *testing.T) {
+	tokens := collectTokens(`"unclosed`)
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+	}
+	tok := tokens[0]
+	if tok.Kind != STRING {
+		t.Errorf("expected STRING, got %s", tok.Kind)
+	}
+	if tok.Raw != `"unclosed` {
+		t.Errorf("expected Raw=%q, got %q", `"unclosed`, tok.Raw)
+	}
+}
+
+func TestRoundTripDatesNumbersStrings(t *testing.T) {
+	inputs := []string{
+		"2024-01-15",
+		"2024/01/15",
+		"1234",
+		"1234.56",
+		"1,234.56",
+		".56",
+		"1234.",
+		`"hello"`,
+		`""`,
+		"\"multi\nline\"",
+		`"escaped \"quote\""`,
+		`"unclosed`,
+		"2024-01-15 1,234.56 \"hello\"",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			tokens := collectTokens(input)
+			got := roundTrip(tokens)
+			if got != input {
+				t.Errorf("round-trip mismatch:\n  input: %q\n  got:   %q", input, got)
+			}
+		})
+	}
+}
+
+func TestMixedDateNumberString(t *testing.T) {
+	tokens := collectTokens("2024-01-15 1,234.56 \"hello\"")
+	if len(tokens) != 4 { // DATE, NUMBER, STRING, EOF
+		t.Fatalf("expected 4 tokens, got %d", len(tokens))
+	}
+
+	if tokens[0].Kind != DATE {
+		t.Errorf("token[0]: expected DATE, got %s", tokens[0].Kind)
+	}
+	if tokens[0].Raw != "2024-01-15" {
+		t.Errorf("token[0]: expected Raw=%q, got %q", "2024-01-15", tokens[0].Raw)
+	}
+
+	if tokens[1].Kind != NUMBER {
+		t.Errorf("token[1]: expected NUMBER, got %s", tokens[1].Kind)
+	}
+	if tokens[1].Raw != "1,234.56" {
+		t.Errorf("token[1]: expected Raw=%q, got %q", "1,234.56", tokens[1].Raw)
+	}
+
+	if tokens[2].Kind != STRING {
+		t.Errorf("token[2]: expected STRING, got %s", tokens[2].Kind)
+	}
+	if tokens[2].Raw != "\"hello\"" {
+		t.Errorf("token[2]: expected Raw=%q, got %q", "\"hello\"", tokens[2].Raw)
+	}
+}

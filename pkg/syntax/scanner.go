@@ -167,8 +167,98 @@ func (s *scanner) scanToken() Token {
 		s.offset++
 		return Token{Kind: CARET, Pos: pos, Raw: s.src[pos:s.offset]}
 	default:
-		// Unrecognized character — emit ILLEGAL for a single byte
-		s.offset++
-		return Token{Kind: ILLEGAL, Pos: pos, Raw: s.src[pos:s.offset]}
+		switch {
+		case ch == '"':
+			return s.scanString()
+		case ch >= '0' && ch <= '9':
+			return s.scanDateOrNumber()
+		case ch == '.' && s.offset+1 < len(s.src) && s.src[s.offset+1] >= '0' && s.src[s.offset+1] <= '9':
+			return s.scanNumber()
+		default:
+			// Unrecognized character — emit ILLEGAL for a single byte
+			s.offset++
+			return Token{Kind: ILLEGAL, Pos: pos, Raw: s.src[pos:s.offset]}
+		}
 	}
+}
+
+// isDigit reports whether ch is an ASCII digit.
+func isDigit(ch byte) bool {
+	return ch >= '0' && ch <= '9'
+}
+
+// scanDateOrNumber tries to scan a DATE token; if the pattern doesn't match,
+// it falls back to scanning a NUMBER. Called when current byte is a digit.
+func (s *scanner) scanDateOrNumber() Token {
+	pos := s.offset
+
+	// Try to match date pattern: \d{4}[-/]\d{2}[-/]\d{2}
+	// We need at least 10 characters: YYYY-MM-DD
+	if s.offset+10 <= len(s.src) {
+		candidate := s.src[s.offset : s.offset+10]
+		if isDigit(candidate[0]) && isDigit(candidate[1]) && isDigit(candidate[2]) && isDigit(candidate[3]) &&
+			(candidate[4] == '-' || candidate[4] == '/') &&
+			isDigit(candidate[5]) && isDigit(candidate[6]) &&
+			(candidate[7] == '-' || candidate[7] == '/') &&
+			isDigit(candidate[8]) && isDigit(candidate[9]) {
+			s.offset += 10
+			return Token{Kind: DATE, Pos: pos, Raw: s.src[pos:s.offset]}
+		}
+	}
+
+	return s.scanNumber()
+}
+
+// scanNumber consumes a number token. Called when current byte is a digit or '.'.
+// Pattern: [0-9][0-9,]*(\.[0-9]*)? or \.[0-9]+
+func (s *scanner) scanNumber() Token {
+	pos := s.offset
+
+	if s.src[s.offset] == '.' {
+		// Leading dot: consume '.' then digits
+		s.offset++
+		for s.offset < len(s.src) && isDigit(s.src[s.offset]) {
+			s.offset++
+		}
+		return Token{Kind: NUMBER, Pos: pos, Raw: s.src[pos:s.offset]}
+	}
+
+	// Consume digits and commas
+	for s.offset < len(s.src) && (isDigit(s.src[s.offset]) || s.src[s.offset] == ',') {
+		s.offset++
+	}
+
+	// Optional decimal part
+	if s.offset < len(s.src) && s.src[s.offset] == '.' {
+		s.offset++ // consume '.'
+		for s.offset < len(s.src) && isDigit(s.src[s.offset]) {
+			s.offset++
+		}
+	}
+
+	return Token{Kind: NUMBER, Pos: pos, Raw: s.src[pos:s.offset]}
+}
+
+// scanString consumes a double-quoted string token. Called when current byte is '"'.
+// The token includes the opening and closing quotes. Handles \" escape.
+// If EOF is reached before the closing quote, the token is emitted as-is.
+func (s *scanner) scanString() Token {
+	pos := s.offset
+	s.offset++ // consume opening '"'
+
+	for s.offset < len(s.src) {
+		ch := s.src[s.offset]
+		if ch == '\\' && s.offset+1 < len(s.src) {
+			s.offset += 2 // skip escaped character
+			continue
+		}
+		if ch == '"' {
+			s.offset++ // consume closing '"'
+			return Token{Kind: STRING, Pos: pos, Raw: s.src[pos:s.offset]}
+		}
+		s.offset++
+	}
+
+	// EOF before closing quote
+	return Token{Kind: STRING, Pos: pos, Raw: s.src[pos:s.offset]}
 }
