@@ -8,9 +8,7 @@ func TestParseOption(t *testing.T) {
 	src := `option "title" "My Ledger"`
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	// Root should have 1 directive + EOF token.
 	root := f.Root
@@ -38,9 +36,7 @@ func TestParsePlugin(t *testing.T) {
 	src := `plugin "module.name"`
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	plug := f.Root.FindNode(PluginDirective)
 	if plug == nil {
@@ -60,9 +56,7 @@ func TestParsePluginWithConfig(t *testing.T) {
 	src := `plugin "module.name" "config"`
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	plug := f.Root.FindNode(PluginDirective)
 	if plug == nil {
@@ -83,9 +77,7 @@ func TestParseInclude(t *testing.T) {
 	src := `include "other.beancount"`
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	inc := f.Root.FindNode(IncludeDirective)
 	if inc == nil {
@@ -105,9 +97,7 @@ func TestParsePushtag(t *testing.T) {
 	src := `pushtag #trip`
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	pt := f.Root.FindNode(PushtagDirective)
 	if pt == nil {
@@ -127,9 +117,7 @@ func TestParsePoptag(t *testing.T) {
 	src := `poptag #trip`
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	pt := f.Root.FindNode(PoptagDirective)
 	if pt == nil {
@@ -149,9 +137,7 @@ func TestParseMultipleDirectives(t *testing.T) {
 	src := "option \"title\" \"Test\"\ninclude \"other.beancount\"\nplugin \"module\"\n"
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	nodes := collectNodeChildren(f.Root)
 	if len(nodes) != 3 {
@@ -232,9 +218,7 @@ func TestParseEmptyInput(t *testing.T) {
 	src := ""
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	nodes := collectNodeChildren(f.Root)
 	if len(nodes) != 0 {
@@ -248,9 +232,7 @@ func TestParseOnlyComments(t *testing.T) {
 	src := "; just a comment\n; another comment\n"
 	f := Parse(src)
 
-	if len(f.Errors) != 0 {
-		t.Fatalf("unexpected errors: %v", f.Errors)
-	}
+	assertNoErrors(t, f)
 
 	// Comments are trivia attached to EOF, so no directive nodes.
 	nodes := collectNodeChildren(f.Root)
@@ -300,8 +282,10 @@ func TestParseCommodity(t *testing.T) {
 
 	node := f.Root.FindNode(CommodityDirective)
 	if node == nil {
-		t.Fatal("expected CommodityDirective")
+		t.Fatalf("Parse(%q): expected CommodityDirective node", src)
 	}
+	assertTokenChild(t, node.Children[1], IDENT, "commodity")
+	assertTokenChild(t, node.Children[2], CURRENCY, "HOOL")
 	assertRoundTrip(t, src, f)
 }
 
@@ -312,8 +296,10 @@ func TestParseNote(t *testing.T) {
 
 	node := f.Root.FindNode(NoteDirective)
 	if node == nil {
-		t.Fatal("expected NoteDirective")
+		t.Fatalf("Parse(%q): expected NoteDirective node", src)
 	}
+	assertTokenChild(t, node.Children[1], IDENT, "note")
+	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Bank:Checking")
 	assertRoundTrip(t, src, f)
 }
 
@@ -324,8 +310,10 @@ func TestParseDocument(t *testing.T) {
 
 	node := f.Root.FindNode(DocumentDirective)
 	if node == nil {
-		t.Fatal("expected DocumentDirective")
+		t.Fatalf("Parse(%q): expected DocumentDirective node", src)
 	}
+	assertTokenChild(t, node.Children[1], IDENT, "document")
+	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Bank:Checking")
 	assertRoundTrip(t, src, f)
 }
 
@@ -336,8 +324,10 @@ func TestParseEvent(t *testing.T) {
 
 	node := f.Root.FindNode(EventDirective)
 	if node == nil {
-		t.Fatal("expected EventDirective")
+		t.Fatalf("Parse(%q): expected EventDirective node", src)
 	}
+	assertTokenChild(t, node.Children[1], IDENT, "event")
+	assertTokenChild(t, node.Children[2], STRING, `"location"`)
 	assertRoundTrip(t, src, f)
 }
 
@@ -348,8 +338,10 @@ func TestParseQuery(t *testing.T) {
 
 	node := f.Root.FindNode(QueryDirective)
 	if node == nil {
-		t.Fatal("expected QueryDirective")
+		t.Fatalf("Parse(%q): expected QueryDirective node", src)
 	}
+	assertTokenChild(t, node.Children[1], IDENT, "query")
+	assertTokenChild(t, node.Children[2], STRING, `"net-worth"`)
 	assertRoundTrip(t, src, f)
 }
 
@@ -360,8 +352,10 @@ func TestParsePrice(t *testing.T) {
 
 	node := f.Root.FindNode(PriceDirective)
 	if node == nil {
-		t.Fatal("expected PriceDirective")
+		t.Fatalf("Parse(%q): expected PriceDirective node", src)
 	}
+	assertTokenChild(t, node.Children[1], IDENT, "price")
+	assertTokenChild(t, node.Children[2], CURRENCY, "HOOL")
 	// Check Amount sub-node
 	amt := node.FindNode(AmountNode)
 	if amt == nil {
