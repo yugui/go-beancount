@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "syntax",
+    srcs = [
+        "token.go",
+        "token_kind.go",
+        "trivia.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/syntax",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "syntax_test",
+    srcs = [
+        "token_kind_test.go",
+        "token_test.go",
+    ],
+    embed = [":syntax"],
+)
