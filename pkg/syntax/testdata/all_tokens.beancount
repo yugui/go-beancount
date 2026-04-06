@@ -1,0 +1,30 @@
+; Comment line
+option "title" "All Tokens Test"
+plugin "beancount.plugins.auto_accounts"
+include "other.beancount"
+
+pushtag #trip-2024
+poptag #trip-2024
+
+2024-01-01 open Assets:Bank:Checking USD,EUR "STRICT"
+2024-01-01 close Assets:Old:Account
+2024-01-01 commodity HOOL
+2024-01-01 price HOOL 150.00 USD
+2024-01-01 event "location" "Paris"
+2024-01-01 query "net-worth" "SELECT account, sum(position) GROUP BY account"
+2024-01-01 note Assets:Bank:Checking "Opened new account"
+2024-01-01 document Assets:Bank:Checking "/path/to/statement.pdf"
+2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances
+2024-01-01 balance Assets:Bank:Checking 1,000.00 USD ~ 0.01 USD
+2024-01-01 custom "budget" Assets:Bank:Checking 500.00 USD
+
+2024-01-15 * "Payee" "Narration" #tag1 #tag2 ^link1
+  ! Expenses:Food      (10.00 + 5.00) USD
+  Assets:Bank:Checking  -15.00 USD  ; inline comment
+
+2024-02-01 ! "Flagged transaction"
+  Assets:Investments     10 HOOL {150.00 USD, 2024-01-01, "lot1"}
+  Assets:Investments     5 HOOL {{750.00 USD}}
+  Assets:Investments     -3 HOOL {} @ 160.00 USD
+  Assets:Investments     -2 HOOL {} @@ 310.00 USD
+  Assets:Bank:Checking

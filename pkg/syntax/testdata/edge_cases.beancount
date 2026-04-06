@@ -1,0 +1,17 @@
+; First line comment
+;; Double semicolon comment
+
+  ; Indented comment line
+
+2024-01-01 open Assets:A ; trailing comment
+
+2024-01-02 *
+  Assets:A   1.00 USD
+  Assets:B  -1.00 USD
+
+; org-mode heading
+* This is an org-mode line
+
+2024-03-15 * "Unicode: café résumé"
+  Expenses:Food     10.50 USD
+  Assets:Cash
