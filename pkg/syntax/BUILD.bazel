@@ -15,9 +15,11 @@ go_library(
 go_test(
     name = "syntax_test",
     srcs = [
+        "scanner_integration_test.go",
         "scanner_test.go",
         "token_kind_test.go",
         "token_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":syntax"],
 )
