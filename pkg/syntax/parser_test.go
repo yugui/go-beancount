@@ -392,6 +392,117 @@ func TestParseDatedWithTrailingComment(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
+func TestParseMetadataSingleLine(t *testing.T) {
+	src := "2024-01-01 commodity HOOL\n  name: \"Google Class A\"\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(CommodityDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected CommodityDirective", src)
+	}
+	meta := node.FindNode(MetadataLineNode)
+	if meta == nil {
+		t.Fatal("expected MetadataLineNode")
+	}
+	assertTokenChild(t, meta.Children[0], IDENT, "name")
+	assertTokenChild(t, meta.Children[1], COLON, ":")
+	assertTokenChild(t, meta.Children[2], STRING, `"Google Class A"`)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseMetadataMultipleLines(t *testing.T) {
+	src := "2024-01-01 commodity HOOL\n  name: \"Google\"\n  asset-class: \"equity\"\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(CommodityDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected CommodityDirective", src)
+	}
+	metas := node.FindAllNodes(MetadataLineNode)
+	if len(metas) != 2 {
+		t.Fatalf("got %d MetadataLineNodes, want 2", len(metas))
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseMetadataValueTypes(t *testing.T) {
+	tests := []struct {
+		name    string
+		src     string
+		valKind TokenKind
+	}{
+		{"string", "2024-01-01 close Assets:A\n  reason: \"closed\"\n", STRING},
+		{"number", "2024-01-01 close Assets:A\n  seq: 42\n", NUMBER},
+		{"date", "2024-01-01 close Assets:A\n  opened: 2020-01-01\n", DATE},
+		{"account", "2024-01-01 close Assets:A\n  transfer: Assets:B\n", ACCOUNT},
+		{"currency", "2024-01-01 close Assets:A\n  denomination: USD\n", CURRENCY},
+		{"tag", "2024-01-01 close Assets:A\n  category: #savings\n", TAG},
+		{"link", "2024-01-01 close Assets:A\n  ref: ^doc-123\n", LINK},
+		{"bool-as-currency", "2024-01-01 close Assets:A\n  active: TRUE\n", CURRENCY}, // TRUE is lexed as CURRENCY (all-caps)
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := Parse(tt.src)
+			assertNoErrors(t, f)
+			node := f.Root.FindNode(CloseDirective)
+			if node == nil {
+				t.Fatalf("Parse(%q): expected CloseDirective", tt.src)
+			}
+			meta := node.FindNode(MetadataLineNode)
+			if meta == nil {
+				t.Fatal("expected MetadataLineNode")
+			}
+			if len(meta.Children) < 3 {
+				t.Fatalf("MetadataLineNode has %d children, want >= 3", len(meta.Children))
+			}
+			if meta.Children[2].Token == nil || meta.Children[2].Token.Kind != tt.valKind {
+				gotKind := ILLEGAL
+				if meta.Children[2].Token != nil {
+					gotKind = meta.Children[2].Token.Kind
+				}
+				t.Errorf("metadata value kind = %v, want %v", gotKind, tt.valKind)
+			}
+			assertRoundTrip(t, tt.src, f)
+		})
+	}
+}
+
+func TestParseMetadataOnPrice(t *testing.T) {
+	src := "2024-01-01 price HOOL 100.00 USD\n  source: \"Yahoo Finance\"\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(PriceDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected PriceDirective", src)
+	}
+	meta := node.FindNode(MetadataLineNode)
+	if meta == nil {
+		t.Fatal("expected MetadataLineNode on PriceDirective")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseNoMetadataOnUnindented(t *testing.T) {
+	// Next directive on column 0 should NOT be treated as metadata
+	src := "2024-01-01 commodity HOOL\n2024-01-02 commodity USD\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	nodes := collectNodeChildren(f.Root)
+	if len(nodes) != 2 {
+		t.Fatalf("got %d nodes, want 2", len(nodes))
+	}
+	for i, n := range nodes {
+		if n.FindNode(MetadataLineNode) != nil {
+			t.Errorf("nodes[%d] unexpectedly has metadata", i)
+		}
+	}
+	assertRoundTrip(t, src, f)
+}
+
 // -- helpers --
 
 func assertNoErrors(t *testing.T, f *File) {
