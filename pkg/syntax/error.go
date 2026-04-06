@@ -8,7 +8,7 @@ type Error struct {
 	Msg string // human-readable error message
 }
 
-// Error implements the error interface.
+// Error returns a human-readable string including the byte offset and message.
 func (e *Error) Error() string {
 	return fmt.Sprintf("offset %d: %s", e.Pos, e.Msg)
 }

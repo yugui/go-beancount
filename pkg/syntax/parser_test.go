@@ -278,7 +278,134 @@ func TestParsePluginConfigOnNextLine(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
+func TestParseClose(t *testing.T) {
+	src := `2024-01-01 close Assets:Old:Account`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(CloseDirective)
+	if node == nil {
+		t.Fatal("expected CloseDirective")
+	}
+	assertTokenChild(t, node.Children[0], DATE, "2024-01-01")
+	assertTokenChild(t, node.Children[1], IDENT, "close")
+	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Old:Account")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseCommodity(t *testing.T) {
+	src := `2024-01-01 commodity HOOL`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(CommodityDirective)
+	if node == nil {
+		t.Fatal("expected CommodityDirective")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseNote(t *testing.T) {
+	src := `2024-01-01 note Assets:Bank:Checking "Opened account"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(NoteDirective)
+	if node == nil {
+		t.Fatal("expected NoteDirective")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseDocument(t *testing.T) {
+	src := `2024-01-01 document Assets:Bank:Checking "/path/to/statement.pdf"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(DocumentDirective)
+	if node == nil {
+		t.Fatal("expected DocumentDirective")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseEvent(t *testing.T) {
+	src := `2024-01-01 event "location" "Paris"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(EventDirective)
+	if node == nil {
+		t.Fatal("expected EventDirective")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseQuery(t *testing.T) {
+	src := `2024-01-01 query "net-worth" "SELECT account, sum(position)"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(QueryDirective)
+	if node == nil {
+		t.Fatal("expected QueryDirective")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePrice(t *testing.T) {
+	src := `2024-07-09 price HOOL 579.18 USD`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(PriceDirective)
+	if node == nil {
+		t.Fatal("expected PriceDirective")
+	}
+	// Check Amount sub-node
+	amt := node.FindNode(AmountNode)
+	if amt == nil {
+		t.Fatal("expected AmountNode in PriceDirective")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseMultipleDatedDirectives(t *testing.T) {
+	src := "2024-01-01 commodity USD\n2024-01-01 close Assets:Old\n2024-07-09 price HOOL 100.00 USD\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	nodes := collectNodeChildren(f.Root)
+	if len(nodes) != 3 {
+		t.Fatalf("got %d nodes, want 3", len(nodes))
+	}
+	if nodes[0].Kind != CommodityDirective {
+		t.Errorf("nodes[0] = %v, want CommodityDirective", nodes[0].Kind)
+	}
+	if nodes[1].Kind != CloseDirective {
+		t.Errorf("nodes[1] = %v, want CloseDirective", nodes[1].Kind)
+	}
+	if nodes[2].Kind != PriceDirective {
+		t.Errorf("nodes[2] = %v, want PriceDirective", nodes[2].Kind)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseDatedWithTrailingComment(t *testing.T) {
+	src := `2024-01-01 close Assets:Old ; closing old account`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
 // -- helpers --
+
+func assertNoErrors(t *testing.T, f *File) {
+	t.Helper()
+	if len(f.Errors) != 0 {
+		t.Fatalf("unexpected errors: %v", f.Errors)
+	}
+}
 
 func assertRoundTrip(t *testing.T, src string, f *File) {
 	t.Helper()

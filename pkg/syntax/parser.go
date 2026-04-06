@@ -110,8 +110,7 @@ func (p *parser) parseFile() *File {
 func (p *parser) parseTopLevel() *Node {
 	switch {
 	case p.peek() == DATE:
-		// Dated directive -- will be handled in later steps.
-		return p.parseUnrecognizedLine()
+		return p.parseDatedDirective()
 	case p.peek() == IDENT:
 		switch p.tok.Raw {
 		case "option":
@@ -185,6 +184,155 @@ func (p *parser) parsePoptag() *Node {
 	node.AddToken(&kw)
 	tag := p.expect(TAG)
 	node.AddToken(&tag)
+	return node
+}
+
+func (p *parser) parseDatedDirective() *Node {
+	date := p.advance() // consume DATE
+
+	if p.peek() != IDENT && p.peek() != STAR && p.peek() != BANG {
+		// Not a valid directive after date
+		node := &Node{Kind: UnrecognizedLineNode}
+		node.AddToken(&date)
+		for p.peek() != EOF && !p.isAtNextLine() {
+			tok := p.advance()
+			node.AddToken(&tok)
+		}
+		return node
+	}
+
+	// For transactions (STAR, BANG, or "txn") — handle in Step 11
+	if p.peek() == STAR || p.peek() == BANG || (p.peek() == IDENT && p.tok.Raw == "txn") {
+		node := &Node{Kind: UnrecognizedLineNode}
+		node.AddToken(&date)
+		for p.peek() != EOF && !p.isAtNextLine() {
+			tok := p.advance()
+			node.AddToken(&tok)
+		}
+		return node
+	}
+
+	// Must be IDENT — dispatch by keyword
+	switch p.tok.Raw {
+	case "close":
+		return p.parseClose(&date)
+	case "commodity":
+		return p.parseCommodity(&date)
+	case "note":
+		return p.parseNote(&date)
+	case "document":
+		return p.parseDocument(&date)
+	case "event":
+		return p.parseEvent(&date)
+	case "query":
+		return p.parseQuery(&date)
+	case "price":
+		return p.parsePrice(&date)
+	// open, balance, pad, custom — will be handled in later steps
+	default:
+		node := &Node{Kind: UnrecognizedLineNode}
+		node.AddToken(&date)
+		for p.peek() != EOF && !p.isAtNextLine() {
+			tok := p.advance()
+			node.AddToken(&tok)
+		}
+		return node
+	}
+}
+
+func (p *parser) parseClose(date *Token) *Node {
+	// YYYY-MM-DD close Account
+	node := &Node{Kind: CloseDirective}
+	node.AddToken(date)
+	kw := p.advance() // consume "close" IDENT
+	node.AddToken(&kw)
+	acct := p.expect(ACCOUNT)
+	node.AddToken(&acct)
+	return node
+}
+
+func (p *parser) parseCommodity(date *Token) *Node {
+	// YYYY-MM-DD commodity Currency
+	node := &Node{Kind: CommodityDirective}
+	node.AddToken(date)
+	kw := p.advance()
+	node.AddToken(&kw)
+	cur := p.expect(CURRENCY)
+	node.AddToken(&cur)
+	return node
+}
+
+func (p *parser) parseNote(date *Token) *Node {
+	// YYYY-MM-DD note Account "description"
+	node := &Node{Kind: NoteDirective}
+	node.AddToken(date)
+	kw := p.advance()
+	node.AddToken(&kw)
+	acct := p.expect(ACCOUNT)
+	node.AddToken(&acct)
+	desc := p.expect(STRING)
+	node.AddToken(&desc)
+	return node
+}
+
+func (p *parser) parseDocument(date *Token) *Node {
+	// YYYY-MM-DD document Account "path"
+	node := &Node{Kind: DocumentDirective}
+	node.AddToken(date)
+	kw := p.advance()
+	node.AddToken(&kw)
+	acct := p.expect(ACCOUNT)
+	node.AddToken(&acct)
+	path := p.expect(STRING)
+	node.AddToken(&path)
+	return node
+}
+
+func (p *parser) parseEvent(date *Token) *Node {
+	// YYYY-MM-DD event "name" "value"
+	node := &Node{Kind: EventDirective}
+	node.AddToken(date)
+	kw := p.advance()
+	node.AddToken(&kw)
+	name := p.expect(STRING)
+	node.AddToken(&name)
+	val := p.expect(STRING)
+	node.AddToken(&val)
+	return node
+}
+
+func (p *parser) parseQuery(date *Token) *Node {
+	// YYYY-MM-DD query "name" "sql"
+	node := &Node{Kind: QueryDirective}
+	node.AddToken(date)
+	kw := p.advance()
+	node.AddToken(&kw)
+	name := p.expect(STRING)
+	node.AddToken(&name)
+	sql := p.expect(STRING)
+	node.AddToken(&sql)
+	return node
+}
+
+func (p *parser) parsePrice(date *Token) *Node {
+	// YYYY-MM-DD price Commodity Amount
+	node := &Node{Kind: PriceDirective}
+	node.AddToken(date)
+	kw := p.advance()
+	node.AddToken(&kw)
+	commodity := p.expect(CURRENCY)
+	node.AddToken(&commodity)
+	node.AddNode(p.parseAmount())
+	return node
+}
+
+func (p *parser) parseAmount() *Node {
+	// Amount = Number Currency
+	node := &Node{Kind: AmountNode}
+	num := p.expect(NUMBER)
+	node.AddToken(&num)
+	cur := p.expect(CURRENCY)
+	node.AddToken(&cur)
 	return node
 }
 
