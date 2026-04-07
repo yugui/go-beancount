@@ -637,6 +637,137 @@ func TestParsePadWithMetadata(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
+func TestParseTransactionStar(t *testing.T) {
+	src := `2024-01-15 * "Payee" "Narration"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	assertTokenChild(t, node.Children[0], DATE, "2024-01-15")
+	assertTokenChild(t, node.Children[1], STAR, "*")
+	assertTokenChild(t, node.Children[2], STRING, `"Payee"`)
+	assertTokenChild(t, node.Children[3], STRING, `"Narration"`)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionBang(t *testing.T) {
+	src := `2024-01-15 ! "Narration only"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	assertTokenChild(t, node.Children[1], BANG, "!")
+	assertTokenChild(t, node.Children[2], STRING, `"Narration only"`)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionTxn(t *testing.T) {
+	src := `2024-01-15 txn "Narration"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	assertTokenChild(t, node.Children[1], IDENT, "txn")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionNarrationOnly(t *testing.T) {
+	src := `2024-01-15 * "Just narration"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	// Should have: DATE, STAR, STRING (narration only, no payee)
+	if len(node.Children) != 3 {
+		t.Fatalf("Parse(%q): TransactionDirective children = %d, want 3", src, len(node.Children))
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionWithTagsAndLinks(t *testing.T) {
+	src := `2024-01-15 * "Payee" "Narration" #trip ^invoice-123`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	// DATE, STAR, STRING(payee), STRING(narration), TAG, LINK
+	if len(node.Children) != 6 {
+		t.Fatalf("Parse(%q): TransactionDirective children = %d, want 6", src, len(node.Children))
+	}
+	assertTokenChild(t, node.Children[4], TAG, "#trip")
+	assertTokenChild(t, node.Children[5], LINK, "^invoice-123")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionMultipleTags(t *testing.T) {
+	src := `2024-01-15 * "Narration" #tag1 #tag2 #tag3`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	// DATE, STAR, STRING(narration), TAG, TAG, TAG
+	if len(node.Children) != 6 {
+		t.Fatalf("Parse(%q): TransactionDirective children = %d, want 6", src, len(node.Children))
+	}
+	assertTokenChild(t, node.Children[3], TAG, "#tag1")
+	assertTokenChild(t, node.Children[4], TAG, "#tag2")
+	assertTokenChild(t, node.Children[5], TAG, "#tag3")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionNoStrings(t *testing.T) {
+	// Transaction with just a flag, no payee or narration
+	src := `2024-01-15 *`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	if len(node.Children) != 2 {
+		t.Fatalf("Parse(%q): TransactionDirective children = %d, want 2", src, len(node.Children))
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionWithMetadata(t *testing.T) {
+	src := "2024-01-15 * \"Narration\"\n  note: \"some note\"\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	meta := node.FindNode(MetadataLineNode)
+	if meta == nil {
+		t.Fatalf("Parse(%q): expected MetadataLineNode on TransactionDirective", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionWithTrailingComment(t *testing.T) {
+	src := `2024-01-15 * "Payee" "Narration" ; comment`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
 // -- helpers --
 
 func assertNoErrors(t *testing.T, f *File) {
