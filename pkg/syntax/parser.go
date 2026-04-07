@@ -275,6 +275,12 @@ func (p *parser) parseDatedDirective() *Node {
 	case "txn":
 		// Transaction — will be handled in Step 11
 		return p.parseDatedUnrecognized(&date)
+	case "open":
+		return p.parseOpen(&date)
+	case "balance":
+		return p.parseBalance(&date)
+	case "pad":
+		return p.parsePad(&date)
 	case "close":
 		return p.parseClose(&date)
 	case "commodity":
@@ -301,6 +307,72 @@ func (p *parser) parseDatedUnrecognized(date *Token) *Node {
 		tok := p.advance()
 		node.AddToken(&tok)
 	}
+	return node
+}
+
+func (p *parser) parseOpen(date *Token) *Node {
+	// YYYY-MM-DD open Account [Currency,...] ["BookingMethod"]
+	node := &Node{Kind: OpenDirective}
+	node.AddToken(date)
+	kw := p.advance() // consume "open"
+	node.AddToken(&kw)
+	acct := p.expect(ACCOUNT)
+	node.AddToken(&acct)
+
+	// Optional currency constraint list
+	if p.peek() == CURRENCY && !p.isAtNextLine() {
+		cur := p.advance()
+		node.AddToken(&cur)
+		for p.peek() == COMMA && !p.isAtNextLine() {
+			comma := p.advance()
+			node.AddToken(&comma)
+			cur := p.expect(CURRENCY)
+			node.AddToken(&cur)
+		}
+	}
+
+	// Optional booking method
+	if p.peek() == STRING && !p.isAtNextLine() {
+		bm := p.advance()
+		node.AddToken(&bm)
+	}
+
+	p.parseMetadata(node)
+	return node
+}
+
+func (p *parser) parseBalance(date *Token) *Node {
+	// YYYY-MM-DD balance Account Amount [~ Tolerance]
+	node := &Node{Kind: BalanceDirective}
+	node.AddToken(date)
+	kw := p.advance() // consume "balance"
+	node.AddToken(&kw)
+	acct := p.expect(ACCOUNT)
+	node.AddToken(&acct)
+	node.AddNode(p.parseAmount())
+
+	// Optional tolerance: ~ Amount
+	if p.peek() == TILDE && !p.isAtNextLine() {
+		tilde := p.advance()
+		node.AddToken(&tilde)
+		node.AddNode(p.parseAmount())
+	}
+
+	p.parseMetadata(node)
+	return node
+}
+
+func (p *parser) parsePad(date *Token) *Node {
+	// YYYY-MM-DD pad Account AccountPad
+	node := &Node{Kind: PadDirective}
+	node.AddToken(date)
+	kw := p.advance() // consume "pad"
+	node.AddToken(&kw)
+	acct := p.expect(ACCOUNT)
+	node.AddToken(&acct)
+	pad := p.expect(ACCOUNT)
+	node.AddToken(&pad)
+	p.parseMetadata(node)
 	return node
 }
 
