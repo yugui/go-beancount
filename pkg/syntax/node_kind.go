@@ -33,7 +33,7 @@ const (
 	CostSpecNode     // {Amount [, Date] [, Label]} or {{Amount}} or {}
 	PriceAnnotNode   // @ Amount or @@ Amount
 	MetadataLineNode // key: value
-	ArithExprNode    // binary expression: left op right
+	ArithExprNode    // arithmetic expression (number, unary, binary, or parenthesized)
 
 	// Error recovery
 	ErrorNode            // contains tokens from a failed parse
