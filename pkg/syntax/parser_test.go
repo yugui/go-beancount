@@ -503,6 +503,140 @@ func TestParseNoMetadataOnUnindented(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
+func TestParseOpen(t *testing.T) {
+	src := `2024-01-01 open Assets:Bank:Checking`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(OpenDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected OpenDirective", src)
+	}
+	assertTokenChild(t, node.Children[0], DATE, "2024-01-01")
+	assertTokenChild(t, node.Children[1], IDENT, "open")
+	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Bank:Checking")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseOpenWithCurrencies(t *testing.T) {
+	src := `2024-01-01 open Assets:Bank:Checking USD,EUR`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(OpenDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected OpenDirective", src)
+	}
+	// children: DATE, IDENT("open"), ACCOUNT, CURRENCY("USD"), COMMA, CURRENCY("EUR")
+	if len(node.Children) != 6 {
+		t.Fatalf("Parse(%q): OpenDirective children = %d, want 6", src, len(node.Children))
+	}
+	assertTokenChild(t, node.Children[3], CURRENCY, "USD")
+	assertTokenChild(t, node.Children[4], COMMA, ",")
+	assertTokenChild(t, node.Children[5], CURRENCY, "EUR")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseOpenWithBooking(t *testing.T) {
+	src := `2024-01-01 open Assets:Bank:Checking USD "STRICT"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(OpenDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected OpenDirective", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseOpenWithCurrenciesAndBooking(t *testing.T) {
+	src := `2024-01-01 open Assets:Bank:Checking USD,EUR "STRICT"`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseOpenWithMetadata(t *testing.T) {
+	src := "2024-01-01 open Assets:Bank:Checking USD\n  institution: \"Bank of America\"\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(OpenDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected OpenDirective", src)
+	}
+	meta := node.FindNode(MetadataLineNode)
+	if meta == nil {
+		t.Fatal("expected MetadataLineNode on OpenDirective")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseBalance(t *testing.T) {
+	src := `2024-01-31 balance Assets:Bank:Checking 1000.00 USD`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(BalanceDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected BalanceDirective", src)
+	}
+	assertTokenChild(t, node.Children[0], DATE, "2024-01-31")
+	assertTokenChild(t, node.Children[1], IDENT, "balance")
+	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Bank:Checking")
+	// Children[3] should be AmountNode
+	if node.Children[3].Node == nil || node.Children[3].Node.Kind != AmountNode {
+		t.Fatal("expected AmountNode as 4th child")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseBalanceWithTolerance(t *testing.T) {
+	src := `2024-01-31 balance Assets:Bank:Checking 1000.00 USD ~ 0.01 USD`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(BalanceDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected BalanceDirective", src)
+	}
+	// Should have: DATE, IDENT, ACCOUNT, AmountNode, TILDE, AmountNode
+	found := false
+	for _, c := range node.Children {
+		if c.Token != nil && c.Token.Kind == TILDE {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Parse(%q): expected TILDE token in balance with tolerance", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePad(t *testing.T) {
+	src := `2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances`
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(PadDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected PadDirective", src)
+	}
+	assertTokenChild(t, node.Children[0], DATE, "2024-01-01")
+	assertTokenChild(t, node.Children[1], IDENT, "pad")
+	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Bank:Checking")
+	assertTokenChild(t, node.Children[3], ACCOUNT, "Equity:Opening-Balances")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePadWithMetadata(t *testing.T) {
+	src := "2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances\n  note: \"Initial balance\"\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(PadDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected PadDirective", src)
+	}
+	meta := node.FindNode(MetadataLineNode)
+	if meta == nil {
+		t.Fatalf("Parse(%q): expected MetadataLineNode on PadDirective", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
 // -- helpers --
 
 func assertNoErrors(t *testing.T, f *File) {
