@@ -934,3 +934,145 @@ func collectNodeChildren(n *Node) []*Node {
 	}
 	return nodes
 }
+
+func TestParsePostingWithCost(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {150.00 USD}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	postings := node.FindAllNodes(PostingNode)
+	if len(postings) != 2 {
+		t.Fatalf("Parse(%q): got %d postings, want 2", src, len(postings))
+	}
+	cost := postings[0].FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode on first posting", src)
+	}
+	// Cost should contain: LBRACE, AmountNode, RBRACE
+	assertTokenChild(t, cost.Children[0], LBRACE, "{")
+	if len(cost.Children) < 3 {
+		t.Fatalf("Parse(%q): CostSpec has %d children, want >= 3", src, len(cost.Children))
+	}
+	if cost.Children[1].Node == nil || cost.Children[1].Node.Kind != AmountNode {
+		t.Fatalf("Parse(%q): expected AmountNode inside CostSpec", src)
+	}
+	assertTokenChild(t, cost.Children[2], RBRACE, "}")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithCostAndDate(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {150.00 USD, 2024-01-01}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithCostDateAndLabel(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {150.00 USD, 2024-01-01, \"lot1\"}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithEmptyCost(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  -3 HOOL {}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	// Empty cost: just LBRACE and RBRACE
+	assertTokenChild(t, cost.Children[0], LBRACE, "{")
+	assertTokenChild(t, cost.Children[1], RBRACE, "}")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithTotalCost(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  5 HOOL {{750.00 USD}}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	assertTokenChild(t, cost.Children[0], LBRACE2, "{{")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithPricePerUnit(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  -3 HOOL {} @ 160.00 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	price := posting.FindNode(PriceAnnotNode)
+	if price == nil {
+		t.Fatalf("Parse(%q): expected PriceAnnotNode", src)
+	}
+	assertTokenChild(t, price.Children[0], AT, "@")
+	amt := price.FindNode(AmountNode)
+	if amt == nil {
+		t.Fatal("expected AmountNode inside PriceAnnotNode")
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithTotalPrice(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  -2 HOOL {} @@ 310.00 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	price := posting.FindNode(PriceAnnotNode)
+	if price == nil {
+		t.Fatalf("Parse(%q): expected PriceAnnotNode", src)
+	}
+	assertTokenChild(t, price.Children[0], ATAT, "@@")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithCostAndPrice(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {150.00 USD} @ 160.00 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	price := posting.FindNode(PriceAnnotNode)
+	if price == nil {
+		t.Fatalf("Parse(%q): expected PriceAnnotNode", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingPriceWithoutCost(t *testing.T) {
+	// Price annotation without cost spec
+	src := "2024-01-15 *\n  Assets:Foreign  100.00 EUR @ 1.09 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	if posting.FindNode(CostSpecNode) != nil {
+		t.Fatalf("Parse(%q): should not have CostSpecNode", src)
+	}
+	price := posting.FindNode(PriceAnnotNode)
+	if price == nil {
+		t.Fatalf("Parse(%q): expected PriceAnnotNode", src)
+	}
+	assertRoundTrip(t, src, f)
+}

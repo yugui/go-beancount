@@ -385,8 +385,88 @@ func (p *parser) parsePosting() *Node {
 	// Optional amount (NUMBER, MINUS, or PLUS on the same line indicates an amount follows)
 	if !p.isAtNextLine() && (p.peek() == NUMBER || p.peek() == MINUS || p.peek() == PLUS) {
 		node.AddNode(p.parseAmount())
+
+		// Optional cost spec: { ... } or {{ ... }}
+		if !p.isAtNextLine() && (p.peek() == LBRACE || p.peek() == LBRACE2) {
+			node.AddNode(p.parseCostSpec())
+		}
+
+		// Optional price annotation: @ or @@
+		if !p.isAtNextLine() && (p.peek() == AT || p.peek() == ATAT) {
+			node.AddNode(p.parsePriceAnnotation())
+		}
 	}
 
+	return node
+}
+
+// parseCostSpec parses a cost specification: {Amount [, Date] [, Label]}, {{Amount}}, {}, or {{}}.
+func (p *parser) parseCostSpec() *Node {
+	node := &Node{Kind: CostSpecNode}
+
+	if p.peek() == LBRACE2 {
+		// Total cost: {{ ... }}
+		open := p.advance()
+		node.AddToken(&open)
+		p.parseCostContents(node)
+		close := p.expect(RBRACE2)
+		node.AddToken(&close)
+	} else {
+		// Per-unit cost: { ... }
+		open := p.advance() // consume LBRACE
+		node.AddToken(&open)
+		p.parseCostContents(node)
+		close := p.expect(RBRACE)
+		node.AddToken(&close)
+	}
+
+	return node
+}
+
+// parseCostContents parses comma-separated elements inside a cost spec.
+// Elements can be: Amount (NUMBER [CURRENCY]), Date, or String label.
+func (p *parser) parseCostContents(node *Node) {
+	// Could be empty: {} or {{}}
+	if p.peek() == RBRACE || p.peek() == RBRACE2 {
+		return
+	}
+
+	// Parse first element
+	p.parseCostElement(node)
+
+	// Parse comma-separated additional elements
+	for p.peek() == COMMA {
+		comma := p.advance()
+		node.AddToken(&comma)
+		p.parseCostElement(node)
+	}
+}
+
+// parseCostElement parses a single element inside a cost spec.
+// Can be: Amount, Date, or String (label).
+func (p *parser) parseCostElement(node *Node) {
+	switch p.peek() {
+	case NUMBER, MINUS, PLUS:
+		node.AddNode(p.parseAmount())
+	case DATE:
+		date := p.advance()
+		node.AddToken(&date)
+	case STRING:
+		label := p.advance()
+		node.AddToken(&label)
+	default:
+		p.errorf("expected amount, date, or label in cost spec, got %s", p.tok.Kind)
+		tok := p.advance() // skip unexpected token to ensure forward progress
+		node.AddToken(&tok)
+	}
+}
+
+// parsePriceAnnotation parses a price annotation: @ Amount or @@ Amount.
+func (p *parser) parsePriceAnnotation() *Node {
+	node := &Node{Kind: PriceAnnotNode}
+	op := p.advance() // consume AT or ATAT
+	node.AddToken(&op)
+	node.AddNode(p.parseAmount())
 	return node
 }
 
