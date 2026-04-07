@@ -768,6 +768,133 @@ func TestParseTransactionWithTrailingComment(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
+func TestParseTransactionWithPostings(t *testing.T) {
+	src := "2024-01-15 * \"Grocery Store\" \"Weekly groceries\"\n  Expenses:Food            50.00 USD\n  Assets:Bank:Checking   -50.00 USD\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	postings := node.FindAllNodes(PostingNode)
+	if len(postings) != 2 {
+		t.Fatalf("Parse(%q): got %d postings, want 2", src, len(postings))
+	}
+	// First posting: Expenses:Food 50.00 USD
+	assertTokenChild(t, postings[0].Children[0], ACCOUNT, "Expenses:Food")
+	amt := postings[0].FindNode(AmountNode)
+	if amt == nil {
+		t.Fatalf("Parse(%q): expected AmountNode in first posting", src)
+	}
+	// Second posting: Assets:Bank:Checking -50.00 USD
+	assertTokenChild(t, postings[1].Children[0], ACCOUNT, "Assets:Bank:Checking")
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithFlag(t *testing.T) {
+	src := "2024-01-15 * \"Test\"\n  ! Expenses:Food  50.00 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	postings := node.FindAllNodes(PostingNode)
+	if len(postings) != 2 {
+		t.Fatalf("Parse(%q): got %d postings, want 2", src, len(postings))
+	}
+	// First posting has BANG flag
+	assertTokenChild(t, postings[0].Children[0], BANG, "!")
+	assertTokenChild(t, postings[0].Children[1], ACCOUNT, "Expenses:Food")
+	// Second posting has no amount (auto-balanced)
+	if postings[1].FindNode(AmountNode) != nil {
+		t.Fatalf("Parse(%q): second posting should have no amount", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithMetadata(t *testing.T) {
+	src := "2024-01-15 * \"Test\"\n  Expenses:Food  50.00 USD\n    note: \"receipt\"\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	postings := node.FindAllNodes(PostingNode)
+	if len(postings) != 2 {
+		t.Fatalf("Parse(%q): got %d postings, want 2", src, len(postings))
+	}
+	// Metadata on first posting
+	meta := postings[0].FindNode(MetadataLineNode)
+	if meta == nil {
+		t.Fatalf("Parse(%q): expected MetadataLineNode on first posting", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseTransactionMetadataBeforePostings(t *testing.T) {
+	src := "2024-01-15 * \"Test\"\n  note: \"txn-level\"\n  Expenses:Food  50.00 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	// Transaction-level metadata (before any posting)
+	meta := node.FindNode(MetadataLineNode)
+	if meta == nil {
+		t.Fatalf("Parse(%q): expected MetadataLineNode on transaction", src)
+	}
+	postings := node.FindAllNodes(PostingNode)
+	if len(postings) != 2 {
+		t.Fatalf("Parse(%q): got %d postings, want 2", src, len(postings))
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingAutoBalanced(t *testing.T) {
+	src := "2024-01-15 *\n  Expenses:Food  50.00 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	postings := node.FindAllNodes(PostingNode)
+	if len(postings) != 2 {
+		t.Fatalf("Parse(%q): got %d postings, want 2", src, len(postings))
+	}
+	// Second posting has no amount
+	if postings[1].FindNode(AmountNode) != nil {
+		t.Fatalf("Parse(%q): auto-balanced posting should have no amount", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingNegativeAmount(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Bank  -100.00 USD\n  Expenses:Food\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	node := f.Root.FindNode(TransactionDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	postings := node.FindAllNodes(PostingNode)
+	if len(postings) != 2 {
+		t.Fatalf("Parse(%q): got %d postings, want 2", src, len(postings))
+	}
+	amt := postings[0].FindNode(AmountNode)
+	if amt == nil {
+		t.Fatalf("Parse(%q): expected AmountNode in first posting", src)
+	}
+	// Verify MINUS sign token is present in the amount
+	assertTokenChild(t, amt.Children[0], MINUS, "-")
+	assertTokenChild(t, amt.Children[1], NUMBER, "100.00")
+	assertTokenChild(t, amt.Children[2], CURRENCY, "USD")
+	assertRoundTrip(t, src, f)
+}
+
 // -- helpers --
 
 func assertNoErrors(t *testing.T, f *File) {
