@@ -888,10 +888,15 @@ func TestParsePostingNegativeAmount(t *testing.T) {
 	if amt == nil {
 		t.Fatalf("Parse(%q): expected AmountNode in first posting", src)
 	}
-	// Verify MINUS sign token is present in the amount
-	assertTokenChild(t, amt.Children[0], MINUS, "-")
-	assertTokenChild(t, amt.Children[1], NUMBER, "100.00")
-	assertTokenChild(t, amt.Children[2], CURRENCY, "USD")
+	// Verify ArithExprNode with unary minus is present in the amount
+	expr := amt.FindNode(ArithExprNode)
+	if expr == nil {
+		t.Fatalf("Parse(%q): expected ArithExprNode in AmountNode", src)
+	}
+	// The unary minus expression should have a MINUS token
+	if expr.FindToken(MINUS) == nil {
+		t.Fatalf("Parse(%q): expected MINUS token in ArithExprNode", src)
+	}
 	assertRoundTrip(t, src, f)
 }
 
@@ -1074,5 +1079,97 @@ func TestParsePostingPriceWithoutCost(t *testing.T) {
 	if price == nil {
 		t.Fatalf("Parse(%q): expected PriceAnnotNode", src)
 	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountSimpleNumber(t *testing.T) {
+	// Simple number should still work (backward compat)
+	src := "2024-01-15 *\n  Expenses:Food  100 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	txn := f.Root.FindNode(TransactionDirective)
+	if txn == nil {
+		t.Fatalf("Parse(%q): expected TransactionDirective", src)
+	}
+	posting := txn.FindAllNodes(PostingNode)[0]
+	amt := posting.FindNode(AmountNode)
+	if amt == nil {
+		t.Fatalf("Parse(%q): expected AmountNode", src)
+	}
+	// AmountNode should have: ArithExprNode(NUMBER), CURRENCY
+	expr := amt.FindNode(ArithExprNode)
+	if expr == nil {
+		t.Fatalf("Parse(%q): expected ArithExprNode inside AmountNode", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountAddition(t *testing.T) {
+	src := "2024-01-15 *\n  Expenses:Food  10 + 20 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountMultiplication(t *testing.T) {
+	src := "2024-01-15 *\n  Expenses:Food  100 * 2 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountParenthesized(t *testing.T) {
+	src := "2024-01-15 *\n  Expenses:Food  (10 + 20) USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountComplex(t *testing.T) {
+	src := "2024-01-15 *\n  Expenses:Food  (100 + 50) * 2 USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountNested(t *testing.T) {
+	src := "2024-01-15 *\n  Expenses:Food  ((40.00 / 3) + 5) USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountUnaryMinus(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Bank  -100.00 USD\n  Expenses:Food\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountInCostExpr(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {(100 / 3) USD}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountInPriceExpr(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Foreign  100 EUR @ (1.09 + 0.01) USD\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountInBalanceDirective(t *testing.T) {
+	src := "2024-01-31 balance Assets:Bank:Checking 1000.00 USD"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseAmountInPriceDirective(t *testing.T) {
+	src := "2024-07-09 price HOOL 579.18 USD"
+	f := Parse(src)
+	assertNoErrors(t, f)
 	assertRoundTrip(t, src, f)
 }

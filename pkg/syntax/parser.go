@@ -382,8 +382,8 @@ func (p *parser) parsePosting() *Node {
 	acct := p.expect(ACCOUNT)
 	node.AddToken(&acct)
 
-	// Optional amount (NUMBER, MINUS, or PLUS on the same line indicates an amount follows)
-	if !p.isAtNextLine() && (p.peek() == NUMBER || p.peek() == MINUS || p.peek() == PLUS) {
+	// Optional amount (NUMBER, MINUS, PLUS, or LPAREN on the same line indicates an amount follows)
+	if !p.isAtNextLine() && (p.peek() == NUMBER || p.peek() == MINUS || p.peek() == PLUS || p.peek() == LPAREN) {
 		node.AddNode(p.parseAmount())
 
 		// Optional cost spec: { ... } or {{ ... }}
@@ -446,7 +446,7 @@ func (p *parser) parseCostContents(node *Node) {
 // Can be: Amount, Date, or String (label).
 func (p *parser) parseCostElement(node *Node) {
 	switch p.peek() {
-	case NUMBER, MINUS, PLUS:
+	case NUMBER, MINUS, PLUS, LPAREN:
 		node.AddNode(p.parseAmount())
 	case DATE:
 		date := p.advance()
@@ -640,18 +640,79 @@ func (p *parser) parsePrice(date *Token) *Node {
 }
 
 func (p *parser) parseAmount() *Node {
-	// Amount = [MINUS|PLUS] Number Currency
+	// Amount = Expr Currency
 	node := &Node{Kind: AmountNode}
-	// Optional sign
-	if p.peek() == MINUS || p.peek() == PLUS {
-		sign := p.advance()
-		node.AddToken(&sign)
-	}
-	num := p.expect(NUMBER)
-	node.AddToken(&num)
+	node.AddNode(p.parseExpr())
 	cur := p.expect(CURRENCY)
 	node.AddToken(&cur)
 	return node
+}
+
+// parseExpr parses an additive expression: term (('+' | '-') term)*
+func (p *parser) parseExpr() *Node {
+	left := p.parseTerm()
+
+	for p.peek() == PLUS || p.peek() == MINUS {
+		node := &Node{Kind: ArithExprNode}
+		node.AddNode(left)
+		op := p.advance()
+		node.AddToken(&op)
+		right := p.parseTerm()
+		node.AddNode(right)
+		left = node
+	}
+
+	return left
+}
+
+// parseTerm parses a multiplicative expression: factor (('*' | '/') factor)*
+func (p *parser) parseTerm() *Node {
+	left := p.parseFactor()
+
+	for p.peek() == STAR || p.peek() == SLASH {
+		node := &Node{Kind: ArithExprNode}
+		node.AddNode(left)
+		op := p.advance()
+		node.AddToken(&op)
+		right := p.parseFactor()
+		node.AddNode(right)
+		left = node
+	}
+
+	return left
+}
+
+// parseFactor parses a primary expression: NUMBER, unary +/-, or '(' expr ')'
+func (p *parser) parseFactor() *Node {
+	switch p.peek() {
+	case NUMBER:
+		node := &Node{Kind: ArithExprNode}
+		num := p.advance()
+		node.AddToken(&num)
+		return node
+	case MINUS, PLUS:
+		node := &Node{Kind: ArithExprNode}
+		op := p.advance()
+		node.AddToken(&op)
+		operand := p.parseFactor()
+		node.AddNode(operand)
+		return node
+	case LPAREN:
+		node := &Node{Kind: ArithExprNode}
+		lp := p.advance()
+		node.AddToken(&lp)
+		inner := p.parseExpr()
+		node.AddNode(inner)
+		rp := p.expect(RPAREN)
+		node.AddToken(&rp)
+		return node
+	default:
+		p.errorf("expected number or expression, got %s", p.tok.Kind)
+		node := &Node{Kind: ArithExprNode}
+		tok := p.advance()
+		node.AddToken(&tok)
+		return node
+	}
 }
 
 func (p *parser) parseUnrecognizedLine() *Node {
