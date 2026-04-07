@@ -22,6 +22,7 @@ go_test(
     srcs = [
         "node_kind_test.go",
         "node_test.go",
+        "parser_integration_test.go",
         "parser_test.go",
         "scanner_integration_test.go",
         "scanner_test.go",
