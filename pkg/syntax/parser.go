@@ -263,8 +263,7 @@ func (p *parser) parseDatedDirective() *Node {
 	date := p.advance() // consume DATE
 
 	if p.peek() == STAR || p.peek() == BANG {
-		// Transaction — will be handled in Step 11
-		return p.parseDatedUnrecognized(&date)
+		return p.parseTransaction(&date)
 	}
 	if p.peek() != IDENT {
 		return p.parseDatedUnrecognized(&date)
@@ -273,8 +272,7 @@ func (p *parser) parseDatedDirective() *Node {
 	// Now p.peek() == IDENT for certain
 	switch p.tok.Raw {
 	case "txn":
-		// Transaction — will be handled in Step 11
-		return p.parseDatedUnrecognized(&date)
+		return p.parseTransaction(&date)
 	case "open":
 		return p.parseOpen(&date)
 	case "balance":
@@ -298,6 +296,50 @@ func (p *parser) parseDatedDirective() *Node {
 	default:
 		return p.parseDatedUnrecognized(&date)
 	}
+}
+
+// parseTransaction parses a transaction directive:
+// DATE (STAR | BANG | "txn") [payee] [narration] [tags/links].
+func (p *parser) parseTransaction(date *Token) *Node {
+	node := &Node{Kind: TransactionDirective}
+	node.AddToken(date)
+
+	// Consume flag: STAR, BANG, or IDENT("txn")
+	flag := p.advance()
+	node.AddToken(&flag)
+
+	// Optional payee and narration (on the same line)
+	if p.peek() == STRING && !p.isAtNextLine() {
+		s1 := p.advance()
+		if p.peek() == STRING && !p.isAtNextLine() {
+			// Two strings: s1 is payee, s2 is narration
+			node.AddToken(&s1)
+			s2 := p.advance()
+			node.AddToken(&s2)
+		} else {
+			// One string: s1 is narration
+			node.AddToken(&s1)
+		}
+	}
+
+	// Optional tags and links (on the same line)
+	for !p.isAtNextLine() && p.peek() != EOF {
+		if p.peek() == TAG {
+			tag := p.advance()
+			node.AddToken(&tag)
+		} else if p.peek() == LINK {
+			link := p.advance()
+			node.AddToken(&link)
+		} else {
+			break
+		}
+	}
+
+	// Postings and metadata on indented lines
+	// TODO: parse postings here; currently only metadata is parsed.
+	p.parseMetadata(node)
+
+	return node
 }
 
 func (p *parser) parseDatedUnrecognized(date *Token) *Node {
