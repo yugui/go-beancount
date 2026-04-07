@@ -1,0 +1,24 @@
+; File with intentional errors for error recovery testing
+
+option "title" "Error Test"
+
+; Valid directive before error
+2024-01-01 open Assets:Bank USD
+
+; Malformed directive (missing account)
+2024-01-02 close
+
+; Valid directive after error - should still parse
+2024-01-03 commodity USD
+
+; Malformed transaction (incomplete)
+2024-01-04 * "Test"
+  Expenses:Food  50.00
+
+; Valid transaction after error
+2024-01-05 * "Good transaction"
+  Expenses:Food     25.00 USD
+  Assets:Bank      -25.00 USD
+
+; Another valid directive at the end
+2024-12-31 balance Assets:Bank 100.00 USD

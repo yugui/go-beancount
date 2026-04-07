@@ -293,6 +293,8 @@ func (p *parser) parseDatedDirective() *Node {
 		return p.parseQuery(&date)
 	case "price":
 		return p.parsePrice(&date)
+	case "custom":
+		return p.parseCustom(&date)
 	default:
 		return p.parseDatedUnrecognized(&date)
 	}
@@ -635,6 +637,31 @@ func (p *parser) parsePrice(date *Token) *Node {
 	commodity := p.expect(CURRENCY)
 	node.AddToken(&commodity)
 	node.AddNode(p.parseAmount())
+	p.parseMetadata(node)
+	return node
+}
+
+func (p *parser) parseCustom(date *Token) *Node {
+	// YYYY-MM-DD custom "type" Value...
+	node := &Node{Kind: CustomDirective}
+	node.AddToken(date)
+	kw := p.advance() // consume "custom"
+	node.AddToken(&kw)
+	typeName := p.expect(STRING)
+	node.AddToken(&typeName)
+
+	// Variable-length value list on the same line
+	for !p.isAtNextLine() && p.peek() != EOF {
+		if p.at(STRING, DATE, ACCOUNT, CURRENCY, IDENT) {
+			tok := p.advance()
+			node.AddToken(&tok)
+		} else if p.at(NUMBER, MINUS, PLUS, LPAREN) {
+			node.AddNode(p.parseAmount())
+		} else {
+			break
+		}
+	}
+
 	p.parseMetadata(node)
 	return node
 }
