@@ -336,8 +336,56 @@ func (p *parser) parseTransaction(date *Token) *Node {
 	}
 
 	// Postings and metadata on indented lines
-	// TODO: parse postings here; currently only metadata is parsed.
-	p.parseMetadata(node)
+	p.parsePostingsAndMetadata(node)
+
+	return node
+}
+
+// parsePostingsAndMetadata parses indented posting and metadata lines
+// after a transaction header. Metadata lines before any posting attach to
+// the transaction node. Metadata lines after a posting attach to that posting.
+func (p *parser) parsePostingsAndMetadata(txn *Node) {
+	var lastPosting *Node
+
+	for p.isAtNextLine() && p.isIndented() && p.peek() != EOF {
+		if p.peek() == ACCOUNT || p.peek() == STAR || p.peek() == BANG {
+			lastPosting = p.parsePosting()
+			txn.AddNode(lastPosting)
+		} else if p.peek() == IDENT {
+			meta := p.tryParseMetadataLine()
+			if meta != nil {
+				if lastPosting != nil {
+					lastPosting.AddNode(meta)
+				} else {
+					txn.AddNode(meta)
+				}
+			} else {
+				return
+			}
+		} else {
+			return
+		}
+	}
+}
+
+// parsePosting parses a posting line: [STAR|BANG] ACCOUNT [Amount].
+func (p *parser) parsePosting() *Node {
+	node := &Node{Kind: PostingNode}
+
+	// Optional flag
+	if p.peek() == STAR || p.peek() == BANG {
+		flag := p.advance()
+		node.AddToken(&flag)
+	}
+
+	// Account (required)
+	acct := p.expect(ACCOUNT)
+	node.AddToken(&acct)
+
+	// Optional amount (NUMBER, MINUS, or PLUS on the same line indicates an amount follows)
+	if !p.isAtNextLine() && (p.peek() == NUMBER || p.peek() == MINUS || p.peek() == PLUS) {
+		node.AddNode(p.parseAmount())
+	}
 
 	return node
 }
@@ -512,8 +560,13 @@ func (p *parser) parsePrice(date *Token) *Node {
 }
 
 func (p *parser) parseAmount() *Node {
-	// Amount = Number Currency
+	// Amount = [MINUS|PLUS] Number Currency
 	node := &Node{Kind: AmountNode}
+	// Optional sign
+	if p.peek() == MINUS || p.peek() == PLUS {
+		sign := p.advance()
+		node.AddToken(&sign)
+	}
 	num := p.expect(NUMBER)
 	node.AddToken(&num)
 	cur := p.expect(CURRENCY)
