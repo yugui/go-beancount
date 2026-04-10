@@ -2,6 +2,8 @@ package ast
 
 import (
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/yugui/go-beancount/pkg/syntax"
 )
@@ -54,9 +56,9 @@ func (l *lowerer) lowerDirective(n *syntax.Node) {
 	case syntax.PoptagDirective:
 		// TODO: step 14
 	case syntax.OpenDirective:
-		// TODO: step 4
+		l.lowerOpen(n)
 	case syntax.CloseDirective:
-		// TODO: step 4
+		l.lowerClose(n)
 	case syntax.CommodityDirective:
 		// TODO: step 5
 	case syntax.BalanceDirective:
@@ -155,6 +157,82 @@ func unquoteString(t *syntax.Token) string {
 		s = s[1 : len(s)-1]
 	}
 	return s
+}
+
+// parseDate parses a DATE token's Raw value into time.Time.
+// Beancount dates are YYYY-MM-DD or YYYY/MM/DD.
+func parseDate(t *syntax.Token) (time.Time, error) {
+	s := t.Raw
+	// Normalize separator
+	s = strings.ReplaceAll(s, "/", "-")
+	return time.Parse("2006-01-02", s)
+}
+
+// lowerOpen converts an OpenDirective CST node into an Open AST directive.
+func (l *lowerer) lowerOpen(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "open directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	acctTok := n.FindToken(syntax.ACCOUNT)
+	if acctTok == nil {
+		l.addDiagnostic(n, "open directive missing account")
+		return
+	}
+
+	// Collect optional constraint currencies.
+	currTokens := findTokens(n, syntax.CURRENCY)
+	var currencies []string
+	for _, ct := range currTokens {
+		currencies = append(currencies, ct.Raw)
+	}
+
+	// Optional booking method (STRING token after account).
+	var booking string
+	strTokens := findTokens(n, syntax.STRING)
+	if len(strTokens) > 0 {
+		booking = unquoteString(strTokens[0])
+	}
+
+	l.addDirective(&Open{
+		Span:       l.spanFromNode(n),
+		Date:       date,
+		Account:    acctTok.Raw,
+		Currencies: currencies,
+		Booking:    booking,
+		// TODO: populate Meta when metadata lowering is implemented.
+	})
+}
+
+// lowerClose converts a CloseDirective CST node into a Close AST directive.
+func (l *lowerer) lowerClose(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "close directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	acctTok := n.FindToken(syntax.ACCOUNT)
+	if acctTok == nil {
+		l.addDiagnostic(n, "close directive missing account")
+		return
+	}
+	l.addDirective(&Close{
+		Span:    l.spanFromNode(n),
+		Date:    date,
+		Account: acctTok.Raw,
+		// TODO: populate Meta when metadata lowering is implemented.
+	})
 }
 
 // lowerOption converts an OptionDirective CST node into an Option AST directive.

@@ -34,8 +34,6 @@ func TestLower_ValidDirectiveStubs(t *testing.T) {
 		name  string
 		input string
 	}{
-		{"open", "2024-01-01 open Assets:Bank USD\n"},
-		{"close", "2024-01-01 close Assets:Bank\n"},
 		{"commodity", "2024-01-01 commodity USD\n"},
 		{"balance", "2024-01-01 balance Assets:Bank 100 USD\n"},
 		{"pad", "2024-01-01 pad Assets:Bank Equity:Opening-Balances\n"},
@@ -56,6 +54,96 @@ func TestLower_ValidDirectiveStubs(t *testing.T) {
 				t.Errorf("Lower(%q): got %d directives, want 0", tc.name, len(f.Directives))
 			}
 		})
+	}
+}
+
+func TestLower_Open(t *testing.T) {
+	cst := syntax.Parse("2024-01-15 open Assets:US:BofA:Checking USD,EUR\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(open): got %d directives, want 1", len(f.Directives))
+	}
+	o, ok := f.Directives[0].(*ast.Open)
+	if !ok {
+		t.Fatalf("Lower(open): directive is %T, want *ast.Open", f.Directives[0])
+	}
+	if got := o.Date.Format("2006-01-02"); got != "2024-01-15" {
+		t.Errorf("Lower(open): Date = %q, want %q", got, "2024-01-15")
+	}
+	if o.Account != "Assets:US:BofA:Checking" {
+		t.Errorf("Lower(open): Account = %q, want %q", o.Account, "Assets:US:BofA:Checking")
+	}
+	if len(o.Currencies) != 2 || o.Currencies[0] != "USD" || o.Currencies[1] != "EUR" {
+		t.Errorf("Lower(open): Currencies = %v, want %v", o.Currencies, []string{"USD", "EUR"})
+	}
+}
+
+func TestLower_OpenWithBooking(t *testing.T) {
+	cst := syntax.Parse("2024-01-15 open Assets:Bank USD \"STRICT\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(open-booking): got %d directives, want 1", len(f.Directives))
+	}
+	o, ok := f.Directives[0].(*ast.Open)
+	if !ok {
+		t.Fatalf("Lower(open-booking): directive is %T, want *ast.Open", f.Directives[0])
+	}
+	if o.Booking != "STRICT" {
+		t.Errorf("Lower(open-booking): Booking = %q, want %q", o.Booking, "STRICT")
+	}
+	if len(o.Currencies) != 1 || o.Currencies[0] != "USD" {
+		t.Errorf("Lower(open-booking): Currencies = %v, want %v", o.Currencies, []string{"USD"})
+	}
+}
+
+func TestLower_OpenMinimal(t *testing.T) {
+	cst := syntax.Parse("2024-01-15 open Expenses:Food\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(open-minimal): got %d directives, want 1", len(f.Directives))
+	}
+	o, ok := f.Directives[0].(*ast.Open)
+	if !ok {
+		t.Fatalf("Lower(open-minimal): directive is %T, want *ast.Open", f.Directives[0])
+	}
+	if len(o.Currencies) != 0 {
+		t.Errorf("Lower(open-minimal): Currencies = %v, want empty", o.Currencies)
+	}
+	if o.Booking != "" {
+		t.Errorf("Lower(open-minimal): Booking = %q, want empty", o.Booking)
+	}
+}
+
+func TestLower_Close(t *testing.T) {
+	cst := syntax.Parse("2024-06-30 close Assets:Bank\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(close): got %d directives, want 1", len(f.Directives))
+	}
+	c, ok := f.Directives[0].(*ast.Close)
+	if !ok {
+		t.Fatalf("Lower(close): directive is %T, want *ast.Close", f.Directives[0])
+	}
+	if got := c.Date.Format("2006-01-02"); got != "2024-06-30" {
+		t.Errorf("Lower(close): Date = %q, want %q", got, "2024-06-30")
+	}
+	if c.Account != "Assets:Bank" {
+		t.Errorf("Lower(close): Account = %q, want %q", c.Account, "Assets:Bank")
+	}
+}
+
+func TestLower_OpenSlashDate(t *testing.T) {
+	cst := syntax.Parse("2024/01/15 open Assets:Bank\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(open-slash-date): got %d directives, want 1", len(f.Directives))
+	}
+	o, ok := f.Directives[0].(*ast.Open)
+	if !ok {
+		t.Fatalf("Lower(open-slash-date): directive is %T, want *ast.Open", f.Directives[0])
+	}
+	if got := o.Date.Format("2006-01-02"); got != "2024-01-15" {
+		t.Errorf("Lower(open-slash-date): Date = %q, want %q", got, "2024-01-15")
 	}
 }
 
