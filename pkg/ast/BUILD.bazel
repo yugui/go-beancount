@@ -2,15 +2,27 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "ast",
-    srcs = ["ast.go"],
+    srcs = [
+        "ast.go",
+        "lower.go",
+    ],
     importpath = "github.com/yugui/go-beancount/pkg/ast",
     visibility = ["//visibility:public"],
-    deps = ["@com_github_cockroachdb_apd_v3//:apd"],
+    deps = [
+        "//pkg/syntax",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
 )
 
 go_test(
     name = "ast_test",
-    srcs = ["ast_test.go"],
+    srcs = [
+        "ast_test.go",
+        "lower_test.go",
+    ],
     embed = [":ast"],
-    deps = ["@com_github_cockroachdb_apd_v3//:apd"],
+    deps = [
+        "//pkg/syntax",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
 )
