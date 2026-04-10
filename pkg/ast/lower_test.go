@@ -34,8 +34,6 @@ func TestLower_ValidDirectiveStubs(t *testing.T) {
 		name  string
 		input string
 	}{
-		{"commodity", "2024-01-01 commodity USD\n"},
-		{"balance", "2024-01-01 balance Assets:Bank 100 USD\n"},
 		{"pad", "2024-01-01 pad Assets:Bank Equity:Opening-Balances\n"},
 		{"note", "2024-01-01 note Assets:Bank \"hello\"\n"},
 		{"document", "2024-01-01 document Assets:Bank \"/path/to/doc\"\n"},
@@ -269,5 +267,155 @@ func TestLower_NilRoot(t *testing.T) {
 	}
 	if len(f.Diagnostics) != 0 {
 		t.Errorf("Lower: got %d diagnostics, want 0", len(f.Diagnostics))
+	}
+}
+
+func TestLower_Commodity(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 commodity USD\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(commodity): got %d directives, want 1", len(f.Directives))
+	}
+	c, ok := f.Directives[0].(*ast.Commodity)
+	if !ok {
+		t.Fatalf("Lower(commodity): directive is %T, want *ast.Commodity", f.Directives[0])
+	}
+	if got := c.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Lower(commodity): Date = %q, want %q", got, "2024-01-01")
+	}
+	if c.Currency != "USD" {
+		t.Errorf("Lower(commodity): Currency = %q, want %q", c.Currency, "USD")
+	}
+}
+
+func TestLower_Balance(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 balance Assets:Bank 1234.56 USD\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(balance): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(balance): got %d directives, want 1", len(f.Directives))
+	}
+	b, ok := f.Directives[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("Lower(balance): directive is %T, want *ast.Balance", f.Directives[0])
+	}
+	if got := b.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Lower(balance): Date = %q, want %q", got, "2024-01-01")
+	}
+	if b.Account != "Assets:Bank" {
+		t.Errorf("Lower(balance): Account = %q, want %q", b.Account, "Assets:Bank")
+	}
+	if got := b.Amount.Number.String(); got != "1234.56" {
+		t.Errorf("Lower(balance): Amount.Number = %q, want %q", got, "1234.56")
+	}
+	if b.Amount.Currency != "USD" {
+		t.Errorf("Lower(balance): Amount.Currency = %q, want %q", b.Amount.Currency, "USD")
+	}
+	if b.Tolerance != nil {
+		t.Errorf("Lower(balance): Tolerance = %v, want nil", b.Tolerance)
+	}
+}
+
+func TestLower_BalanceWithCommas(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 balance Assets:Bank 1,234.56 USD\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(balance-commas): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(balance-commas): got %d directives, want 1", len(f.Directives))
+	}
+	b, ok := f.Directives[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("Lower(balance-commas): directive is %T, want *ast.Balance", f.Directives[0])
+	}
+	if got := b.Amount.Number.String(); got != "1234.56" {
+		t.Errorf("Lower(balance-commas): Amount.Number = %q, want %q", got, "1234.56")
+	}
+}
+
+func TestLower_BalanceWithExpr(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 balance Assets:Bank (100 + 200) USD\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(balance-expr): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(balance-expr): got %d directives, want 1", len(f.Directives))
+	}
+	b, ok := f.Directives[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("Lower(balance-expr): directive is %T, want *ast.Balance", f.Directives[0])
+	}
+	if got := b.Amount.Number.String(); got != "300" {
+		t.Errorf("Lower(balance-expr): Amount.Number = %q, want %q", got, "300")
+	}
+}
+
+func TestLower_BalanceNegative(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 balance Assets:Bank -500 USD\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(balance-negative): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(balance-negative): got %d directives, want 1", len(f.Directives))
+	}
+	b, ok := f.Directives[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("Lower(balance-negative): directive is %T, want *ast.Balance", f.Directives[0])
+	}
+	if got := b.Amount.Number.String(); got != "-500" {
+		t.Errorf("Lower(balance-negative): Amount.Number = %q, want %q", got, "-500")
+	}
+}
+
+func TestLower_BalanceArithmetic(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 balance Assets:Bank 100 * 3 + 50 USD\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(balance-arith): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(balance-arith): got %d directives, want 1", len(f.Directives))
+	}
+	b, ok := f.Directives[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("Lower(balance-arith): directive is %T, want *ast.Balance", f.Directives[0])
+	}
+	if got := b.Amount.Number.String(); got != "350" {
+		t.Errorf("Lower(balance-arith): Amount.Number = %q, want %q", got, "350")
+	}
+}
+
+func TestLower_BalanceWithTolerance(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 balance Assets:Bank 1000 USD ~ 5 USD\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(balance-tolerance): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(balance-tolerance): got %d directives, want 1", len(f.Directives))
+	}
+	b, ok := f.Directives[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("Lower(balance-tolerance): directive is %T, want *ast.Balance", f.Directives[0])
+	}
+	if got := b.Amount.Number.String(); got != "1000" {
+		t.Errorf("Lower(balance-tolerance): Amount.Number = %q, want %q", got, "1000")
+	}
+	if b.Amount.Currency != "USD" {
+		t.Errorf("Lower(balance-tolerance): Amount.Currency = %q, want %q", b.Amount.Currency, "USD")
+	}
+	if b.Tolerance == nil {
+		t.Fatal("Lower(balance-tolerance): Tolerance is nil, want non-nil")
+	}
+	if got := b.Tolerance.Number.String(); got != "5" {
+		t.Errorf("Lower(balance-tolerance): Tolerance.Number = %q, want %q", got, "5")
+	}
+	if b.Tolerance.Currency != "USD" {
+		t.Errorf("Lower(balance-tolerance): Tolerance.Currency = %q, want %q", b.Tolerance.Currency, "USD")
 	}
 }

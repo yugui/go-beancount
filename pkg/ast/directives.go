@@ -55,3 +55,27 @@ type Close struct {
 
 func (c *Close) directive()    {}
 func (c *Close) DirSpan() Span { return c.Span }
+
+// Commodity represents a commodity directive: YYYY-MM-DD commodity Currency
+type Commodity struct {
+	Span     Span
+	Date     time.Time
+	Currency string
+	Meta     Metadata
+}
+
+func (c *Commodity) directive()    {}
+func (c *Commodity) DirSpan() Span { return c.Span }
+
+// Balance represents a balance assertion: YYYY-MM-DD balance Account Amount [~ Tolerance]
+type Balance struct {
+	Span      Span
+	Date      time.Time
+	Account   string
+	Amount    Amount
+	Tolerance *Amount // optional; nil if not specified
+	Meta      Metadata
+}
+
+func (b *Balance) directive()    {}
+func (b *Balance) DirSpan() Span { return b.Span }

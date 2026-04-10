@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/syntax"
 )
 
@@ -60,9 +61,9 @@ func (l *lowerer) lowerDirective(n *syntax.Node) {
 	case syntax.CloseDirective:
 		l.lowerClose(n)
 	case syntax.CommodityDirective:
-		// TODO: step 5
+		l.lowerCommodity(n)
 	case syntax.BalanceDirective:
-		// TODO: step 6
+		l.lowerBalance(n)
 	case syntax.PadDirective:
 		// TODO: step 7
 	case syntax.NoteDirective:
@@ -264,6 +265,197 @@ func (l *lowerer) lowerPlugin(n *syntax.Node) {
 		p.Config = unquoteString(strTokens[1])
 	}
 	l.addDirective(p)
+}
+
+// lowerCommodity converts a CommodityDirective CST node into a Commodity AST directive.
+func (l *lowerer) lowerCommodity(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "commodity directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	currTok := n.FindToken(syntax.CURRENCY)
+	if currTok == nil {
+		l.addDiagnostic(n, "commodity directive missing currency")
+		return
+	}
+	l.addDirective(&Commodity{
+		Span:     l.spanFromNode(n),
+		Date:     date,
+		Currency: currTok.Raw,
+		// TODO: populate Meta when metadata lowering is implemented.
+	})
+}
+
+// lowerBalance converts a BalanceDirective CST node into a Balance AST directive.
+func (l *lowerer) lowerBalance(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "balance directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	acctTok := n.FindToken(syntax.ACCOUNT)
+	if acctTok == nil {
+		l.addDiagnostic(n, "balance directive missing account")
+		return
+	}
+
+	// The balance directive has one or two AmountNode children.
+	// First is the expected amount; second (after TILDE) is the tolerance.
+	amountNodes := n.FindAllNodes(syntax.AmountNode)
+	if len(amountNodes) == 0 {
+		l.addDiagnostic(n, "balance directive missing amount")
+		return
+	}
+	amt, ok := l.lowerAmount(amountNodes[0])
+	if !ok {
+		return
+	}
+
+	bal := &Balance{
+		Span:    l.spanFromNode(n),
+		Date:    date,
+		Account: acctTok.Raw,
+		Amount:  amt,
+		// TODO: populate Meta when metadata lowering is implemented.
+	}
+
+	// Optional tolerance (second AmountNode, after TILDE token).
+	if len(amountNodes) >= 2 {
+		tol, ok := l.lowerAmount(amountNodes[1])
+		if ok {
+			bal.Tolerance = &tol
+		}
+	}
+
+	l.addDirective(bal)
+}
+
+// lowerAmount converts an AmountNode CST node into an Amount.
+func (l *lowerer) lowerAmount(n *syntax.Node) (Amount, bool) {
+	exprNode := n.FindNode(syntax.ArithExprNode)
+	if exprNode == nil {
+		l.addDiagnostic(n, "amount missing expression")
+		return Amount{}, false
+	}
+	currTok := n.FindToken(syntax.CURRENCY)
+	if currTok == nil {
+		l.addDiagnostic(n, "amount missing currency")
+		return Amount{}, false
+	}
+	num, ok := l.evalExpr(exprNode)
+	if !ok {
+		return Amount{}, false
+	}
+	return Amount{Number: num, Currency: currTok.Raw}, true
+}
+
+// arithCtx is the decimal context used for arithmetic expression evaluation.
+// 34 digits of precision (128-bit decimal) is standard for financial calculations.
+var arithCtx = apd.BaseContext.WithPrecision(34)
+
+// evalExpr evaluates an ArithExprNode into an apd.Decimal.
+func (l *lowerer) evalExpr(n *syntax.Node) (apd.Decimal, bool) {
+	var nodes []*syntax.Node
+	var tokens []*syntax.Token
+	for _, c := range n.Children {
+		if c.Node != nil {
+			nodes = append(nodes, c.Node)
+		}
+		if c.Token != nil {
+			tokens = append(tokens, c.Token)
+		}
+	}
+
+	// Case 1: single NUMBER token (primary)
+	if len(nodes) == 0 && len(tokens) == 1 && tokens[0].Kind == syntax.NUMBER {
+		d, err := parseNumber(tokens[0])
+		if err != nil {
+			l.addDiagnostic(n, err.Error())
+			return apd.Decimal{}, false
+		}
+		return d, true
+	}
+
+	// Case 2: parenthesized (LPAREN expr RPAREN)
+	if len(nodes) == 1 && len(tokens) == 2 && tokens[0].Kind == syntax.LPAREN {
+		return l.evalExpr(nodes[0])
+	}
+
+	// Case 3: unary prefix (PLUS/MINUS + expr)
+	if len(nodes) == 1 && len(tokens) == 1 {
+		op := tokens[0]
+		if op.Kind == syntax.PLUS || op.Kind == syntax.MINUS {
+			val, ok := l.evalExpr(nodes[0])
+			if !ok {
+				return apd.Decimal{}, false
+			}
+			if op.Kind == syntax.MINUS {
+				val.Negative = !val.Negative
+			}
+			return val, true
+		}
+	}
+
+	// Case 4: binary (expr op expr)
+	if len(nodes) == 2 && len(tokens) == 1 {
+		op := tokens[0]
+		left, ok := l.evalExpr(nodes[0])
+		if !ok {
+			return apd.Decimal{}, false
+		}
+		right, ok := l.evalExpr(nodes[1])
+		if !ok {
+			return apd.Decimal{}, false
+		}
+		var result apd.Decimal
+		var cond apd.Condition
+		// The second return value from apd arithmetic is the updated context,
+		// which we intentionally discard; all error state is captured in cond.
+		switch op.Kind {
+		case syntax.PLUS:
+			cond, _ = arithCtx.Add(&result, &left, &right)
+		case syntax.MINUS:
+			cond, _ = arithCtx.Sub(&result, &left, &right)
+		case syntax.STAR:
+			cond, _ = arithCtx.Mul(&result, &left, &right)
+		case syntax.SLASH:
+			cond, _ = arithCtx.Quo(&result, &left, &right)
+		default:
+			l.addDiagnostic(n, fmt.Sprintf("unexpected operator %s in expression", op.Kind))
+			return apd.Decimal{}, false
+		}
+		if cond.Any() {
+			l.addDiagnostic(n, fmt.Sprintf("arithmetic error: %s", cond))
+			return apd.Decimal{}, false
+		}
+		return result, true
+	}
+
+	l.addDiagnostic(n, "malformed arithmetic expression")
+	return apd.Decimal{}, false
+}
+
+// parseNumber parses a NUMBER token into apd.Decimal.
+// NUMBER tokens may contain commas (e.g., "1,234.56").
+func parseNumber(t *syntax.Token) (apd.Decimal, error) {
+	s := strings.ReplaceAll(t.Raw, ",", "")
+	var d apd.Decimal
+	_, _, err := d.SetString(s)
+	if err != nil {
+		return apd.Decimal{}, fmt.Errorf("invalid number %q: %w", t.Raw, err)
+	}
+	return d, nil
 }
 
 // lowerInclude converts an IncludeDirective CST node into an Include AST directive.
