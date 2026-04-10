@@ -1,5 +1,10 @@
 package syntax
 
+import (
+	"unicode"
+	"unicode/utf8"
+)
+
 // scanner tokenizes a beancount source string into a sequence of Tokens.
 // It is zero-copy: all Raw strings are substrings of the original input.
 type scanner struct {
@@ -274,6 +279,30 @@ func isAccountRoot(word string) bool {
 	return false
 }
 
+// isAccountComponentStart reports whether r is valid as the first character
+// of an account component. Allowed Unicode categories: Lu, Lt, Lo, Lm, Nd, Nl, No.
+func isAccountComponentStart(r rune) bool {
+	if r < 0x80 {
+		return (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+	}
+	return unicode.In(r, unicode.Lu, unicode.Lt, unicode.Lo, unicode.Lm,
+		unicode.Nd, unicode.Nl, unicode.No)
+}
+
+// isAccountComponentCont reports whether r is valid as a continuation character
+// in an account component. Extends isAccountComponentStart with Ll, Mn, Mc, and hyphen.
+func isAccountComponentCont(r rune) bool {
+	if r == '-' {
+		return true
+	}
+	if r < 0x80 {
+		return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+	}
+	return unicode.In(r, unicode.Lu, unicode.Lt, unicode.Lo, unicode.Lm,
+		unicode.Nd, unicode.Nl, unicode.No,
+		unicode.Ll, unicode.Mn, unicode.Mc)
+}
+
 // isCurrency reports whether word matches the currency pattern:
 // 1-24 chars, all [A-Z0-9'._-], starts and ends with [A-Z0-9].
 func isCurrency(word string) bool {
@@ -312,7 +341,7 @@ func (s *scanner) scanUpperWord() Token {
 	// Check for account: root type followed by ':'
 	if isAccountRoot(word) && s.offset < len(s.src) && s.src[s.offset] == ':' {
 		// Try to scan account components: (:Component)+
-		// Each component: ':' then [A-Z0-9] then [A-Za-z0-9-]*
+		// Each component: ':' then a valid start rune then valid continuation runes
 		saved := s.offset
 		componentCount := 0
 		for s.offset < len(s.src) && s.src[s.offset] == ':' {
@@ -320,16 +349,16 @@ func (s *scanner) scanUpperWord() Token {
 			if next >= len(s.src) {
 				break
 			}
-			ch := s.src[next]
-			if !((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')) {
+			r, size := utf8.DecodeRuneInString(s.src[next:])
+			if !isAccountComponentStart(r) {
 				break
 			}
-			// Consume ':' and the component
-			s.offset = next + 1
+			// Consume ':' and the first rune of the component
+			s.offset = next + size
 			for s.offset < len(s.src) {
-				c := s.src[s.offset]
-				if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' {
-					s.offset++
+				r, size = utf8.DecodeRuneInString(s.src[s.offset:])
+				if isAccountComponentCont(r) {
+					s.offset += size
 				} else {
 					break
 				}

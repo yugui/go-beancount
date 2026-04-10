@@ -22,6 +22,8 @@ poptag #year-2024
 2024-01-01 open Expenses:Transport
 2024-01-01 open Income:Salary
 2024-01-01 open Equity:Opening-Balances
+2024-01-01 open Expenses:食費
+2024-01-01 open Assets:Банк
 
 2024-12-31 close Assets:Bank:Checking
 
