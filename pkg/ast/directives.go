@@ -1,5 +1,7 @@
 package ast
 
+import "time"
+
 // Option represents an option directive: option "key" "value"
 type Option struct {
 	Span  Span
@@ -29,3 +31,27 @@ type Include struct {
 
 func (i *Include) directive()    {}
 func (i *Include) DirSpan() Span { return i.Span }
+
+// Open represents an open directive: YYYY-MM-DD open Account [Currency,...] ["BookingMethod"]
+type Open struct {
+	Span       Span
+	Date       time.Time
+	Account    string
+	Currencies []string // optional constraint currencies
+	Booking    string   // optional booking method (e.g. "STRICT", "NONE"); empty if not provided
+	Meta       Metadata
+}
+
+func (o *Open) directive()    {}
+func (o *Open) DirSpan() Span { return o.Span }
+
+// Close represents a close directive: YYYY-MM-DD close Account
+type Close struct {
+	Span    Span
+	Date    time.Time
+	Account string
+	Meta    Metadata
+}
+
+func (c *Close) directive()    {}
+func (c *Close) DirSpan() Span { return c.Span }
