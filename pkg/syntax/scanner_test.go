@@ -777,3 +777,51 @@ func TestRoundTripAccountsCurrenciesIdents(t *testing.T) {
 		})
 	}
 }
+
+func TestUnicodeAccountTokens(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		wantKind TokenKind
+		wantRaw  string
+	}{
+		{"CJK_kanji", "Assets:食費", ACCOUNT, "Assets:食費"},
+		{"katakana_and_kanji", "Expenses:カフェ代", ACCOUNT, "Expenses:カフェ代"},
+		{"cyrillic_uppercase", "Assets:Банк", ACCOUNT, "Assets:Банк"},
+		{"roman_numeral_start", "Income:Ⅱ期", ACCOUNT, "Income:Ⅱ期"},
+		{"multi_component_unicode", "Expenses:食費:ランチ", ACCOUNT, "Expenses:食費:ランチ"},
+		{"lowercase_start_not_account", "Assets:café", IDENT, "Assets"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			tok := tokens[0]
+			if tok.Kind != tt.wantKind {
+				t.Errorf("expected kind %s, got %s (raw=%q)", tt.wantKind, tok.Kind, tok.Raw)
+			}
+			if tok.Raw != tt.wantRaw {
+				t.Errorf("expected Raw=%q, got %q", tt.wantRaw, tok.Raw)
+			}
+		})
+	}
+}
+
+func TestRoundTripUnicodeAccounts(t *testing.T) {
+	inputs := []string{
+		"Assets:食費",
+		"Expenses:カフェ代",
+		"Assets:Банк",
+		"Income:Ⅱ期",
+		"Expenses:食費:ランチ",
+		"Assets:café",
+	}
+	for _, input := range inputs {
+		t.Run(input, func(t *testing.T) {
+			tokens := collectTokens(input)
+			got := roundTrip(tokens)
+			if got != input {
+				t.Errorf("round-trip mismatch:\n  input: %q\n  got:   %q", input, got)
+			}
+		})
+	}
+}
