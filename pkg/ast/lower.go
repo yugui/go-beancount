@@ -44,11 +44,11 @@ func (l *lowerer) lowerDirective(n *syntax.Node) {
 	case syntax.ErrorNode, syntax.UnrecognizedLineNode:
 		l.addDiagnostic(n, "syntax error")
 	case syntax.OptionDirective:
-		// TODO: step 3
+		l.lowerOption(n)
 	case syntax.PluginDirective:
-		// TODO: step 3
+		l.lowerPlugin(n)
 	case syntax.IncludeDirective:
-		// TODO: step 3
+		l.lowerInclude(n)
 	case syntax.PushtagDirective:
 		// TODO: step 14
 	case syntax.PoptagDirective:
@@ -128,5 +128,75 @@ func (l *lowerer) addDiagnostic(n *syntax.Node, msg string) {
 		Span:     l.spanFromNode(n),
 		Message:  msg,
 		Severity: Error,
+	})
+}
+
+// addDirective appends a directive to the file.
+func (l *lowerer) addDirective(d Directive) {
+	l.file.Directives = append(l.file.Directives, d)
+}
+
+// findTokens returns all direct child tokens with the given kind.
+func findTokens(n *syntax.Node, kind syntax.TokenKind) []*syntax.Token {
+	var result []*syntax.Token
+	for _, c := range n.Children {
+		if c.Token != nil && c.Token.Kind == kind {
+			result = append(result, c.Token)
+		}
+	}
+	return result
+}
+
+// unquoteString strips surrounding double quotes from a STRING token's Raw value.
+// The caller must ensure t is a valid STRING token; if not, the raw value is returned unchanged.
+func unquoteString(t *syntax.Token) string {
+	s := t.Raw
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	return s
+}
+
+// lowerOption converts an OptionDirective CST node into an Option AST directive.
+func (l *lowerer) lowerOption(n *syntax.Node) {
+	strTokens := findTokens(n, syntax.STRING)
+	if len(strTokens) < 2 {
+		l.addDiagnostic(n, "option directive requires two string arguments")
+		return
+	}
+	l.addDirective(&Option{
+		Span:  l.spanFromNode(n),
+		Key:   unquoteString(strTokens[0]),
+		Value: unquoteString(strTokens[1]),
+	})
+}
+
+// lowerPlugin converts a PluginDirective CST node into a Plugin AST directive.
+func (l *lowerer) lowerPlugin(n *syntax.Node) {
+	strTokens := findTokens(n, syntax.STRING)
+	if len(strTokens) < 1 {
+		l.addDiagnostic(n, "plugin directive requires a string argument")
+		return
+	}
+	p := &Plugin{
+		Span: l.spanFromNode(n),
+		Name: unquoteString(strTokens[0]),
+	}
+	if len(strTokens) >= 2 {
+		p.Config = unquoteString(strTokens[1])
+	}
+	l.addDirective(p)
+}
+
+// lowerInclude converts an IncludeDirective CST node into an Include AST directive.
+func (l *lowerer) lowerInclude(n *syntax.Node) {
+	strTokens := findTokens(n, syntax.STRING)
+	if len(strTokens) < 1 {
+		l.addDiagnostic(n, "include directive requires a string argument")
+		return
+	}
+	l.addDirective(&Include{
+		Span: l.spanFromNode(n),
+		Path: unquoteString(strTokens[0]),
 	})
 }

@@ -34,9 +34,6 @@ func TestLower_ValidDirectiveStubs(t *testing.T) {
 		name  string
 		input string
 	}{
-		{"option", "option \"title\" \"Test\"\n"},
-		{"plugin", "plugin \"beancount.plugins.auto\"\n"},
-		{"include", "include \"other.beancount\"\n"},
 		{"open", "2024-01-01 open Assets:Bank USD\n"},
 		{"close", "2024-01-01 close Assets:Bank\n"},
 		{"commodity", "2024-01-01 commodity USD\n"},
@@ -59,6 +56,85 @@ func TestLower_ValidDirectiveStubs(t *testing.T) {
 				t.Errorf("Lower(%q): got %d directives, want 0", tc.name, len(f.Directives))
 			}
 		})
+	}
+}
+
+func TestLower_Option(t *testing.T) {
+	cst := syntax.Parse("option \"title\" \"My Ledger\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(option): got %d directives, want 1", len(f.Directives))
+	}
+	opt, ok := f.Directives[0].(*ast.Option)
+	if !ok {
+		t.Fatalf("Lower(option): directive is %T, want *ast.Option", f.Directives[0])
+	}
+	if opt.Key != "title" {
+		t.Errorf("Lower(option): Key = %q, want %q", opt.Key, "title")
+	}
+	if opt.Value != "My Ledger" {
+		t.Errorf("Lower(option): Value = %q, want %q", opt.Value, "My Ledger")
+	}
+	// Verify span is populated with non-zero offsets.
+	if opt.Span.End.Offset == 0 {
+		t.Errorf("Lower(option): Span.End.Offset = 0, want non-zero")
+	}
+}
+
+func TestLower_Plugin(t *testing.T) {
+	cst := syntax.Parse("plugin \"beancount.plugins.auto\" \"config\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(plugin): got %d directives, want 1", len(f.Directives))
+	}
+	p, ok := f.Directives[0].(*ast.Plugin)
+	if !ok {
+		t.Fatalf("Lower(plugin): directive is %T, want *ast.Plugin", f.Directives[0])
+	}
+	if p.Name != "beancount.plugins.auto" {
+		t.Errorf("Lower(plugin): Name = %q, want %q", p.Name, "beancount.plugins.auto")
+	}
+	if p.Config != "config" {
+		t.Errorf("Lower(plugin): Config = %q, want %q", p.Config, "config")
+	}
+	if p.Span.End.Offset == 0 {
+		t.Errorf("Lower(plugin): Span.End.Offset = 0, want non-zero")
+	}
+}
+
+func TestLower_PluginNoConfig(t *testing.T) {
+	cst := syntax.Parse("plugin \"beancount.plugins.auto\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(plugin-no-config): got %d directives, want 1", len(f.Directives))
+	}
+	p, ok := f.Directives[0].(*ast.Plugin)
+	if !ok {
+		t.Fatalf("Lower(plugin-no-config): directive is %T, want *ast.Plugin", f.Directives[0])
+	}
+	if p.Name != "beancount.plugins.auto" {
+		t.Errorf("Lower(plugin-no-config): Name = %q, want %q", p.Name, "beancount.plugins.auto")
+	}
+	if p.Config != "" {
+		t.Errorf("Lower(plugin-no-config): Config = %q, want empty", p.Config)
+	}
+}
+
+func TestLower_Include(t *testing.T) {
+	cst := syntax.Parse("include \"other.beancount\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(include): got %d directives, want 1", len(f.Directives))
+	}
+	inc, ok := f.Directives[0].(*ast.Include)
+	if !ok {
+		t.Fatalf("Lower(include): directive is %T, want *ast.Include", f.Directives[0])
+	}
+	if inc.Path != "other.beancount" {
+		t.Errorf("Lower(include): Path = %q, want %q", inc.Path, "other.beancount")
+	}
+	if inc.Span.End.Offset == 0 {
+		t.Errorf("Lower(include): Span.End.Offset = 0, want non-zero")
 	}
 }
 

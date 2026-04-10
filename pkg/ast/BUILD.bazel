@@ -4,6 +4,7 @@ go_library(
     name = "ast",
     srcs = [
         "ast.go",
+        "directives.go",
         "lower.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/ast",
