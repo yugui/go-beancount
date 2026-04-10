@@ -40,8 +40,8 @@ type Diagnostic struct {
 
 // Directive is the interface implemented by all AST directive types.
 type Directive interface {
-	directive() // marker method
-	DirSpan() Span
+	directive()    // marker method
+	DirSpan() Span // DirSpan returns the source span of the directive.
 }
 
 // File is the result of lowering a single CST file into an AST.
