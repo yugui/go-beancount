@@ -14,8 +14,9 @@ import (
 // Include resolution is not performed; Include directives appear as AST nodes.
 func Lower(filename string, cst *syntax.File) *File {
 	l := &lowerer{
-		filename: filename,
-		file:     &File{Filename: filename},
+		filename:   filename,
+		file:       &File{Filename: filename},
+		activeTags: make(map[string]struct{}),
 	}
 	// Convert CST-level errors to diagnostics.
 	for _, e := range cst.Errors {
@@ -38,8 +39,9 @@ func Lower(filename string, cst *syntax.File) *File {
 }
 
 type lowerer struct {
-	filename string
-	file     *File
+	filename   string
+	file       *File
+	activeTags map[string]struct{} // tags pushed via pushtag, not yet popped
 }
 
 func (l *lowerer) lowerDirective(n *syntax.Node) {
@@ -53,9 +55,9 @@ func (l *lowerer) lowerDirective(n *syntax.Node) {
 	case syntax.IncludeDirective:
 		l.lowerInclude(n)
 	case syntax.PushtagDirective:
-		// TODO: step 14
+		l.handlePushtag(n)
 	case syntax.PoptagDirective:
-		// TODO: step 14
+		l.handlePoptag(n)
 	case syntax.OpenDirective:
 		l.lowerOpen(n)
 	case syntax.CloseDirective:
@@ -259,6 +261,32 @@ func (l *lowerer) tokenToMetaValue(n *syntax.Node, t *syntax.Token) MetaValue {
 	default:
 		return MetaValue{Kind: MetaString, String: t.Raw}
 	}
+}
+
+// handlePushtag adds a tag to the active tag set.
+func (l *lowerer) handlePushtag(n *syntax.Node) {
+	tagTok := n.FindToken(syntax.TAG)
+	if tagTok == nil {
+		l.addDiagnostic(n, "pushtag missing tag")
+		return
+	}
+	tag := tagTok.Raw[1:] // strip # prefix
+	l.activeTags[tag] = struct{}{}
+}
+
+// handlePoptag removes a tag from the active tag set.
+func (l *lowerer) handlePoptag(n *syntax.Node) {
+	tagTok := n.FindToken(syntax.TAG)
+	if tagTok == nil {
+		l.addDiagnostic(n, "poptag missing tag")
+		return
+	}
+	tag := tagTok.Raw[1:] // strip # prefix
+	if _, ok := l.activeTags[tag]; !ok {
+		l.addDiagnostic(n, fmt.Sprintf("poptag: tag %q was not previously pushed", tag))
+		return
+	}
+	delete(l.activeTags, tag)
 }
 
 // lowerOpen converts an OpenDirective CST node into an Open AST directive.
@@ -910,6 +938,21 @@ func (l *lowerer) lowerTransaction(n *syntax.Node) {
 	} else if len(strs) >= 2 {
 		txn.Payee = unquoteString(strs[0])
 		txn.Narration = unquoteString(strs[1])
+	}
+
+	// Merge active (pushed) tags into this transaction.
+	for tag := range l.activeTags {
+		// Avoid duplicates: only add if not already present.
+		found := false
+		for _, t := range txn.Tags {
+			if t == tag {
+				found = true
+				break
+			}
+		}
+		if !found {
+			txn.Tags = append(txn.Tags, tag)
+		}
 	}
 
 	// Lower postings.
