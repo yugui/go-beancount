@@ -51,6 +51,15 @@ type File struct {
 	Diagnostics []Diagnostic
 }
 
+// Ledger is the result of loading a beancount ledger, including all
+// transitively included files. Directives are in source order across
+// all files.
+type Ledger struct {
+	Files       []*File      // all files in load order (root first)
+	Directives  []Directive  // merged directives from all files, in source order
+	Diagnostics []Diagnostic // merged diagnostics from all files
+}
+
 // Amount represents a numeric value with a currency.
 type Amount struct {
 	Number   apd.Decimal
