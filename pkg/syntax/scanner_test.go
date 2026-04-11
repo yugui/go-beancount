@@ -426,19 +426,36 @@ func TestStringTokens(t *testing.T) {
 		{"multiline", "\"multi\nline\"", "\"multi\nline\""},
 		{"escaped_quote", `"escaped \"quote\""`, `"escaped \"quote\""`},
 		{"empty_string", `""`, `""`},
+		// Escape sequences (literal backslash in source, not Go escapes)
+		{"escape_n", `"line\nbreak"`, `"line\nbreak"`},
+		{"escape_t", `"col\tcol"`, `"col\tcol"`},
+		{"escape_r", `"before\rafter"`, `"before\rafter"`},
+		{"escape_f", `"page\fbreak"`, `"page\fbreak"`},
+		{"escape_b", `"back\bspace"`, `"back\bspace"`},
+		{"escape_backslash", `"path\\to"`, `"path\\to"`},
+		{"escape_backslash_quote", `"end\\\"more"`, `"end\\\"more"`},
+		{"escape_unrecognized", `"test\xval"`, `"test\xval"`},
+		// Literal special characters (actual characters, not escapes)
+		{"literal_tab", "\"before\tafter\"", "\"before\tafter\""},
+		{"literal_cr", "\"before\rafter\"", "\"before\rafter\""},
+		// Unicode
+		{"accented", `"café résumé"`, `"café résumé"`},
+		{"combining", "\"e\u0301\"", "\"e\u0301\""},
+		{"cjk", `"日本語"`, `"日本語"`},
+		{"emoji", `"🎉 party"`, `"🎉 party"`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != 2 {
-				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+				t.Fatalf("got %d tokens; want 2", len(tokens))
 			}
 			tok := tokens[0]
 			if tok.Kind != STRING {
-				t.Errorf("expected STRING, got %s", tok.Kind)
+				t.Errorf("got Kind=%s; want STRING", tok.Kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+				t.Errorf("got Raw=%q; want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -490,6 +507,20 @@ func TestStringAtEOF(t *testing.T) {
 	}
 }
 
+func TestStringBackslashAtEOF(t *testing.T) {
+	tokens := collectTokens(`"test\`)
+	if len(tokens) != 2 {
+		t.Fatalf("got %d tokens; want 2", len(tokens))
+	}
+	tok := tokens[0]
+	if tok.Kind != STRING {
+		t.Errorf("got Kind=%s; want STRING", tok.Kind)
+	}
+	if tok.Raw != `"test\` {
+		t.Errorf("got Raw=%q; want %q", tok.Raw, `"test\`)
+	}
+}
+
 func TestRoundTripDatesNumbersStrings(t *testing.T) {
 	inputs := []string{
 		"2024-01-15",
@@ -504,6 +535,15 @@ func TestRoundTripDatesNumbersStrings(t *testing.T) {
 		"\"multi\nline\"",
 		`"escaped \"quote\""`,
 		`"unclosed`,
+		`"line\nbreak"`,
+		`"col\tcol"`,
+		`"path\\to"`,
+		`"end\\\"more"`,
+		`"café résumé"`,
+		`"日本語"`,
+		`"🎉 party"`,
+		"\"before\tafter\"",
+		"\"e\u0301\"",
 		"2024-01-15 1,234.56 \"hello\"",
 	}
 	for _, input := range inputs {
