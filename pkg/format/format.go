@@ -73,18 +73,13 @@ func isDirective(k syntax.NodeKind) bool {
 }
 
 // normalizeBlankLinesBefore adjusts the leading trivia of a node's first token
-// so that there are exactly n blank lines (n+1 newlines) between it and the
-// previous directive.
+// so that there are exactly n blank lines between it and the previous directive,
+// while preserving any inter-directive comment lines.
 func (f *formatter) normalizeBlankLinesBefore(node *syntax.Node, n int) {
 	tok := firstToken(node)
 	if tok == nil {
 		return
 	}
-
-	// Rebuild leading trivia: preserve everything up to and including the first
-	// newline (which terminates the previous line), then insert exactly n blank
-	// lines, then keep any non-newline trivia that was after the last newline
-	// (i.e., indentation/comments on the current line).
 
 	trivia := tok.LeadingTrivia
 
@@ -95,20 +90,52 @@ func (f *formatter) normalizeBlankLinesBefore(node *syntax.Node, n int) {
 			lastNL = i
 		}
 	}
-
-	// Current-line trivia (indent etc.) is everything after the last newline.
-	var currentLine []syntax.Trivia
-	if lastNL >= 0 {
-		currentLine = trivia[lastNL+1:]
-	} else {
-		// No newlines at all -- unusual, but preserve everything as current-line.
-		currentLine = trivia
+	if lastNL < 0 {
+		return
 	}
 
-	// Build new trivia: one newline to end the previous line, then n more
-	// newlines for blank lines, then current-line trivia.
-	var newTrivia []syntax.Trivia
+	currentLine := trivia[lastNL+1:]
+
+	// Parse trivia[0..lastNL] into logical lines separated by newlines.
+	// A line that contains a CommentTrivia is a comment line and is preserved.
+	type triviaLine struct {
+		pieces     []syntax.Trivia
+		hasComment bool
+	}
+	var lines []triviaLine
+	var cur triviaLine
+	for i := 0; i <= lastNL; i++ {
+		tr := trivia[i]
+		if tr.Kind == syntax.NewlineTrivia {
+			lines = append(lines, cur)
+			cur = triviaLine{}
+		} else {
+			cur.pieces = append(cur.pieces, tr)
+			if tr.Kind == syntax.CommentTrivia {
+				cur.hasComment = true
+			}
+		}
+	}
+
+	// Collect comment lines.
+	var commentLines []triviaLine
+	for _, l := range lines {
+		if l.hasComment {
+			commentLines = append(commentLines, l)
+		}
+	}
+
+	// Rebuild trivia:
+	//   1 newline  (end previous directive's last line)
+	// + n newlines (blank lines)
+	// + comment lines, each followed by a newline
+	// + current-line trivia (indent)
+	newTrivia := make([]syntax.Trivia, 0, n+1+len(commentLines)*3+len(currentLine))
 	for range n + 1 {
+		newTrivia = append(newTrivia, syntax.Trivia{Kind: syntax.NewlineTrivia, Raw: "\n"})
+	}
+	for _, cl := range commentLines {
+		newTrivia = append(newTrivia, cl.pieces...)
 		newTrivia = append(newTrivia, syntax.Trivia{Kind: syntax.NewlineTrivia, Raw: "\n"})
 	}
 	newTrivia = append(newTrivia, currentLine...)

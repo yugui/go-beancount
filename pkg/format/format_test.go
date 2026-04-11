@@ -154,6 +154,38 @@ func TestFormatCommentsPreserved(t *testing.T) {
 	}
 }
 
+func TestFormatInterDirectiveComments(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "single comment between directives",
+			src:  "2024-01-01 open Assets:Cash\n; section header\n2024-01-02 open Expenses:Food\n",
+			want: "2024-01-01 open Assets:Cash\n\n; section header\n2024-01-02 open Expenses:Food\n",
+		},
+		{
+			name: "multiple comments between directives",
+			src:  "2024-01-01 open Assets:Cash\n; line 1\n; line 2\n2024-01-02 open Expenses:Food\n",
+			want: "2024-01-01 open Assets:Cash\n\n; line 1\n; line 2\n2024-01-02 open Expenses:Food\n",
+		},
+		{
+			name: "comment with surrounding blank lines preserved",
+			src:  "2024-01-01 open Assets:Cash\n\n; comment\n\n2024-01-02 open Expenses:Food\n",
+			want: "2024-01-01 open Assets:Cash\n\n; comment\n2024-01-02 open Expenses:Food\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Format(tt.src)
+			if got != tt.want {
+				t.Errorf("Format():\ngot:  %q\nwant: %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatErrorNodesPassThrough(t *testing.T) {
 	src := "this is not valid beancount\n"
 	got := Format(src)

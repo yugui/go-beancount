@@ -1,0 +1,13 @@
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-01-01 open Expenses:Food
+
+2024-01-15 * "Store" "Big purchase"
+  Expenses:Food                       1,234,567.89 USD
+  Assets:Bank:Checking               -1,234,567.89 USD
+
+2024-02-01 balance Assets:Bank:Checking 9,876,543.21 USD
+
+2024-03-01 * "東京デパート" "高級食材"
+  Expenses:食費                          1,234,567 JPY
+  Assets:銀行:三菱UFJ
