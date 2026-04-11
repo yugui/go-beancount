@@ -2,6 +2,22 @@ package ast
 
 import "time"
 
+// CostSpec represents a cost specification on a posting.
+type CostSpec struct {
+	Span    Span
+	Amount  *Amount    // the cost amount; nil for empty cost spec ({} or {{}})
+	Date    *time.Time // optional acquisition date
+	Label   string     // optional lot label; empty if not specified
+	IsTotal bool       // true if {{...}} syntax (total cost), false if {...} (per-unit cost)
+}
+
+// PriceAnnotation represents a price annotation on a posting.
+type PriceAnnotation struct {
+	Span    Span
+	Amount  Amount
+	IsTotal bool // true if @@ (total price), false if @ (per-unit price)
+}
+
 // Option represents an option directive: option "key" "value"
 type Option struct {
 	Span  Span
