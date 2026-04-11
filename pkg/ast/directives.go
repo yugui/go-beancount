@@ -2,6 +2,17 @@ package ast
 
 import "time"
 
+// Posting represents a posting within a transaction.
+type Posting struct {
+	Span    Span
+	Flag    byte // '*', '!', or 0 if not specified
+	Account string
+	Amount  *Amount          // nil if not specified (auto-balanced posting)
+	Cost    *CostSpec        // nil if no cost spec
+	Price   *PriceAnnotation // nil if no price annotation
+	Meta    Metadata
+}
+
 // CostSpec represents a cost specification on a posting.
 type CostSpec struct {
 	Span    Span

@@ -725,6 +725,63 @@ func (l *lowerer) lowerPrice(n *syntax.Node) {
 	})
 }
 
+// lowerPosting converts a PostingNode CST node into a Posting.
+func (l *lowerer) lowerPosting(n *syntax.Node) (Posting, bool) {
+	p := Posting{
+		Span: l.spanFromNode(n),
+	}
+
+	// Optional flag
+	if n.FindToken(syntax.STAR) != nil {
+		p.Flag = '*'
+	} else if n.FindToken(syntax.BANG) != nil {
+		p.Flag = '!'
+	}
+
+	// Account (required)
+	acctTok := n.FindToken(syntax.ACCOUNT)
+	if acctTok == nil {
+		l.addDiagnostic(n, "posting missing account")
+		return Posting{}, false
+	}
+	p.Account = acctTok.Raw
+
+	// Optional amount
+	amountNode := n.FindNode(syntax.AmountNode)
+	if amountNode != nil {
+		amt, ok := l.lowerAmount(amountNode)
+		if !ok {
+			return Posting{}, false
+		}
+		p.Amount = &amt
+	}
+
+	// Optional cost spec
+	costNode := n.FindNode(syntax.CostSpecNode)
+	if costNode != nil {
+		cs, ok := l.lowerCostSpec(costNode)
+		if !ok {
+			return Posting{}, false
+		}
+		p.Cost = &cs
+	}
+
+	// Optional price annotation
+	priceNode := n.FindNode(syntax.PriceAnnotNode)
+	if priceNode != nil {
+		pa, ok := l.lowerPriceAnnotation(priceNode)
+		if !ok {
+			return Posting{}, false
+		}
+		p.Price = &pa
+	}
+
+	// Metadata
+	p.Meta = l.lowerMetadata(n)
+
+	return p, true
+}
+
 // lowerCostSpec converts a CostSpecNode into a CostSpec.
 func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
 	cs := CostSpec{

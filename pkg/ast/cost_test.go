@@ -227,3 +227,155 @@ func TestLowerPriceAnnotation_Total(t *testing.T) {
 		t.Errorf("Amount.Currency = %q, want %q", pa.Amount.Currency, "EUR")
 	}
 }
+
+func TestLowerPosting_Simple(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 * \"Test\"\n  Assets:Bank  100 USD\n  Expenses:Food\n")
+	txnNode := cst.Root.FindNode(syntax.TransactionDirective)
+	if txnNode == nil {
+		t.Fatal("no transaction found")
+	}
+	postings := txnNode.FindAllNodes(syntax.PostingNode)
+	if len(postings) < 2 {
+		t.Fatalf("expected 2 postings, got %d", len(postings))
+	}
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+
+	// First posting: with amount
+	p1, ok := l.lowerPosting(postings[0])
+	if !ok {
+		t.Fatalf("lowerPosting failed for first posting: %v", l.file.Diagnostics)
+	}
+	if p1.Account != "Assets:Bank" {
+		t.Errorf("Account = %q, want %q", p1.Account, "Assets:Bank")
+	}
+	if p1.Flag != 0 {
+		t.Errorf("Flag = %d, want 0", p1.Flag)
+	}
+	if p1.Amount == nil {
+		t.Fatal("Amount is nil")
+	}
+	if got := p1.Amount.Number.String(); got != "100" {
+		t.Errorf("Amount.Number = %q, want %q", got, "100")
+	}
+	if p1.Amount.Currency != "USD" {
+		t.Errorf("Amount.Currency = %q, want %q", p1.Amount.Currency, "USD")
+	}
+
+	// Second posting: no amount (auto-balanced)
+	p2, ok := l.lowerPosting(postings[1])
+	if !ok {
+		t.Fatalf("lowerPosting failed for second posting: %v", l.file.Diagnostics)
+	}
+	if p2.Account != "Expenses:Food" {
+		t.Errorf("Account = %q, want %q", p2.Account, "Expenses:Food")
+	}
+	if p2.Amount != nil {
+		t.Errorf("Amount = %v, want nil", p2.Amount)
+	}
+}
+
+func TestLowerPosting_WithFlag(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 * \"Test\"\n  ! Assets:Bank  100 USD\n  Expenses:Food\n")
+	txnNode := cst.Root.FindNode(syntax.TransactionDirective)
+	if txnNode == nil {
+		t.Fatal("no transaction found")
+	}
+	postings := txnNode.FindAllNodes(syntax.PostingNode)
+	if len(postings) == 0 {
+		t.Fatal("no posting found")
+	}
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+
+	p, ok := l.lowerPosting(postings[0])
+	if !ok {
+		t.Fatalf("lowerPosting failed: %v", l.file.Diagnostics)
+	}
+	if p.Flag != '!' {
+		t.Errorf("Flag = %c, want %c", p.Flag, '!')
+	}
+	if p.Account != "Assets:Bank" {
+		t.Errorf("Account = %q, want %q", p.Account, "Assets:Bank")
+	}
+}
+
+func TestLowerPosting_WithCostAndPrice(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {100 USD} @ 105 USD\n  Expenses:Other\n")
+	txnNode := cst.Root.FindNode(syntax.TransactionDirective)
+	if txnNode == nil {
+		t.Fatal("no transaction found")
+	}
+	postings := txnNode.FindAllNodes(syntax.PostingNode)
+	if len(postings) == 0 {
+		t.Fatal("no posting found")
+	}
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+
+	p, ok := l.lowerPosting(postings[0])
+	if !ok {
+		t.Fatalf("lowerPosting failed: %v", l.file.Diagnostics)
+	}
+	if p.Amount == nil {
+		t.Fatal("Amount is nil")
+	}
+	if got := p.Amount.Number.String(); got != "10" {
+		t.Errorf("Amount.Number = %q, want %q", got, "10")
+	}
+	if p.Amount.Currency != "HOOL" {
+		t.Errorf("Amount.Currency = %q, want %q", p.Amount.Currency, "HOOL")
+	}
+	if p.Cost == nil {
+		t.Fatal("Cost is nil")
+	}
+	if p.Cost.Amount == nil {
+		t.Fatal("Cost.Amount is nil")
+	}
+	if got := p.Cost.Amount.Number.String(); got != "100" {
+		t.Errorf("Cost.Amount.Number = %q, want %q", got, "100")
+	}
+	if p.Cost.Amount.Currency != "USD" {
+		t.Errorf("Cost.Amount.Currency = %q, want %q", p.Cost.Amount.Currency, "USD")
+	}
+	if p.Price == nil {
+		t.Fatal("Price is nil")
+	}
+	if got := p.Price.Amount.Number.String(); got != "105" {
+		t.Errorf("Price.Amount.Number = %q, want %q", got, "105")
+	}
+	if p.Price.Amount.Currency != "USD" {
+		t.Errorf("Price.Amount.Currency = %q, want %q", p.Price.Amount.Currency, "USD")
+	}
+}
+
+func TestLowerPosting_WithMetadata(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 * \"Test\"\n  Assets:Bank  100 USD\n    note: \"test\"\n  Expenses:Food\n")
+	txnNode := cst.Root.FindNode(syntax.TransactionDirective)
+	if txnNode == nil {
+		t.Fatal("no transaction found")
+	}
+	postings := txnNode.FindAllNodes(syntax.PostingNode)
+	if len(postings) == 0 {
+		t.Fatal("no posting found")
+	}
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+
+	p, ok := l.lowerPosting(postings[0])
+	if !ok {
+		t.Fatalf("lowerPosting failed: %v", l.file.Diagnostics)
+	}
+	if p.Account != "Assets:Bank" {
+		t.Errorf("Account = %q, want %q", p.Account, "Assets:Bank")
+	}
+	if len(p.Meta.Props) == 0 {
+		t.Fatal("expected metadata, got none")
+	}
+	val, ok := p.Meta.Props["note"]
+	if !ok {
+		t.Fatal("metadata key 'note' not found")
+	}
+	if val.Kind != MetaString {
+		t.Errorf("metadata kind = %v, want MetaString", val.Kind)
+	}
+	if val.String != "test" {
+		t.Errorf("metadata value = %q, want %q", val.String, "test")
+	}
+}
