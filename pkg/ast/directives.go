@@ -194,3 +194,15 @@ type Transaction struct {
 
 func (t *Transaction) directive()    {}
 func (t *Transaction) DirSpan() Span { return t.Span }
+
+// Custom represents a custom directive: YYYY-MM-DD custom "type" Value...
+type Custom struct {
+	Span     Span
+	Date     time.Time
+	TypeName string
+	Values   []MetaValue // heterogeneous value list (reuses MetaValue)
+	Meta     Metadata
+}
+
+func (c *Custom) directive()    {}
+func (c *Custom) DirSpan() Span { return c.Span }

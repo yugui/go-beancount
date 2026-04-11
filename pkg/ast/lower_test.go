@@ -29,22 +29,79 @@ func TestLower_SyntaxError(t *testing.T) {
 	}
 }
 
-func TestLower_ValidDirectiveStubs(t *testing.T) {
-	inputs := []struct {
-		name  string
-		input string
-	}{
-		{"custom", "2024-01-01 custom \"budget\" Assets:Bank 100 USD\n"},
+func TestLower_Custom(t *testing.T) {
+	src := "2024-01-01 custom \"budget\" Assets:Bank \"monthly\" 500 USD\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
 	}
-	for _, tc := range inputs {
-		t.Run(tc.name, func(t *testing.T) {
-			cst := syntax.Parse(tc.input)
-			f := ast.Lower("test.beancount", cst)
-			// Stubs produce no directives, but should not panic.
-			if len(f.Directives) != 0 {
-				t.Errorf("Lower(%q): got %d directives, want 0", tc.name, len(f.Directives))
-			}
-		})
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	c, ok := f.Directives[0].(*ast.Custom)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Custom", f.Directives[0])
+	}
+	if c.TypeName != "budget" {
+		t.Errorf("TypeName = %q, want %q", c.TypeName, "budget")
+	}
+	// Check values: Account, String, Amount
+	if len(c.Values) != 3 {
+		t.Fatalf("Values count = %d, want 3", len(c.Values))
+	}
+	if c.Values[0].Kind != ast.MetaAccount || c.Values[0].String != "Assets:Bank" {
+		t.Errorf("Values[0] = %+v, want MetaAccount(Assets:Bank)", c.Values[0])
+	}
+	if c.Values[1].Kind != ast.MetaString || c.Values[1].String != "monthly" {
+		t.Errorf("Values[1] = %+v, want MetaString(monthly)", c.Values[1])
+	}
+	if c.Values[2].Kind != ast.MetaAmount || c.Values[2].Amount.Currency != "USD" {
+		t.Errorf("Values[2] = %+v, want MetaAmount(500 USD)", c.Values[2])
+	}
+}
+
+func TestLower_CustomMinimal(t *testing.T) {
+	src := "2024-01-01 custom \"mytype\"\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	c, ok := f.Directives[0].(*ast.Custom)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Custom", f.Directives[0])
+	}
+	if c.TypeName != "mytype" {
+		t.Errorf("TypeName = %q, want %q", c.TypeName, "mytype")
+	}
+	if len(c.Values) != 0 {
+		t.Errorf("Values = %v, want nil/empty", c.Values)
+	}
+}
+
+func TestLower_CustomWithBool(t *testing.T) {
+	src := "2024-01-01 custom \"flag\" TRUE\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	c, ok := f.Directives[0].(*ast.Custom)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Custom", f.Directives[0])
+	}
+	if len(c.Values) != 1 {
+		t.Fatalf("Values count = %d, want 1", len(c.Values))
+	}
+	if c.Values[0].Kind != ast.MetaBool || !c.Values[0].Bool {
+		t.Errorf("Values[0] = %+v, want MetaBool(true)", c.Values[0])
 	}
 }
 
