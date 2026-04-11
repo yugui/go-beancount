@@ -79,3 +79,63 @@ type Balance struct {
 
 func (b *Balance) directive()    {}
 func (b *Balance) DirSpan() Span { return b.Span }
+
+// Pad represents a pad directive: YYYY-MM-DD pad Account PadAccount
+type Pad struct {
+	Span       Span
+	Date       time.Time
+	Account    string
+	PadAccount string
+	Meta       Metadata
+}
+
+func (p *Pad) directive()    {}
+func (p *Pad) DirSpan() Span { return p.Span }
+
+// Note represents a note directive: YYYY-MM-DD note Account "comment"
+type Note struct {
+	Span    Span
+	Date    time.Time
+	Account string
+	Comment string
+	Meta    Metadata
+}
+
+func (n *Note) directive()    {}
+func (n *Note) DirSpan() Span { return n.Span }
+
+// Document represents a document directive: YYYY-MM-DD document Account "path"
+type Document struct {
+	Span    Span
+	Date    time.Time
+	Account string
+	Path    string
+	Meta    Metadata
+}
+
+func (d *Document) directive()    {}
+func (d *Document) DirSpan() Span { return d.Span }
+
+// Event represents an event directive: YYYY-MM-DD event "name" "value"
+type Event struct {
+	Span  Span
+	Date  time.Time
+	Name  string
+	Value string
+	Meta  Metadata
+}
+
+func (e *Event) directive()    {}
+func (e *Event) DirSpan() Span { return e.Span }
+
+// Query represents a query directive: YYYY-MM-DD query "name" "bql"
+type Query struct {
+	Span Span
+	Date time.Time
+	Name string
+	BQL  string
+	Meta Metadata
+}
+
+func (q *Query) directive()    {}
+func (q *Query) DirSpan() Span { return q.Span }

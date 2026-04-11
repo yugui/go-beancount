@@ -34,12 +34,7 @@ func TestLower_ValidDirectiveStubs(t *testing.T) {
 		name  string
 		input string
 	}{
-		{"pad", "2024-01-01 pad Assets:Bank Equity:Opening-Balances\n"},
-		{"note", "2024-01-01 note Assets:Bank \"hello\"\n"},
-		{"document", "2024-01-01 document Assets:Bank \"/path/to/doc\"\n"},
 		{"price", "2024-01-01 price USD 1.2 EUR\n"},
-		{"event", "2024-01-01 event \"location\" \"home\"\n"},
-		{"query", "2024-01-01 query \"myquery\" \"SELECT *\"\n"},
 		{"custom", "2024-01-01 custom \"budget\" Assets:Bank 100 USD\n"},
 		{"transaction", "2024-01-01 * \"Payee\" \"Narration\"\n  Assets:Bank  100 USD\n  Expenses:Food\n"},
 	}
@@ -417,5 +412,125 @@ func TestLower_BalanceWithTolerance(t *testing.T) {
 	}
 	if b.Tolerance.Currency != "USD" {
 		t.Errorf("Lower(balance-tolerance): Tolerance.Currency = %q, want %q", b.Tolerance.Currency, "USD")
+	}
+}
+
+func TestLower_Pad(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 pad Assets:Bank Equity:Opening-Balances\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(pad): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(pad): got %d directives, want 1", len(f.Directives))
+	}
+	p, ok := f.Directives[0].(*ast.Pad)
+	if !ok {
+		t.Fatalf("Lower(pad): directive is %T, want *ast.Pad", f.Directives[0])
+	}
+	if got := p.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Lower(pad): Date = %q, want %q", got, "2024-01-01")
+	}
+	if p.Account != "Assets:Bank" {
+		t.Errorf("Lower(pad): Account = %q, want %q", p.Account, "Assets:Bank")
+	}
+	if p.PadAccount != "Equity:Opening-Balances" {
+		t.Errorf("Lower(pad): PadAccount = %q, want %q", p.PadAccount, "Equity:Opening-Balances")
+	}
+}
+
+func TestLower_Note(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 note Assets:Bank \"opened account\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(note): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(note): got %d directives, want 1", len(f.Directives))
+	}
+	n, ok := f.Directives[0].(*ast.Note)
+	if !ok {
+		t.Fatalf("Lower(note): directive is %T, want *ast.Note", f.Directives[0])
+	}
+	if got := n.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Lower(note): Date = %q, want %q", got, "2024-01-01")
+	}
+	if n.Account != "Assets:Bank" {
+		t.Errorf("Lower(note): Account = %q, want %q", n.Account, "Assets:Bank")
+	}
+	if n.Comment != "opened account" {
+		t.Errorf("Lower(note): Comment = %q, want %q", n.Comment, "opened account")
+	}
+}
+
+func TestLower_Document(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 document Assets:Bank \"/path/to/statement.pdf\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(document): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(document): got %d directives, want 1", len(f.Directives))
+	}
+	d, ok := f.Directives[0].(*ast.Document)
+	if !ok {
+		t.Fatalf("Lower(document): directive is %T, want *ast.Document", f.Directives[0])
+	}
+	if got := d.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Lower(document): Date = %q, want %q", got, "2024-01-01")
+	}
+	if d.Account != "Assets:Bank" {
+		t.Errorf("Lower(document): Account = %q, want %q", d.Account, "Assets:Bank")
+	}
+	if d.Path != "/path/to/statement.pdf" {
+		t.Errorf("Lower(document): Path = %q, want %q", d.Path, "/path/to/statement.pdf")
+	}
+}
+
+func TestLower_Event(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 event \"location\" \"New York\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(event): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(event): got %d directives, want 1", len(f.Directives))
+	}
+	e, ok := f.Directives[0].(*ast.Event)
+	if !ok {
+		t.Fatalf("Lower(event): directive is %T, want *ast.Event", f.Directives[0])
+	}
+	if got := e.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Lower(event): Date = %q, want %q", got, "2024-01-01")
+	}
+	if e.Name != "location" {
+		t.Errorf("Lower(event): Name = %q, want %q", e.Name, "location")
+	}
+	if e.Value != "New York" {
+		t.Errorf("Lower(event): Value = %q, want %q", e.Value, "New York")
+	}
+}
+
+func TestLower_Query(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 query \"balance\" \"SELECT account, sum(position) GROUP BY account\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(query): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(query): got %d directives, want 1", len(f.Directives))
+	}
+	q, ok := f.Directives[0].(*ast.Query)
+	if !ok {
+		t.Fatalf("Lower(query): directive is %T, want *ast.Query", f.Directives[0])
+	}
+	if got := q.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Lower(query): Date = %q, want %q", got, "2024-01-01")
+	}
+	if q.Name != "balance" {
+		t.Errorf("Lower(query): Name = %q, want %q", q.Name, "balance")
+	}
+	if q.BQL != "SELECT account, sum(position) GROUP BY account" {
+		t.Errorf("Lower(query): BQL = %q, want %q", q.BQL, "SELECT account, sum(position) GROUP BY account")
 	}
 }
