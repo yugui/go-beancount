@@ -852,3 +852,89 @@ func TestLower_TransactionWithMetadata(t *testing.T) {
 		t.Errorf("Meta[category] = %v, want MetaString(\"travel\")", val)
 	}
 }
+
+func TestLower_Pushtag(t *testing.T) {
+	src := "pushtag #trip\n2024-01-01 * \"Hotel\"\n  Expenses:Travel  200 USD\n  Assets:Bank\npoptag #trip\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	// The "trip" tag should be merged from the push stack
+	found := false
+	for _, tag := range txn.Tags {
+		if tag == "trip" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Tags = %v, want to contain \"trip\"", txn.Tags)
+	}
+}
+
+func TestLower_PushtagNoDuplicate(t *testing.T) {
+	// Transaction already has #trip, pushtag also has #trip — should not duplicate
+	src := "pushtag #trip\n2024-01-01 * \"Hotel\" #trip\n  Expenses:Travel  200 USD\n  Assets:Bank\npoptag #trip\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	count := 0
+	for _, tag := range txn.Tags {
+		if tag == "trip" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("tag \"trip\" appears %d times, want 1", count)
+	}
+}
+
+func TestLower_PoptagWithoutPush(t *testing.T) {
+	src := "poptag #nonexistent\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) == 0 {
+		t.Error("expected diagnostic for poptag without matching pushtag")
+	}
+}
+
+func TestLower_PushtagMultiple(t *testing.T) {
+	// Multiple pushed tags should all be applied
+	src := "pushtag #trip\npushtag #2024\n2024-01-01 * \"Hotel\"\n  Expenses:Travel  200 USD\n  Assets:Bank\npoptag #2024\npoptag #trip\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if len(txn.Tags) != 2 {
+		t.Errorf("Tags count = %d, want 2", len(txn.Tags))
+	}
+}
+
+func TestLower_PushtagScope(t *testing.T) {
+	// Transaction after poptag should NOT have the tag
+	src := "pushtag #trip\n2024-01-01 * \"Hotel\"\n  Expenses:Travel  200 USD\n  Assets:Bank\npoptag #trip\n2024-01-02 * \"Lunch\"\n  Expenses:Food  20 USD\n  Assets:Bank\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 2 {
+		t.Fatalf("got %d directives, want 2", len(f.Directives))
+	}
+	txn2 := f.Directives[1].(*ast.Transaction)
+	for _, tag := range txn2.Tags {
+		if tag == "trip" {
+			t.Error("second transaction should not have tag \"trip\" after poptag")
+		}
+	}
+}
