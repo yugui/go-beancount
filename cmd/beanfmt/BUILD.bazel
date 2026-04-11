@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "beanfmt_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/yugui/go-beancount/cmd/beanfmt",
+    visibility = ["//visibility:private"],
+    deps = ["//pkg/format"],
+)
+
+go_binary(
+    name = "beanfmt",
+    embed = [":beanfmt_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "beanfmt_test",
+    srcs = ["main_test.go"],
+    embed = [":beanfmt_lib"],
+)
