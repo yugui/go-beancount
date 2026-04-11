@@ -20,6 +20,7 @@ go_test(
     srcs = [
         "ast_test.go",
         "cost_test.go",
+        "lower_integration_test.go",
         "lower_test.go",
     ],
     embed = [":ast"],
