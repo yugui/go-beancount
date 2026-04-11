@@ -132,6 +132,39 @@ func TestLoad_NestedIncludes(t *testing.T) {
 	}
 }
 
+func TestLoad_WithHeadings(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "main.beancount")
+	content := `* Assets
+2024-01-01 open Assets:Bank USD
+
+** Expenses
+2024-01-01 open Expenses:Food
+
+* Transactions
+2024-01-15 * "Store" "Groceries"
+  Expenses:Food  50 USD
+  Assets:Bank
+`
+	if err := os.WriteFile(root, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger, err := ast.Load(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(ledger.Directives); got != 3 {
+		t.Errorf("Directives count = %d, want 3 (headings should be trivia, not directives)", got)
+	}
+	if got := len(ledger.Diagnostics); got != 0 {
+		t.Errorf("Diagnostics count = %d, want 0 (headings should not produce errors)", got)
+		for _, d := range ledger.Diagnostics {
+			t.Logf("  diagnostic: %s", d.Message)
+		}
+	}
+}
+
 func TestLoad_FileNotFound(t *testing.T) {
 	_, err := ast.Load("/nonexistent/path/file.beancount")
 	// Should not panic. The root file not being found results in

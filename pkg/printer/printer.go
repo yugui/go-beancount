@@ -72,7 +72,7 @@ func (p *printer) printf(format string, args ...any) {
 
 func (p *printer) printDirectives(dirs []ast.Directive) {
 	for i, d := range dirs {
-		if i > 0 {
+		if i > 0 && p.opts.InsertBlankLinesBetweenDirectives {
 			for range p.opts.BlankLinesBetweenDirectives {
 				p.write("\n")
 			}

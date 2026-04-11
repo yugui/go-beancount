@@ -7,12 +7,14 @@ const (
 	WhitespaceTrivia TriviaKind = iota // spaces and tabs
 	CommentTrivia                      // ; to end of line (not including the newline)
 	NewlineTrivia                      // \n or \r\n
+	HeadingTrivia                      // org-mode heading: * to end of line (not including the newline)
 )
 
 var triviaKindNames = [...]string{
 	WhitespaceTrivia: "WhitespaceTrivia",
 	CommentTrivia:    "CommentTrivia",
 	NewlineTrivia:    "NewlineTrivia",
+	HeadingTrivia:    "HeadingTrivia",
 }
 
 // String returns the name of the trivia kind.

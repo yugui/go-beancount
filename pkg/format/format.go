@@ -97,10 +97,11 @@ func (f *formatter) normalizeBlankLinesBefore(node *syntax.Node, n int) {
 	currentLine := trivia[lastNL+1:]
 
 	// Parse trivia[0..lastNL] into logical lines separated by newlines.
-	// A line that contains a CommentTrivia is a comment line and is preserved.
+	// A line that contains a CommentTrivia or HeadingTrivia is a content
+	// line and is preserved across blank-line normalization.
 	type triviaLine struct {
 		pieces     []syntax.Trivia
-		hasComment bool
+		hasContent bool // true if the line contains a comment or heading
 	}
 	var lines []triviaLine
 	var cur triviaLine
@@ -111,30 +112,41 @@ func (f *formatter) normalizeBlankLinesBefore(node *syntax.Node, n int) {
 			cur = triviaLine{}
 		} else {
 			cur.pieces = append(cur.pieces, tr)
-			if tr.Kind == syntax.CommentTrivia {
-				cur.hasComment = true
+			if tr.Kind == syntax.CommentTrivia || tr.Kind == syntax.HeadingTrivia {
+				cur.hasContent = true
 			}
 		}
 	}
 
-	// Collect comment lines.
-	var commentLines []triviaLine
+	// Collect content lines (comments and headings) and check whether
+	// blank lines already exist.
+	var contentLines []triviaLine
+	hasExistingBlanks := false
 	for _, l := range lines {
-		if l.hasComment {
-			commentLines = append(commentLines, l)
+		if l.hasContent {
+			contentLines = append(contentLines, l)
+		} else if len(l.pieces) == 0 {
+			hasExistingBlanks = true
 		}
+	}
+
+	// If InsertBlankLinesBetweenDirectives is false and no blank lines exist,
+	// preserve original spacing (no insertion). If blank lines already exist,
+	// fall through and normalize their count to n.
+	if !f.opts.InsertBlankLinesBetweenDirectives && !hasExistingBlanks {
+		return
 	}
 
 	// Rebuild trivia:
 	//   1 newline  (end previous directive's last line)
 	// + n newlines (blank lines)
-	// + comment lines, each followed by a newline
+	// + content lines (comments/headings), each followed by a newline
 	// + current-line trivia (indent)
-	newTrivia := make([]syntax.Trivia, 0, n+1+len(commentLines)*3+len(currentLine))
+	newTrivia := make([]syntax.Trivia, 0, n+1+len(contentLines)*3+len(currentLine))
 	for range n + 1 {
 		newTrivia = append(newTrivia, syntax.Trivia{Kind: syntax.NewlineTrivia, Raw: "\n"})
 	}
-	for _, cl := range commentLines {
+	for _, cl := range contentLines {
 		newTrivia = append(newTrivia, cl.pieces...)
 		newTrivia = append(newTrivia, syntax.Trivia{Kind: syntax.NewlineTrivia, Raw: "\n"})
 	}

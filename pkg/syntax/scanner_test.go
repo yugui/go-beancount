@@ -865,3 +865,91 @@ func TestRoundTripUnicodeAccounts(t *testing.T) {
 		})
 	}
 }
+
+func TestHeadingTrivia(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string // expected HeadingTrivia Raw
+	}{
+		{"single star with text", "* Heading\n", "* Heading"},
+		{"double star", "** Deeper\n", "** Deeper"},
+		{"triple star", "*** Even deeper\n", "*** Even deeper"},
+		{"star at EOF", "* Heading", "* Heading"},
+		{"star newline", "*\n", "*"},
+		{"star tab text", "*\tHeading\n", "*\tHeading"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tokens := collectTokens(tt.input)
+			// Heading should be leading trivia on the EOF token
+			eof := tokens[len(tokens)-1]
+			if eof.Kind != EOF {
+				t.Fatalf("last token = %v, want EOF", eof.Kind)
+			}
+			found := false
+			for _, tr := range eof.LeadingTrivia {
+				if tr.Kind == HeadingTrivia {
+					if tr.Raw != tt.want {
+						t.Errorf("HeadingTrivia.Raw = %q, want %q", tr.Raw, tt.want)
+					}
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("no HeadingTrivia found in EOF leading trivia: %v", eof.LeadingTrivia)
+			}
+			// Round-trip
+			got := roundTrip(tokens)
+			if got != tt.input {
+				t.Errorf("round-trip mismatch:\n  input: %q\n  got:   %q", tt.input, got)
+			}
+		})
+	}
+}
+
+func TestHeadingTriviaBeforeDirective(t *testing.T) {
+	input := "* Section\n2024-01-01 open Assets:A\n"
+	tokens := collectTokens(input)
+	// First real token should be DATE with heading in its leading trivia
+	if tokens[0].Kind != DATE {
+		t.Fatalf("first token = %v, want DATE", tokens[0].Kind)
+	}
+	found := false
+	for _, tr := range tokens[0].LeadingTrivia {
+		if tr.Kind == HeadingTrivia && tr.Raw == "* Section" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected HeadingTrivia on DATE token, got: %v", tokens[0].LeadingTrivia)
+	}
+	got := roundTrip(tokens)
+	if got != input {
+		t.Errorf("round-trip mismatch:\n  input: %q\n  got:   %q", input, got)
+	}
+}
+
+func TestStarNotHeadingWhenIndented(t *testing.T) {
+	// Indented * should be a STAR token, not heading trivia
+	input := "  * Assets:A\n"
+	tokens := collectTokens(input)
+	found := false
+	for _, tok := range tokens {
+		if tok.Kind == STAR {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected STAR token for indented *, got none")
+	}
+}
+
+func TestStarNotHeadingWithoutSpace(t *testing.T) {
+	// *USD at line start should not be heading trivia
+	input := "*USD\n"
+	tokens := collectTokens(input)
+	if tokens[0].Kind != STAR {
+		t.Errorf("first token = %v, want STAR", tokens[0].Kind)
+	}
+}

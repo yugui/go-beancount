@@ -9,6 +9,11 @@ type Options struct {
 	EastAsianAmbiguousWidth     int  // EA Ambiguous char width: 1 or 2.
 	IndentWidth                 int  // Spaces per indent level.
 	BlankLinesBetweenDirectives int  // Blank lines between directives.
+	// InsertBlankLinesBetweenDirectives controls whether blank lines are
+	// actively inserted between directives. When false (the default),
+	// existing blank lines are normalized to BlankLinesBetweenDirectives
+	// but no new blank lines are created where none exist.
+	InsertBlankLinesBetweenDirectives bool
 }
 
 // Default returns Options with sensible defaults.

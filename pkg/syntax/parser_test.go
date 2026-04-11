@@ -157,7 +157,7 @@ func TestParseMultipleDirectives(t *testing.T) {
 }
 
 func TestParseUnrecognizedLine(t *testing.T) {
-	src := `* this is org-mode text`
+	src := `some unrecognized text`
 	f := Parse(src)
 
 	nodes := collectNodeChildren(f.Root)
@@ -171,25 +171,35 @@ func TestParseUnrecognizedLine(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
+func TestParseOrgModeHeadingAsTrivia(t *testing.T) {
+	src := `* this is org-mode text`
+	f := Parse(src)
+
+	// Heading is trivia — no directive nodes expected
+	nodes := collectNodeChildren(f.Root)
+	if len(nodes) != 0 {
+		t.Fatalf("got %d nodes, want 0 (heading should be trivia)", len(nodes))
+	}
+
+	assertRoundTrip(t, src, f)
+}
+
 func TestParseMixedWithUnrecognized(t *testing.T) {
 	src := "; comment\noption \"title\" \"Test\"\n* org mode heading\ninclude \"other.beancount\"\n"
 	f := Parse(src)
 
 	nodes := collectNodeChildren(f.Root)
-	if len(nodes) != 3 {
-		t.Fatalf("got %d nodes, want 3 (comment is trivia on option)", len(nodes))
+	if len(nodes) != 2 {
+		t.Fatalf("got %d nodes, want 2 (comment and heading are trivia)", len(nodes))
 	}
 
 	// The comment becomes leading trivia on the "option" IDENT token,
-	// so the first node is the OptionDirective.
+	// and the heading becomes leading trivia on the "include" IDENT token.
 	if nodes[0].Kind != OptionDirective {
 		t.Errorf("nodes[0].Kind = %v, want OptionDirective", nodes[0].Kind)
 	}
-	if nodes[1].Kind != UnrecognizedLineNode {
-		t.Errorf("nodes[1].Kind = %v, want UnrecognizedLineNode", nodes[1].Kind)
-	}
-	if nodes[2].Kind != IncludeDirective {
-		t.Errorf("nodes[2].Kind = %v, want IncludeDirective", nodes[2].Kind)
+	if nodes[1].Kind != IncludeDirective {
+		t.Errorf("nodes[1].Kind = %v, want IncludeDirective", nodes[1].Kind)
 	}
 
 	assertRoundTrip(t, src, f)
