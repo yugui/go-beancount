@@ -65,17 +65,17 @@ func (l *lowerer) lowerDirective(n *syntax.Node) {
 	case syntax.BalanceDirective:
 		l.lowerBalance(n)
 	case syntax.PadDirective:
-		// TODO: step 7
+		l.lowerPad(n)
 	case syntax.NoteDirective:
-		// TODO: step 8
+		l.lowerNote(n)
 	case syntax.DocumentDirective:
-		// TODO: step 9
+		l.lowerDocument(n)
 	case syntax.PriceDirective:
 		// TODO: step 10
 	case syntax.EventDirective:
-		// TODO: step 11
+		l.lowerEvent(n)
 	case syntax.QueryDirective:
-		// TODO: step 11
+		l.lowerQuery(n)
 	case syntax.CustomDirective:
 		// TODO: step 15
 	case syntax.TransactionDirective:
@@ -456,6 +456,141 @@ func parseNumber(t *syntax.Token) (apd.Decimal, error) {
 		return apd.Decimal{}, fmt.Errorf("invalid number %q: %w", t.Raw, err)
 	}
 	return d, nil
+}
+
+// lowerPad converts a PadDirective CST node into a Pad AST directive.
+func (l *lowerer) lowerPad(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "pad directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	acctTokens := findTokens(n, syntax.ACCOUNT)
+	if len(acctTokens) < 2 {
+		l.addDiagnostic(n, "pad directive requires two accounts")
+		return
+	}
+	l.addDirective(&Pad{
+		Span:       l.spanFromNode(n),
+		Date:       date,
+		Account:    acctTokens[0].Raw,
+		PadAccount: acctTokens[1].Raw,
+	})
+}
+
+// lowerNote converts a NoteDirective CST node into a Note AST directive.
+func (l *lowerer) lowerNote(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "note directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	acctTok := n.FindToken(syntax.ACCOUNT)
+	if acctTok == nil {
+		l.addDiagnostic(n, "note directive missing account")
+		return
+	}
+	strTokens := findTokens(n, syntax.STRING)
+	if len(strTokens) < 1 {
+		l.addDiagnostic(n, "note directive missing comment string")
+		return
+	}
+	l.addDirective(&Note{
+		Span:    l.spanFromNode(n),
+		Date:    date,
+		Account: acctTok.Raw,
+		Comment: unquoteString(strTokens[0]),
+	})
+}
+
+// lowerDocument converts a DocumentDirective CST node into a Document AST directive.
+func (l *lowerer) lowerDocument(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "document directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	acctTok := n.FindToken(syntax.ACCOUNT)
+	if acctTok == nil {
+		l.addDiagnostic(n, "document directive missing account")
+		return
+	}
+	strTokens := findTokens(n, syntax.STRING)
+	if len(strTokens) < 1 {
+		l.addDiagnostic(n, "document directive missing path string")
+		return
+	}
+	l.addDirective(&Document{
+		Span:    l.spanFromNode(n),
+		Date:    date,
+		Account: acctTok.Raw,
+		Path:    unquoteString(strTokens[0]),
+	})
+}
+
+// lowerEvent converts an EventDirective CST node into an Event AST directive.
+func (l *lowerer) lowerEvent(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "event directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	strTokens := findTokens(n, syntax.STRING)
+	if len(strTokens) < 2 {
+		l.addDiagnostic(n, "event directive requires two string arguments")
+		return
+	}
+	l.addDirective(&Event{
+		Span:  l.spanFromNode(n),
+		Date:  date,
+		Name:  unquoteString(strTokens[0]),
+		Value: unquoteString(strTokens[1]),
+	})
+}
+
+// lowerQuery converts a QueryDirective CST node into a Query AST directive.
+func (l *lowerer) lowerQuery(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "query directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	strTokens := findTokens(n, syntax.STRING)
+	if len(strTokens) < 2 {
+		l.addDiagnostic(n, "query directive requires two string arguments")
+		return
+	}
+	l.addDirective(&Query{
+		Span: l.spanFromNode(n),
+		Date: date,
+		Name: unquoteString(strTokens[0]),
+		BQL:  unquoteString(strTokens[1]),
+	})
 }
 
 // lowerInclude converts an IncludeDirective CST node into an Include AST directive.
