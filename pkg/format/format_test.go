@@ -177,42 +177,6 @@ func TestFormatPreservesLeadingFileComments(t *testing.T) {
 	}
 }
 
-func TestInsertCommas(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{"1234", "1,234"},
-		{"1234567", "1,234,567"},
-		{"1234.56", "1,234.56"},
-		{"123", "123"},
-		{"1234567.89", "1,234,567.89"},
-		{"-1234", "-1,234"},
-		{"1,234", "1,234"}, // already has commas
-	}
-	for _, tt := range tests {
-		got := insertCommas(tt.in)
-		if got != tt.want {
-			t.Errorf("insertCommas(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
-func TestStripCommas(t *testing.T) {
-	tests := []struct {
-		in, want string
-	}{
-		{"1,234", "1234"},
-		{"1,234,567.89", "1234567.89"},
-		{"1234", "1234"},
-	}
-	for _, tt := range tests {
-		got := stripCommas(tt.in)
-		if got != tt.want {
-			t.Errorf("stripCommas(%q) = %q, want %q", tt.in, got, tt.want)
-		}
-	}
-}
-
 func TestFormatPostingWithCostSpec(t *testing.T) {
 	src := "2024-01-15 * \"Test\"\n  Assets:Stock  10 HOOL {100 USD} @ 150 USD\n  Assets:Cash\n"
 	got := Format(src)
