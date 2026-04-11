@@ -79,7 +79,7 @@ func (l *lowerer) lowerDirective(n *syntax.Node) {
 	case syntax.CustomDirective:
 		// TODO: step 15
 	case syntax.TransactionDirective:
-		// TODO: step 12
+		l.lowerTransaction(n)
 	default:
 		l.addDiagnostic(n, fmt.Sprintf("unknown directive kind: %s", n.Kind))
 	}
@@ -856,4 +856,72 @@ func (l *lowerer) lowerInclude(n *syntax.Node) {
 		Span: l.spanFromNode(n),
 		Path: unquoteString(strTokens[0]),
 	})
+}
+
+// lowerTransaction converts a TransactionDirective CST node into a Transaction AST directive.
+func (l *lowerer) lowerTransaction(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "transaction missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+
+	txn := &Transaction{
+		Span: l.spanFromNode(n),
+		Date: date,
+	}
+
+	// Extract flag, payee/narration, tags, links from direct child tokens.
+	var strs []*syntax.Token
+	for _, c := range n.Children {
+		if c.Token == nil {
+			continue
+		}
+		switch c.Token.Kind {
+		case syntax.STAR:
+			txn.Flag = '*'
+		case syntax.BANG:
+			txn.Flag = '!'
+		case syntax.IDENT:
+			// Only "txn" is a valid flag keyword; other IDENTs (e.g.,
+			// directive keywords consumed by the parser) are ignored.
+			if c.Token.Raw == "txn" {
+				txn.Flag = '*'
+			}
+		case syntax.STRING:
+			strs = append(strs, c.Token)
+		case syntax.TAG:
+			// TAG token Raw is "#tag-name" — strip the # prefix.
+			txn.Tags = append(txn.Tags, c.Token.Raw[1:])
+		case syntax.LINK:
+			// LINK token Raw is "^link-name" — strip the ^ prefix.
+			txn.Links = append(txn.Links, c.Token.Raw[1:])
+		}
+	}
+
+	// Resolve payee vs narration.
+	if len(strs) == 1 {
+		txn.Narration = unquoteString(strs[0])
+	} else if len(strs) >= 2 {
+		txn.Payee = unquoteString(strs[0])
+		txn.Narration = unquoteString(strs[1])
+	}
+
+	// Lower postings.
+	for _, postingNode := range n.FindAllNodes(syntax.PostingNode) {
+		p, ok := l.lowerPosting(postingNode)
+		if ok {
+			txn.Postings = append(txn.Postings, p)
+		}
+	}
+
+	// Transaction-level metadata.
+	txn.Meta = l.lowerMetadata(n)
+
+	l.addDirective(txn)
 }
