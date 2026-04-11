@@ -227,3 +227,59 @@ func TestFormatAutoBalancedPosting(t *testing.T) {
 		t.Errorf("Format(%q) should fix indent for auto-balanced posting, got:\n%s", src, got)
 	}
 }
+
+func TestFormatStringPreservation(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "multiline",
+			src:  "2024-01-01 note Assets:A \"Line one\nline two\"\n",
+		},
+		{
+			name: "tab",
+			src:  "2024-01-01 note Assets:A \"before\tafter\"\n",
+		},
+		{
+			name: "carriage return",
+			src:  "2024-01-01 note Assets:A \"before\rafter\"\n",
+		},
+		{
+			name: "backslash",
+			src:  "2024-01-01 note Assets:A \"path\\\\to\\\\file\"\n",
+		},
+		{
+			name: "escaped quote",
+			src:  "2024-01-01 note Assets:A \"say \\\"hello\\\"\"\n",
+		},
+		{
+			name: "accented",
+			src:  "2024-01-01 note Assets:A \"café résumé\"\n",
+		},
+		{
+			name: "combining character",
+			src:  "2024-01-01 note Assets:A \"e\u0301\"\n",
+		},
+		{
+			name: "CJK",
+			src:  "2024-01-01 note Assets:A \"日本語テスト\"\n",
+		},
+		{
+			name: "emoji",
+			src:  "2024-01-01 note Assets:A \"🎉 party\"\n",
+		},
+		{
+			name: "mixed newline and special",
+			src:  "2024-01-01 note Assets:A \"café\n日本語\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Format(tt.src)
+			if got != tt.src {
+				t.Errorf("Format(%q) changed string content:\ngot:  %q\nwant: %q", tt.src, got, tt.src)
+			}
+		})
+	}
+}
