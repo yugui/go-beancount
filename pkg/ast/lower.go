@@ -725,6 +725,69 @@ func (l *lowerer) lowerPrice(n *syntax.Node) {
 	})
 }
 
+// lowerCostSpec converts a CostSpecNode into a CostSpec.
+func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
+	cs := CostSpec{
+		Span: l.spanFromNode(n),
+	}
+
+	// Determine per-unit vs total by checking for LBRACE2.
+	cs.IsTotal = n.FindToken(syntax.LBRACE2) != nil
+
+	// Extract amount (if present).
+	amountNode := n.FindNode(syntax.AmountNode)
+	if amountNode != nil {
+		amt, ok := l.lowerAmount(amountNode)
+		if !ok {
+			return CostSpec{}, false
+		}
+		cs.Amount = &amt
+	}
+
+	// Extract optional date.
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok != nil {
+		d, err := parseDate(dateTok)
+		if err != nil {
+			l.addDiagnostic(n, fmt.Sprintf("invalid cost date %q: %v", dateTok.Raw, err))
+			return CostSpec{}, false
+		}
+		cs.Date = &d
+	}
+
+	// Extract optional label.
+	strTok := n.FindToken(syntax.STRING)
+	if strTok != nil {
+		cs.Label = unquoteString(strTok)
+	}
+
+	return cs, true
+}
+
+// lowerPriceAnnotation converts a PriceAnnotNode into a PriceAnnotation.
+func (l *lowerer) lowerPriceAnnotation(n *syntax.Node) (PriceAnnotation, bool) {
+	pa := PriceAnnotation{
+		Span: l.spanFromNode(n),
+	}
+
+	// Check for @@ (total) vs @ (per-unit).
+	pa.IsTotal = n.FindToken(syntax.ATAT) != nil
+
+	// Extract the amount.
+	amountNode := n.FindNode(syntax.AmountNode)
+	if amountNode == nil {
+		l.addDiagnostic(n, "price annotation missing amount")
+		return PriceAnnotation{}, false
+	}
+	amt, ok := l.lowerAmount(amountNode)
+	if !ok {
+		return PriceAnnotation{}, false
+	}
+	pa.Amount = amt
+
+	return pa, true
+}
+
 // lowerInclude converts an IncludeDirective CST node into an Include AST directive.
 func (l *lowerer) lowerInclude(n *syntax.Node) {
 	strTokens := findTokens(n, syntax.STRING)
