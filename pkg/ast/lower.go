@@ -77,7 +77,7 @@ func (l *lowerer) lowerDirective(n *syntax.Node) {
 	case syntax.QueryDirective:
 		l.lowerQuery(n)
 	case syntax.CustomDirective:
-		// TODO: step 15
+		l.lowerCustom(n)
 	case syntax.TransactionDirective:
 		l.lowerTransaction(n)
 	default:
@@ -924,4 +924,54 @@ func (l *lowerer) lowerTransaction(n *syntax.Node) {
 	txn.Meta = l.lowerMetadata(n)
 
 	l.addDirective(txn)
+}
+
+// lowerCustom converts a CustomDirective CST node into a Custom AST directive.
+func (l *lowerer) lowerCustom(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "custom directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+
+	// Find the type name (first STRING child) and its index.
+	typeNameIdx := -1
+	var typeName string
+	for i, c := range n.Children {
+		if c.Token != nil && c.Token.Kind == syntax.STRING {
+			typeNameIdx = i
+			typeName = unquoteString(c.Token)
+			break
+		}
+	}
+	if typeNameIdx < 0 {
+		l.addDiagnostic(n, "custom directive missing type name")
+		return
+	}
+
+	// Skip the type name and collect the remaining children as values.
+	var values []MetaValue
+	for _, c := range n.Children[typeNameIdx+1:] {
+		if c.Token != nil {
+			values = append(values, l.tokenToMetaValue(n, c.Token))
+		} else if c.Node != nil && c.Node.Kind == syntax.AmountNode {
+			amt, ok := l.lowerAmount(c.Node)
+			if ok {
+				values = append(values, MetaValue{Kind: MetaAmount, Amount: amt})
+			}
+		}
+	}
+
+	l.addDirective(&Custom{
+		Span:     l.spanFromNode(n),
+		Date:     date,
+		TypeName: typeName,
+		Values:   values,
+		Meta:     l.lowerMetadata(n),
+	})
 }
