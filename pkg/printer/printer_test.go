@@ -741,6 +741,77 @@ func TestStringEscaping(t *testing.T) {
 	}
 }
 
+func TestStringQuoting(t *testing.T) {
+	tests := []struct {
+		name    string
+		comment string
+		want    string
+	}{
+		{
+			name:    "multiline",
+			comment: "Line one\nline two",
+			want:    "2024-01-01 note Assets:A \"Line one\nline two\"\n",
+		},
+		{
+			name:    "tab",
+			comment: "before\tafter",
+			want:    "2024-01-01 note Assets:A \"before\tafter\"\n",
+		},
+		{
+			name:    "carriage return",
+			comment: "before\rafter",
+			want:    "2024-01-01 note Assets:A \"before\rafter\"\n",
+		},
+		{
+			name:    "backslash",
+			comment: `path\to\file`,
+			want:    "2024-01-01 note Assets:A \"path\\\\to\\\\file\"\n",
+		},
+		{
+			name:    "double quote",
+			comment: `say "hello"`,
+			want:    "2024-01-01 note Assets:A \"say \\\"hello\\\"\"\n",
+		},
+		{
+			name:    "accented",
+			comment: "café résumé",
+			want:    "2024-01-01 note Assets:A \"café résumé\"\n",
+		},
+		{
+			name:    "combining character",
+			comment: "e\u0301", // e + combining acute accent
+			want:    "2024-01-01 note Assets:A \"e\u0301\"\n",
+		},
+		{
+			name:    "CJK",
+			comment: "日本語テスト",
+			want:    "2024-01-01 note Assets:A \"日本語テスト\"\n",
+		},
+		{
+			name:    "emoji",
+			comment: "🎉 party",
+			want:    "2024-01-01 note Assets:A \"🎉 party\"\n",
+		},
+		{
+			name:    "mixed newline and special",
+			comment: "café\n日本語",
+			want:    "2024-01-01 note Assets:A \"café\n日本語\"\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := print(t, &ast.Note{
+				Date:    date("2024-01-01"),
+				Account: "Assets:A",
+				Comment: tt.comment,
+			})
+			if got != tt.want {
+				t.Errorf("print note with comment %q: got %q, want %q", tt.comment, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCommaGroupingInTransaction(t *testing.T) {
 	got := print(t, &ast.Transaction{
 		Date:      date("2024-01-15"),
