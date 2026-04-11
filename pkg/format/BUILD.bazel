@@ -2,17 +2,24 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "format",
-    srcs = ["option.go"],
+    srcs = [
+        "format.go",
+        "option.go",
+    ],
     importpath = "github.com/yugui/go-beancount/pkg/format",
     visibility = ["//visibility:public"],
-    deps = ["//internal/formatopt"],
+    deps = [
+        "//internal/formatopt",
+        "//pkg/syntax",
+    ],
 )
 
 go_test(
     name = "format_test",
-    srcs = ["option_test.go"],
-    deps = [
-        ":format",
-        "//internal/formatopt",
+    srcs = [
+        "format_test.go",
+        "option_test.go",
     ],
+    embed = [":format"],
+    deps = ["//internal/formatopt"],
 )
