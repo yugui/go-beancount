@@ -139,3 +139,15 @@ type Query struct {
 
 func (q *Query) directive()    {}
 func (q *Query) DirSpan() Span { return q.Span }
+
+// Price represents a price directive: YYYY-MM-DD price Commodity Amount
+type Price struct {
+	Span      Span
+	Date      time.Time
+	Commodity string // the base commodity (CURRENCY token)
+	Amount    Amount // the price amount (number + quote currency)
+	Meta      Metadata
+}
+
+func (p *Price) directive()    {}
+func (p *Price) DirSpan() Span { return p.Span }
