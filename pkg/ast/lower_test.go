@@ -34,7 +34,6 @@ func TestLower_ValidDirectiveStubs(t *testing.T) {
 		name  string
 		input string
 	}{
-		{"price", "2024-01-01 price USD 1.2 EUR\n"},
 		{"custom", "2024-01-01 custom \"budget\" Assets:Bank 100 USD\n"},
 		{"transaction", "2024-01-01 * \"Payee\" \"Narration\"\n  Assets:Bank  100 USD\n  Expenses:Food\n"},
 	}
@@ -532,5 +531,59 @@ func TestLower_Query(t *testing.T) {
 	}
 	if q.BQL != "SELECT account, sum(position) GROUP BY account" {
 		t.Errorf("Lower(query): BQL = %q, want %q", q.BQL, "SELECT account, sum(position) GROUP BY account")
+	}
+}
+
+func TestLower_Price(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 price USD 1.20 EUR\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(price): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(price): got %d directives, want 1", len(f.Directives))
+	}
+	p, ok := f.Directives[0].(*ast.Price)
+	if !ok {
+		t.Fatalf("Lower(price): directive is %T, want *ast.Price", f.Directives[0])
+	}
+	if got := p.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Lower(price): Date = %q, want %q", got, "2024-01-01")
+	}
+	if p.Commodity != "USD" {
+		t.Errorf("Lower(price): Commodity = %q, want %q", p.Commodity, "USD")
+	}
+	if got := p.Amount.Number.String(); got != "1.20" {
+		t.Errorf("Lower(price): Amount.Number = %q, want %q", got, "1.20")
+	}
+	if p.Amount.Currency != "EUR" {
+		t.Errorf("Lower(price): Amount.Currency = %q, want %q", p.Amount.Currency, "EUR")
+	}
+}
+
+func TestLower_PriceDecimal(t *testing.T) {
+	cst := syntax.Parse("2024-06-15 price HOOL 579.18 USD\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(price-decimal): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(price-decimal): got %d directives, want 1", len(f.Directives))
+	}
+	p, ok := f.Directives[0].(*ast.Price)
+	if !ok {
+		t.Fatalf("Lower(price-decimal): directive is %T, want *ast.Price", f.Directives[0])
+	}
+	if got := p.Date.Format("2006-01-02"); got != "2024-06-15" {
+		t.Errorf("Lower(price-decimal): Date = %q, want %q", got, "2024-06-15")
+	}
+	if p.Commodity != "HOOL" {
+		t.Errorf("Lower(price-decimal): Commodity = %q, want %q", p.Commodity, "HOOL")
+	}
+	if got := p.Amount.Number.String(); got != "579.18" {
+		t.Errorf("Lower(price-decimal): Amount.Number = %q, want %q", got, "579.18")
+	}
+	if p.Amount.Currency != "USD" {
+		t.Errorf("Lower(price-decimal): Amount.Currency = %q, want %q", p.Amount.Currency, "USD")
 	}
 }

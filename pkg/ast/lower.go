@@ -71,7 +71,7 @@ func (l *lowerer) lowerDirective(n *syntax.Node) {
 	case syntax.DocumentDirective:
 		l.lowerDocument(n)
 	case syntax.PriceDirective:
-		// TODO: step 10
+		l.lowerPrice(n)
 	case syntax.EventDirective:
 		l.lowerEvent(n)
 	case syntax.QueryDirective:
@@ -590,6 +590,41 @@ func (l *lowerer) lowerQuery(n *syntax.Node) {
 		Date: date,
 		Name: unquoteString(strTokens[0]),
 		BQL:  unquoteString(strTokens[1]),
+	})
+}
+
+// lowerPrice converts a PriceDirective CST node into a Price AST directive.
+func (l *lowerer) lowerPrice(n *syntax.Node) {
+	dateTok := n.FindToken(syntax.DATE)
+	if dateTok == nil {
+		l.addDiagnostic(n, "price directive missing date")
+		return
+	}
+	date, err := parseDate(dateTok)
+	if err != nil {
+		l.addDiagnostic(n, fmt.Sprintf("invalid date %s: %v", dateTok.Raw, err))
+		return
+	}
+	commodityTok := n.FindToken(syntax.CURRENCY)
+	if commodityTok == nil {
+		l.addDiagnostic(n, "price directive missing commodity")
+		return
+	}
+	amountNode := n.FindNode(syntax.AmountNode)
+	if amountNode == nil {
+		l.addDiagnostic(n, "price directive missing amount")
+		return
+	}
+	amt, ok := l.lowerAmount(amountNode)
+	if !ok {
+		return
+	}
+	l.addDirective(&Price{
+		Span:      l.spanFromNode(n),
+		Date:      date,
+		Commodity: commodityTok.Raw,
+		Amount:    amt,
+		// TODO: populate Meta when metadata lowering is implemented.
 	})
 }
 
