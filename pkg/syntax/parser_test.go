@@ -300,6 +300,22 @@ func TestParseNote(t *testing.T) {
 	}
 	assertTokenChild(t, node.Children[1], IDENT, "note")
 	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Bank:Checking")
+	assertTokenChild(t, node.Children[3], STRING, `"Opened account"`)
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseNoteMultilineString(t *testing.T) {
+	src := "2024-01-01 note Assets:Bank:Checking \"Line one\nline two\""
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(NoteDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected NoteDirective node", src)
+	}
+	assertTokenChild(t, node.Children[1], IDENT, "note")
+	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Bank:Checking")
+	assertTokenChild(t, node.Children[3], STRING, "\"Line one\nline two\"")
 	assertRoundTrip(t, src, f)
 }
 
