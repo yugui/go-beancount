@@ -587,3 +587,77 @@ func TestLower_PriceDecimal(t *testing.T) {
 		t.Errorf("Lower(price-decimal): Amount.Currency = %q, want %q", p.Amount.Currency, "USD")
 	}
 }
+
+func TestLower_OpenWithMetadata(t *testing.T) {
+	src := "2024-01-01 open Assets:Bank USD\n  category: \"taxable\"\n  number: 42\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	o, ok := f.Directives[0].(*ast.Open)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Open", f.Directives[0])
+	}
+	if o.Meta.Props == nil {
+		t.Fatal("Meta.Props is nil, want non-nil")
+	}
+	if got, ok := o.Meta.Props["category"]; !ok {
+		t.Error("missing metadata key \"category\"")
+	} else if got.Kind != ast.MetaString || got.String != "taxable" {
+		t.Errorf("category = %+v, want MetaString \"taxable\"", got)
+	}
+	if got, ok := o.Meta.Props["number"]; !ok {
+		t.Error("missing metadata key \"number\"")
+	} else if got.Kind != ast.MetaNumber {
+		t.Errorf("number kind = %v, want MetaNumber", got.Kind)
+	}
+}
+
+func TestLower_MetadataTypes(t *testing.T) {
+	src := "2024-01-01 commodity USD\n  name: \"US Dollar\"\n  date: 2020-01-01\n  flag: TRUE\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	c, ok := f.Directives[0].(*ast.Commodity)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Commodity", f.Directives[0])
+	}
+	if c.Meta.Props == nil {
+		t.Fatal("Meta.Props is nil, want non-nil")
+	}
+	if got, ok := c.Meta.Props["name"]; !ok {
+		t.Error("missing metadata key \"name\"")
+	} else if got.Kind != ast.MetaString || got.String != "US Dollar" {
+		t.Errorf("name = %+v, want MetaString \"US Dollar\"", got)
+	}
+	if got, ok := c.Meta.Props["date"]; !ok {
+		t.Error("missing metadata key \"date\"")
+	} else if got.Kind != ast.MetaDate {
+		t.Errorf("date kind = %v, want MetaDate", got.Kind)
+	} else if got.Date.Format("2006-01-02") != "2020-01-01" {
+		t.Errorf("date = %v, want 2020-01-01", got.Date)
+	}
+	if got, ok := c.Meta.Props["flag"]; !ok {
+		t.Error("missing metadata key \"flag\"")
+	} else if got.Kind != ast.MetaBool || !got.Bool {
+		t.Errorf("flag = %+v, want MetaBool true", got)
+	}
+}
+
+func TestLower_MetadataEmpty(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 close Assets:Bank\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	c, ok := f.Directives[0].(*ast.Close)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Close", f.Directives[0])
+	}
+	if c.Meta.Props != nil {
+		t.Errorf("expected nil Props, got %v", c.Meta.Props)
+	}
+}
