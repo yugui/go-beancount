@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "formatopt",
+    srcs = [
+        "options.go",
+        "width.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/internal/formatopt",
+    visibility = ["//:__subpackages__"],
+    deps = ["@com_github_mattn_go_runewidth//:go-runewidth"],
+)
+
+go_test(
+    name = "formatopt_test",
+    srcs = [
+        "options_test.go",
+        "width_test.go",
+    ],
+    embed = [":formatopt"],
+)
