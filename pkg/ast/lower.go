@@ -169,6 +169,98 @@ func parseDate(t *syntax.Token) (time.Time, error) {
 	return time.Parse("2006-01-02", s)
 }
 
+// lowerMetadata extracts all MetadataLineNode children from a CST node
+// and returns a Metadata map.
+func (l *lowerer) lowerMetadata(n *syntax.Node) Metadata {
+	metaNodes := n.FindAllNodes(syntax.MetadataLineNode)
+	if len(metaNodes) == 0 {
+		return Metadata{}
+	}
+	meta := Metadata{Props: make(map[string]MetaValue)}
+	for _, mn := range metaNodes {
+		key, val, ok := l.lowerMetadataLine(mn)
+		if ok {
+			meta.Props[key] = val
+		}
+	}
+	return meta
+}
+
+// lowerMetadataLine converts a MetadataLineNode into a key-value pair.
+func (l *lowerer) lowerMetadataLine(n *syntax.Node) (string, MetaValue, bool) {
+	// First child token is the key (IDENT).
+	keyTok := n.FindToken(syntax.IDENT)
+	if keyTok == nil {
+		l.addDiagnostic(n, "metadata line missing key")
+		return "", MetaValue{}, false
+	}
+	key := keyTok.Raw
+
+	// Find the value token (after COLON).
+	var valueTok *syntax.Token
+	foundColon := false
+	for _, c := range n.Children {
+		if c.Token != nil {
+			if c.Token.Kind == syntax.COLON {
+				foundColon = true
+				continue
+			}
+			if foundColon {
+				valueTok = c.Token
+				break
+			}
+		}
+	}
+
+	if valueTok == nil {
+		l.addDiagnostic(n, "metadata line missing value")
+		return "", MetaValue{}, false
+	}
+
+	val := l.tokenToMetaValue(n, valueTok)
+	return key, val, true
+}
+
+// tokenToMetaValue converts a token into a MetaValue based on its kind.
+// The node parameter is used for diagnostic reporting on parse errors.
+func (l *lowerer) tokenToMetaValue(n *syntax.Node, t *syntax.Token) MetaValue {
+	// Booleans TRUE/FALSE may be lexed as either CURRENCY or IDENT tokens.
+	if (t.Kind == syntax.CURRENCY || t.Kind == syntax.IDENT) && (t.Raw == "TRUE" || t.Raw == "FALSE") {
+		return MetaValue{Kind: MetaBool, Bool: t.Raw == "TRUE"}
+	}
+
+	switch t.Kind {
+	case syntax.STRING:
+		return MetaValue{Kind: MetaString, String: unquoteString(t)}
+	case syntax.ACCOUNT:
+		return MetaValue{Kind: MetaAccount, String: t.Raw}
+	case syntax.CURRENCY:
+		return MetaValue{Kind: MetaCurrency, String: t.Raw}
+	case syntax.DATE:
+		d, err := parseDate(t)
+		if err != nil {
+			l.addDiagnostic(n, fmt.Sprintf("invalid metadata date %q: %v", t.Raw, err))
+			return MetaValue{Kind: MetaString, String: t.Raw}
+		}
+		return MetaValue{Kind: MetaDate, Date: d}
+	case syntax.TAG:
+		return MetaValue{Kind: MetaTag, String: t.Raw}
+	case syntax.LINK:
+		return MetaValue{Kind: MetaLink, String: t.Raw}
+	case syntax.NUMBER:
+		num, err := parseNumber(t)
+		if err != nil {
+			l.addDiagnostic(n, fmt.Sprintf("invalid metadata number %q: %v", t.Raw, err))
+			return MetaValue{Kind: MetaString, String: t.Raw}
+		}
+		return MetaValue{Kind: MetaNumber, Number: num}
+	case syntax.IDENT:
+		return MetaValue{Kind: MetaString, String: t.Raw}
+	default:
+		return MetaValue{Kind: MetaString, String: t.Raw}
+	}
+}
+
 // lowerOpen converts an OpenDirective CST node into an Open AST directive.
 func (l *lowerer) lowerOpen(n *syntax.Node) {
 	dateTok := n.FindToken(syntax.DATE)
@@ -207,7 +299,7 @@ func (l *lowerer) lowerOpen(n *syntax.Node) {
 		Account:    acctTok.Raw,
 		Currencies: currencies,
 		Booking:    booking,
-		// TODO: populate Meta when metadata lowering is implemented.
+		Meta:       l.lowerMetadata(n),
 	})
 }
 
@@ -232,7 +324,7 @@ func (l *lowerer) lowerClose(n *syntax.Node) {
 		Span:    l.spanFromNode(n),
 		Date:    date,
 		Account: acctTok.Raw,
-		// TODO: populate Meta when metadata lowering is implemented.
+		Meta:    l.lowerMetadata(n),
 	})
 }
 
@@ -288,7 +380,7 @@ func (l *lowerer) lowerCommodity(n *syntax.Node) {
 		Span:     l.spanFromNode(n),
 		Date:     date,
 		Currency: currTok.Raw,
-		// TODO: populate Meta when metadata lowering is implemented.
+		Meta:     l.lowerMetadata(n),
 	})
 }
 
@@ -327,7 +419,7 @@ func (l *lowerer) lowerBalance(n *syntax.Node) {
 		Date:    date,
 		Account: acctTok.Raw,
 		Amount:  amt,
-		// TODO: populate Meta when metadata lowering is implemented.
+		Meta:    l.lowerMetadata(n),
 	}
 
 	// Optional tolerance (second AmountNode, after TILDE token).
@@ -480,6 +572,7 @@ func (l *lowerer) lowerPad(n *syntax.Node) {
 		Date:       date,
 		Account:    acctTokens[0].Raw,
 		PadAccount: acctTokens[1].Raw,
+		Meta:       l.lowerMetadata(n),
 	})
 }
 
@@ -510,6 +603,7 @@ func (l *lowerer) lowerNote(n *syntax.Node) {
 		Date:    date,
 		Account: acctTok.Raw,
 		Comment: unquoteString(strTokens[0]),
+		Meta:    l.lowerMetadata(n),
 	})
 }
 
@@ -540,6 +634,7 @@ func (l *lowerer) lowerDocument(n *syntax.Node) {
 		Date:    date,
 		Account: acctTok.Raw,
 		Path:    unquoteString(strTokens[0]),
+		Meta:    l.lowerMetadata(n),
 	})
 }
 
@@ -565,6 +660,7 @@ func (l *lowerer) lowerEvent(n *syntax.Node) {
 		Date:  date,
 		Name:  unquoteString(strTokens[0]),
 		Value: unquoteString(strTokens[1]),
+		Meta:  l.lowerMetadata(n),
 	})
 }
 
@@ -590,6 +686,7 @@ func (l *lowerer) lowerQuery(n *syntax.Node) {
 		Date: date,
 		Name: unquoteString(strTokens[0]),
 		BQL:  unquoteString(strTokens[1]),
+		Meta: l.lowerMetadata(n),
 	})
 }
 
@@ -624,7 +721,7 @@ func (l *lowerer) lowerPrice(n *syntax.Node) {
 		Date:      date,
 		Commodity: commodityTok.Raw,
 		Amount:    amt,
-		// TODO: populate Meta when metadata lowering is implemented.
+		Meta:      l.lowerMetadata(n),
 	})
 }
 
