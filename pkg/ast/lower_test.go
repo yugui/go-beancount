@@ -35,7 +35,6 @@ func TestLower_ValidDirectiveStubs(t *testing.T) {
 		input string
 	}{
 		{"custom", "2024-01-01 custom \"budget\" Assets:Bank 100 USD\n"},
-		{"transaction", "2024-01-01 * \"Payee\" \"Narration\"\n  Assets:Bank  100 USD\n  Expenses:Food\n"},
 	}
 	for _, tc := range inputs {
 		t.Run(tc.name, func(t *testing.T) {
@@ -659,5 +658,140 @@ func TestLower_MetadataEmpty(t *testing.T) {
 	}
 	if c.Meta.Props != nil {
 		t.Errorf("expected nil Props, got %v", c.Meta.Props)
+	}
+}
+
+func TestLower_Transaction(t *testing.T) {
+	src := "2024-01-01 * \"Grocery Store\" \"Weekly shopping\" #groceries ^receipt-123\n  Expenses:Food  50.00 USD\n  Assets:Bank\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if got := txn.Date.Format("2006-01-02"); got != "2024-01-01" {
+		t.Errorf("Date = %q, want %q", got, "2024-01-01")
+	}
+	if txn.Flag != '*' {
+		t.Errorf("Flag = %c, want *", txn.Flag)
+	}
+	if txn.Payee != "Grocery Store" {
+		t.Errorf("Payee = %q, want %q", txn.Payee, "Grocery Store")
+	}
+	if txn.Narration != "Weekly shopping" {
+		t.Errorf("Narration = %q, want %q", txn.Narration, "Weekly shopping")
+	}
+	if len(txn.Tags) != 1 || txn.Tags[0] != "groceries" {
+		t.Errorf("Tags = %v, want [groceries]", txn.Tags)
+	}
+	if len(txn.Links) != 1 || txn.Links[0] != "receipt-123" {
+		t.Errorf("Links = %v, want [receipt-123]", txn.Links)
+	}
+	if len(txn.Postings) != 2 {
+		t.Fatalf("Postings count = %d, want 2", len(txn.Postings))
+	}
+	if txn.Postings[0].Account != "Expenses:Food" {
+		t.Errorf("Posting[0].Account = %q, want %q", txn.Postings[0].Account, "Expenses:Food")
+	}
+	if txn.Postings[0].Amount == nil || txn.Postings[0].Amount.Number.String() != "50.00" {
+		t.Errorf("Posting[0].Amount = %v, want 50.00 USD", txn.Postings[0].Amount)
+	}
+	if txn.Postings[1].Account != "Assets:Bank" {
+		t.Errorf("Posting[1].Account = %q, want %q", txn.Postings[1].Account, "Assets:Bank")
+	}
+	if txn.Postings[1].Amount != nil {
+		t.Errorf("Posting[1].Amount = %v, want nil", txn.Postings[1].Amount)
+	}
+}
+
+func TestLower_TransactionNarrationOnly(t *testing.T) {
+	src := "2024-01-01 * \"Just narration\"\n  Assets:Bank  100 USD\n  Expenses:Food\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if txn.Payee != "" {
+		t.Errorf("Payee = %q, want empty", txn.Payee)
+	}
+	if txn.Narration != "Just narration" {
+		t.Errorf("Narration = %q, want %q", txn.Narration, "Just narration")
+	}
+}
+
+func TestLower_TransactionBangFlag(t *testing.T) {
+	src := "2024-01-01 ! \"Pending\"\n  Assets:Bank  100 USD\n  Expenses:Food\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if txn.Flag != '!' {
+		t.Errorf("Flag = %c, want !", txn.Flag)
+	}
+}
+
+func TestLower_TransactionTxnFlag(t *testing.T) {
+	src := "2024-01-01 txn \"Test\"\n  Assets:Bank  100 USD\n  Expenses:Food\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if txn.Flag != '*' {
+		t.Errorf("Flag = %c, want *", txn.Flag)
+	}
+}
+
+func TestLower_TransactionWithMetadata(t *testing.T) {
+	src := "2024-01-01 * \"Test\"\n  category: \"travel\"\n  Expenses:Food  100 USD\n  Assets:Bank\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if txn.Meta.Props == nil {
+		t.Fatal("expected non-nil Meta.Props")
+	}
+	val, ok := txn.Meta.Props["category"]
+	if !ok {
+		t.Fatal("expected metadata key 'category'")
+	}
+	if val.Kind != ast.MetaString || val.String != "travel" {
+		t.Errorf("Meta[category] = %v, want MetaString(\"travel\")", val)
 	}
 }

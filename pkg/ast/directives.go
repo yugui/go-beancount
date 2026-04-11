@@ -178,3 +178,19 @@ type Price struct {
 
 func (p *Price) directive()    {}
 func (p *Price) DirSpan() Span { return p.Span }
+
+// Transaction represents a transaction directive.
+type Transaction struct {
+	Span      Span
+	Date      time.Time
+	Flag      byte     // '*' or '!'
+	Payee     string   // empty if not specified
+	Narration string   // empty if not specified
+	Tags      []string // e.g., ["trip-2024"] (without # prefix)
+	Links     []string // e.g., ["invoice-123"] (without ^ prefix)
+	Postings  []Posting
+	Meta      Metadata
+}
+
+func (t *Transaction) directive()    {}
+func (t *Transaction) DirSpan() Span { return t.Span }
