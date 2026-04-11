@@ -1,0 +1,24 @@
+; Test: special characters in strings
+
+2024-01-01 note Assets:Bank "Line one
+line two
+line three"
+
+2024-01-02 note Assets:Bank "contains	a tab"
+
+2024-01-03 * "café résumé" "naïve"
+  Expenses:Food                            10.00 USD
+  Assets:Cash
+
+2024-01-04 event "location" "日本語テスト"
+
+2024-01-05 note Assets:Bank "path\\to\\file"
+
+2024-01-06 note Assets:Bank "say \"hello\""
+
+2024-01-07 note Assets:Bank "🎉 celebration"
+
+2024-01-08 * "Mixed: café
+with newline" "and 日本語"
+  Expenses:Food                            20.00 USD
+  Assets:Cash
