@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "printer",
+    srcs = ["printer.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/printer",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/formatopt",
+        "//pkg/ast",
+        "//pkg/format",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "printer_test",
+    srcs = ["printer_test.go"],
+    deps = [
+        ":printer",
+        "//pkg/ast",
+        "//pkg/format",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
