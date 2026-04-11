@@ -186,6 +186,51 @@ func TestFormatInterDirectiveComments(t *testing.T) {
 	}
 }
 
+func TestFormatHeadingsPreserved(t *testing.T) {
+	src := "* Section\n2024-01-01 open Assets:Cash\n"
+	got := Format(src)
+	if !strings.Contains(got, "* Section") {
+		t.Errorf("Format(%q) lost heading, got:\n%s", src, got)
+	}
+}
+
+func TestFormatInterDirectiveHeadings(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{
+			name: "heading between directives",
+			src:  "2024-01-01 open Assets:Cash\n* Section\n2024-01-02 open Expenses:Food\n",
+			want: "2024-01-01 open Assets:Cash\n\n* Section\n2024-01-02 open Expenses:Food\n",
+		},
+		{
+			name: "deeper heading between directives",
+			src:  "2024-01-01 open Assets:Cash\n** Subsection\n2024-01-02 open Expenses:Food\n",
+			want: "2024-01-01 open Assets:Cash\n\n** Subsection\n2024-01-02 open Expenses:Food\n",
+		},
+		{
+			name: "heading with surrounding blank lines",
+			src:  "2024-01-01 open Assets:Cash\n\n* Section\n\n2024-01-02 open Expenses:Food\n",
+			want: "2024-01-01 open Assets:Cash\n\n* Section\n2024-01-02 open Expenses:Food\n",
+		},
+		{
+			name: "heading and comment between directives",
+			src:  "2024-01-01 open Assets:Cash\n* Section\n; comment\n2024-01-02 open Expenses:Food\n",
+			want: "2024-01-01 open Assets:Cash\n\n* Section\n; comment\n2024-01-02 open Expenses:Food\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Format(tt.src)
+			if got != tt.want {
+				t.Errorf("Format():\ngot:  %q\nwant: %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatErrorNodesPassThrough(t *testing.T) {
 	src := "this is not valid beancount\n"
 	got := Format(src)

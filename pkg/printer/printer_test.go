@@ -487,7 +487,7 @@ func TestFileWithMultipleDirectives(t *testing.T) {
 			&ast.Close{Date: date("2024-12-31"), Account: "Assets:Bank"},
 		},
 	}
-	got := print(t, &f)
+	got := print(t, &f, format.WithInsertBlankLinesBetweenDirectives(true))
 	want := "" +
 		"option \"title\" \"Test\"\n" +
 		"\n" +
@@ -519,7 +519,7 @@ func TestLedger(t *testing.T) {
 			&ast.Open{Date: date("2024-01-01"), Account: "Assets:Cash"},
 		},
 	}
-	got := print(t, &l)
+	got := print(t, &l, format.WithInsertBlankLinesBetweenDirectives(true))
 	want := "" +
 		"option \"title\" \"Ledger\"\n" +
 		"\n" +
@@ -534,11 +534,27 @@ func TestDirectiveSlice(t *testing.T) {
 		&ast.Include{Path: "a.beancount"},
 		&ast.Include{Path: "b.beancount"},
 	}
-	got := print(t, dirs)
+	got := print(t, dirs, format.WithInsertBlankLinesBetweenDirectives(true))
 	want := "" +
 		"include \"a.beancount\"\n" +
 		"\n" +
 		"include \"b.beancount\"\n"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestDirectivesNoBlankLinesInsertedByDefault(t *testing.T) {
+	dirs := []ast.Directive{
+		&ast.Include{Path: "a.beancount"},
+		&ast.Include{Path: "b.beancount"},
+		&ast.Include{Path: "c.beancount"},
+	}
+	got := print(t, dirs)
+	want := "" +
+		"include \"a.beancount\"\n" +
+		"include \"b.beancount\"\n" +
+		"include \"c.beancount\"\n"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -722,7 +738,7 @@ func TestBlankLinesBetweenDirectives(t *testing.T) {
 		&ast.Include{Path: "a.beancount"},
 		&ast.Include{Path: "b.beancount"},
 	}
-	got := print(t, dirs, format.WithBlankLinesBetweenDirectives(2))
+	got := print(t, dirs, format.WithBlankLinesBetweenDirectives(2), format.WithInsertBlankLinesBetweenDirectives(true))
 	want := "" +
 		"include \"a.beancount\"\n" +
 		"\n" +

@@ -37,26 +37,35 @@ func (s *scanner) scan() Token {
 	return tok
 }
 
-// scanLeadingTrivia collects whitespace, comments, and newlines before a token.
+// scanLeadingTrivia collects whitespace, comments, newlines, and headings before a token.
 func (s *scanner) scanLeadingTrivia() []Trivia {
 	var trivia []Trivia
+	atLineStart := s.offset == 0
 	for s.offset < len(s.src) {
 		ch := s.src[s.offset]
 		switch {
 		case ch == ' ' || ch == '\t':
 			trivia = append(trivia, s.scanWhitespace())
+			atLineStart = false
 		case ch == '\n':
 			trivia = append(trivia, Trivia{Kind: NewlineTrivia, Raw: s.src[s.offset : s.offset+1]})
 			s.offset++
+			atLineStart = true
 		case ch == '\r' && s.offset+1 < len(s.src) && s.src[s.offset+1] == '\n':
 			trivia = append(trivia, Trivia{Kind: NewlineTrivia, Raw: s.src[s.offset : s.offset+2]})
 			s.offset += 2
+			atLineStart = true
 		case ch == '\r':
 			// bare \r treated as newline
 			trivia = append(trivia, Trivia{Kind: NewlineTrivia, Raw: s.src[s.offset : s.offset+1]})
 			s.offset++
+			atLineStart = true
 		case ch == ';':
 			trivia = append(trivia, s.scanComment())
+			atLineStart = false
+		case ch == '*' && atLineStart && s.isHeadingStart():
+			trivia = append(trivia, s.scanHeading())
+			atLineStart = false
 		default:
 			return trivia
 		}
@@ -105,6 +114,28 @@ func (s *scanner) scanComment() Trivia {
 		s.offset++
 	}
 	return Trivia{Kind: CommentTrivia, Raw: s.src[start:s.offset]}
+}
+
+// isHeadingStart reports whether the current position looks like the start of
+// an org-mode heading. The caller must have already verified that s.src[s.offset] == '*'
+// and that we are at column 0. A heading is '*' followed by another '*', a space,
+// a tab, or a newline (\n or \r).
+func (s *scanner) isHeadingStart() bool {
+	next := s.offset + 1
+	if next >= len(s.src) {
+		return false // bare '*' at EOF is not a heading
+	}
+	ch := s.src[next]
+	return ch == '*' || ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+}
+
+// scanHeading consumes an org-mode heading from '*' to end of line (not including the newline).
+func (s *scanner) scanHeading() Trivia {
+	start := s.offset
+	for s.offset < len(s.src) && s.src[s.offset] != '\n' && s.src[s.offset] != '\r' {
+		s.offset++
+	}
+	return Trivia{Kind: HeadingTrivia, Raw: s.src[start:s.offset]}
 }
 
 // scanToken scans and returns the next real token (not trivia).

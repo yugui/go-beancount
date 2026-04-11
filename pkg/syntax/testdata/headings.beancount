@@ -1,0 +1,9 @@
+* Heading
+** Deeper Heading
+*** Even deeper heading
+2026-04-11 * "transaction"
+  Assets:Foo 1 JPY
+  Income:Bar
+
+* Another heading
+2026-04-12 balance Assets:Foo 1000 JPY

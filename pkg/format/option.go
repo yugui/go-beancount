@@ -29,3 +29,11 @@ func WithIndentWidth(w int) Option {
 func WithBlankLinesBetweenDirectives(n int) Option {
 	return func(o *formatopt.Options) { o.BlankLinesBetweenDirectives = n }
 }
+
+// WithInsertBlankLinesBetweenDirectives controls whether blank lines are
+// actively inserted between directives. When false (the default), existing
+// blank lines are normalized but no new blank lines are created where none
+// exist. When true, blank lines are always ensured between directives.
+func WithInsertBlankLinesBetweenDirectives(v bool) Option {
+	return func(o *formatopt.Options) { o.InsertBlankLinesBetweenDirectives = v }
+}
