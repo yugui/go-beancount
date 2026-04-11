@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/cockroachdb/apd/v3"
@@ -118,19 +117,19 @@ func (p *printer) printDirective(d ast.Directive) {
 }
 
 func (p *printer) printOption(o *ast.Option) {
-	p.printf("option %s %s\n", strconv.Quote(o.Key), strconv.Quote(o.Value))
+	p.printf("option %s %s\n", beancountQuote(o.Key), beancountQuote(o.Value))
 }
 
 func (p *printer) printPlugin(pl *ast.Plugin) {
 	if pl.Config != "" {
-		p.printf("plugin %s %s\n", strconv.Quote(pl.Name), strconv.Quote(pl.Config))
+		p.printf("plugin %s %s\n", beancountQuote(pl.Name), beancountQuote(pl.Config))
 	} else {
-		p.printf("plugin %s\n", strconv.Quote(pl.Name))
+		p.printf("plugin %s\n", beancountQuote(pl.Name))
 	}
 }
 
 func (p *printer) printInclude(inc *ast.Include) {
-	p.printf("include %s\n", strconv.Quote(inc.Path))
+	p.printf("include %s\n", beancountQuote(inc.Path))
 }
 
 func (p *printer) indent() string {
@@ -147,7 +146,7 @@ func (p *printer) printOpen(o *ast.Open) {
 		p.printf(" %s", strings.Join(o.Currencies, ","))
 	}
 	if o.Booking != "" {
-		p.printf(" %s", strconv.Quote(o.Booking))
+		p.printf(" %s", beancountQuote(o.Booking))
 	}
 	p.write("\n")
 	p.printMetadata(o.Meta, p.indent())
@@ -178,22 +177,22 @@ func (p *printer) printPad(pd *ast.Pad) {
 }
 
 func (p *printer) printNote(n *ast.Note) {
-	p.printf("%s note %s %s\n", n.Date.Format("2006-01-02"), n.Account, strconv.Quote(n.Comment))
+	p.printf("%s note %s %s\n", n.Date.Format("2006-01-02"), n.Account, beancountQuote(n.Comment))
 	p.printMetadata(n.Meta, p.indent())
 }
 
 func (p *printer) printDocument(d *ast.Document) {
-	p.printf("%s document %s %s\n", d.Date.Format("2006-01-02"), d.Account, strconv.Quote(d.Path))
+	p.printf("%s document %s %s\n", d.Date.Format("2006-01-02"), d.Account, beancountQuote(d.Path))
 	p.printMetadata(d.Meta, p.indent())
 }
 
 func (p *printer) printEvent(e *ast.Event) {
-	p.printf("%s event %s %s\n", e.Date.Format("2006-01-02"), strconv.Quote(e.Name), strconv.Quote(e.Value))
+	p.printf("%s event %s %s\n", e.Date.Format("2006-01-02"), beancountQuote(e.Name), beancountQuote(e.Value))
 	p.printMetadata(e.Meta, p.indent())
 }
 
 func (p *printer) printQuery(q *ast.Query) {
-	p.printf("%s query %s %s\n", q.Date.Format("2006-01-02"), strconv.Quote(q.Name), strconv.Quote(q.BQL))
+	p.printf("%s query %s %s\n", q.Date.Format("2006-01-02"), beancountQuote(q.Name), beancountQuote(q.BQL))
 	p.printMetadata(q.Meta, p.indent())
 }
 
@@ -203,7 +202,7 @@ func (p *printer) printPrice(pr *ast.Price) {
 }
 
 func (p *printer) printCustom(c *ast.Custom) {
-	p.printf("%s custom %s", c.Date.Format("2006-01-02"), strconv.Quote(c.TypeName))
+	p.printf("%s custom %s", c.Date.Format("2006-01-02"), beancountQuote(c.TypeName))
 	for _, v := range c.Values {
 		p.printf(" %s", p.formatMetaValue(v))
 	}
@@ -214,9 +213,9 @@ func (p *printer) printCustom(c *ast.Custom) {
 func (p *printer) printTransaction(t *ast.Transaction) {
 	p.printf("%s %s", t.Date.Format("2006-01-02"), string(rune(t.Flag)))
 	if t.Payee != "" {
-		p.printf(" %s %s", strconv.Quote(t.Payee), strconv.Quote(t.Narration))
+		p.printf(" %s %s", beancountQuote(t.Payee), beancountQuote(t.Narration))
 	} else if t.Narration != "" {
-		p.printf(" %s", strconv.Quote(t.Narration))
+		p.printf(" %s", beancountQuote(t.Narration))
 	}
 	for _, tag := range t.Tags {
 		p.printf(" #%s", tag)
@@ -321,7 +320,7 @@ func (p *printer) formatCostSpec(cs ast.CostSpec) string {
 		parts = append(parts, cs.Date.Format("2006-01-02"))
 	}
 	if cs.Label != "" {
-		parts = append(parts, strconv.Quote(cs.Label))
+		parts = append(parts, beancountQuote(cs.Label))
 	}
 
 	return open + strings.Join(parts, ", ") + close
@@ -338,7 +337,7 @@ func (p *printer) formatPriceAnnotation(pa ast.PriceAnnotation) string {
 func (p *printer) formatMetaValue(v ast.MetaValue) string {
 	switch v.Kind {
 	case ast.MetaString:
-		return strconv.Quote(v.String)
+		return beancountQuote(v.String)
 	case ast.MetaAccount:
 		return v.String
 	case ast.MetaCurrency:
@@ -361,6 +360,29 @@ func (p *printer) formatMetaValue(v ast.MetaValue) string {
 	default:
 		return ""
 	}
+}
+
+// beancountQuote wraps s in double quotes, escaping only backslashes and
+// double quotes. Unlike strconv.Quote, it preserves literal newlines, tabs,
+// and all other characters as-is, matching beancount's string syntax.
+// The byte-by-byte loop is safe because the only escaped bytes (0x5C and 0x22)
+// never appear as continuation bytes in valid UTF-8.
+func beancountQuote(s string) string {
+	var b strings.Builder
+	b.Grow(len(s) + 2)
+	b.WriteByte('"')
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			b.WriteString(`\\`)
+		case '"':
+			b.WriteString(`\"`)
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 func (p *printer) printMetadata(meta ast.Metadata, indent string) {
