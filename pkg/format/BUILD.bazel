@@ -17,9 +17,18 @@ go_library(
 go_test(
     name = "format_test",
     srcs = [
+        "consistency_test.go",
+        "diff_test.go",
+        "format_integration_test.go",
         "format_test.go",
         "option_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":format"],
-    deps = ["//internal/formatopt"],
+    deps = [
+        "//internal/formatopt",
+        "//pkg/ast",
+        "//pkg/printer",
+        "//pkg/syntax",
+    ],
 )

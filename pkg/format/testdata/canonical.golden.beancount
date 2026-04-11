@@ -1,0 +1,113 @@
+; Header comment: canonical beancount file
+; This file is already in canonical format.
+
+option "title" "Canonical Test Ledger"
+
+option "operating_currency" "USD"
+
+plugin "beancount.plugins.auto_accounts"
+
+plugin "beancount.plugins.check_commodity" "strict"
+
+include "other.beancount"
+
+pushtag #year-2024
+
+poptag #year-2024
+
+2024-01-01 open Assets:Bank:Checking USD,EUR "STRICT"
+  institution: "Bank of America"
+
+2024-01-01 open Assets:Investments HOOL
+
+2024-01-01 open Expenses:Food
+
+2024-01-01 open Expenses:食費
+
+2024-01-01 open Income:Salary
+
+2024-01-01 open Equity:Opening-Balances
+
+2024-12-31 close Assets:Bank:Checking
+
+2024-01-01 commodity HOOL
+  asset-class: "equity"
+  name: "Hooli Inc."
+
+2024-01-01 commodity USD
+
+2024-01-15 * "Grocery Store" "Weekly groceries" #food ^receipt-001
+  Expenses:Food                            50.00 USD
+  Assets:Bank:Checking                    -50.00 USD
+
+2024-01-20 ! "Pending Transaction"
+  Expenses:Transport                       25.00 USD
+  Assets:Bank:Checking
+
+2024-02-01 * "Broker" "Buy stocks" #investing
+  Assets:Investments                         10 HOOL {150.00 USD, 2024-02-01, "lot1"}
+  Assets:Bank:Checking                  -1500.00 USD
+
+2024-03-01 * "Broker" "Sell stocks"
+  Assets:Investments                         -5 HOOL {150.00 USD, 2024-02-01, "lot1"} @ 175.00 USD
+  Assets:Bank:Checking                    875.00 USD
+  Income:Gains                           -125.00 USD
+
+2024-04-01 * "Currency exchange"
+  Assets:Bank:Checking                  -1000.00 USD @@ 920.00 EUR
+  Assets:Bank:Checking                    920.00 EUR
+
+2024-05-01 *
+  Assets:Investments                          5 HOOL {{750.00 USD}}
+  Assets:Bank:Checking
+
+2024-07-01 * "Detailed purchase"
+  ref: "invoice-2024-07-001"
+  Expenses:Food                            42.00 USD
+    receipt: "/receipts/2024-07-01.pdf"
+  Assets:Bank:Checking
+
+2024-08-01 * "Mixed flags"
+  ! Expenses:Food                          30.00 USD
+  * Assets:Bank:Checking                  -30.00 USD
+
+2024-09-01 * "スーパー" "食料品の買い物"
+  Expenses:食費                             1500 JPY
+  Assets:Bank:Checking
+
+; Japanese metadata values and multiple CJK accounts
+2024-09-15 * "東京マーケット" "日用品の購入"
+  store: "東京マーケット"
+  Expenses:日用品                           3200 JPY
+    category: "日用品"
+  Assets:現金
+
+2024-10-01 * "居酒屋やまと" "忘年会"
+  Expenses:交際費                          15000 JPY
+  Assets:銀行:三菱UFJ
+
+2024-10-15 note Assets:銀行:三菱UFJ "口座を確認した"
+
+2024-01-31 balance Assets:Bank:Checking 5000.00 USD
+
+2024-02-28 balance Assets:Bank:Checking 3500.00 USD ~ 0.01 USD
+
+2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances
+
+2024-01-01 note Assets:Bank:Checking "Account opened"
+
+2024-01-15 document Assets:Bank:Checking "/statements/2024-01.pdf"
+
+2024-07-09 price HOOL 175.00 USD
+
+2024-08-09 price HOOL 180.50 USD
+
+2024-01-01 event "location" "San Francisco"
+
+2024-06-01 event "location" "New York"
+
+2024-12-31 query "net-worth" "SELECT account, sum(position) GROUP BY account"
+
+2024-01-01 custom "budget" Expenses:Food 500.00 USD
+
+2024-01-01 custom "flag" "test-value" TRUE 2024-01-01

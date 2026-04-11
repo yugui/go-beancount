@@ -1,0 +1,45 @@
+option "title" "Messy Ledger"
+
+option "operating_currency" "USD"
+
+plugin "beancount.plugins.auto_accounts"
+
+2024-01-01 open Assets:Bank:Checking USD
+
+2024-01-01 open Expenses:Food
+
+2024-01-01 open Expenses:Transport
+
+2024-01-01 open Income:Salary
+
+2024-12-31 close Assets:Bank:Checking
+
+2024-01-15 * "Store" "Groceries"
+  Expenses:Food                            50.00 USD
+  Assets:Bank:Checking                    -50.00 USD
+
+2024-01-20 ! "Pending"
+  Expenses:Transport                       25.00 USD
+  Assets:Bank:Checking
+
+2024-02-01 * "Big purchase"
+  Expenses:Food                     1234567.89 USD
+  Assets:Bank:Checking
+
+2024-03-01 * "Detailed"
+  ref: "inv-001"
+  Expenses:Food                            42.00 USD
+    receipt: "/receipt.pdf"
+  Assets:Bank:Checking
+
+2024-04-01 * "東京スーパー" "野菜と果物"
+  store: "東京スーパー"
+  Expenses:食費                             1500 JPY
+    category: "食料品"
+  Assets:現金
+
+2024-05-01 * "居酒屋" "飲み会"
+  Expenses:交際費                           8000 JPY
+  Assets:銀行:三菱UFJ
+
+2024-06-01 note Assets:銀行:三菱UFJ "口座の残高を確認"
