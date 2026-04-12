@@ -111,13 +111,13 @@ func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 	}
 }
 
-// txnTolerance derives the residual tolerance for a transaction from the
-// maximum precision among non-auto postings contributing to each currency.
-// The tolerance is the max over all residual currencies of half the
+// txnTolerance derives per-currency residual tolerances for a transaction
+// from the maximum precision among non-auto postings contributing to each
+// currency. For each residual currency, the tolerance is half the
 // least-significant digit of any posting that contributes to that currency.
-// If no postings contribute to a currency, the tolerance for that currency
-// falls back to the inferTolerance of the currency's residual decimal.
-func txnTolerance(d *ast.Transaction, residualCurrencies []string) *apd.Decimal {
+// If no postings contribute to a currency (e.g. it arose from a price
+// conversion), the tolerance for that currency is zero.
+func txnTolerance(d *ast.Transaction, residualCurrencies []string) map[string]*apd.Decimal {
 	// Per-currency max precision means the smallest (most negative)
 	// exponent among posting amounts in that currency. We track the
 	// minimum exponent observed.
@@ -134,22 +134,15 @@ func txnTolerance(d *ast.Transaction, residualCurrencies []string) *apd.Decimal 
 		}
 	}
 
-	var best *apd.Decimal
+	out := make(map[string]*apd.Decimal, len(residualCurrencies))
 	for _, cur := range residualCurrencies {
-		var tol *apd.Decimal
 		if e, ok := minExpPerCurrency[cur]; ok {
-			tol = toleranceForExponent(e)
+			out[cur] = toleranceForExponent(e)
 		} else {
-			// No posting contributed directly to this currency (e.g. it
-			// arose from a price conversion). Use zero tolerance.
-			tol = new(apd.Decimal)
+			out[cur] = new(apd.Decimal)
 		}
-		best = maxTolerance(best, tol)
 	}
-	if best == nil {
-		return new(apd.Decimal)
-	}
-	return best
+	return out
 }
 
 // checkBalance verifies that the postings of the transaction sum to zero per
@@ -211,12 +204,12 @@ func (c *checker) checkBalance(d *ast.Transaction) {
 	}
 
 	nonZero := sums.nonZeroCurrencies()
-	tolerance := txnTolerance(d, nonZero)
+	tolerances := txnTolerance(d, nonZero)
 
 	// Filter nonZero down to currencies whose residual exceeds the tolerance.
 	residual := make([]string, 0, len(nonZero))
 	for _, cur := range nonZero {
-		within, err := withinTolerance(sums[cur], tolerance)
+		within, err := withinTolerance(sums[cur], tolerances[cur])
 		if err != nil {
 			c.emit(Error{
 				Code:    CodeUnbalancedTransaction,
