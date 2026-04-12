@@ -30,22 +30,23 @@ func (c *checker) apply(account, currency string, delta *apd.Decimal) error {
 	return err
 }
 
-// toleranceForExponent returns half the unit at the given decimal exponent,
-// i.e. a decimal with coefficient 5 and exponent e-1. For e=-2 this yields
-// 0.005; for e=0 it yields 0.5.
-func toleranceForExponent(e int32) *apd.Decimal {
-	tol := new(apd.Decimal)
-	tol.Coeff.SetInt64(5)
-	tol.Exponent = e - 1
-	return tol
+// toleranceForExponent returns the inferred tolerance for a value whose
+// least-significant digit sits at exponent e. The result is
+// `inferred_tolerance_multiplier × 10^e`; at the default multiplier 0.5
+// this yields 0.005 for e=-2 and 0.5 for e=0.
+func (c *checker) toleranceForExponent(e int32) *apd.Decimal {
+	mult := c.options.Decimal("inferred_tolerance_multiplier")
+	out := new(apd.Decimal)
+	out.Set(mult)
+	out.Exponent += e
+	return out
 }
 
-// inferTolerance returns the default Beancount tolerance for an amount: half
-// the precision of the amount's least-significant digit. For example, an
-// amount written as "100.00" (exponent -2) yields 0.005, while an integer
-// amount "100" (exponent 0) yields 0.5.
-func inferTolerance(amount ast.Amount) *apd.Decimal {
-	return toleranceForExponent(amount.Number.Exponent)
+// inferTolerance returns the default Beancount tolerance for an amount based
+// on the precision of its least-significant digit and the ledger's
+// configured inferred_tolerance_multiplier.
+func (c *checker) inferTolerance(amount ast.Amount) *apd.Decimal {
+	return c.toleranceForExponent(amount.Number.Exponent)
 }
 
 // maxTolerance returns the larger of a and b. Both are assumed to be
@@ -126,7 +127,7 @@ func (c *checker) visitBalance(d *ast.Balance) {
 			return
 		}
 	} else {
-		tolerance = inferTolerance(d.Amount)
+		tolerance = c.inferTolerance(d.Amount)
 	}
 
 	ok, err := withinTolerance(diff, tolerance)

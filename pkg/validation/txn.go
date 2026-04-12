@@ -117,7 +117,7 @@ func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 // least-significant digit of any posting that contributes to that currency.
 // If no postings contribute to a currency (e.g. it arose from a price
 // conversion), the tolerance for that currency is zero.
-func txnTolerance(d *ast.Transaction, residualCurrencies []string) map[string]*apd.Decimal {
+func (c *checker) txnTolerance(d *ast.Transaction, residualCurrencies []string) map[string]*apd.Decimal {
 	// Per-currency max precision means the smallest (most negative)
 	// exponent among posting amounts in that currency. We track the
 	// minimum exponent observed.
@@ -137,7 +137,7 @@ func txnTolerance(d *ast.Transaction, residualCurrencies []string) map[string]*a
 	out := make(map[string]*apd.Decimal, len(residualCurrencies))
 	for _, cur := range residualCurrencies {
 		if e, ok := minExpPerCurrency[cur]; ok {
-			out[cur] = toleranceForExponent(e)
+			out[cur] = c.toleranceForExponent(e)
 		} else {
 			out[cur] = new(apd.Decimal)
 		}
@@ -204,7 +204,7 @@ func (c *checker) checkBalance(d *ast.Transaction) {
 	}
 
 	nonZero := sums.nonZeroCurrencies()
-	tolerances := txnTolerance(d, nonZero)
+	tolerances := c.txnTolerance(d, nonZero)
 
 	// Filter nonZero down to currencies whose residual exceeds the tolerance.
 	residual := make([]string, 0, len(nonZero))

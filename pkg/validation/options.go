@@ -182,6 +182,14 @@ func newDefaultOptionRegistry() *optionRegistry {
 		parse:        parseCurrencyListItem,
 		defaultValue: []string(nil),
 	})
+	// inferred_tolerance_multiplier: decimal, default 0.5. Multiplies the
+	// per-exponent unit when inferring tolerance from an amount's precision.
+	r.register(optionSpec{
+		key:          "inferred_tolerance_multiplier",
+		kind:         optionKindDecimal,
+		parse:        parseDecimalOption,
+		defaultValue: apd.New(5, -1),
+	})
 	return r
 }
 
