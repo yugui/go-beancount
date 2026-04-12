@@ -108,20 +108,10 @@ func (c *checker) visitQuery(*ast.Query) {}
 func (c *checker) visitPrice(*ast.Price) {}
 
 // visitTransaction verifies every posting's account is open on the
-// transaction date and that any specified currency is allowed.
+// transaction date, that any specified currency is allowed, and that the
+// postings balance per currency (with at most one auto-computed posting).
 func (c *checker) visitTransaction(d *ast.Transaction) {
-	for i := range d.Postings {
-		p := &d.Postings[i]
-		span := p.Span
-		if span == (ast.Span{}) {
-			span = d.Span
-		}
-		currency := ""
-		if p.Amount != nil {
-			currency = p.Amount.Currency
-		}
-		c.requireOpen(p.Account, d.Date, span, currency)
-	}
+	c.checkBalance(d)
 }
 
 // visitCustom is a stub; custom assertions are not evaluated here.
