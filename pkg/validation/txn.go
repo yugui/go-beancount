@@ -117,7 +117,13 @@ func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 // least-significant digit of any posting that contributes to that currency.
 // If no postings contribute to a currency (e.g. it arose from a price
 // conversion), the tolerance for that currency is zero.
-func (c *checker) txnTolerance(d *ast.Transaction, residualCurrencies []string) map[string]*apd.Decimal {
+//
+// When the ledger option `infer_tolerance_from_cost` is enabled, postings
+// with an explicit cost spec additionally contribute a tolerance to their
+// cost currency equal to |units| * (multiplier * 10^costExp). Per-currency
+// the largest such contribution is combined with the units-based tolerance
+// via maxTolerance.
+func (c *checker) txnTolerance(d *ast.Transaction, residualCurrencies []string) (map[string]*apd.Decimal, error) {
 	// Per-currency max precision means the smallest (most negative)
 	// exponent among posting amounts in that currency. We track the
 	// minimum exponent observed.
@@ -134,15 +140,54 @@ func (c *checker) txnTolerance(d *ast.Transaction, residualCurrencies []string) 
 		}
 	}
 
-	out := make(map[string]*apd.Decimal, len(residualCurrencies))
+	unitsTol := make(map[string]*apd.Decimal, len(residualCurrencies))
 	for _, cur := range residualCurrencies {
 		if e, ok := minExpPerCurrency[cur]; ok {
-			out[cur] = c.toleranceForExponent(e)
+			unitsTol[cur] = c.toleranceForExponent(e)
 		} else {
+			unitsTol[cur] = new(apd.Decimal)
+		}
+	}
+
+	if !c.options.Bool("infer_tolerance_from_cost") {
+		return unitsTol, nil
+	}
+
+	// Second scan: per-posting cost-based contributions.
+	costTol := make(map[string]*apd.Decimal)
+	for i := range d.Postings {
+		p := &d.Postings[i]
+		if p.Amount == nil || p.Cost == nil || p.Cost.Amount == nil {
+			continue
+		}
+		costCur := p.Cost.Amount.Currency
+		costExp := p.Cost.Amount.Number.Exponent
+		perUnitCostTol := c.toleranceForExponent(costExp)
+
+		absUnits := new(apd.Decimal)
+		unitsNum := p.Amount.Number
+		if _, err := apd.BaseContext.Abs(absUnits, &unitsNum); err != nil {
+			return nil, fmt.Errorf("abs units: %w", err)
+		}
+
+		contribution := new(apd.Decimal)
+		if _, err := apd.BaseContext.Mul(contribution, absUnits, perUnitCostTol); err != nil {
+			return nil, fmt.Errorf("mul cost tolerance: %w", err)
+		}
+
+		if existing, ok := costTol[costCur]; !ok || contribution.Cmp(existing) > 0 {
+			costTol[costCur] = contribution
+		}
+	}
+
+	out := make(map[string]*apd.Decimal, len(residualCurrencies))
+	for _, cur := range residualCurrencies {
+		out[cur] = maxTolerance(unitsTol[cur], costTol[cur])
+		if out[cur] == nil {
 			out[cur] = new(apd.Decimal)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // checkBalance verifies that the postings of the transaction sum to zero per
@@ -204,7 +249,15 @@ func (c *checker) checkBalance(d *ast.Transaction) {
 	}
 
 	nonZero := sums.nonZeroCurrencies()
-	tolerances := c.txnTolerance(d, nonZero)
+	tolerances, err := c.txnTolerance(d, nonZero)
+	if err != nil {
+		c.emit(Error{
+			Code:    CodeInternalError,
+			Span:    d.Span,
+			Message: fmt.Sprintf("failed to derive transaction tolerance: %v", err),
+		})
+		return
+	}
 
 	// Filter nonZero down to currencies whose residual exceeds the tolerance.
 	residual := make([]string, 0, len(nonZero))
