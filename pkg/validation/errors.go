@@ -35,6 +35,8 @@ const (
 	// arithmetic error from the underlying decimal context. These are not
 	// user-facing ledger problems but signal a bug or pathological input.
 	CodeInternalError
+	// CodeInvalidOption indicates a malformed value for a known option key.
+	CodeInvalidOption
 )
 
 // Error is a validation error found in a ledger.

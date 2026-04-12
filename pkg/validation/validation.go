@@ -1,6 +1,7 @@
 package validation
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/cockroachdb/apd/v3"
@@ -19,6 +20,7 @@ type checker struct {
 	accounts    map[string]*accountState
 	balances    map[balanceKey]*apd.Decimal
 	pendingPads map[string]*pendingPad
+	options     *optionValues
 	errors      []Error
 }
 
@@ -29,6 +31,7 @@ func newChecker(ledger *ast.Ledger) *checker {
 		accounts:    make(map[string]*accountState),
 		balances:    make(map[balanceKey]*apd.Decimal),
 		pendingPads: make(map[string]*pendingPad),
+		options:     newOptionValues(defaultOptionRegistry),
 	}
 }
 
@@ -42,6 +45,7 @@ func (c *checker) run() []Error {
 	if c.ledger == nil {
 		return nil
 	}
+	c.collectOptions()
 	ordered := orderDirectives(c.ledger)
 	for _, od := range ordered {
 		switch d := od.dir.(type) {
@@ -133,8 +137,28 @@ func (c *checker) visitCustom(d *ast.Custom) {
 	}
 }
 
-// visitOption is a stub; options are processed elsewhere.
+// visitOption is a no-op; option directives are consumed by the
+// collectOptions pre-pass before directive walking begins.
 func (c *checker) visitOption(*ast.Option) {}
+
+// collectOptions runs before the main directive walk, scanning the ledger
+// for option directives and feeding their values into c.options. Unknown
+// keys are silently ignored; parse errors emit CodeInvalidOption.
+func (c *checker) collectOptions() {
+	for _, d := range c.ledger.Directives {
+		opt, ok := d.(*ast.Option)
+		if !ok {
+			continue
+		}
+		if err := c.options.set(opt.Key, opt.Value); err != nil {
+			c.emit(Error{
+				Code:    CodeInvalidOption,
+				Span:    opt.Span,
+				Message: fmt.Sprintf("invalid option %q: %v", opt.Key, err),
+			})
+		}
+	}
+}
 
 // visitPlugin is a stub; plugins are not executed by the validator.
 func (c *checker) visitPlugin(*ast.Plugin) {}
