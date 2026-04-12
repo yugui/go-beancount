@@ -1,0 +1,27 @@
+; bad_ledger.beancount — contains multiple distinct validation errors.
+
+2024-01-01 open Assets:Cash   USD
+2024-01-01 open Assets:Bank   USD
+2024-01-01 open Expenses:Food USD
+2024-01-01 open Income:Salary USD
+
+; Duplicate open of Assets:Cash.
+2024-01-02 open Assets:Cash   USD
+
+; Use-before-open: Assets:Brokerage is never opened.
+2024-02-01 * "Mystery broker"
+  Assets:Brokerage    100.00 USD
+  Assets:Bank        -100.00 USD
+
+; Unbalanced transaction: postings do not sum to zero.
+2024-03-01 * "Typo in amount"
+  Expenses:Food        10.00 USD
+  Assets:Cash          -5.00 USD
+
+; Currency not allowed for the account (Assets:Cash is USD-only).
+2024-04-01 * "Wrong currency"
+  Assets:Cash          10.00 EUR
+  Income:Salary       -10.00 EUR
+
+; Balance mismatch: running balance of Assets:Bank is -100 USD, not 999.
+2024-05-01 balance Assets:Bank   999.00 USD

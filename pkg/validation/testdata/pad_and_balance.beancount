@@ -1,0 +1,18 @@
+; pad_and_balance.beancount — pad followed by balance with a mid-period
+; transaction. The pad should fill exactly the amount needed so that the
+; balance assertion on 2024-03-01 matches.
+
+2024-01-01 open Assets:Bank               USD
+2024-01-01 open Income:Salary             USD
+2024-01-01 open Equity:Opening-Balances
+
+; On 2024-01-02 pad Assets:Bank from Equity:Opening-Balances.
+2024-01-02 pad Assets:Bank Equity:Opening-Balances
+
+; Mid-period transaction adds 200 USD to Assets:Bank.
+2024-02-10 * "Paycheck"
+  Assets:Bank          200.00 USD
+  Income:Salary       -200.00 USD
+
+; Balance assertion: pad must fill 800 so running balance = 1000.
+2024-03-01 balance Assets:Bank           1000.00 USD
