@@ -8,6 +8,7 @@ go_library(
         "custom.go",
         "doc.go",
         "errors.go",
+        "options.go",
         "order.go",
         "pad.go",
         "txn.go",
@@ -28,9 +29,11 @@ go_test(
         "balance_test.go",
         "custom_test.go",
         "integration_test.go",
+        "options_test.go",
         "order_test.go",
         "pad_test.go",
         "txn_test.go",
+        "validation_options_test.go",
         "validation_test.go",
     ],
     data = glob(["testdata/**"]),
@@ -38,5 +41,6 @@ go_test(
     deps = [
         "//pkg/ast",
         "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
     ],
 )
