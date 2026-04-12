@@ -137,6 +137,50 @@ func TestBalancedWithTotalPriceAnnotation(t *testing.T) {
 	}
 }
 
+func TestUnbalancedMixedCurrencyPerCurrencyTolerance(t *testing.T) {
+	dirs := openAccounts(t, "2024-01-01", "Assets:A", "Assets:B")
+	td := parseDay(t, "2024-02-01")
+	jpyPos := amt(10, "JPY")
+	jpyNeg := amt(-10, "JPY")
+	usdPos := amtStr(t, "100.00", "USD")
+	usdNeg := amtStr(t, "-99.60", "USD")
+	txn := &ast.Transaction{
+		Date: td,
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:A", Amount: &jpyPos},
+			{Account: "Assets:B", Amount: &jpyNeg},
+			{Account: "Assets:A", Amount: &usdPos},
+			{Account: "Assets:B", Amount: &usdNeg},
+		},
+	}
+	errs := Check(ledgerOf(append(dirs, txn)...))
+	wantCodes(t, errs, CodeUnbalancedTransaction)
+}
+
+func TestBalancedMixedCurrencies(t *testing.T) {
+	dirs := openAccounts(t, "2024-01-01", "Assets:A", "Assets:B")
+	td := parseDay(t, "2024-02-01")
+	jpyPos := amt(10, "JPY")
+	jpyNeg := amt(-10, "JPY")
+	usdPos := amtStr(t, "100.00", "USD")
+	usdNeg := amtStr(t, "-100.00", "USD")
+	txn := &ast.Transaction{
+		Date: td,
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:A", Amount: &jpyPos},
+			{Account: "Assets:B", Amount: &jpyNeg},
+			{Account: "Assets:A", Amount: &usdPos},
+			{Account: "Assets:B", Amount: &usdNeg},
+		},
+	}
+	errs := Check(ledgerOf(append(dirs, txn)...))
+	if len(errs) != 0 {
+		t.Fatalf("balanced mixed-currency txn: got %v, want no errors", errs)
+	}
+}
+
 func TestUnbalancedMultiCurrencyAutoPosting(t *testing.T) {
 	dirs := openAccounts(t, "2024-01-01", "Assets:Cash", "Assets:EurCash", "Expenses:Food")
 	td := parseDay(t, "2024-02-01")
