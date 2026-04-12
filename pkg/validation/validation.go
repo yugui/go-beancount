@@ -14,18 +14,20 @@ func Check(ledger *ast.Ledger) []Error {
 
 // checker holds the state for a single validation pass.
 type checker struct {
-	ledger   *ast.Ledger
-	accounts map[string]*accountState
-	balances map[balanceKey]*apd.Decimal
-	errors   []Error
+	ledger      *ast.Ledger
+	accounts    map[string]*accountState
+	balances    map[balanceKey]*apd.Decimal
+	pendingPads map[string]*pendingPad
+	errors      []Error
 }
 
 // newChecker constructs a checker for the given ledger.
 func newChecker(ledger *ast.Ledger) *checker {
 	return &checker{
-		ledger:   ledger,
-		accounts: make(map[string]*accountState),
-		balances: make(map[balanceKey]*apd.Decimal),
+		ledger:      ledger,
+		accounts:    make(map[string]*accountState),
+		balances:    make(map[balanceKey]*apd.Decimal),
+		pendingPads: make(map[string]*pendingPad),
 	}
 }
 
@@ -74,18 +76,12 @@ func (c *checker) run() []Error {
 			c.visitInclude(d)
 		}
 	}
+	c.reportUnresolvedPads()
 	return c.errors
 }
 
 // visitCommodity is a stub; commodity directives have no cross-directive checks yet.
 func (c *checker) visitCommodity(*ast.Commodity) {}
-
-// visitPad verifies that both the target and source accounts are open on the
-// pad date. The actual padding is resolved in a later step.
-func (c *checker) visitPad(d *ast.Pad) {
-	c.requireOpen(d.Account, d.Date, d.Span, "")
-	c.requireOpen(d.PadAccount, d.Date, d.Span, "")
-}
 
 // visitNote verifies the referenced account is open on the note date.
 func (c *checker) visitNote(d *ast.Note) {
