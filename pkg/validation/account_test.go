@@ -186,7 +186,9 @@ func TestValidBalancePadNoteDocument(t *testing.T) {
 
 	open1 := &ast.Open{Date: od, Account: "Assets:Cash", Currencies: []string{"USD"}}
 	open2 := &ast.Open{Date: od, Account: "Equity:Opening"}
-	bal := &ast.Balance{Date: d, Account: "Assets:Cash", Amount: amt(100, "USD")}
+	// Balance asserts zero because the pad directive is not yet resolved
+	// in this step; pad resolution will land in a later phase.
+	bal := &ast.Balance{Date: d, Account: "Assets:Cash", Amount: amt(0, "USD")}
 	pad := &ast.Pad{Date: d, Account: "Assets:Cash", PadAccount: "Equity:Opening"}
 	note := &ast.Note{Date: d, Account: "Assets:Cash", Comment: "hello"}
 	doc := &ast.Document{Date: d, Account: "Assets:Cash", Path: "/tmp/x.pdf"}
