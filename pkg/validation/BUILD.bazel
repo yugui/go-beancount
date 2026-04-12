@@ -6,11 +6,15 @@ go_library(
         "account.go",
         "errors.go",
         "order.go",
+        "txn.go",
         "validation.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/validation",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/ast"],
+    deps = [
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
 )
 
 go_test(
@@ -18,6 +22,7 @@ go_test(
     srcs = [
         "account_test.go",
         "order_test.go",
+        "txn_test.go",
         "validation_test.go",
     ],
     embed = [":validation"],
