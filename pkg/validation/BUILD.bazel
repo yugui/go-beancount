@@ -4,6 +4,7 @@ go_library(
     name = "validation",
     srcs = [
         "errors.go",
+        "order.go",
         "validation.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/validation",
@@ -13,7 +14,10 @@ go_library(
 
 go_test(
     name = "validation_test",
-    srcs = ["validation_test.go"],
+    srcs = [
+        "order_test.go",
+        "validation_test.go",
+    ],
     embed = [":validation"],
     deps = ["//pkg/ast"],
 )
