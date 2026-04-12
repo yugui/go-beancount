@@ -109,8 +109,18 @@ func (c *checker) visitTransaction(d *ast.Transaction) {
 	c.checkBalance(d)
 }
 
-// visitCustom is a stub; custom assertions are not evaluated here.
-func (c *checker) visitCustom(*ast.Custom) {}
+// visitCustom dispatches the custom directive to the registered handler, if
+// any. Unknown custom types are silently ignored for forward compatibility.
+func (c *checker) visitCustom(d *ast.Custom) {
+	handler, ok := customAssertions[d.TypeName]
+	if !ok {
+		return
+	}
+	state := &State{c: c}
+	for _, e := range handler.Evaluate(state, d) {
+		c.emit(e)
+	}
+}
 
 // visitOption is a stub; options are processed elsewhere.
 func (c *checker) visitOption(*ast.Option) {}
