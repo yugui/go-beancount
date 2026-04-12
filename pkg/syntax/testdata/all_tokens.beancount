@@ -15,7 +15,7 @@ poptag #trip-2024
 2024-01-01 note Assets:Bank:Checking "Opened new account"
 2024-01-01 document Assets:Bank:Checking "/path/to/statement.pdf"
 2024-01-01 pad Assets:Bank:Checking Equity:Opening-Balances
-2024-01-01 balance Assets:Bank:Checking 1,000.00 USD ~ 0.01 USD
+2024-01-01 balance Assets:Bank:Checking 1,000.00 ~ 0.01 USD
 2024-01-01 custom "budget" Assets:Bank:Checking 500.00 USD
 
 2024-01-15 * "Payee" "Narration" #tag1 #tag2 ^link1

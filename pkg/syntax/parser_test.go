@@ -1,6 +1,7 @@
 package syntax
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -605,32 +606,78 @@ func TestParseBalance(t *testing.T) {
 	assertTokenChild(t, node.Children[0], DATE, "2024-01-31")
 	assertTokenChild(t, node.Children[1], IDENT, "balance")
 	assertTokenChild(t, node.Children[2], ACCOUNT, "Assets:Bank:Checking")
-	// Children[3] should be AmountNode
-	if node.Children[3].Node == nil || node.Children[3].Node.Kind != AmountNode {
-		t.Fatal("expected AmountNode as 4th child")
+	// Children[3] should be BalanceAmountNode
+	if node.Children[3].Node == nil || node.Children[3].Node.Kind != BalanceAmountNode {
+		t.Fatal("expected BalanceAmountNode as 4th child")
 	}
 	assertRoundTrip(t, src, f)
 }
 
 func TestParseBalanceWithTolerance(t *testing.T) {
-	src := `2024-01-31 balance Assets:Bank:Checking 1000.00 USD ~ 0.01 USD`
+	// Official Beancount example: currency appears once at the end and
+	// applies to both the main amount and the tolerance number.
+	src := `2013-09-20 balance Assets:Investing:Funds 319.020 ~ 0.002 RGAGX`
 	f := Parse(src)
 	assertNoErrors(t, f)
 	node := f.Root.FindNode(BalanceDirective)
 	if node == nil {
 		t.Fatalf("Parse(%q): expected BalanceDirective", src)
 	}
-	// Should have: DATE, IDENT, ACCOUNT, AmountNode, TILDE, AmountNode
-	found := false
-	for _, c := range node.Children {
-		if c.Token != nil && c.Token.Kind == TILDE {
-			found = true
-		}
+	body := node.FindNode(BalanceAmountNode)
+	if body == nil {
+		t.Fatalf("Parse(%q): expected BalanceAmountNode", src)
 	}
-	if !found {
-		t.Fatalf("Parse(%q): expected TILDE token in balance with tolerance", src)
+	exprs := body.FindAllNodes(ArithExprNode)
+	if len(exprs) != 2 {
+		t.Fatalf("Parse(%q): got %d ArithExprNode children, want 2", src, len(exprs))
+	}
+	if body.FindToken(TILDE) == nil {
+		t.Fatalf("Parse(%q): expected TILDE token in balance body", src)
+	}
+	cur := body.FindToken(CURRENCY)
+	if cur == nil || cur.Raw != "RGAGX" {
+		t.Fatalf("Parse(%q): expected trailing CURRENCY=RGAGX", src)
 	}
 	assertRoundTrip(t, src, f)
+}
+
+// TestParseBalanceRedundantCurrencyRejected ensures that the old
+// non-standard syntax `Number Currency ~ Number Currency` is rejected as
+// a hard parse error. The balance directive body still parses (so the
+// balance node is present and we don't crash), but f.Errors must contain
+// a diagnostic flagging the stray tokens after the currency.
+func TestParseBalanceRedundantCurrencyRejected(t *testing.T) {
+	src := `2024-01-31 balance Assets:Bank 1000.00 USD ~ 0.01 USD`
+	f := Parse(src)
+	bal := f.Root.FindNode(BalanceDirective)
+	if bal == nil {
+		t.Fatalf("Parse(%q): expected BalanceDirective", src)
+	}
+	body := bal.FindNode(BalanceAmountNode)
+	if body == nil {
+		t.Fatalf("Parse(%q): expected BalanceAmountNode", src)
+	}
+	// Canonical body form: exactly one ArithExprNode (no tolerance).
+	// The stray tokens after the currency are captured as trailing
+	// tokens on the body for trivia preservation, but they do not form
+	// a tolerance branch.
+	if len(body.FindAllNodes(ArithExprNode)) != 1 {
+		t.Fatalf("Parse(%q): expected exactly one expression inside balance body", src)
+	}
+	// A hard parse error must be reported mentioning the stray tokens.
+	if len(f.Errors) == 0 {
+		t.Fatalf("Parse(%q): expected at least one error for stray tokens, got none", src)
+	}
+	foundStrayErr := false
+	for _, e := range f.Errors {
+		if strings.Contains(e.Msg, "after balance amount") {
+			foundStrayErr = true
+			break
+		}
+	}
+	if !foundStrayErr {
+		t.Fatalf("Parse(%q): expected error mentioning stray tokens after balance amount, got %v", src, f.Errors)
+	}
 }
 
 func TestParsePad(t *testing.T) {

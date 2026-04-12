@@ -514,23 +514,47 @@ func (p *parser) parseOpen(date *Token) *Node {
 }
 
 func (p *parser) parseBalance(date *Token) *Node {
-	// YYYY-MM-DD balance Account Amount [~ Tolerance]
+	// YYYY-MM-DD balance Account Number [~ Number] Currency
 	node := &Node{Kind: BalanceDirective}
 	node.AddToken(date)
 	kw := p.advance() // consume "balance"
 	node.AddToken(&kw)
 	acct := p.expect(ACCOUNT)
 	node.AddToken(&acct)
-	node.AddNode(p.parseAmount())
+	node.AddNode(p.parseBalanceAmount())
 
-	// Optional tolerance: ~ Amount
+	p.parseMetadata(node)
+	return node
+}
+
+// parseBalanceAmount parses the balance directive body:
+//
+//	Number [~ Number] Currency
+//
+// The currency appears once at the end and applies to both the main number
+// and the optional tolerance number.
+func (p *parser) parseBalanceAmount() *Node {
+	node := &Node{Kind: BalanceAmountNode}
+	node.AddNode(p.parseExpr())
 	if p.peek() == TILDE && !p.isAtNextLine() {
 		tilde := p.advance()
 		node.AddToken(&tilde)
-		node.AddNode(p.parseAmount())
+		node.AddNode(p.parseExpr())
 	}
-
-	p.parseMetadata(node)
+	cur := p.expect(CURRENCY)
+	node.AddToken(&cur)
+	// Reject stray tokens after the currency on the same logical line.
+	// This catches the old non-standard `Number Currency ~ Number Currency`
+	// syntax: after consuming the first currency we're still on the same
+	// line, so any further tokens are an error. Consume them into this
+	// node to ensure forward progress and preserve trivia.
+	if !p.isAtNextLine() && p.peek() != EOF {
+		p.errorf("unexpected token %s after balance amount", p.tok.Kind)
+		for !p.isAtNextLine() && p.peek() != EOF {
+			tok := p.advance()
+			node.AddToken(&tok)
+		}
+	}
 	return node
 }
 

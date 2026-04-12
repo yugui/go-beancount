@@ -430,14 +430,26 @@ func (l *lowerer) lowerBalance(n *syntax.Node) {
 		return
 	}
 
-	// The balance directive has one or two AmountNode children.
-	// First is the expected amount; second (after TILDE) is the tolerance.
-	amountNodes := n.FindAllNodes(syntax.AmountNode)
-	if len(amountNodes) == 0 {
+	// The balance directive body is a BalanceAmountNode containing:
+	//   ArithExprNode            (main number)
+	//   [TILDE ArithExprNode]    (optional tolerance number)
+	//   CURRENCY                 (single, shared currency)
+	body := n.FindNode(syntax.BalanceAmountNode)
+	if body == nil {
 		l.addDiagnostic(n, "balance directive missing amount")
 		return
 	}
-	amt, ok := l.lowerAmount(amountNodes[0])
+	exprNodes := body.FindAllNodes(syntax.ArithExprNode)
+	if len(exprNodes) == 0 {
+		l.addDiagnostic(n, "balance directive missing amount")
+		return
+	}
+	currTok := body.FindToken(syntax.CURRENCY)
+	if currTok == nil {
+		l.addDiagnostic(n, "balance directive missing currency")
+		return
+	}
+	num, ok := l.evalExpr(exprNodes[0])
 	if !ok {
 		return
 	}
@@ -446,13 +458,13 @@ func (l *lowerer) lowerBalance(n *syntax.Node) {
 		Span:    l.spanFromNode(n),
 		Date:    date,
 		Account: acctTok.Raw,
-		Amount:  amt,
+		Amount:  Amount{Number: num, Currency: currTok.Raw},
 		Meta:    l.lowerMetadata(n),
 	}
 
-	// Optional tolerance (second AmountNode, after TILDE token).
-	if len(amountNodes) >= 2 {
-		tol, ok := l.lowerAmount(amountNodes[1])
+	// Optional tolerance: the second ArithExprNode after the TILDE token.
+	if len(exprNodes) >= 2 && body.FindToken(syntax.TILDE) != nil {
+		tol, ok := l.evalExpr(exprNodes[1])
 		if ok {
 			bal.Tolerance = &tol
 		}

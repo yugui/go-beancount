@@ -163,11 +163,11 @@ func (p *printer) printCommodity(c *ast.Commodity) {
 }
 
 func (p *printer) printBalance(b *ast.Balance) {
-	p.printf("%s balance %s %s", b.Date.Format("2006-01-02"), b.Account, p.formatAmount(b.Amount))
+	p.printf("%s balance %s %s", b.Date.Format("2006-01-02"), b.Account, p.formatDecimal(&b.Amount.Number))
 	if b.Tolerance != nil {
-		p.printf(" ~ %s", p.formatAmount(*b.Tolerance))
+		p.printf(" ~ %s", p.formatDecimal(b.Tolerance))
 	}
-	p.write("\n")
+	p.printf(" %s\n", b.Amount.Currency)
 	p.printMetadata(b.Meta, p.indent())
 }
 

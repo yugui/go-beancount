@@ -74,7 +74,7 @@ var canonicalInputs = []consistencyCase{
 	},
 	{
 		name: "balance directive with tolerance",
-		src: `2024-02-28 balance Assets:Bank:Checking 3500.00 USD ~ 0.01 USD
+		src: `2024-02-28 balance Assets:Bank:Checking 3500.00 ~ 0.01 USD
 `,
 	},
 	{

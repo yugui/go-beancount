@@ -120,7 +120,7 @@ func TestBalanceExplicitTolerance(t *testing.T) {
 			{Account: "Expenses:Food", Amount: &neg},
 		},
 	}
-	tol := amtStr(t, "0.001", "USD")
+	tol := decimalFromString(t, "0.001")
 	bal := &ast.Balance{
 		Date:      parseDay(t, "2024-03-01"),
 		Account:   "Assets:Cash",
@@ -146,7 +146,7 @@ func TestBalanceExplicitToleranceTooTight(t *testing.T) {
 			{Account: "Expenses:Food", Amount: &neg},
 		},
 	}
-	tol := amtStr(t, "0.001", "USD")
+	tol := decimalFromString(t, "0.001")
 	bal := &ast.Balance{
 		Date:      parseDay(t, "2024-03-01"),
 		Account:   "Assets:Cash",

@@ -17,7 +17,7 @@ const (
 	OpenDirective        // open Account [Currency,...] ["Booking"]
 	CloseDirective       // close Account
 	CommodityDirective   // commodity Currency
-	BalanceDirective     // balance Account Amount [~ Tolerance]
+	BalanceDirective     // balance Account Number [~ Number] Currency
 	PadDirective         // pad Account Account
 	NoteDirective        // note Account "description"
 	DocumentDirective    // document Account "path"
@@ -28,12 +28,13 @@ const (
 	TransactionDirective // txn|*|! ["Payee"] "Narration" ...
 
 	// Sub-nodes
-	PostingNode      // [Flag] Account [Amount] [CostSpec] [PriceAnnotation]
-	AmountNode       // Number Currency
-	CostSpecNode     // {Amount [, Date] [, Label]} or {{Amount}} or {}
-	PriceAnnotNode   // @ Amount or @@ Amount
-	MetadataLineNode // key: value
-	ArithExprNode    // arithmetic expression (number, unary, binary, or parenthesized)
+	PostingNode       // [Flag] Account [Amount] [CostSpec] [PriceAnnotation]
+	AmountNode        // Number Currency
+	BalanceAmountNode // Number [~ Number] Currency (balance directive body)
+	CostSpecNode      // {Amount [, Date] [, Label]} or {{Amount}} or {}
+	PriceAnnotNode    // @ Amount or @@ Amount
+	MetadataLineNode  // key: value
+	ArithExprNode     // arithmetic expression (number, unary, binary, or parenthesized)
 
 	// Error recovery
 	ErrorNode            // contains tokens from a failed parse
@@ -63,6 +64,7 @@ var nodeKindNames = [nodeKindCount]string{
 	TransactionDirective: "TransactionDirective",
 	PostingNode:          "PostingNode",
 	AmountNode:           "AmountNode",
+	BalanceAmountNode:    "BalanceAmountNode",
 	CostSpecNode:         "CostSpecNode",
 	PriceAnnotNode:       "PriceAnnotNode",
 	MetadataLineNode:     "MetadataLineNode",

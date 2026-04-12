@@ -145,13 +145,27 @@ func TestBalance(t *testing.T) {
 		}
 	})
 	t.Run("with tolerance", func(t *testing.T) {
+		tol := decimal("0.01")
 		got := print(t, &ast.Balance{
 			Date:      date("2024-01-15"),
 			Account:   "Assets:Bank",
 			Amount:    amount("1234.56", "USD"),
-			Tolerance: amountp("0.01", "USD"),
+			Tolerance: &tol,
 		})
-		want := "2024-01-15 balance Assets:Bank 1234.56 USD ~ 0.01 USD\n"
+		want := "2024-01-15 balance Assets:Bank 1234.56 ~ 0.01 USD\n"
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+	t.Run("official example", func(t *testing.T) {
+		tol := decimal("0.002")
+		got := print(t, &ast.Balance{
+			Date:      date("2013-09-20"),
+			Account:   "Assets:Investing:Funds",
+			Amount:    amount("319.020", "RGAGX"),
+			Tolerance: &tol,
+		})
+		want := "2013-09-20 balance Assets:Investing:Funds 319.020 ~ 0.002 RGAGX\n"
 		if got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
