@@ -441,7 +441,7 @@ func TestLower_BalanceArithmetic(t *testing.T) {
 }
 
 func TestLower_BalanceWithTolerance(t *testing.T) {
-	cst := syntax.Parse("2024-01-01 balance Assets:Bank 1000 USD ~ 5 USD\n")
+	cst := syntax.Parse("2024-01-01 balance Assets:Bank 1000 ~ 5 USD\n")
 	f := ast.Lower("test.beancount", cst)
 	if len(f.Diagnostics) > 0 {
 		t.Fatalf("Lower(balance-tolerance): unexpected diagnostics: %v", f.Diagnostics)
@@ -462,11 +462,36 @@ func TestLower_BalanceWithTolerance(t *testing.T) {
 	if b.Tolerance == nil {
 		t.Fatal("Lower(balance-tolerance): Tolerance is nil, want non-nil")
 	}
-	if got := b.Tolerance.Number.String(); got != "5" {
-		t.Errorf("Lower(balance-tolerance): Tolerance.Number = %q, want %q", got, "5")
+	if got := b.Tolerance.String(); got != "5" {
+		t.Errorf("Lower(balance-tolerance): Tolerance = %q, want %q", got, "5")
 	}
-	if b.Tolerance.Currency != "USD" {
-		t.Errorf("Lower(balance-tolerance): Tolerance.Currency = %q, want %q", b.Tolerance.Currency, "USD")
+}
+
+func TestLower_BalanceWithToleranceOfficialExample(t *testing.T) {
+	// Beancount's documented example.
+	cst := syntax.Parse("2013-09-20 balance Assets:Investing:Funds 319.020 ~ 0.002 RGAGX\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(balance-official): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(balance-official): got %d directives, want 1", len(f.Directives))
+	}
+	b, ok := f.Directives[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("Lower(balance-official): directive is %T, want *ast.Balance", f.Directives[0])
+	}
+	if got := b.Amount.Number.Text('f'); got != "319.020" {
+		t.Errorf("Lower(balance-official): Amount.Number = %q, want %q", got, "319.020")
+	}
+	if b.Amount.Currency != "RGAGX" {
+		t.Errorf("Lower(balance-official): Amount.Currency = %q, want %q", b.Amount.Currency, "RGAGX")
+	}
+	if b.Tolerance == nil {
+		t.Fatal("Lower(balance-official): Tolerance is nil, want non-nil")
+	}
+	if got := b.Tolerance.Text('f'); got != "0.002" {
+		t.Errorf("Lower(balance-official): Tolerance = %q, want %q", got, "0.002")
 	}
 }
 

@@ -117,7 +117,7 @@ func (c *checker) visitBalance(d *ast.Balance) {
 	var tolerance *apd.Decimal
 	if d.Tolerance != nil {
 		tolerance = new(apd.Decimal)
-		if _, err := apd.BaseContext.Abs(tolerance, &d.Tolerance.Number); err != nil {
+		if _, err := apd.BaseContext.Abs(tolerance, d.Tolerance); err != nil {
 			c.emit(Error{
 				Code:    CodeBalanceMismatch,
 				Span:    d.Span,

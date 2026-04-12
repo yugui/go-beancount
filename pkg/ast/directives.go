@@ -1,6 +1,10 @@
 package ast
 
-import "time"
+import (
+	"time"
+
+	"github.com/cockroachdb/apd/v3"
+)
 
 // Posting represents a posting within a transaction.
 type Posting struct {
@@ -94,13 +98,17 @@ type Commodity struct {
 func (c *Commodity) directive()    {}
 func (c *Commodity) DirSpan() Span { return c.Span }
 
-// Balance represents a balance assertion: YYYY-MM-DD balance Account Amount [~ Tolerance]
+// Balance represents a balance assertion:
+// YYYY-MM-DD balance Account Number [~ Number] Currency
+//
+// Tolerance, when non-nil, shares Amount.Currency; the tolerance number has
+// no independent currency in Beancount's real syntax.
 type Balance struct {
 	Span      Span
 	Date      time.Time
 	Account   string
 	Amount    Amount
-	Tolerance *Amount // optional; nil if not specified
+	Tolerance *apd.Decimal // optional; nil if not specified
 	Meta      Metadata
 }
 
