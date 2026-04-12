@@ -27,6 +27,13 @@ func (s *State) Balance(account, currency string) *apd.Decimal {
 	return out
 }
 
+// InferTolerance returns the inferred tolerance for an amount, honouring
+// the ledger's inferred_tolerance_multiplier option. The returned decimal
+// is freshly allocated and safe for the caller to mutate.
+func (s *State) InferTolerance(a ast.Amount) *apd.Decimal {
+	return s.c.inferTolerance(a)
+}
+
 // AccountOpen reports whether the named account exists and is not closed.
 func (s *State) AccountOpen(account string) bool {
 	st, ok := s.c.accounts[account]
@@ -133,7 +140,7 @@ func (assertHandler) Evaluate(state *State, d *ast.Custom) []Error {
 			Message: fmt.Sprintf("failed to compute balance difference: %v", err),
 		}}
 	}
-	tolerance := inferTolerance(amount)
+	tolerance := state.InferTolerance(amount)
 	ok, err := withinTolerance(diff, tolerance)
 	if err != nil {
 		return []Error{{

@@ -181,6 +181,39 @@ func TestBalancedMixedCurrencies(t *testing.T) {
 	}
 }
 
+func TestTxnMultiplierAffectsResidualTolerance(t *testing.T) {
+	// Residual is exactly 0.01 USD: 100.00 + (-99.99) = 0.01.
+	// Default multiplier 0.5 → tolerance 0.005 → fail.
+	// Multiplier 1 → tolerance 0.01 → pass.
+	build := func(withOption bool) *ast.Ledger {
+		dirs := openAccounts(t, "2024-01-01", "Assets:Cash", "Expenses:Food")
+		pos := amtStr(t, "100.00", "USD")
+		neg := amtStr(t, "-99.99", "USD")
+		txn := &ast.Transaction{
+			Date: parseDay(t, "2024-02-01"),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &pos},
+				{Account: "Expenses:Food", Amount: &neg},
+			},
+		}
+		all := append([]ast.Directive{}, dirs...)
+		if withOption {
+			all = append(all, &ast.Option{Key: "inferred_tolerance_multiplier", Value: "1"})
+		}
+		all = append(all, txn)
+		return ledgerOf(all...)
+	}
+
+	errs := Check(build(false))
+	wantCodes(t, errs, CodeUnbalancedTransaction)
+
+	errs = Check(build(true))
+	if len(errs) != 0 {
+		t.Fatalf("TestTxnMultiplierAffectsResidualTolerance: multiplier=1: got %v, want no errors", errs)
+	}
+}
+
 func TestUnbalancedMultiCurrencyAutoPosting(t *testing.T) {
 	dirs := openAccounts(t, "2024-01-01", "Assets:Cash", "Assets:EurCash", "Expenses:Food")
 	td := parseDay(t, "2024-02-01")

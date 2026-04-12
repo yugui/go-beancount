@@ -223,11 +223,73 @@ func TestInferToleranceExponents(t *testing.T) {
 		{"100", "0.5"},
 		{"100.001", "0.0005"},
 	}
+	c := &checker{options: newOptionValues(defaultOptionRegistry)}
 	for _, tc := range cases {
 		a := amtStr(t, tc.in, "USD")
-		got := inferTolerance(a)
+		got := c.inferTolerance(a)
 		if got.Text('f') != tc.want {
 			t.Errorf("inferTolerance(%q) = %s, want %s", tc.in, got.Text('f'), tc.want)
 		}
+	}
+}
+
+// buildMultiplierLedger constructs a ledger where a transaction posts
+// 100.00 USD into Assets:Cash and a subsequent balance assertion claims
+// 100.01 USD. The default multiplier 0.5 yields tolerance 0.005 (fail);
+// a multiplier of 1 yields tolerance 0.01 (pass).
+func buildMultiplierLedger(t *testing.T, withOption bool) *ast.Ledger {
+	t.Helper()
+	dirs := openAccounts(t, "2024-01-01", "Assets:Cash", "Expenses:Food")
+	pos := amtStr(t, "100.00", "USD")
+	neg := amtStr(t, "-100.00", "USD")
+	txn := &ast.Transaction{
+		Date: parseDay(t, "2024-02-01"),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &pos},
+			{Account: "Expenses:Food", Amount: &neg},
+		},
+	}
+	bal := &ast.Balance{
+		Date:    parseDay(t, "2024-03-01"),
+		Account: "Assets:Cash",
+		Amount:  amtStr(t, "100.01", "USD"),
+	}
+	all := append([]ast.Directive{}, dirs...)
+	if withOption {
+		all = append(all, &ast.Option{Key: "inferred_tolerance_multiplier", Value: "1"})
+	}
+	all = append(all, txn, bal)
+	return ledgerOf(all...)
+}
+
+func TestInferToleranceMultiplierOverride(t *testing.T) {
+	// Multiplier = 1 → tolerance 0.01 → diff of 0.01 passes.
+	errs := Check(buildMultiplierLedger(t, true))
+	if len(errs) != 0 {
+		t.Fatalf("multiplier=1: got %v, want no errors", errs)
+	}
+
+	// Default multiplier 0.5 → tolerance 0.005 → same diff fails.
+	errs = Check(buildMultiplierLedger(t, false))
+	wantCodes(t, errs, CodeBalanceMismatch)
+}
+
+func TestInferredToleranceMultiplierInvalid(t *testing.T) {
+	ledger := &ast.Ledger{
+		Directives: []ast.Directive{
+			&ast.Option{
+				Span:  ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 1, Column: 1}},
+				Key:   "inferred_tolerance_multiplier",
+				Value: "abc",
+			},
+		},
+	}
+	errs := Check(ledger)
+	if len(errs) != 1 {
+		t.Fatalf("invalid multiplier: got %d errors, want 1: %v", len(errs), errs)
+	}
+	if errs[0].Code != CodeInvalidOption {
+		t.Errorf("TestInferredToleranceMultiplierInvalid: errs[0].Code = %v, want %v", errs[0].Code, CodeInvalidOption)
 	}
 }
