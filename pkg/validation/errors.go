@@ -10,8 +10,10 @@ import (
 type Code int
 
 const (
-	// CodeAccountNotOpen indicates a posting references an account before it has been opened.
+	// CodeAccountNotOpen indicates a directive references an account that has never been opened.
 	CodeAccountNotOpen Code = iota
+	// CodeAccountNotYetOpen indicates a directive references an account on a date before its open directive.
+	CodeAccountNotYetOpen
 	// CodeAccountClosed indicates a posting references an account after it has been closed.
 	CodeAccountClosed
 	// CodeDuplicateOpen indicates an account was opened more than once.
