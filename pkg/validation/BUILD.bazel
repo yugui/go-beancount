@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "validation",
     srcs = [
+        "account.go",
         "errors.go",
         "order.go",
         "validation.go",
@@ -15,9 +16,13 @@ go_library(
 go_test(
     name = "validation_test",
     srcs = [
+        "account_test.go",
         "order_test.go",
         "validation_test.go",
     ],
     embed = [":validation"],
-    deps = ["//pkg/ast"],
+    deps = [
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
 )
