@@ -87,13 +87,23 @@ func withinTolerance(diff, tolerance *apd.Decimal) (bool, error) {
 func (c *checker) visitBalance(d *ast.Balance) {
 	c.requireOpen(d.Account, d.Date, d.Span, d.Amount.Currency)
 
+	expCopy := d.Amount.Number
+	expected := &expCopy
+	if _, err := c.resolvePendingPad(d.Account, d.Amount.Currency, expected); err != nil {
+		c.emit(Error{
+			Code:    CodeInternalError,
+			Span:    d.Span,
+			Message: fmt.Sprintf("failed to resolve pad for %q: %v", d.Account, err),
+		})
+		return
+	}
+
 	key := balanceKey{Account: d.Account, Currency: d.Amount.Currency}
 	actual := c.balances[key]
 	if actual == nil {
 		actual = new(apd.Decimal)
 	}
 
-	expected := &d.Amount.Number
 	diff := new(apd.Decimal)
 	if _, err := apd.BaseContext.Sub(diff, expected, actual); err != nil {
 		c.emit(Error{

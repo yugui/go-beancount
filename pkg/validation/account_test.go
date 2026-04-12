@@ -182,18 +182,17 @@ func TestBalanceOnClosedAccount(t *testing.T) {
 
 func TestValidBalancePadNoteDocument(t *testing.T) {
 	od := parseDay(t, "2024-01-01")
+	pd := parseDay(t, "2024-01-15")
 	d := parseDay(t, "2024-02-01")
 
 	open1 := &ast.Open{Date: od, Account: "Assets:Cash", Currencies: []string{"USD"}}
 	open2 := &ast.Open{Date: od, Account: "Equity:Opening"}
-	// Balance asserts zero because the pad directive is not yet resolved
-	// in this step; pad resolution will land in a later phase.
-	bal := &ast.Balance{Date: d, Account: "Assets:Cash", Amount: amt(0, "USD")}
-	pad := &ast.Pad{Date: d, Account: "Assets:Cash", PadAccount: "Equity:Opening"}
+	pad := &ast.Pad{Date: pd, Account: "Assets:Cash", PadAccount: "Equity:Opening"}
+	bal := &ast.Balance{Date: d, Account: "Assets:Cash", Amount: amt(100, "USD")}
 	note := &ast.Note{Date: d, Account: "Assets:Cash", Comment: "hello"}
 	doc := &ast.Document{Date: d, Account: "Assets:Cash", Path: "/tmp/x.pdf"}
 
-	errs := Check(ledgerOf(open1, open2, bal, pad, note, doc))
+	errs := Check(ledgerOf(open1, open2, pad, bal, note, doc))
 	if len(errs) != 0 {
 		t.Fatalf("valid refs: got %v, want no errors", errs)
 	}
