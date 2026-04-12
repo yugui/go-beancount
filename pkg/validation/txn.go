@@ -37,16 +37,6 @@ func (s currencySum) nonZeroCurrencies() []string {
 	return out
 }
 
-// isZero reports whether every accumulated currency is exactly zero.
-func (s currencySum) isZero() bool {
-	for _, d := range s {
-		if !d.IsZero() {
-			return false
-		}
-	}
-	return true
-}
-
 // weightFromTotal converts a total-amount annotation (e.g. `@@` or `{{}}`)
 // into a signed weight whose sign matches the units posting, so the two
 // sides of the transaction cancel out. It returns a freshly allocated
@@ -121,12 +111,57 @@ func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 	}
 }
 
+// txnTolerance derives the residual tolerance for a transaction from the
+// maximum precision among non-auto postings contributing to each currency.
+// The tolerance is the max over all residual currencies of half the
+// least-significant digit of any posting that contributes to that currency.
+// If no postings contribute to a currency, the tolerance for that currency
+// falls back to the inferTolerance of the currency's residual decimal.
+func txnTolerance(d *ast.Transaction, residualCurrencies []string) *apd.Decimal {
+	// Per-currency max precision means the smallest (most negative)
+	// exponent among posting amounts in that currency. We track the
+	// minimum exponent observed.
+	minExpPerCurrency := make(map[string]int32)
+	for i := range d.Postings {
+		p := &d.Postings[i]
+		if p.Amount == nil {
+			continue
+		}
+		cur := p.Amount.Currency
+		e := p.Amount.Number.Exponent
+		if existing, ok := minExpPerCurrency[cur]; !ok || e < existing {
+			minExpPerCurrency[cur] = e
+		}
+	}
+
+	var best *apd.Decimal
+	for _, cur := range residualCurrencies {
+		var tol *apd.Decimal
+		if e, ok := minExpPerCurrency[cur]; ok {
+			tol = toleranceForExponent(e)
+		} else {
+			// No posting contributed directly to this currency (e.g. it
+			// arose from a price conversion). Use zero tolerance.
+			tol = new(apd.Decimal)
+		}
+		best = maxTolerance(best, tol)
+	}
+	if best == nil {
+		return new(apd.Decimal)
+	}
+	return best
+}
+
 // checkBalance verifies that the postings of the transaction sum to zero per
-// currency, tolerating at most one auto-computed posting. It also performs
-// the per-posting account lifecycle checks required of every transaction.
+// currency (within the derived tolerance), tolerating at most one
+// auto-computed posting. On success, it also feeds per-posting weights into
+// the running balance map so later balance assertions can consult them.
 func (c *checker) checkBalance(d *ast.Transaction) {
 	sums := make(currencySum)
+	weights := make([]*apd.Decimal, len(d.Postings))
+	currencies := make([]string, len(d.Postings))
 	autoCount := 0
+	autoIdx := -1
 
 	for i := range d.Postings {
 		p := &d.Postings[i]
@@ -142,12 +177,11 @@ func (c *checker) checkBalance(d *ast.Transaction) {
 
 		if p.Amount == nil {
 			autoCount++
+			autoIdx = i
 			continue
 		}
 		w, cur, err := postingWeight(p)
 		if err != nil {
-			// Arithmetic failure is unexpected for well-formed decimals;
-			// surface it as an unbalanced error rather than panicking.
 			c.emit(Error{
 				Code:    CodeUnbalancedTransaction,
 				Span:    d.Span,
@@ -155,6 +189,8 @@ func (c *checker) checkBalance(d *ast.Transaction) {
 			})
 			return
 		}
+		weights[i] = w
+		currencies[i] = cur
 		if err := sums.add(cur, w); err != nil {
 			c.emit(Error{
 				Code:    CodeUnbalancedTransaction,
@@ -175,31 +211,108 @@ func (c *checker) checkBalance(d *ast.Transaction) {
 	}
 
 	nonZero := sums.nonZeroCurrencies()
+	tolerance := txnTolerance(d, nonZero)
+
+	// Filter nonZero down to currencies whose residual exceeds the tolerance.
+	residual := make([]string, 0, len(nonZero))
+	for _, cur := range nonZero {
+		within, err := withinTolerance(sums[cur], tolerance)
+		if err != nil {
+			c.emit(Error{
+				Code:    CodeUnbalancedTransaction,
+				Span:    d.Span,
+				Message: fmt.Sprintf("failed to evaluate balance tolerance: %v", err),
+			})
+			return
+		}
+		if !within {
+			residual = append(residual, cur)
+		}
+	}
 
 	if autoCount == 1 {
-		switch len(nonZero) {
+		// The auto-posting must absorb at most one residual currency. We
+		// ignore within-tolerance residuals in other currencies (they are
+		// considered zero for balancing purposes).
+		switch len(residual) {
 		case 0:
 			// The auto-posting is implicitly zero; nothing to infer.
+			// Mark it as skipped and apply explicit posting weights.
+			weights[autoIdx] = nil
+			c.applyPostingWeights(d, weights, currencies)
 		case 1:
-			// Exactly one residual currency: the auto-posting is the
-			// negation of it. Step 5 will compute the inferred amount from
-			// the residual when it consumes postings for running balances.
+			// Exactly one residual currency: the auto-posting absorbs the
+			// negation of it.
+			cur := residual[0]
+			inferred := new(apd.Decimal)
+			if _, err := apd.BaseContext.Neg(inferred, sums[cur]); err != nil {
+				c.emit(Error{
+					Code:    CodeUnbalancedTransaction,
+					Span:    d.Span,
+					Message: fmt.Sprintf("failed to infer auto-posting amount: %v", err),
+				})
+				return
+			}
+			weights[autoIdx] = inferred
+			currencies[autoIdx] = cur
+			c.applyPostingWeights(d, weights, currencies)
 		default:
 			c.emit(Error{
 				Code:    CodeUnbalancedTransaction,
 				Span:    d.Span,
-				Message: fmt.Sprintf("cannot infer auto-posting amount: residual has %d non-zero currencies (%v)", len(nonZero), nonZero),
+				Message: fmt.Sprintf("cannot infer auto-posting amount: residual has %d non-zero currencies (%v)", len(residual), residual),
 			})
 		}
 		return
 	}
 
-	// No auto-postings: residual must be exactly zero.
-	if len(nonZero) > 0 {
+	// No auto-postings: residual must be within tolerance.
+	if len(residual) > 0 {
 		c.emit(Error{
 			Code:    CodeUnbalancedTransaction,
 			Span:    d.Span,
-			Message: fmt.Sprintf("transaction does not balance: non-zero residual in %v", nonZero),
+			Message: fmt.Sprintf("transaction does not balance: non-zero residual in %v", residual),
 		})
+		return
+	}
+	c.applyPostingWeights(d, weights, currencies)
+}
+
+// applyPostingWeights feeds the computed per-posting weights into the
+// running balance map. Entries with a nil weight are skipped; callers use
+// this to exclude an auto-posting whose inferred amount is zero.
+func (c *checker) applyPostingWeights(d *ast.Transaction, weights []*apd.Decimal, currencies []string) {
+	for i := range d.Postings {
+		if weights[i] == nil {
+			continue
+		}
+		// For the running balance we want the posting's effect on its own
+		// account expressed in its own currency, not the weight converted
+		// via a price/cost annotation. So when the posting has a literal
+		// Amount, we record that amount. For auto-postings whose amount was
+		// inferred, we use the inferred weight directly.
+		p := &d.Postings[i]
+		if p.Amount != nil {
+			num := new(apd.Decimal)
+			num.Set(&p.Amount.Number)
+			if err := c.apply(p.Account, p.Amount.Currency, num); err != nil {
+				c.emit(Error{
+					Code:    CodeInternalError,
+					Span:    d.Span,
+					Message: fmt.Sprintf("failed to update running balance: %v", err),
+				})
+				return
+			}
+		} else {
+			// Inferred auto-posting: weight and currency are the residual.
+			if err := c.apply(p.Account, currencies[i], weights[i]); err != nil {
+				c.emit(Error{
+					Code:    CodeInternalError,
+					Span:    d.Span,
+					Message: fmt.Sprintf("failed to update running balance: %v", err),
+				})
+				return
+			}
+		}
 	}
 }

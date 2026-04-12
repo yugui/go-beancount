@@ -1,7 +1,10 @@
 // Package validation performs semantic checks on a loaded beancount ledger.
 package validation
 
-import "github.com/yugui/go-beancount/pkg/ast"
+import (
+	"github.com/cockroachdb/apd/v3"
+	"github.com/yugui/go-beancount/pkg/ast"
+)
 
 // Check runs all semantic validations on the given ledger and returns any
 // errors found.
@@ -13,6 +16,7 @@ func Check(ledger *ast.Ledger) []Error {
 type checker struct {
 	ledger   *ast.Ledger
 	accounts map[string]*accountState
+	balances map[balanceKey]*apd.Decimal
 	errors   []Error
 }
 
@@ -21,6 +25,7 @@ func newChecker(ledger *ast.Ledger) *checker {
 	return &checker{
 		ledger:   ledger,
 		accounts: make(map[string]*accountState),
+		balances: make(map[balanceKey]*apd.Decimal),
 	}
 }
 
@@ -74,12 +79,6 @@ func (c *checker) run() []Error {
 
 // visitCommodity is a stub; commodity directives have no cross-directive checks yet.
 func (c *checker) visitCommodity(*ast.Commodity) {}
-
-// visitBalance verifies the asserted account is open on the balance date.
-// Arithmetic verification of the assertion is performed in a later step.
-func (c *checker) visitBalance(d *ast.Balance) {
-	c.requireOpen(d.Account, d.Date, d.Span, d.Amount.Currency)
-}
 
 // visitPad verifies that both the target and source accounts are open on the
 // pad date. The actual padding is resolved in a later step.

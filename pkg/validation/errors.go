@@ -31,6 +31,10 @@ const (
 	CodeCurrencyNotAllowed
 	// CodeCustomAssertionFailed indicates a user-defined custom assertion failed.
 	CodeCustomAssertionFailed
+	// CodeInternalError indicates an internal validation failure such as an
+	// arithmetic error from the underlying decimal context. These are not
+	// user-facing ledger problems but signal a bug or pathological input.
+	CodeInternalError
 )
 
 // Error is a validation error found in a ledger.
