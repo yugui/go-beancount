@@ -190,6 +190,15 @@ func newDefaultOptionRegistry() *optionRegistry {
 		parse:        parseDecimalOption,
 		defaultValue: apd.New(5, -1),
 	})
+	// infer_tolerance_from_cost: bool, default false. When true, postings
+	// with an explicit cost spec also contribute a per-cost-currency
+	// tolerance of |units| * (multiplier * 10^costExp).
+	r.register(optionSpec{
+		key:          "infer_tolerance_from_cost",
+		kind:         optionKindBool,
+		parse:        parseBoolOption,
+		defaultValue: false,
+	})
 	return r
 }
 

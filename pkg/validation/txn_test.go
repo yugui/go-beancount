@@ -214,6 +214,95 @@ func TestTxnMultiplierAffectsResidualTolerance(t *testing.T) {
 	}
 }
 
+// TestInferToleranceFromCost exercises the `infer_tolerance_from_cost`
+// option with a costed transaction whose residual is within the
+// cost-derived tolerance but not within the units-derived tolerance.
+//
+// Postings:
+//
+//	Assets:Inv     1000 XYZ {1.0001 USD}   -> weight =  1000.1000 USD
+//	Assets:Cash   -1000.15 USD             -> weight = -1000.1500 USD
+//
+// Residual USD = -0.05. Units-based USD tolerance comes from the cash
+// posting (exp -2) -> 0.005. Cost-based contribution is
+// |1000| * 0.00005 = 0.05.
+//
+//   - Disabled (default): cost contribution ignored, |-0.05| > 0.005 -> unbalanced.
+//   - Enabled: max(0.005, 0.05) = 0.05, |-0.05| == 0.05 -> balanced.
+func TestInferToleranceFromCost(t *testing.T) {
+	build := func(withOption bool) *ast.Ledger {
+		dirs := openAccounts(t, "2024-01-01", "Assets:Inv", "Assets:Cash")
+		td := parseDay(t, "2024-02-01")
+		units := amt(1000, "XYZ")
+		costAmt := amtStr(t, "1.0001", "USD")
+		cash := amtStr(t, "-1000.15", "USD")
+		txn := &ast.Transaction{
+			Date: td,
+			Flag: '*',
+			Postings: []ast.Posting{
+				{
+					Account: "Assets:Inv",
+					Amount:  &units,
+					Cost:    &ast.CostSpec{Amount: &costAmt, IsTotal: false},
+				},
+				{Account: "Assets:Cash", Amount: &cash},
+			},
+		}
+		all := append([]ast.Directive{}, dirs...)
+		if withOption {
+			all = append(all, &ast.Option{Key: "infer_tolerance_from_cost", Value: "TRUE"})
+		}
+		all = append(all, txn)
+		return ledgerOf(all...)
+	}
+
+	tests := []struct {
+		name      string
+		withOpt   bool
+		wantCodes []Code
+	}{
+		{name: "disabled", withOpt: false, wantCodes: []Code{CodeUnbalancedTransaction}},
+		{name: "enabled", withOpt: true, wantCodes: nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			errs := Check(build(tc.withOpt))
+			wantCodes(t, errs, tc.wantCodes...)
+		})
+	}
+}
+
+// TestInferToleranceFromCostOnlyCostCurrency verifies the cost-based
+// contribution applies only to the cost currency, not the units currency.
+// Here USD balances exactly but XYZ has a 1-unit residual that must remain
+// unbalanced regardless of the option being on.
+func TestInferToleranceFromCostOnlyCostCurrency(t *testing.T) {
+	dirs := openAccounts(t, "2024-01-01", "Assets:Inv", "Assets:Inv2", "Assets:Cash")
+	td := parseDay(t, "2024-02-01")
+	invUnits := amt(1000, "XYZ")
+	invNeg := amt(-999, "XYZ")
+	costAmt := amtStr(t, "1.0001", "USD")
+	cash := amtStr(t, "-1000.10", "USD")
+	txn := &ast.Transaction{
+		Date: td,
+		Flag: '*',
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Inv",
+				Amount:  &invUnits,
+				Cost:    &ast.CostSpec{Amount: &costAmt, IsTotal: false},
+			},
+			{Account: "Assets:Inv2", Amount: &invNeg},
+			{Account: "Assets:Cash", Amount: &cash},
+		},
+	}
+	all := append([]ast.Directive{}, dirs...)
+	all = append(all, &ast.Option{Key: "infer_tolerance_from_cost", Value: "TRUE"})
+	all = append(all, txn)
+	errs := Check(ledgerOf(all...))
+	wantCodes(t, errs, CodeUnbalancedTransaction)
+}
+
 func TestUnbalancedMultiCurrencyAutoPosting(t *testing.T) {
 	dirs := openAccounts(t, "2024-01-01", "Assets:Cash", "Assets:EurCash", "Expenses:Food")
 	td := parseDay(t, "2024-02-01")
