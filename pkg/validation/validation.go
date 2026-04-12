@@ -1,7 +1,8 @@
-// Package validation performs semantic checks on a loaded beancount ledger.
 package validation
 
 import (
+	"sort"
+
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
@@ -77,6 +78,16 @@ func (c *checker) run() []Error {
 		}
 	}
 	c.reportUnresolvedPads()
+	sort.SliceStable(c.errors, func(i, j int) bool {
+		ai, aj := c.errors[i].Span.Start, c.errors[j].Span.Start
+		if ai.Filename != aj.Filename {
+			return ai.Filename < aj.Filename
+		}
+		if ai.Offset != aj.Offset {
+			return ai.Offset < aj.Offset
+		}
+		return c.errors[i].Code < c.errors[j].Code
+	})
 	return c.errors
 }
 
