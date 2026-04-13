@@ -473,23 +473,41 @@ func (l *lowerer) lowerBalance(n *syntax.Node) {
 	l.addDirective(bal)
 }
 
-// lowerAmount converts an AmountNode CST node into an Amount.
+// lowerAmount converts an AmountNode CST node into an Amount. It requires
+// the currency token to be present; use lowerAmountOptionalCurrency when the
+// currency may be absent.
 func (l *lowerer) lowerAmount(n *syntax.Node) (Amount, bool) {
+	amt, ok := l.lowerAmountOptionalCurrency(n)
+	if !ok {
+		return Amount{}, false
+	}
+	if amt.Currency == "" {
+		l.addDiagnostic(n, "amount missing currency")
+		return Amount{}, false
+	}
+	return amt, true
+}
+
+// lowerAmountOptionalCurrency converts an AmountNode whose currency token may
+// be absent. It is used for the per-unit side of a combined cost spec
+// `{X # Y CUR}`, where the per-unit amount may omit its currency and inherit
+// it from the total side. The returned Amount has an empty Currency field
+// when the source omitted the currency token.
+func (l *lowerer) lowerAmountOptionalCurrency(n *syntax.Node) (Amount, bool) {
 	exprNode := n.FindNode(syntax.ArithExprNode)
 	if exprNode == nil {
 		l.addDiagnostic(n, "amount missing expression")
-		return Amount{}, false
-	}
-	currTok := n.FindToken(syntax.CURRENCY)
-	if currTok == nil {
-		l.addDiagnostic(n, "amount missing currency")
 		return Amount{}, false
 	}
 	num, ok := l.evalExpr(exprNode)
 	if !ok {
 		return Amount{}, false
 	}
-	return Amount{Number: num, Currency: currTok.Raw}, true
+	amt := Amount{Number: num}
+	if currTok := n.FindToken(syntax.CURRENCY); currTok != nil {
+		amt.Currency = currTok.Raw
+	}
+	return amt, true
 }
 
 // arithCtx is the decimal context used for arithmetic expression evaluation.
@@ -829,16 +847,68 @@ func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
 	}
 
 	// Determine per-unit vs total by checking for LBRACE2.
-	cs.IsTotal = n.FindToken(syntax.LBRACE2) != nil
+	isTotal := n.FindToken(syntax.LBRACE2) != nil
 
-	// Extract amount (if present).
-	amountNode := n.FindNode(syntax.AmountNode)
-	if amountNode != nil {
+	// Detect combined form: a HASH child token signals "{ perUnit # total CUR }".
+	if n.FindToken(syntax.HASH) != nil {
+		// {{...#...}} should have been rejected by the parser; guard defensively.
+		if isTotal {
+			l.addDiagnostic(n, "'#' separator is not allowed inside total-cost braces {{...}}")
+			return CostSpec{}, false
+		}
+
+		// Collect direct-child AmountNodes in source order.
+		var amountNodes []*syntax.Node
+		for _, c := range n.Children {
+			if c.Node != nil && c.Node.Kind == syntax.AmountNode {
+				amountNodes = append(amountNodes, c.Node)
+			}
+		}
+		if len(amountNodes) < 2 {
+			l.addDiagnostic(n, "combined cost form requires two amounts")
+			return CostSpec{}, false
+		}
+		// The parser guarantees at most two AmountNodes in the combined form;
+		// any extras are silently ignored.
+
+		// Lower the total side first: it must have an explicit currency.
+		total, ok := l.lowerAmount(amountNodes[1])
+		if !ok {
+			return CostSpec{}, false
+		}
+		if total.Currency == "" {
+			// Should be unreachable: parser requires currency on the total side.
+			l.addDiagnostic(amountNodes[1], "total amount in combined cost form requires a currency")
+			return CostSpec{}, false
+		}
+
+		// Lower the per-unit side. The parser allows it to omit its currency,
+		// in which case lowerAmount errors out. Use lowerAmountOptionalCurrency
+		// to permit a currency-less amount and inherit from the total side.
+		perUnit, ok := l.lowerAmountOptionalCurrency(amountNodes[0])
+		if !ok {
+			return CostSpec{}, false
+		}
+		if perUnit.Currency == "" {
+			perUnit.Currency = total.Currency
+		} else if perUnit.Currency != total.Currency {
+			l.addDiagnostic(n, fmt.Sprintf("mismatched currencies in combined cost form: %q and %q", perUnit.Currency, total.Currency))
+			return CostSpec{}, false
+		}
+
+		cs.PerUnit = &perUnit
+		cs.Total = &total
+	} else if amountNode := n.FindNode(syntax.AmountNode); amountNode != nil {
+		// Single-amount form: { X CUR } or {{ X CUR }}.
 		amt, ok := l.lowerAmount(amountNode)
 		if !ok {
 			return CostSpec{}, false
 		}
-		cs.Amount = &amt
+		if isTotal {
+			cs.Total = &amt
+		} else {
+			cs.PerUnit = &amt
+		}
 	}
 
 	// Extract optional date.

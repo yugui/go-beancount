@@ -85,22 +85,49 @@ func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 			return nil, "", err
 		}
 		return out, p.Price.Amount.Currency, nil
-	case p.Cost != nil && p.Cost.Amount != nil:
-		// Cost spec with an explicit per-unit (or total) cost amount.
-		// Mirrors the price handling above.
-		costNum := p.Cost.Amount.Number
-		if p.Cost.IsTotal {
-			out, err := weightFromTotal(&num, &costNum)
-			if err != nil {
-				return nil, "", err
-			}
-			return out, p.Cost.Amount.Currency, nil
+	case p.Cost != nil && p.Cost.PerUnit != nil && p.Cost.Total != nil:
+		// Combined form `{per # total CUR}`: weight = units*per +
+		// sign(units)*total, in the shared cost currency. The lowerer
+		// guarantees PerUnit.Currency == Total.Currency; we defensively
+		// verify and surface a descriptive error if it is ever violated.
+		// This case must come BEFORE the PerUnit-only and Total-only
+		// cases below, because those use `!= nil` without excluding the
+		// other field and would otherwise shadow this branch.
+		if p.Cost.PerUnit.Currency != p.Cost.Total.Currency {
+			return nil, "", fmt.Errorf("combined cost currencies differ: %q vs %q", p.Cost.PerUnit.Currency, p.Cost.Total.Currency)
 		}
+		perNum := p.Cost.PerUnit.Number
+		totalNum := p.Cost.Total.Number
+		perPart := new(apd.Decimal)
+		if _, err := apd.BaseContext.Mul(perPart, &num, &perNum); err != nil {
+			return nil, "", err
+		}
+		totalPart, err := weightFromTotal(&num, &totalNum)
+		if err != nil {
+			return nil, "", err
+		}
+		out := new(apd.Decimal)
+		if _, err := apd.BaseContext.Add(out, perPart, totalPart); err != nil {
+			return nil, "", err
+		}
+		return out, p.Cost.PerUnit.Currency, nil
+	case p.Cost != nil && p.Cost.PerUnit != nil:
+		// Cost spec with an explicit per-unit cost amount: weight = units * cost.
+		costNum := p.Cost.PerUnit.Number
 		out := new(apd.Decimal)
 		if _, err := apd.BaseContext.Mul(out, &num, &costNum); err != nil {
 			return nil, "", err
 		}
-		return out, p.Cost.Amount.Currency, nil
+		return out, p.Cost.PerUnit.Currency, nil
+	case p.Cost != nil && p.Cost.Total != nil:
+		// Cost spec with a total cost amount ({{...}}): weight =
+		// sign(units) * total. Mirrors the total-price (@@) weight calculation.
+		costNum := p.Cost.Total.Number
+		out, err := weightFromTotal(&num, &costNum)
+		if err != nil {
+			return nil, "", err
+		}
+		return out, p.Cost.Total.Currency, nil
 	default:
 		// Plain amount: the caller must not mutate the returned pointer
 		// because it aliases the AST. Copy to a fresh value so the
@@ -157,11 +184,32 @@ func (c *checker) txnTolerance(d *ast.Transaction, residualCurrencies []string) 
 	costTol := make(map[string]*apd.Decimal)
 	for i := range d.Postings {
 		p := &d.Postings[i]
-		if p.Amount == nil || p.Cost == nil || p.Cost.Amount == nil {
+		if p.Amount == nil || p.Cost == nil {
 			continue
 		}
-		costCur := p.Cost.Amount.Currency
-		costExp := p.Cost.Amount.Number.Exponent
+		// Pick the cost component(s) present. For the combined
+		// "{per # total CUR}" form, the residual can pick up imprecision
+		// from either component, so we use the more precise (more
+		// negative) exponent. The lowerer guarantees both components
+		// share a currency in the combined case.
+		var costCur string
+		var costExp int32
+		switch {
+		case p.Cost.PerUnit != nil && p.Cost.Total != nil:
+			costCur = p.Cost.PerUnit.Currency
+			costExp = p.Cost.PerUnit.Number.Exponent
+			if te := p.Cost.Total.Number.Exponent; te < costExp {
+				costExp = te
+			}
+		case p.Cost.PerUnit != nil:
+			costCur = p.Cost.PerUnit.Currency
+			costExp = p.Cost.PerUnit.Number.Exponent
+		case p.Cost.Total != nil:
+			costCur = p.Cost.Total.Currency
+			costExp = p.Cost.Total.Number.Exponent
+		default:
+			continue
+		}
 		perUnitCostTol := c.toleranceForExponent(costExp)
 
 		absUnits := new(apd.Decimal)

@@ -403,6 +403,8 @@ func (p *parser) parsePosting() *Node {
 }
 
 // parseCostSpec parses a cost specification: {Amount [, Date] [, Label]}, {{Amount}}, {}, or {{}}.
+// The per-unit form `{...}` also accepts a combined "{X # Y CUR}" shape where the
+// per-unit amount may omit its currency and inherit it from the total amount.
 func (p *parser) parseCostSpec() *Node {
 	node := &Node{Kind: CostSpecNode}
 
@@ -410,14 +412,14 @@ func (p *parser) parseCostSpec() *Node {
 		// Total cost: {{ ... }}
 		open := p.advance()
 		node.AddToken(&open)
-		p.parseCostContents(node)
+		p.parseCostContents(node, true /*isTotalBraces*/)
 		close := p.expect(RBRACE2)
 		node.AddToken(&close)
 	} else {
 		// Per-unit cost: { ... }
 		open := p.advance() // consume LBRACE
 		node.AddToken(&open)
-		p.parseCostContents(node)
+		p.parseCostContents(node, false /*isTotalBraces*/)
 		close := p.expect(RBRACE)
 		node.AddToken(&close)
 	}
@@ -426,15 +428,63 @@ func (p *parser) parseCostSpec() *Node {
 }
 
 // parseCostContents parses comma-separated elements inside a cost spec.
-// Elements can be: Amount (NUMBER [CURRENCY]), Date, or String label.
-func (p *parser) parseCostContents(node *Node) {
+// The leading element may be an Amount (with currency optional when the
+// combined per-unit `#` total form is used and only outside `{{...}}`),
+// a Date, or a String label; subsequent elements follow parseCostElement.
+func (p *parser) parseCostContents(node *Node, isTotalBraces bool) {
 	// Could be empty: {} or {{}}
 	if p.peek() == RBRACE || p.peek() == RBRACE2 {
 		return
 	}
 
-	// Parse first element
-	p.parseCostElement(node)
+	// Parse first element. The first element may be an amount whose currency
+	// is omitted when followed by `#` (the currency is then inherited from the
+	// total-side amount). We therefore special-case the leading amount here so
+	// we can accept a currency-less per-unit amount only in the combined form.
+	switch p.peek() {
+	case NUMBER, MINUS, PLUS, LPAREN:
+		// Parse an amount that may optionally omit its currency.
+		amt := p.parseAmountOptionalCurrency()
+		node.AddNode(amt)
+
+		// Combined form: { perUnit # total CUR }
+		if p.peek() == HASH {
+			if isTotalBraces {
+				p.errorf("'#' separator is not allowed inside total-cost braces {{...}}")
+				// Record the error but continue consuming '#' and the total amount
+				// so later diagnostics are not spurious.
+			}
+			hash := p.advance()
+			node.AddToken(&hash)
+
+			// The total amount must be a regular Amount with a currency.
+			if p.peek() != NUMBER && p.peek() != MINUS && p.peek() != PLUS && p.peek() != LPAREN {
+				p.errorf("expected total amount after '#' in cost spec, got %s", p.tok.Kind)
+				// Skip a stray token only if it cannot close the cost spec; otherwise
+				// leave it for parseCostSpec to consume so we don't emit a spurious
+				// "expected '}'" diagnostic on inputs like `{502.12 #}`.
+				if p.peek() != RBRACE && p.peek() != RBRACE2 && p.peek() != EOF {
+					tok := p.advance()
+					node.AddToken(&tok)
+				}
+			} else {
+				node.AddNode(p.parseAmount())
+			}
+		} else if amt.FindToken(CURRENCY) == nil {
+			// A currency-less amount is only permitted before `#`.
+			p.errorf("expected currency after amount in cost spec, got %s", p.tok.Kind)
+		}
+	case DATE:
+		date := p.advance()
+		node.AddToken(&date)
+	case STRING:
+		label := p.advance()
+		node.AddToken(&label)
+	default:
+		p.errorf("expected amount, date, or label in cost spec, got %s", p.tok.Kind)
+		tok := p.advance() // skip unexpected token to ensure forward progress
+		node.AddToken(&tok)
+	}
 
 	// Parse comma-separated additional elements
 	for p.peek() == COMMA {
@@ -444,8 +494,10 @@ func (p *parser) parseCostContents(node *Node) {
 	}
 }
 
-// parseCostElement parses a single element inside a cost spec.
-// Can be: Amount, Date, or String (label).
+// parseCostElement parses a single trailing element inside a cost spec.
+// Can be: Amount, Date, or String (label). This is used for elements after
+// the first one (i.e. after a comma); the first element is handled inline by
+// parseCostContents because it may participate in the combined `#` form.
 func (p *parser) parseCostElement(node *Node) {
 	switch p.peek() {
 	case NUMBER, MINUS, PLUS, LPAREN:
@@ -461,6 +513,21 @@ func (p *parser) parseCostElement(node *Node) {
 		tok := p.advance() // skip unexpected token to ensure forward progress
 		node.AddToken(&tok)
 	}
+}
+
+// parseAmountOptionalCurrency parses an amount whose currency is optional.
+// It is used for the per-unit side of a combined cost spec `{X # Y CUR}`,
+// where the per-unit amount may omit its currency and inherit it from the
+// total side. Callers are responsible for enforcing currency presence when
+// the optional form is not allowed.
+func (p *parser) parseAmountOptionalCurrency() *Node {
+	node := &Node{Kind: AmountNode}
+	node.AddNode(p.parseExpr())
+	if p.peek() == CURRENCY {
+		cur := p.advance()
+		node.AddToken(&cur)
+	}
+	return node
 }
 
 // parsePriceAnnotation parses a price annotation: @ Amount or @@ Amount.

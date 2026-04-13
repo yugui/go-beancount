@@ -1139,6 +1139,102 @@ func TestParsePostingWithCostAndPrice(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
+func TestParsePostingWithCombinedCost(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {502.12 # 9.95 USD}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	amounts := cost.FindAllNodes(AmountNode)
+	if len(amounts) != 2 {
+		t.Fatalf("Parse(%q): cost has %d AmountNodes, want 2", src, len(amounts))
+	}
+	if cost.FindToken(HASH) == nil {
+		t.Fatalf("Parse(%q): expected HASH token child in cost spec", src)
+	}
+	// Per-unit amount should have no CURRENCY token (currency inherited).
+	if amounts[0].FindToken(CURRENCY) != nil {
+		t.Errorf("Parse(%q): per-unit amount should have no currency token", src)
+	}
+	// Total amount should have a CURRENCY token.
+	if amounts[1].FindToken(CURRENCY) == nil {
+		t.Errorf("Parse(%q): total amount should have a currency token", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingWithCombinedCostExplicitPerUnitCurrency(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {502.12 USD # 9.95 USD}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	amounts := cost.FindAllNodes(AmountNode)
+	if len(amounts) != 2 {
+		t.Fatalf("Parse(%q): cost has %d AmountNodes, want 2", src, len(amounts))
+	}
+	if amounts[0].FindToken(CURRENCY) == nil {
+		t.Errorf("Parse(%q): per-unit amount should have a currency token", src)
+	}
+	if amounts[1].FindToken(CURRENCY) == nil {
+		t.Errorf("Parse(%q): total amount should have a currency token", src)
+	}
+	if cost.FindToken(HASH) == nil {
+		t.Fatalf("Parse(%q): expected HASH token child in cost spec", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParsePostingCombinedCostInTotalBracesIsError(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {{502.12 # 9.95 USD}}\n  Assets:Cash\n"
+	f := Parse(src)
+	if len(f.Errors) == 0 {
+		t.Fatalf("Parse(%q): expected parse error for '#' inside {{...}}", src)
+	}
+	if msg := f.Errors[0].Msg; !strings.Contains(msg, "'#'") || !strings.Contains(msg, "total") {
+		t.Fatalf("Parse(%q): error message %q should mention '#' and total", src, msg)
+	}
+}
+
+func TestParsePostingCombinedCostMissingPerUnitIsError(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {# 9.95 USD}\n  Assets:Cash\n"
+	f := Parse(src)
+	if len(f.Errors) == 0 {
+		t.Fatalf("Parse(%q): expected parse error for missing per-unit amount", src)
+	}
+	if msg := f.Errors[0].Msg; !strings.Contains(msg, "expected") || !strings.Contains(msg, "amount") {
+		t.Fatalf("Parse(%q): error message %q should contain 'expected' and 'amount'", src, msg)
+	}
+}
+
+func TestParsePostingCombinedCostMissingTotalIsError(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {502.12 # USD}\n  Assets:Cash\n"
+	f := Parse(src)
+	if len(f.Errors) == 0 {
+		t.Fatalf("Parse(%q): expected parse error for missing total amount", src)
+	}
+	if msg := f.Errors[0].Msg; !strings.Contains(msg, "total amount") {
+		t.Fatalf("Parse(%q): error message %q should contain 'total amount'", src, msg)
+	}
+}
+
+func TestParsePostingCombinedCostMissingTotalBeforeBraceIsError(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {502.12 #}\n  Assets:Cash\n"
+	f := Parse(src)
+	if len(f.Errors) != 1 {
+		t.Fatalf("Parse(%q): expected exactly 1 parse error, got %d: %v", src, len(f.Errors), f.Errors)
+	}
+	if msg := f.Errors[0].Msg; !strings.Contains(msg, "total amount") {
+		t.Fatalf("Parse(%q): error message %q should contain 'total amount'", src, msg)
+	}
+}
+
 func TestParsePostingPriceWithoutCost(t *testing.T) {
 	// Price annotation without cost spec
 	src := "2024-01-15 *\n  Assets:Foreign  100.00 EUR @ 1.09 USD\n  Assets:Cash\n"

@@ -265,6 +265,45 @@ func TestFormatPostingWithCostSpec(t *testing.T) {
 	}
 }
 
+func TestFormatPostingWithCombinedCostSpec(t *testing.T) {
+	// Round-trip the combined per-unit/total cost form `{per # total CCY}`.
+	// The formatter should preserve it byte-for-byte (modulo amount alignment
+	// padding, which is determined by the AmountNode width and not the cost).
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "combined cost only",
+			// "  Assets:Brokerage" = 18 cols, "10 GOOG" = 7 cols, padding = 52-18-7 = 27.
+			// "  Assets:Cash" = 13 cols, "-5031.15 USD" = 12 cols, padding = 52-13-12 = 27.
+			src: "2024-01-15 * \"Buy GOOG with commission\"\n" +
+				"  Assets:Brokerage                           10 GOOG {502.12 # 9.95 USD}\n" +
+				"  Assets:Cash                           -5031.15 USD\n",
+		},
+		{
+			name: "combined cost with explicit per-unit currency",
+			src: "2024-01-15 * \"Buy GOOG\"\n" +
+				"  Assets:Brokerage                           10 GOOG {502.12 USD # 9.95 USD}\n" +
+				"  Assets:Cash                           -5031.15 USD\n",
+		},
+		{
+			name: "combined cost with date and label",
+			src: "2024-01-15 * \"Buy GOOG\"\n" +
+				"  Assets:Brokerage                           10 GOOG {502.12 # 9.95 USD, 2024-01-15, \"lot1\"}\n" +
+				"  Assets:Cash                           -5031.15 USD\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Format(tt.src)
+			if got != tt.src {
+				t.Errorf("Format() not byte-for-byte stable:\ngot:\n%q\nwant:\n%q", got, tt.src)
+			}
+		})
+	}
+}
+
 func TestFormatAutoBalancedPosting(t *testing.T) {
 	src := "2024-01-15 * \"Test\"\n     Expenses:Food  50.00 USD\n     Assets:Cash\n"
 	got := Format(src)
