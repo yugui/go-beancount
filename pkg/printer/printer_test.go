@@ -10,6 +10,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/format"
 	"github.com/yugui/go-beancount/pkg/printer"
+	"github.com/yugui/go-beancount/pkg/syntax"
 )
 
 func decimal(s string) apd.Decimal {
@@ -420,6 +421,124 @@ func TestCostSpecTotal(t *testing.T) {
 		"  Assets:Bank\n"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestCostSpecCombined(t *testing.T) {
+	got := print(t, &ast.Transaction{
+		Date:      date("2024-01-15"),
+		Flag:      '*',
+		Narration: "Buy stock combined",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amountp("10", "AAPL"),
+				Cost: &ast.CostSpec{
+					PerUnit: amountp("502.12", "USD"),
+					Total:   amountp("9.95", "USD"),
+				},
+			},
+			{Account: "Assets:Bank"},
+		},
+	})
+	want := "" +
+		"2024-01-15 * \"Buy stock combined\"\n" +
+		"  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD}\n" +
+		"  Assets:Bank\n"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestCostSpecCombinedExplicitCurrencies(t *testing.T) {
+	// Defensive case: mismatched currencies. The lowerer rejects this, but
+	// a directly-constructed AST should still produce a valid-looking
+	// rendering with both currencies emitted explicitly, never a panic.
+	got := print(t, &ast.Transaction{
+		Date:      date("2024-01-15"),
+		Flag:      '*',
+		Narration: "Mismatched cost",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amountp("10", "AAPL"),
+				Cost: &ast.CostSpec{
+					PerUnit: amountp("502.12", "EUR"),
+					Total:   amountp("9.95", "USD"),
+				},
+			},
+			{Account: "Assets:Bank"},
+		},
+	})
+	want := "" +
+		"2024-01-15 * \"Mismatched cost\"\n" +
+		"  Assets:Brokerage                           10 AAPL {502.12 EUR # 9.95 USD}\n" +
+		"  Assets:Bank\n"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestCostSpecCombinedWithDateAndLabel(t *testing.T) {
+	got := print(t, &ast.Transaction{
+		Date:      date("2024-01-15"),
+		Flag:      '*',
+		Narration: "Buy stock combined annotated",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amountp("10", "AAPL"),
+				Cost: &ast.CostSpec{
+					PerUnit: amountp("502.12", "USD"),
+					Total:   amountp("9.95", "USD"),
+					Date:    datep("2024-01-15"),
+					Label:   "lot1",
+				},
+			},
+			{Account: "Assets:Bank"},
+		},
+	})
+	want := "" +
+		"2024-01-15 * \"Buy stock combined annotated\"\n" +
+		"  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD, 2024-01-15, \"lot1\"}\n" +
+		"  Assets:Bank\n"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestCostSpecCombinedRoundTrip(t *testing.T) {
+	// First parse → lower → print test for the combined form. This test
+	// deliberately skips validation because validation has not yet been updated
+	// to accept the combined form.
+	src := "" +
+		"2024-01-15 * \"Buy stock combined\"\n" +
+		"  Assets:Brokerage  10 AAPL {502.12 # 9.95 USD}\n" +
+		"  Assets:Bank\n"
+
+	cst := syntax.Parse(src)
+	if len(cst.Errors) > 0 {
+		t.Fatalf("parse errors: %v", cst.Errors)
+	}
+	file := ast.Lower("test.beancount", cst)
+	if len(file.Diagnostics) > 0 {
+		t.Fatalf("lower diagnostics: %v", file.Diagnostics)
+	}
+
+	var buf bytes.Buffer
+	if err := printer.Fprint(&buf, file); err != nil {
+		t.Fatalf("Fprint: %v", err)
+	}
+	out := buf.String()
+	// The printer normalizes the amount-column alignment, so the round-tripped
+	// output is not byte-identical to src; compare against the canonical printer
+	// output instead. Update this constant if the printer's formatting changes.
+	const want = "" +
+		"2024-01-15 * \"Buy stock combined\"\n" +
+		"  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD}\n" +
+		"  Assets:Bank\n"
+	if out != want {
+		t.Errorf("printer round-trip output mismatch\ngot:\n%s\nwant:\n%s", out, want)
 	}
 }
 
