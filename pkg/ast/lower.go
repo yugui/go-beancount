@@ -828,9 +828,15 @@ func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
 		Span: l.spanFromNode(n),
 	}
 
-	// Determine per-unit vs total by checking for LBRACE2. The combined
-	// "{X # Y CUR}" form is not yet accepted by the parser; once the parser
-	// learns the # separator, lowerCostSpec will populate both fields.
+	// Determine per-unit vs total by checking for LBRACE2.
+	//
+	// TODO(step3): The parser now accepts the combined "{X # Y CUR}" form
+	// (a HASH token child plus a second AmountNode). Step 3 will detect the
+	// HASH child and populate Total from the second AmountNode (inheriting
+	// the currency from the total side when the per-unit amount omits it).
+	// For now we deliberately ignore the second amount: FindNode returns the
+	// first AmountNode (the per-unit one), preserving existing semantics so
+	// the printer/validator combined-form panic guards remain unreachable.
 	isTotal := n.FindToken(syntax.LBRACE2) != nil
 
 	// Extract amount (if present).
