@@ -324,7 +324,7 @@ func (l *lowerer) lowerOpen(n *syntax.Node) {
 	l.addDirective(&Open{
 		Span:       l.spanFromNode(n),
 		Date:       date,
-		Account:    acctTok.Raw,
+		Account:    Account(acctTok.Raw),
 		Currencies: currencies,
 		Booking:    booking,
 		Meta:       l.lowerMetadata(n),
@@ -351,7 +351,7 @@ func (l *lowerer) lowerClose(n *syntax.Node) {
 	l.addDirective(&Close{
 		Span:    l.spanFromNode(n),
 		Date:    date,
-		Account: acctTok.Raw,
+		Account: Account(acctTok.Raw),
 		Meta:    l.lowerMetadata(n),
 	})
 }
@@ -457,7 +457,7 @@ func (l *lowerer) lowerBalance(n *syntax.Node) {
 	bal := &Balance{
 		Span:    l.spanFromNode(n),
 		Date:    date,
-		Account: acctTok.Raw,
+		Account: Account(acctTok.Raw),
 		Amount:  Amount{Number: num, Currency: currTok.Raw},
 		Meta:    l.lowerMetadata(n),
 	}
@@ -628,8 +628,8 @@ func (l *lowerer) lowerPad(n *syntax.Node) {
 	l.addDirective(&Pad{
 		Span:       l.spanFromNode(n),
 		Date:       date,
-		Account:    acctTokens[0].Raw,
-		PadAccount: acctTokens[1].Raw,
+		Account:    Account(acctTokens[0].Raw),
+		PadAccount: Account(acctTokens[1].Raw),
 		Meta:       l.lowerMetadata(n),
 	})
 }
@@ -659,7 +659,7 @@ func (l *lowerer) lowerNote(n *syntax.Node) {
 	l.addDirective(&Note{
 		Span:    l.spanFromNode(n),
 		Date:    date,
-		Account: acctTok.Raw,
+		Account: Account(acctTok.Raw),
 		Comment: unquoteString(strTokens[0]),
 		Meta:    l.lowerMetadata(n),
 	})
@@ -690,7 +690,7 @@ func (l *lowerer) lowerDocument(n *syntax.Node) {
 	l.addDirective(&Document{
 		Span:    l.spanFromNode(n),
 		Date:    date,
-		Account: acctTok.Raw,
+		Account: Account(acctTok.Raw),
 		Path:    unquoteString(strTokens[0]),
 		Meta:    l.lowerMetadata(n),
 	})
@@ -802,7 +802,7 @@ func (l *lowerer) lowerPosting(n *syntax.Node) (Posting, bool) {
 		l.addDiagnostic(n, "posting missing account")
 		return Posting{}, false
 	}
-	p.Account = acctTok.Raw
+	p.Account = Account(acctTok.Raw)
 
 	// Optional amount
 	amountNode := n.FindNode(syntax.AmountNode)

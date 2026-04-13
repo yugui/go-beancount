@@ -79,7 +79,7 @@ func (c *checker) visitClose(d *ast.Close) {
 // requireOpen verifies that an account is open at the given date and, if a
 // currency is supplied, that the currency is allowed by the account. It
 // emits an error for each violation found.
-func (c *checker) requireOpen(account string, at time.Time, span ast.Span, currency string) {
+func (c *checker) requireOpen(account ast.Account, at time.Time, span ast.Span, currency string) {
 	st, ok := c.accounts[account]
 	if !ok {
 		c.emit(Error{

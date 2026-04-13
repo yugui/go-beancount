@@ -17,7 +17,7 @@ type State struct {
 // Balance returns a copy of the running balance for (account, currency), or
 // nil if the bucket has never been touched. The returned pointer is safe for
 // the caller to read and modify without affecting validator state.
-func (s *State) Balance(account, currency string) *apd.Decimal {
+func (s *State) Balance(account ast.Account, currency string) *apd.Decimal {
 	cur, ok := s.c.balances[balanceKey{Account: account, Currency: currency}]
 	if !ok || cur == nil {
 		return nil
@@ -35,7 +35,7 @@ func (s *State) InferTolerance(a ast.Amount) *apd.Decimal {
 }
 
 // AccountOpen reports whether the named account exists and is not closed.
-func (s *State) AccountOpen(account string) bool {
+func (s *State) AccountOpen(account ast.Account) bool {
 	st, ok := s.c.accounts[account]
 	if !ok {
 		return false
@@ -111,7 +111,9 @@ func (assertHandler) Evaluate(state *State, d *ast.Custom) []Error {
 			Message: `custom "assert" expects the second value to be an amount`,
 		}}
 	}
-	account := accountVal.String
+	// accountVal.String was produced by the parser, which enforces account
+	// syntax; an additional IsValid check here would be redundant.
+	account := ast.Account(accountVal.String)
 	amount := amountVal.Amount
 
 	if !state.AccountOpen(account) {

@@ -9,14 +9,14 @@ import (
 
 // balanceKey identifies a running balance bucket by (account, currency).
 type balanceKey struct {
-	Account  string
+	Account  ast.Account
 	Currency string
 }
 
 // apply adds delta to the running balance for (account, currency). A nil or
 // zero delta is treated as a no-op. The returned error surfaces arithmetic
 // failures from the underlying apd context.
-func (c *checker) apply(account, currency string, delta *apd.Decimal) error {
+func (c *checker) apply(account ast.Account, currency string, delta *apd.Decimal) error {
 	if delta == nil {
 		return nil
 	}

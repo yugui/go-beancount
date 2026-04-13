@@ -17,9 +17,9 @@ func Check(ledger *ast.Ledger) []Error {
 // checker holds the state for a single validation pass.
 type checker struct {
 	ledger      *ast.Ledger
-	accounts    map[string]*accountState
+	accounts    map[ast.Account]*accountState
 	balances    map[balanceKey]*apd.Decimal
-	pendingPads map[string]*pendingPad
+	pendingPads map[ast.Account]*pendingPad
 	options     *optionValues
 	errors      []Error
 }
@@ -28,9 +28,9 @@ type checker struct {
 func newChecker(ledger *ast.Ledger) *checker {
 	return &checker{
 		ledger:      ledger,
-		accounts:    make(map[string]*accountState),
+		accounts:    make(map[ast.Account]*accountState),
 		balances:    make(map[balanceKey]*apd.Decimal),
-		pendingPads: make(map[string]*pendingPad),
+		pendingPads: make(map[ast.Account]*pendingPad),
 		options:     newOptionValues(defaultOptionRegistry),
 	}
 }

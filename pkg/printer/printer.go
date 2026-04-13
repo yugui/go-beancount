@@ -241,7 +241,7 @@ func (p *printer) printPosting(posting ast.Posting, txn *ast.Transaction) {
 		prefix.WriteByte(posting.Flag)
 		prefix.WriteByte(' ')
 	}
-	prefix.WriteString(posting.Account)
+	prefix.WriteString(string(posting.Account))
 
 	if posting.Amount == nil {
 		// Auto-balanced posting, just account.

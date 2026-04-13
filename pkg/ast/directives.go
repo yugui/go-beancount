@@ -10,7 +10,7 @@ import (
 type Posting struct {
 	Span    Span
 	Flag    byte // '*', '!', or 0 if not specified
-	Account string
+	Account Account
 	Amount  *Amount          // nil if not specified (auto-balanced posting)
 	Cost    *CostSpec        // nil if no cost spec
 	Price   *PriceAnnotation // nil if no price annotation
@@ -79,7 +79,7 @@ func (i *Include) DirSpan() Span { return i.Span }
 type Open struct {
 	Span       Span
 	Date       time.Time
-	Account    string
+	Account    Account
 	Currencies []string // optional constraint currencies
 	Booking    string   // optional booking method (e.g. "STRICT", "NONE"); empty if not provided
 	Meta       Metadata
@@ -92,7 +92,7 @@ func (o *Open) DirSpan() Span { return o.Span }
 type Close struct {
 	Span    Span
 	Date    time.Time
-	Account string
+	Account Account
 	Meta    Metadata
 }
 
@@ -118,7 +118,7 @@ func (c *Commodity) DirSpan() Span { return c.Span }
 type Balance struct {
 	Span      Span
 	Date      time.Time
-	Account   string
+	Account   Account
 	Amount    Amount
 	Tolerance *apd.Decimal // optional; nil if not specified
 	Meta      Metadata
@@ -131,8 +131,8 @@ func (b *Balance) DirSpan() Span { return b.Span }
 type Pad struct {
 	Span       Span
 	Date       time.Time
-	Account    string
-	PadAccount string
+	Account    Account
+	PadAccount Account
 	Meta       Metadata
 }
 
@@ -143,7 +143,7 @@ func (p *Pad) DirSpan() Span { return p.Span }
 type Note struct {
 	Span    Span
 	Date    time.Time
-	Account string
+	Account Account
 	Comment string
 	Meta    Metadata
 }
@@ -155,7 +155,7 @@ func (n *Note) DirSpan() Span { return n.Span }
 type Document struct {
 	Span    Span
 	Date    time.Time
-	Account string
+	Account Account
 	Path    string
 	Meta    Metadata
 }

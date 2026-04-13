@@ -301,8 +301,9 @@ func isIdentChar(ch byte) bool {
 	return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '_' || ch == '-'
 }
 
-// isAccountRoot reports whether word is a beancount account root type.
-func isAccountRoot(word string) bool {
+// IsAccountRoot reports whether word is a beancount account root type:
+// one of "Assets", "Liabilities", "Equity", "Income", "Expenses".
+func IsAccountRoot(word string) bool {
 	switch word {
 	case "Assets", "Liabilities", "Equity", "Income", "Expenses":
 		return true
@@ -310,9 +311,11 @@ func isAccountRoot(word string) bool {
 	return false
 }
 
-// isAccountComponentStart reports whether r is valid as the first character
-// of an account component. Allowed Unicode categories: Lu, Lt, Lo, Lm, Nd, Nl, No.
-func isAccountComponentStart(r rune) bool {
+// IsAccountComponentStart reports whether r is valid as the first character
+// of an account component. For ASCII runes, only uppercase letters [A-Z]
+// and digits [0-9] are permitted. Beyond ASCII, r must belong to one of
+// the Unicode categories Lu, Lt, Lo, Lm, Nd, Nl, No.
+func IsAccountComponentStart(r rune) bool {
 	if r < 0x80 {
 		return (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 	}
@@ -320,9 +323,11 @@ func isAccountComponentStart(r rune) bool {
 		unicode.Nd, unicode.Nl, unicode.No)
 }
 
-// isAccountComponentCont reports whether r is valid as a continuation character
-// in an account component. Extends isAccountComponentStart with Ll, Mn, Mc, and hyphen.
-func isAccountComponentCont(r rune) bool {
+// IsAccountComponentCont reports whether r is valid as a continuation
+// character in an account component. It extends the IsAccountComponentStart
+// alphabet with ASCII lowercase letters [a-z], Unicode categories Ll, Mn,
+// Mc, and the ASCII hyphen '-'.
+func IsAccountComponentCont(r rune) bool {
 	if r == '-' {
 		return true
 	}
@@ -370,7 +375,7 @@ func (s *scanner) scanUpperWord() Token {
 	word := s.src[pos:s.offset]
 
 	// Check for account: root type followed by ':'
-	if isAccountRoot(word) && s.offset < len(s.src) && s.src[s.offset] == ':' {
+	if IsAccountRoot(word) && s.offset < len(s.src) && s.src[s.offset] == ':' {
 		// Try to scan account components: (:Component)+
 		// Each component: ':' then a valid start rune then valid continuation runes
 		saved := s.offset
@@ -381,14 +386,14 @@ func (s *scanner) scanUpperWord() Token {
 				break
 			}
 			r, size := utf8.DecodeRuneInString(s.src[next:])
-			if !isAccountComponentStart(r) {
+			if !IsAccountComponentStart(r) {
 				break
 			}
 			// Consume ':' and the first rune of the component
 			s.offset = next + size
 			for s.offset < len(s.src) {
 				r, size = utf8.DecodeRuneInString(s.src[s.offset:])
-				if isAccountComponentCont(r) {
+				if IsAccountComponentCont(r) {
 					s.offset += size
 				} else {
 					break
