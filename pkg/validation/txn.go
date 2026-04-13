@@ -86,7 +86,31 @@ func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 		}
 		return out, p.Price.Amount.Currency, nil
 	case p.Cost != nil && p.Cost.PerUnit != nil && p.Cost.Total != nil:
-		panic("validation: combined CostSpec (PerUnit+Total) weight not yet supported")
+		// Combined form `{per # total CUR}`: weight = units*per +
+		// sign(units)*total, in the shared cost currency. The lowerer
+		// guarantees PerUnit.Currency == Total.Currency; we defensively
+		// verify and surface a descriptive error if it is ever violated.
+		// This case must come BEFORE the PerUnit-only and Total-only
+		// cases below, because those use `!= nil` without excluding the
+		// other field and would otherwise shadow this branch.
+		if p.Cost.PerUnit.Currency != p.Cost.Total.Currency {
+			return nil, "", fmt.Errorf("combined cost currencies differ: %q vs %q", p.Cost.PerUnit.Currency, p.Cost.Total.Currency)
+		}
+		perNum := p.Cost.PerUnit.Number
+		totalNum := p.Cost.Total.Number
+		perPart := new(apd.Decimal)
+		if _, err := apd.BaseContext.Mul(perPart, &num, &perNum); err != nil {
+			return nil, "", err
+		}
+		totalPart, err := weightFromTotal(&num, &totalNum)
+		if err != nil {
+			return nil, "", err
+		}
+		out := new(apd.Decimal)
+		if _, err := apd.BaseContext.Add(out, perPart, totalPart); err != nil {
+			return nil, "", err
+		}
+		return out, p.Cost.PerUnit.Currency, nil
 	case p.Cost != nil && p.Cost.PerUnit != nil:
 		// Cost spec with an explicit per-unit cost amount: weight = units * cost.
 		costNum := p.Cost.PerUnit.Number
@@ -163,22 +187,29 @@ func (c *checker) txnTolerance(d *ast.Transaction, residualCurrencies []string) 
 		if p.Amount == nil || p.Cost == nil {
 			continue
 		}
-		// Pick whichever cost component is present. Once the combined
-		// "{X # Y CUR}" form is supported this should consider both
-		// components' precisions; until then, having both set is a
-		// programmer error.
-		if p.Cost.PerUnit != nil && p.Cost.Total != nil {
-			panic("validation: combined CostSpec (PerUnit+Total) tolerance not yet supported")
-		}
-		costAmt := p.Cost.PerUnit
-		if costAmt == nil {
-			costAmt = p.Cost.Total
-		}
-		if costAmt == nil {
+		// Pick the cost component(s) present. For the combined
+		// "{per # total CUR}" form, the residual can pick up imprecision
+		// from either component, so we use the more precise (more
+		// negative) exponent. The lowerer guarantees both components
+		// share a currency in the combined case.
+		var costCur string
+		var costExp int32
+		switch {
+		case p.Cost.PerUnit != nil && p.Cost.Total != nil:
+			costCur = p.Cost.PerUnit.Currency
+			costExp = p.Cost.PerUnit.Number.Exponent
+			if te := p.Cost.Total.Number.Exponent; te < costExp {
+				costExp = te
+			}
+		case p.Cost.PerUnit != nil:
+			costCur = p.Cost.PerUnit.Currency
+			costExp = p.Cost.PerUnit.Number.Exponent
+		case p.Cost.Total != nil:
+			costCur = p.Cost.Total.Currency
+			costExp = p.Cost.Total.Number.Exponent
+		default:
 			continue
 		}
-		costCur := costAmt.Currency
-		costExp := costAmt.Number.Exponent
 		perUnitCostTol := c.toleranceForExponent(costExp)
 
 		absUnits := new(apd.Decimal)
