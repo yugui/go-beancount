@@ -1,8 +1,9 @@
 package validation
 
 import (
+	"cmp"
 	"fmt"
-	"sort"
+	"slices"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -40,7 +41,7 @@ func (c *checker) visitPad(d *ast.Pad) {
 // balance for currency equals expected, and offsets the source account
 // accordingly. Returns whether a pad was resolved and any internal arithmetic
 // error encountered.
-func (c *checker) resolvePendingPad(account, currency string, expected *apd.Decimal) (bool, error) {
+func (c *checker) resolvePendingPad(account ast.Account, currency string, expected *apd.Decimal) (bool, error) {
 	pp, ok := c.pendingPads[account]
 	if !ok {
 		return false, nil
@@ -77,11 +78,11 @@ func (c *checker) reportUnresolvedPads() {
 	if len(c.pendingPads) == 0 {
 		return
 	}
-	accounts := make([]string, 0, len(c.pendingPads))
+	accounts := make([]ast.Account, 0, len(c.pendingPads))
 	for a := range c.pendingPads {
 		accounts = append(accounts, a)
 	}
-	sort.Strings(accounts)
+	slices.SortFunc(accounts, cmp.Compare[ast.Account])
 	for _, a := range accounts {
 		pp := c.pendingPads[a]
 		c.emit(Error{

@@ -13,7 +13,7 @@ func openAccounts(t *testing.T, date string, names ...string) []ast.Directive {
 	d := parseDay(t, date)
 	out := make([]ast.Directive, 0, len(names))
 	for _, n := range names {
-		out = append(out, &ast.Open{Date: d, Account: n})
+		out = append(out, &ast.Open{Date: d, Account: ast.Account(n)})
 	}
 	return out
 }
