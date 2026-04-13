@@ -20,6 +20,7 @@ go_test(
         ":printer",
         "//pkg/ast",
         "//pkg/format",
+        "//pkg/syntax",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )

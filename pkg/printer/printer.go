@@ -310,9 +310,17 @@ func (p *printer) formatDecimal(d *apd.Decimal) string {
 //
 // Brace selection: "{{...}}" is used iff the cost has a Total component and
 // no PerUnit (the legacy total-only form). Every other case—including a
-// completely empty CostSpec and (in the future) the combined "{X # Y CUR}"
-// form—uses single braces. As a consequence an empty CostSpec is normalized
-// to "{}", so a source "{{}}" parses, lowers, and re-prints as "{}".
+// completely empty CostSpec and the combined "{X # Y CUR}" form—uses single
+// braces. As a consequence an empty CostSpec is normalized to "{}", so a
+// source "{{}}" parses, lowers, and re-prints as "{}".
+//
+// Combined form: when both PerUnit and Total are present, the rendering is
+// "perUnit # total". When the per-unit and total currencies match (the common
+// case after lowering, which guarantees they do), the per-unit currency is
+// suppressed so the output mirrors typical beancount source like
+// "{502.12 # 9.95 USD}". If the currencies happen to differ — a defensive
+// branch that the lowerer rejects — both currencies are emitted explicitly
+// rather than panicking.
 func (p *printer) formatCostSpec(cs ast.CostSpec) string {
 	totalOnly := cs.Total != nil && cs.PerUnit == nil
 	openBrace, closeBrace := "{", "}"
@@ -323,7 +331,17 @@ func (p *printer) formatCostSpec(cs ast.CostSpec) string {
 	var parts []string
 	switch {
 	case cs.PerUnit != nil && cs.Total != nil:
-		panic("printer: combined CostSpec (PerUnit+Total) not yet supported by printer")
+		var leading string
+		if cs.PerUnit.Currency == cs.Total.Currency {
+			// Suppress the per-unit currency to match typical source form.
+			leading = p.formatDecimal(&cs.PerUnit.Number) + " # " + p.formatAmount(*cs.Total)
+		} else {
+			// The lowerer from source rejects mismatched currencies, but a
+			// directly-constructed AST may reach this branch; emit both
+			// currencies explicitly rather than panicking.
+			leading = p.formatAmount(*cs.PerUnit) + " # " + p.formatAmount(*cs.Total)
+		}
+		parts = append(parts, leading)
 	case cs.PerUnit != nil:
 		parts = append(parts, p.formatAmount(*cs.PerUnit))
 	case cs.Total != nil:
