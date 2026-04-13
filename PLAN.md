@@ -91,10 +91,16 @@ The abstract syntax tree represents the semantic structure of a ledger, divorced
 ### Deliverables
 
 - **Account lifecycle checker:** verifies every account referenced in a directive was opened before use and not yet closed; flags use-after-close.
-- **Transaction balance checker:** verifies that postings in each transaction sum to zero (with at most one auto-computed posting per transaction).
-- **Balance assertion checker:** verifies `balance` directives match the running balance at their date.
+- **Transaction balance checker:** verifies that postings in each transaction sum to zero (with at most one auto-computed posting per transaction). Residual tolerance is evaluated **per currency** — a tight-currency tolerance (e.g. JPY integer) must not mask an out-of-tolerance residual in a looser currency.
+- **Balance assertion checker:** verifies `balance` directives match the running balance at their date. The balance syntax follows Beancount upstream: `Account Number [~ Number] Currency` (single trailing currency, shared by the main amount and the optional tolerance).
 - **Pad computation:** computes the amount for `pad` directives such that the subsequent `balance` assertion holds.
-- **Assertion checker:** handles `custom` directives used as assertions (for forward compatibility).
+- **Custom assertion extension point:** handles `custom` directives used as assertions. A public `CustomAssertion` interface plus `RegisterCustomAssertion` registry allows additional handlers to be plugged in from `init()` without modifying the core checker. A built-in `"assert"` handler is provided.
+- **Tolerance inference:** default tolerance is `multiplier × 10^e` where `e` is the least-significant exponent of the relevant amount and `multiplier` defaults to `0.5`. Used uniformly by balance assertions, transaction residuals, and custom assertions.
+- **Option-driven tolerance configuration:** the following Beancount options are honored:
+  - `inferred_tolerance_multiplier` (decimal, default `0.5`) — scales the inferred tolerance.
+  - `infer_tolerance_from_cost` (bool, default `false`) — when enabled, postings with a cost spec additionally contribute `|units| × (multiplier × 10^costExp)` to the residual tolerance of the cost currency.
+  - `inferred_tolerance_default` is **not** supported.
+- **Generic option directive registry:** a package-internal registry (`pkg/validation/options.go`) reads `option` directives in a pre-pass before the directive walk, with typed accessors (String/Bool/Decimal/StringList). Unknown keys are silently ignored (Beancount parity); malformed values emit `CodeInvalidOption`. `operating_currency` is registered but not yet consumed. New options are added by registering a spec, not by threading ad-hoc fields through the checker.
 - **API:** `validation.Check(ledger *ast.Ledger) []validation.Error` returning structured diagnostics with source locations.
 
 ---
