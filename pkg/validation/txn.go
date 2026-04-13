@@ -85,22 +85,25 @@ func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 			return nil, "", err
 		}
 		return out, p.Price.Amount.Currency, nil
-	case p.Cost != nil && p.Cost.Amount != nil:
-		// Cost spec with an explicit per-unit (or total) cost amount.
-		// Mirrors the price handling above.
-		costNum := p.Cost.Amount.Number
-		if p.Cost.IsTotal {
-			out, err := weightFromTotal(&num, &costNum)
-			if err != nil {
-				return nil, "", err
-			}
-			return out, p.Cost.Amount.Currency, nil
-		}
+	case p.Cost != nil && p.Cost.PerUnit != nil && p.Cost.Total != nil:
+		panic("validation: combined CostSpec (PerUnit+Total) weight not yet supported")
+	case p.Cost != nil && p.Cost.PerUnit != nil:
+		// Cost spec with an explicit per-unit cost amount: weight = units * cost.
+		costNum := p.Cost.PerUnit.Number
 		out := new(apd.Decimal)
 		if _, err := apd.BaseContext.Mul(out, &num, &costNum); err != nil {
 			return nil, "", err
 		}
-		return out, p.Cost.Amount.Currency, nil
+		return out, p.Cost.PerUnit.Currency, nil
+	case p.Cost != nil && p.Cost.Total != nil:
+		// Cost spec with a total cost amount ({{...}}): weight =
+		// sign(units) * total. Mirrors the total-price (@@) weight calculation.
+		costNum := p.Cost.Total.Number
+		out, err := weightFromTotal(&num, &costNum)
+		if err != nil {
+			return nil, "", err
+		}
+		return out, p.Cost.Total.Currency, nil
 	default:
 		// Plain amount: the caller must not mutate the returned pointer
 		// because it aliases the AST. Copy to a fresh value so the
@@ -157,11 +160,25 @@ func (c *checker) txnTolerance(d *ast.Transaction, residualCurrencies []string) 
 	costTol := make(map[string]*apd.Decimal)
 	for i := range d.Postings {
 		p := &d.Postings[i]
-		if p.Amount == nil || p.Cost == nil || p.Cost.Amount == nil {
+		if p.Amount == nil || p.Cost == nil {
 			continue
 		}
-		costCur := p.Cost.Amount.Currency
-		costExp := p.Cost.Amount.Number.Exponent
+		// Pick whichever cost component is present. Once the combined
+		// "{X # Y CUR}" form is supported this should consider both
+		// components' precisions; until then, having both set is a
+		// programmer error.
+		if p.Cost.PerUnit != nil && p.Cost.Total != nil {
+			panic("validation: combined CostSpec (PerUnit+Total) tolerance not yet supported")
+		}
+		costAmt := p.Cost.PerUnit
+		if costAmt == nil {
+			costAmt = p.Cost.Total
+		}
+		if costAmt == nil {
+			continue
+		}
+		costCur := costAmt.Currency
+		costExp := costAmt.Number.Exponent
 		perUnitCostTol := c.toleranceForExponent(costExp)
 
 		absUnits := new(apd.Decimal)

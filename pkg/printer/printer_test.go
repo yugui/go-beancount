@@ -381,9 +381,9 @@ func TestCostSpecPerUnit(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amountp("10", "AAPL"),
 				Cost: &ast.CostSpec{
-					Amount: amountp("150.00", "USD"),
-					Date:   datep("2024-01-15"),
-					Label:  "lot1",
+					PerUnit: amountp("150.00", "USD"),
+					Date:    datep("2024-01-15"),
+					Label:   "lot1",
 				},
 			},
 			{Account: "Assets:Bank"},
@@ -408,8 +408,7 @@ func TestCostSpecTotal(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amountp("10", "AAPL"),
 				Cost: &ast.CostSpec{
-					Amount:  amountp("1500.00", "USD"),
-					IsTotal: true,
+					Total: amountp("1500.00", "USD"),
 				},
 			},
 			{Account: "Assets:Bank"},

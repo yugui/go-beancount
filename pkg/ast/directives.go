@@ -18,12 +18,24 @@ type Posting struct {
 }
 
 // CostSpec represents a cost specification on a posting.
+//
+// PerUnit and Total carry distinct, non-overlapping meanings; there is no
+// disambiguation flag. The mapping from source syntax is:
+//
+//	{X CUR}            -> PerUnit=X,    Total=nil
+//	{{X CUR}}          -> PerUnit=nil,  Total=X
+//	{X # Y CUR}        -> PerUnit=X,    Total=Y      (combined form, future)
+//	{} or {{}}         -> PerUnit=nil,  Total=nil    (empty)
+//
+// In the combined form (both non-nil) both components share the same
+// currency. The empty form is normalized to "{}" on print; "{{}}" does not
+// round-trip byte-for-byte.
 type CostSpec struct {
 	Span    Span
-	Amount  *Amount    // the cost amount; nil for empty cost spec ({} or {{}})
+	PerUnit *Amount    // per-unit cost component; nil if absent
+	Total   *Amount    // total / surcharge cost component; nil if absent
 	Date    *time.Time // optional acquisition date
 	Label   string     // optional lot label; empty if not specified
-	IsTotal bool       // true if {{...}} syntax (total cost), false if {...} (per-unit cost)
 }
 
 // PriceAnnotation represents a price annotation on a posting.

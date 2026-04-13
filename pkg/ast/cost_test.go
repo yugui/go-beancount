@@ -25,17 +25,17 @@ func TestLowerCostSpec_PerUnit(t *testing.T) {
 	if !ok {
 		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
 	}
-	if cs.IsTotal {
-		t.Error("IsTotal = true, want false")
+	if cs.Total != nil {
+		t.Errorf("Total = %v, want nil", cs.Total)
 	}
-	if cs.Amount == nil {
-		t.Fatal("Amount is nil")
+	if cs.PerUnit == nil {
+		t.Fatal("PerUnit is nil")
 	}
-	if got := cs.Amount.Number.String(); got != "100" {
-		t.Errorf("Amount.Number = %q, want %q", got, "100")
+	if got := cs.PerUnit.Number.String(); got != "100" {
+		t.Errorf("PerUnit.Number = %q, want %q", got, "100")
 	}
-	if cs.Amount.Currency != "USD" {
-		t.Errorf("Amount.Currency = %q, want %q", cs.Amount.Currency, "USD")
+	if cs.PerUnit.Currency != "USD" {
+		t.Errorf("PerUnit.Currency = %q, want %q", cs.PerUnit.Currency, "USD")
 	}
 	if cs.Date != nil {
 		t.Errorf("Date = %v, want nil", cs.Date)
@@ -64,17 +64,17 @@ func TestLowerCostSpec_Total(t *testing.T) {
 	if !ok {
 		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
 	}
-	if !cs.IsTotal {
-		t.Error("IsTotal = false, want true")
+	if cs.PerUnit != nil {
+		t.Errorf("PerUnit = %v, want nil", cs.PerUnit)
 	}
-	if cs.Amount == nil {
-		t.Fatal("Amount is nil")
+	if cs.Total == nil {
+		t.Fatal("Total is nil")
 	}
-	if got := cs.Amount.Number.String(); got != "1000" {
-		t.Errorf("Amount.Number = %q, want %q", got, "1000")
+	if got := cs.Total.Number.String(); got != "1000" {
+		t.Errorf("Total.Number = %q, want %q", got, "1000")
 	}
-	if cs.Amount.Currency != "USD" {
-		t.Errorf("Amount.Currency = %q, want %q", cs.Amount.Currency, "USD")
+	if cs.Total.Currency != "USD" {
+		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
 	}
 }
 
@@ -97,11 +97,53 @@ func TestLowerCostSpec_WithDateAndLabel(t *testing.T) {
 	if !ok {
 		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
 	}
-	if cs.Amount == nil {
-		t.Fatal("Amount is nil")
+	if cs.PerUnit == nil {
+		t.Fatal("PerUnit is nil")
 	}
-	if got := cs.Amount.Number.String(); got != "100" {
-		t.Errorf("Amount.Number = %q, want %q", got, "100")
+	if got := cs.PerUnit.Number.String(); got != "100" {
+		t.Errorf("PerUnit.Number = %q, want %q", got, "100")
+	}
+	if cs.Date == nil {
+		t.Fatal("Date is nil")
+	}
+	if got := cs.Date.Format("2006-01-02"); got != "2023-06-15" {
+		t.Errorf("Date = %q, want %q", got, "2023-06-15")
+	}
+	if cs.Label != "lot1" {
+		t.Errorf("Label = %q, want %q", cs.Label, "lot1")
+	}
+}
+
+func TestLowerCostSpec_TotalWithDateAndLabel(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {{1000 USD, 2023-06-15, \"lot1\"}}\n  Expenses:Other\n")
+	txnNode := cst.Root.FindNode(syntax.TransactionDirective)
+	if txnNode == nil {
+		t.Fatal("no transaction found")
+	}
+	postingNodes := txnNode.FindAllNodes(syntax.PostingNode)
+	if len(postingNodes) == 0 {
+		t.Fatal("no posting found")
+	}
+	costNode := postingNodes[0].FindNode(syntax.CostSpecNode)
+	if costNode == nil {
+		t.Fatal("no cost spec found")
+	}
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+	cs, ok := l.lowerCostSpec(costNode)
+	if !ok {
+		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
+	}
+	if cs.PerUnit != nil {
+		t.Errorf("PerUnit = %v, want nil", cs.PerUnit)
+	}
+	if cs.Total == nil {
+		t.Fatal("Total is nil")
+	}
+	if got := cs.Total.Number.String(); got != "1000" {
+		t.Errorf("Total.Number = %q, want %q", got, "1000")
+	}
+	if cs.Total.Currency != "USD" {
+		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
 	}
 	if cs.Date == nil {
 		t.Fatal("Date is nil")
@@ -133,11 +175,11 @@ func TestLowerCostSpec_Empty(t *testing.T) {
 	if !ok {
 		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
 	}
-	if cs.Amount != nil {
-		t.Errorf("Amount = %v, want nil", cs.Amount)
+	if cs.PerUnit != nil {
+		t.Errorf("PerUnit = %v, want nil", cs.PerUnit)
 	}
-	if cs.IsTotal {
-		t.Error("IsTotal = true, want false")
+	if cs.Total != nil {
+		t.Errorf("Total = %v, want nil", cs.Total)
 	}
 }
 
@@ -160,11 +202,14 @@ func TestLowerCostSpec_EmptyTotal(t *testing.T) {
 	if !ok {
 		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
 	}
-	if cs.Amount != nil {
-		t.Errorf("Amount = %v, want nil", cs.Amount)
+	// {{}} parses to an empty CostSpec; both PerUnit and Total are nil.
+	// The total-form brace is not preserved across lower/print: the printer
+	// normalizes the empty form back to "{}".
+	if cs.PerUnit != nil {
+		t.Errorf("PerUnit = %v, want nil", cs.PerUnit)
 	}
-	if !cs.IsTotal {
-		t.Error("IsTotal = false, want true")
+	if cs.Total != nil {
+		t.Errorf("Total = %v, want nil", cs.Total)
 	}
 }
 
@@ -326,14 +371,14 @@ func TestLowerPosting_WithCostAndPrice(t *testing.T) {
 	if p.Cost == nil {
 		t.Fatal("Cost is nil")
 	}
-	if p.Cost.Amount == nil {
-		t.Fatal("Cost.Amount is nil")
+	if p.Cost.PerUnit == nil {
+		t.Fatal("Cost.PerUnit is nil")
 	}
-	if got := p.Cost.Amount.Number.String(); got != "100" {
-		t.Errorf("Cost.Amount.Number = %q, want %q", got, "100")
+	if got := p.Cost.PerUnit.Number.String(); got != "100" {
+		t.Errorf("Cost.PerUnit.Number = %q, want %q", got, "100")
 	}
-	if p.Cost.Amount.Currency != "USD" {
-		t.Errorf("Cost.Amount.Currency = %q, want %q", p.Cost.Amount.Currency, "USD")
+	if p.Cost.PerUnit.Currency != "USD" {
+		t.Errorf("Cost.PerUnit.Currency = %q, want %q", p.Cost.PerUnit.Currency, "USD")
 	}
 	if p.Price == nil {
 		t.Fatal("Price is nil")

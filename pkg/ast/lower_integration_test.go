@@ -277,8 +277,8 @@ func TestLower_Integration_CostAndPrice(t *testing.T) {
 	if p0.Cost == nil {
 		t.Fatal("buy posting Cost is nil")
 	}
-	if p0.Cost.Amount == nil || p0.Cost.Amount.Number.String() != "185.50" {
-		t.Errorf("Cost.Amount = %v, want 185.50 USD", p0.Cost.Amount)
+	if p0.Cost.PerUnit == nil || p0.Cost.PerUnit.Number.String() != "185.50" {
+		t.Errorf("Cost.PerUnit = %v, want 185.50 USD", p0.Cost.PerUnit)
 	}
 	if p0.Cost.Label != "lot1" {
 		t.Errorf("Cost.Label = %q, want %q", p0.Cost.Label, "lot1")
