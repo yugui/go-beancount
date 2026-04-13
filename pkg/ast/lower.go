@@ -828,8 +828,10 @@ func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
 		Span: l.spanFromNode(n),
 	}
 
-	// Determine per-unit vs total by checking for LBRACE2.
-	cs.IsTotal = n.FindToken(syntax.LBRACE2) != nil
+	// Determine per-unit vs total by checking for LBRACE2. The combined
+	// "{X # Y CUR}" form is not yet accepted by the parser; once the parser
+	// learns the # separator, lowerCostSpec will populate both fields.
+	isTotal := n.FindToken(syntax.LBRACE2) != nil
 
 	// Extract amount (if present).
 	amountNode := n.FindNode(syntax.AmountNode)
@@ -838,7 +840,11 @@ func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
 		if !ok {
 			return CostSpec{}, false
 		}
-		cs.Amount = &amt
+		if isTotal {
+			cs.Total = &amt
+		} else {
+			cs.PerUnit = &amt
+		}
 	}
 
 	// Extract optional date.

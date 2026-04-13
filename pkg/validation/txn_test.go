@@ -243,7 +243,7 @@ func TestInferToleranceFromCost(t *testing.T) {
 				{
 					Account: "Assets:Inv",
 					Amount:  &units,
-					Cost:    &ast.CostSpec{Amount: &costAmt, IsTotal: false},
+					Cost:    &ast.CostSpec{PerUnit: &costAmt},
 				},
 				{Account: "Assets:Cash", Amount: &cash},
 			},
@@ -290,7 +290,7 @@ func TestInferToleranceFromCostOnlyCostCurrency(t *testing.T) {
 			{
 				Account: "Assets:Inv",
 				Amount:  &invUnits,
-				Cost:    &ast.CostSpec{Amount: &costAmt, IsTotal: false},
+				Cost:    &ast.CostSpec{PerUnit: &costAmt},
 			},
 			{Account: "Assets:Inv2", Amount: &invNeg},
 			{Account: "Assets:Cash", Amount: &cash},

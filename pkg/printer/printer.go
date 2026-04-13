@@ -306,15 +306,28 @@ func (p *printer) formatDecimal(d *apd.Decimal) string {
 	return s
 }
 
+// formatCostSpec renders a CostSpec back to source form.
+//
+// Brace selection: "{{...}}" is used iff the cost has a Total component and
+// no PerUnit (the legacy total-only form). Every other case—including a
+// completely empty CostSpec and (in the future) the combined "{X # Y CUR}"
+// form—uses single braces. As a consequence an empty CostSpec is normalized
+// to "{}", so a source "{{}}" parses, lowers, and re-prints as "{}".
 func (p *printer) formatCostSpec(cs ast.CostSpec) string {
-	open, close := "{", "}"
-	if cs.IsTotal {
-		open, close = "{{", "}}"
+	totalOnly := cs.Total != nil && cs.PerUnit == nil
+	openBrace, closeBrace := "{", "}"
+	if totalOnly {
+		openBrace, closeBrace = "{{", "}}"
 	}
 
 	var parts []string
-	if cs.Amount != nil {
-		parts = append(parts, p.formatAmount(*cs.Amount))
+	switch {
+	case cs.PerUnit != nil && cs.Total != nil:
+		panic("printer: combined CostSpec (PerUnit+Total) not yet supported by printer")
+	case cs.PerUnit != nil:
+		parts = append(parts, p.formatAmount(*cs.PerUnit))
+	case cs.Total != nil:
+		parts = append(parts, p.formatAmount(*cs.Total))
 	}
 	if cs.Date != nil {
 		parts = append(parts, cs.Date.Format("2006-01-02"))
@@ -323,7 +336,7 @@ func (p *printer) formatCostSpec(cs ast.CostSpec) string {
 		parts = append(parts, beancountQuote(cs.Label))
 	}
 
-	return open + strings.Join(parts, ", ") + close
+	return openBrace + strings.Join(parts, ", ") + closeBrace
 }
 
 func (p *printer) formatPriceAnnotation(pa ast.PriceAnnotation) string {
