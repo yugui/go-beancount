@@ -213,6 +213,125 @@ func TestLowerCostSpec_EmptyTotal(t *testing.T) {
 	}
 }
 
+// parseCostNodeForTest parses the given source and returns the parsed file
+// along with the first CostSpecNode found in the first posting of the first
+// transaction. It fails the test if any of those are missing.
+//
+// Note: the `{{...#...}}` rejection path in lowerCostSpec is not unit-tested
+// here because the parser prevents that input from reaching the lowerer.
+func parseCostNodeForTest(t *testing.T, src string) (*syntax.File, *syntax.Node) {
+	t.Helper()
+	cst := syntax.Parse(src)
+	txnNode := cst.Root.FindNode(syntax.TransactionDirective)
+	if txnNode == nil {
+		t.Fatal("no transaction found")
+	}
+	postingNodes := txnNode.FindAllNodes(syntax.PostingNode)
+	if len(postingNodes) == 0 {
+		t.Fatal("no posting found")
+	}
+	costNode := postingNodes[0].FindNode(syntax.CostSpecNode)
+	if costNode == nil {
+		t.Fatal("no cost spec found")
+	}
+	return cst, costNode
+}
+
+func TestLowerCostSpec_Combined(t *testing.T) {
+	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {502.12 # 9.95 USD}\n  Expenses:Other\n")
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+	cs, ok := l.lowerCostSpec(costNode)
+	if !ok {
+		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
+	}
+	if cs.PerUnit == nil {
+		t.Fatal("PerUnit is nil")
+	}
+	if got := cs.PerUnit.Number.String(); got != "502.12" {
+		t.Errorf("PerUnit.Number = %q, want %q", got, "502.12")
+	}
+	if cs.PerUnit.Currency != "USD" {
+		t.Errorf("PerUnit.Currency = %q, want %q (inherited)", cs.PerUnit.Currency, "USD")
+	}
+	if cs.Total == nil {
+		t.Fatal("Total is nil")
+	}
+	if got := cs.Total.Number.String(); got != "9.95" {
+		t.Errorf("Total.Number = %q, want %q", got, "9.95")
+	}
+	if cs.Total.Currency != "USD" {
+		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
+	}
+}
+
+func TestLowerCostSpec_CombinedExplicitPerUnitCurrency(t *testing.T) {
+	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {502.12 USD # 9.95 USD}\n  Expenses:Other\n")
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+	cs, ok := l.lowerCostSpec(costNode)
+	if !ok {
+		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
+	}
+	if cs.PerUnit == nil || cs.Total == nil {
+		t.Fatalf("PerUnit=%v Total=%v, want both set", cs.PerUnit, cs.Total)
+	}
+	if cs.PerUnit.Currency != "USD" {
+		t.Errorf("PerUnit.Currency = %q, want %q", cs.PerUnit.Currency, "USD")
+	}
+	if cs.Total.Currency != "USD" {
+		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
+	}
+	if got := cs.PerUnit.Number.String(); got != "502.12" {
+		t.Errorf("PerUnit.Number = %q, want %q", got, "502.12")
+	}
+	if got := cs.Total.Number.String(); got != "9.95" {
+		t.Errorf("Total.Number = %q, want %q", got, "9.95")
+	}
+}
+
+func TestLowerCostSpec_CombinedWithDateAndLabel(t *testing.T) {
+	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {502.12 # 9.95 USD, 2024-01-15, \"lot1\"}\n  Expenses:Other\n")
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+	cs, ok := l.lowerCostSpec(costNode)
+	if !ok {
+		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
+	}
+	if cs.PerUnit == nil || cs.Total == nil {
+		t.Fatalf("PerUnit=%v Total=%v, want both set", cs.PerUnit, cs.Total)
+	}
+	if got := cs.PerUnit.Number.String(); got != "502.12" {
+		t.Errorf("PerUnit.Number = %q, want %q", got, "502.12")
+	}
+	if cs.PerUnit.Currency != "USD" {
+		t.Errorf("PerUnit.Currency = %q, want %q", cs.PerUnit.Currency, "USD")
+	}
+	if got := cs.Total.Number.String(); got != "9.95" {
+		t.Errorf("Total.Number = %q, want %q", got, "9.95")
+	}
+	if cs.Total.Currency != "USD" {
+		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
+	}
+	if cs.Date == nil {
+		t.Fatal("Date is nil")
+	}
+	if got := cs.Date.Format("2006-01-02"); got != "2024-01-15" {
+		t.Errorf("Date = %q, want %q", got, "2024-01-15")
+	}
+	if cs.Label != "lot1" {
+		t.Errorf("Label = %q, want %q", cs.Label, "lot1")
+	}
+}
+
+func TestLowerCostSpec_CombinedMismatchedCurrenciesError(t *testing.T) {
+	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {502.12 EUR # 9.95 USD}\n  Expenses:Other\n")
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+	if _, ok := l.lowerCostSpec(costNode); ok {
+		t.Fatal("lowerCostSpec succeeded, want failure due to mismatched currencies")
+	}
+	if len(l.file.Diagnostics) == 0 {
+		t.Fatal("expected a diagnostic for mismatched currencies, got none")
+	}
+}
+
 func TestLowerPriceAnnotation_PerUnit(t *testing.T) {
 	cst := syntax.Parse("2024-01-01 * \"Test\"\n  Assets:Bank 100 USD @ 1.1 EUR\n  Expenses:Other\n")
 	txnNode := cst.Root.FindNode(syntax.TransactionDirective)
