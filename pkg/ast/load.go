@@ -9,8 +9,9 @@ import (
 )
 
 // Load reads and parses the beancount file at the given path, recursively
-// resolving include directives. It returns a Ledger containing all
-// directives from all files merged in source order.
+// resolving include directives. It returns a Ledger whose directives are
+// ordered canonically by (date, kind, filename, offset) and accessible via
+// Ledger.All.
 //
 // Include paths are resolved relative to the directory of the file
 // containing the include directive.
@@ -25,11 +26,13 @@ func Load(filename string) (*Ledger, error) {
 	}
 	l.loadFile(absPath)
 
-	return &Ledger{
+	ledger := &Ledger{
 		Files:       l.files,
-		Directives:  l.directives,
 		Diagnostics: l.diagnostics,
-	}, nil
+	}
+	// Bulk-insert all collected directives in a single stable sort.
+	ledger.InsertAll(l.directives)
+	return ledger, nil
 }
 
 type loader struct {

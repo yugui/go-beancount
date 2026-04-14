@@ -52,8 +52,10 @@ type Option struct {
 	Value string
 }
 
-func (o *Option) directive()    {}
-func (o *Option) DirSpan() Span { return o.Span }
+func (o *Option) directive()             {}
+func (o *Option) DirSpan() Span          { return o.Span }
+func (o *Option) DirKind() DirectiveKind { return KindFileHeader }
+func (o *Option) DirDate() time.Time     { return time.Time{} }
 
 // Plugin represents a plugin directive: plugin "name" ["config"]
 type Plugin struct {
@@ -62,8 +64,10 @@ type Plugin struct {
 	Config string // empty if not provided
 }
 
-func (p *Plugin) directive()    {}
-func (p *Plugin) DirSpan() Span { return p.Span }
+func (p *Plugin) directive()             {}
+func (p *Plugin) DirSpan() Span          { return p.Span }
+func (p *Plugin) DirKind() DirectiveKind { return KindFileHeader }
+func (p *Plugin) DirDate() time.Time     { return time.Time{} }
 
 // Include represents an include directive: include "path"
 // Include resolution is not performed at this layer.
@@ -72,8 +76,10 @@ type Include struct {
 	Path string
 }
 
-func (i *Include) directive()    {}
-func (i *Include) DirSpan() Span { return i.Span }
+func (i *Include) directive()             {}
+func (i *Include) DirSpan() Span          { return i.Span }
+func (i *Include) DirKind() DirectiveKind { return KindFileHeader }
+func (i *Include) DirDate() time.Time     { return time.Time{} }
 
 // Open represents an open directive: YYYY-MM-DD open Account [Currency,...] ["BookingMethod"]
 type Open struct {
@@ -85,8 +91,10 @@ type Open struct {
 	Meta       Metadata
 }
 
-func (o *Open) directive()    {}
-func (o *Open) DirSpan() Span { return o.Span }
+func (o *Open) directive()             {}
+func (o *Open) DirSpan() Span          { return o.Span }
+func (o *Open) DirKind() DirectiveKind { return KindOpen }
+func (o *Open) DirDate() time.Time     { return o.Date }
 
 // Close represents a close directive: YYYY-MM-DD close Account
 type Close struct {
@@ -96,8 +104,10 @@ type Close struct {
 	Meta    Metadata
 }
 
-func (c *Close) directive()    {}
-func (c *Close) DirSpan() Span { return c.Span }
+func (c *Close) directive()             {}
+func (c *Close) DirSpan() Span          { return c.Span }
+func (c *Close) DirKind() DirectiveKind { return KindClose }
+func (c *Close) DirDate() time.Time     { return c.Date }
 
 // Commodity represents a commodity directive: YYYY-MM-DD commodity Currency
 type Commodity struct {
@@ -107,8 +117,10 @@ type Commodity struct {
 	Meta     Metadata
 }
 
-func (c *Commodity) directive()    {}
-func (c *Commodity) DirSpan() Span { return c.Span }
+func (c *Commodity) directive()             {}
+func (c *Commodity) DirSpan() Span          { return c.Span }
+func (c *Commodity) DirKind() DirectiveKind { return KindOther }
+func (c *Commodity) DirDate() time.Time     { return c.Date }
 
 // Balance represents a balance assertion:
 // YYYY-MM-DD balance Account Number [~ Number] Currency
@@ -124,8 +136,10 @@ type Balance struct {
 	Meta      Metadata
 }
 
-func (b *Balance) directive()    {}
-func (b *Balance) DirSpan() Span { return b.Span }
+func (b *Balance) directive()             {}
+func (b *Balance) DirSpan() Span          { return b.Span }
+func (b *Balance) DirKind() DirectiveKind { return KindBalance }
+func (b *Balance) DirDate() time.Time     { return b.Date }
 
 // Pad represents a pad directive: YYYY-MM-DD pad Account PadAccount
 type Pad struct {
@@ -136,8 +150,10 @@ type Pad struct {
 	Meta       Metadata
 }
 
-func (p *Pad) directive()    {}
-func (p *Pad) DirSpan() Span { return p.Span }
+func (p *Pad) directive()             {}
+func (p *Pad) DirSpan() Span          { return p.Span }
+func (p *Pad) DirKind() DirectiveKind { return KindPad }
+func (p *Pad) DirDate() time.Time     { return p.Date }
 
 // Note represents a note directive: YYYY-MM-DD note Account "comment"
 type Note struct {
@@ -148,8 +164,10 @@ type Note struct {
 	Meta    Metadata
 }
 
-func (n *Note) directive()    {}
-func (n *Note) DirSpan() Span { return n.Span }
+func (n *Note) directive()             {}
+func (n *Note) DirSpan() Span          { return n.Span }
+func (n *Note) DirKind() DirectiveKind { return KindOther }
+func (n *Note) DirDate() time.Time     { return n.Date }
 
 // Document represents a document directive: YYYY-MM-DD document Account "path"
 type Document struct {
@@ -160,8 +178,10 @@ type Document struct {
 	Meta    Metadata
 }
 
-func (d *Document) directive()    {}
-func (d *Document) DirSpan() Span { return d.Span }
+func (d *Document) directive()             {}
+func (d *Document) DirSpan() Span          { return d.Span }
+func (d *Document) DirKind() DirectiveKind { return KindOther }
+func (d *Document) DirDate() time.Time     { return d.Date }
 
 // Event represents an event directive: YYYY-MM-DD event "name" "value"
 type Event struct {
@@ -172,8 +192,10 @@ type Event struct {
 	Meta  Metadata
 }
 
-func (e *Event) directive()    {}
-func (e *Event) DirSpan() Span { return e.Span }
+func (e *Event) directive()             {}
+func (e *Event) DirSpan() Span          { return e.Span }
+func (e *Event) DirKind() DirectiveKind { return KindOther }
+func (e *Event) DirDate() time.Time     { return e.Date }
 
 // Query represents a query directive: YYYY-MM-DD query "name" "bql"
 type Query struct {
@@ -184,8 +206,10 @@ type Query struct {
 	Meta Metadata
 }
 
-func (q *Query) directive()    {}
-func (q *Query) DirSpan() Span { return q.Span }
+func (q *Query) directive()             {}
+func (q *Query) DirSpan() Span          { return q.Span }
+func (q *Query) DirKind() DirectiveKind { return KindOther }
+func (q *Query) DirDate() time.Time     { return q.Date }
 
 // Price represents a price directive: YYYY-MM-DD price Commodity Amount
 type Price struct {
@@ -196,8 +220,10 @@ type Price struct {
 	Meta      Metadata
 }
 
-func (p *Price) directive()    {}
-func (p *Price) DirSpan() Span { return p.Span }
+func (p *Price) directive()             {}
+func (p *Price) DirSpan() Span          { return p.Span }
+func (p *Price) DirKind() DirectiveKind { return KindPrice }
+func (p *Price) DirDate() time.Time     { return p.Date }
 
 // Transaction represents a transaction directive.
 type Transaction struct {
@@ -212,8 +238,10 @@ type Transaction struct {
 	Meta      Metadata
 }
 
-func (t *Transaction) directive()    {}
-func (t *Transaction) DirSpan() Span { return t.Span }
+func (t *Transaction) directive()             {}
+func (t *Transaction) DirSpan() Span          { return t.Span }
+func (t *Transaction) DirKind() DirectiveKind { return KindTransaction }
+func (t *Transaction) DirDate() time.Time     { return t.Date }
 
 // Custom represents a custom directive: YYYY-MM-DD custom "type" Value...
 type Custom struct {
@@ -224,5 +252,7 @@ type Custom struct {
 	Meta     Metadata
 }
 
-func (c *Custom) directive()    {}
-func (c *Custom) DirSpan() Span { return c.Span }
+func (c *Custom) directive()             {}
+func (c *Custom) DirSpan() Span          { return c.Span }
+func (c *Custom) DirKind() DirectiveKind { return KindOther }
+func (c *Custom) DirDate() time.Time     { return c.Date }

@@ -645,12 +645,11 @@ func TestFileByValue(t *testing.T) {
 }
 
 func TestLedger(t *testing.T) {
-	l := ast.Ledger{
-		Directives: []ast.Directive{
-			&ast.Option{Key: "title", Value: "Ledger"},
-			&ast.Open{Date: date("2024-01-01"), Account: "Assets:Cash"},
-		},
-	}
+	l := ast.Ledger{}
+	l.InsertAll([]ast.Directive{
+		&ast.Option{Key: "title", Value: "Ledger"},
+		&ast.Open{Date: date("2024-01-01"), Account: "Assets:Cash"},
+	})
 	got := print(t, &l, format.WithInsertBlankLinesBetweenDirectives(true))
 	want := "" +
 		"option \"title\" \"Ledger\"\n" +

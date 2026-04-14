@@ -8,13 +8,12 @@ import (
 )
 
 func TestOptionsCollectedBeforeWalk(t *testing.T) {
-	ledger := &ast.Ledger{
-		Directives: []ast.Directive{
-			&ast.Option{Key: "operating_currency", Value: "USD"},
-			&ast.Option{Key: "operating_currency", Value: "JPY"},
-			&ast.Option{Key: "no_such_option", Value: "ignored"},
-		},
-	}
+	ledger := &ast.Ledger{}
+	ledger.InsertAll([]ast.Directive{
+		&ast.Option{Key: "operating_currency", Value: "USD"},
+		&ast.Option{Key: "operating_currency", Value: "JPY"},
+		&ast.Option{Key: "no_such_option", Value: "ignored"},
+	})
 	c := newChecker(ledger)
 	errs := c.run()
 	if len(errs) != 0 {
@@ -28,15 +27,14 @@ func TestOptionsCollectedBeforeWalk(t *testing.T) {
 }
 
 func TestOptionsInvalidValueEmitsError(t *testing.T) {
-	ledger := &ast.Ledger{
-		Directives: []ast.Directive{
-			&ast.Option{
-				Span:  ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 3, Column: 1}},
-				Key:   "operating_currency",
-				Value: "   ",
-			},
+	ledger := &ast.Ledger{}
+	ledger.InsertAll([]ast.Directive{
+		&ast.Option{
+			Span:  ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 3, Column: 1}},
+			Key:   "operating_currency",
+			Value: "   ",
 		},
-	}
+	})
 	errs := Check(ledger)
 	if len(errs) != 1 {
 		t.Fatalf("TestOptionsInvalidValueEmitsError: Check returned %d errors, want 1: %v", len(errs), errs)
