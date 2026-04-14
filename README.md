@@ -67,4 +67,8 @@ See [PLAN.md](PLAN.md) for the detailed technical design and phased development 
 
 ## License
 
-TBD
+Copyright (C) 2007-2022  Martin Blais.  All Rights Reserved.
+Copyright (C) 2026  Yugui Sonoda.  All Rights Reserved.
+
+This code is distributed under the terms of the "GNU GPLv2 only".
+See COPYING file for details.
