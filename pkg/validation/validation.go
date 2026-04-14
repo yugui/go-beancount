@@ -46,9 +46,10 @@ func (c *checker) run() []Error {
 		return nil
 	}
 	c.collectOptions()
-	ordered := orderDirectives(c.ledger)
-	for _, od := range ordered {
-		switch d := od.dir.(type) {
+	// ast.Ledger already keeps directives in canonical chronological
+	// order; walk them directly via the Ledger iterator.
+	for _, d := range c.ledger.All() {
+		switch d := d.(type) {
 		case *ast.Open:
 			c.visitOpen(d)
 		case *ast.Balance:
@@ -145,7 +146,7 @@ func (c *checker) visitOption(*ast.Option) {}
 // for option directives and feeding their values into c.options. Unknown
 // keys are silently ignored; parse errors emit CodeInvalidOption.
 func (c *checker) collectOptions() {
-	for _, d := range c.ledger.Directives {
+	for _, d := range c.ledger.All() {
 		opt, ok := d.(*ast.Option)
 		if !ok {
 			continue

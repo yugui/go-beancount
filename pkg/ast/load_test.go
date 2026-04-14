@@ -22,7 +22,7 @@ func TestLoad_SingleFile(t *testing.T) {
 	if got := len(ledger.Files); got != 1 {
 		t.Errorf("Files count = %d, want 1", got)
 	}
-	if got := len(ledger.Directives); got != 1 {
+	if got := ledger.Len(); got != 1 {
 		t.Errorf("Directives count = %d, want 1", got)
 	}
 	if got := len(ledger.Diagnostics); got != 0 {
@@ -55,7 +55,7 @@ func TestLoad_WithInclude(t *testing.T) {
 	}
 	// Directives: 1 option + 2 opens + 1 transaction = 4
 	// (Include directive is consumed, not in Directives)
-	if got := len(ledger.Directives); got != 4 {
+	if got := ledger.Len(); got != 4 {
 		t.Errorf("Directives count = %d, want 4", got)
 	}
 }
@@ -127,7 +127,7 @@ func TestLoad_NestedIncludes(t *testing.T) {
 		t.Errorf("Files count = %d, want 3", got)
 	}
 	// Directives: from c (1 open) + from b (1 open) + from a (1 open) = 3
-	if got := len(ledger.Directives); got != 3 {
+	if got := ledger.Len(); got != 3 {
 		t.Errorf("Directives count = %d, want 3", got)
 	}
 }
@@ -154,7 +154,7 @@ func TestLoad_WithHeadings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := len(ledger.Directives); got != 3 {
+	if got := ledger.Len(); got != 3 {
 		t.Errorf("Directives count = %d, want 3 (headings should be trivia, not directives)", got)
 	}
 	if got := len(ledger.Diagnostics); got != 0 {

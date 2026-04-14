@@ -27,9 +27,9 @@ func Fprint(w io.Writer, node any, opts ...format.Option) error {
 	case ast.File:
 		p.printDirectives(v.Directives)
 	case *ast.Ledger:
-		p.printDirectives(v.Directives)
+		p.printLedger(v)
 	case ast.Ledger:
-		p.printDirectives(v.Directives)
+		p.printLedger(&v)
 	case []ast.Directive:
 		p.printDirectives(v)
 	case *ast.Amount:
@@ -72,6 +72,19 @@ func (p *printer) printf(format string, args ...any) {
 
 func (p *printer) printDirectives(dirs []ast.Directive) {
 	for i, d := range dirs {
+		if i > 0 && p.opts.InsertBlankLinesBetweenDirectives {
+			for range p.opts.BlankLinesBetweenDirectives {
+				p.write("\n")
+			}
+		}
+		p.printDirective(d)
+	}
+}
+
+// printLedger walks a Ledger in its canonical chronological order using
+// Ledger.All, which avoids materializing the directive slice.
+func (p *printer) printLedger(l *ast.Ledger) {
+	for i, d := range l.All() {
 		if i > 0 && p.opts.InsertBlankLinesBetweenDirectives {
 			for range p.opts.BlankLinesBetweenDirectives {
 				p.write("\n")

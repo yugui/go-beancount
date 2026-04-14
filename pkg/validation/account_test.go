@@ -24,7 +24,9 @@ func amt(n int64, cur string) ast.Amount {
 }
 
 func ledgerOf(dirs ...ast.Directive) *ast.Ledger {
-	return &ast.Ledger{Directives: dirs}
+	l := &ast.Ledger{}
+	l.InsertAll(dirs)
+	return l
 }
 
 func codes(errs []Error) []Code {

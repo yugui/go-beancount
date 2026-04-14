@@ -276,15 +276,14 @@ func TestInferToleranceMultiplierOverride(t *testing.T) {
 }
 
 func TestInferredToleranceMultiplierInvalid(t *testing.T) {
-	ledger := &ast.Ledger{
-		Directives: []ast.Directive{
-			&ast.Option{
-				Span:  ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 1, Column: 1}},
-				Key:   "inferred_tolerance_multiplier",
-				Value: "abc",
-			},
+	ledger := &ast.Ledger{}
+	ledger.InsertAll([]ast.Directive{
+		&ast.Option{
+			Span:  ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 1, Column: 1}},
+			Key:   "inferred_tolerance_multiplier",
+			Value: "abc",
 		},
-	}
+	})
 	errs := Check(ledger)
 	if len(errs) != 1 {
 		t.Fatalf("invalid multiplier: got %d errors, want 1: %v", len(errs), errs)
