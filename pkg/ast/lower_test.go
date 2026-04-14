@@ -743,6 +743,37 @@ func TestLower_MetadataEmpty(t *testing.T) {
 	}
 }
 
+func TestLower_MetadataDuplicateKey(t *testing.T) {
+	src := "2024-01-01 open Assets:Bank USD\n  category: \"first\"\n  category: \"second\"\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	const wantMsg = `duplicate metadata key "category"`
+	var found bool
+	for _, d := range f.Diagnostics {
+		if d.Message == wantMsg {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing diagnostic %q in %v", wantMsg, f.Diagnostics)
+	}
+	o, ok := f.Directives[0].(*ast.Open)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Open", f.Directives[0])
+	}
+	got, ok := o.Meta.Props["category"]
+	if !ok {
+		t.Fatalf("missing metadata key \"category\" in Props %v", o.Meta.Props)
+	}
+	if got.Kind != ast.MetaString || got.String != "first" {
+		t.Errorf("category = %+v, want MetaString \"first\" (first occurrence wins)", got)
+	}
+}
+
 func TestLower_Transaction(t *testing.T) {
 	src := "2024-01-01 * \"Grocery Store\" \"Weekly shopping\" #groceries ^receipt-123\n  Expenses:Food  50.00 USD\n  Assets:Bank\n"
 	cst := syntax.Parse(src)

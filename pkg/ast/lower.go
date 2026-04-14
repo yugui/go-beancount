@@ -181,9 +181,14 @@ func (l *lowerer) lowerMetadata(n *syntax.Node) Metadata {
 	meta := Metadata{Props: make(map[string]MetaValue)}
 	for _, mn := range metaNodes {
 		key, val, ok := l.lowerMetadataLine(mn)
-		if ok {
-			meta.Props[key] = val
+		if !ok {
+			continue
 		}
+		if _, dup := meta.Props[key]; dup {
+			l.addDiagnostic(mn, fmt.Sprintf("duplicate metadata key %q", key))
+			continue
+		}
+		meta.Props[key] = val
 	}
 	return meta
 }
