@@ -10,6 +10,7 @@ go_library(
         "inventory.go",
         "matcher.go",
         "position.go",
+        "reducer.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/inventory",
     visibility = ["//visibility:public"],
@@ -29,6 +30,7 @@ go_test(
         "inventory_test.go",
         "matcher_test.go",
         "position_test.go",
+        "reducer_test.go",
     ],
     embed = [":inventory"],
     deps = [
