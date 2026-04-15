@@ -6,6 +6,8 @@ go_library(
         "cost.go",
         "doc.go",
         "errors.go",
+        "inventory.go",
+        "matcher.go",
         "position.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/inventory",
@@ -22,6 +24,8 @@ go_test(
     srcs = [
         "cost_test.go",
         "errors_test.go",
+        "inventory_test.go",
+        "matcher_test.go",
         "position_test.go",
     ],
     embed = [":inventory"],
