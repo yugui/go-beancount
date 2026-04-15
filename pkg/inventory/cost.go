@@ -3,8 +3,7 @@ package inventory
 import (
 	"time"
 
-	apd "github.com/cockroachdb/apd/v3"
-
+	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 

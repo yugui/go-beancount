@@ -3,8 +3,7 @@ package inventory
 import (
 	"fmt"
 
-	apd "github.com/cockroachdb/apd/v3"
-
+	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/validation"
 )
