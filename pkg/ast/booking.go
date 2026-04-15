@@ -77,10 +77,3 @@ func (m BookingMethod) String() string {
 		return fmt.Sprintf("BookingMethod(%d)", int(m))
 	}
 }
-
-// ResolveBookingMethod returns the typed BookingMethod corresponding to
-// o.Booking. It is a convenience wrapper around ParseBookingMethod and
-// shares its case-sensitivity and error semantics.
-func (o *Open) ResolveBookingMethod() (BookingMethod, error) {
-	return ParseBookingMethod(o.Booking)
-}

@@ -87,8 +87,14 @@ type Open struct {
 	Date       time.Time
 	Account    Account
 	Currencies []string // optional constraint currencies
-	Booking    string   // optional booking method (e.g. "STRICT", "NONE"); empty if not provided. Use ResolveBookingMethod for a typed value.
-	Meta       Metadata
+	// Booking is the typed booking method parsed from the optional
+	// "STRICT"/"FIFO"/... keyword. The zero value BookingDefault
+	// indicates that the source directive did not specify a booking
+	// keyword, in which case consumers should fall back to the ledger's
+	// configured default. Invalid keywords are rejected at parse time
+	// by the lowerer, so this field always holds a valid enum value.
+	Booking BookingMethod
+	Meta    Metadata
 }
 
 func (o *Open) directive()             {}

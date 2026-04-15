@@ -15,9 +15,9 @@ func mkLedger(dirs ...ast.Directive) *ast.Ledger {
 	return l
 }
 
-// mkOpen constructs an Open directive. If booking is empty, no booking
-// keyword is recorded, which resolves to ast.BookingDefault.
-func mkOpen(date time.Time, account, booking string) *ast.Open {
+// mkOpen constructs an Open directive with a typed booking method.
+// Pass ast.BookingDefault to leave the booking unspecified.
+func mkOpen(date time.Time, account string, booking ast.BookingMethod) *ast.Open {
 	return &ast.Open{
 		Date:    date,
 		Account: ast.Account(account),
@@ -58,8 +58,8 @@ func TestReducerWalk_BasicTwoPostings(t *testing.T) {
 	)
 
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn,
 	)
 
@@ -109,8 +109,8 @@ func TestReducerWalk_AutoPostingInference(t *testing.T) {
 	)
 
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn,
 	)
 
@@ -170,8 +170,8 @@ func TestReducerWalk_AutoPostingWithCostRejected(t *testing.T) {
 		auto,
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn,
 	)
 
@@ -209,8 +209,8 @@ func TestReducerWalk_AutoPostingWithPriceRejected(t *testing.T) {
 		auto,
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn,
 	)
 
@@ -245,9 +245,9 @@ func TestReducerWalk_AutoPostingZeroResidual(t *testing.T) {
 		&ast.Posting{Account: "Equity:Plug"}, // auto with no residual to absorb
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
-		mkOpen(openDate, "Equity:Plug", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Plug", ast.BookingDefault),
 		txn,
 	)
 
@@ -285,9 +285,9 @@ func TestReducerWalk_AutoPostingMultiCurrencyResidual(t *testing.T) {
 		&ast.Posting{Account: "Equity:Plug"}, // auto cannot absorb two currencies
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:USD", ""),
-		mkOpen(openDate, "Assets:EUR", ""),
-		mkOpen(openDate, "Equity:Plug", ""),
+		mkOpen(openDate, "Assets:USD", ast.BookingDefault),
+		mkOpen(openDate, "Assets:EUR", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Plug", ast.BookingDefault),
 		txn,
 	)
 
@@ -318,8 +318,8 @@ func TestReducerWalk_MultipleAutoPostings(t *testing.T) {
 		&ast.Posting{Account: "Expenses:Food"},
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn,
 	)
 
@@ -352,8 +352,8 @@ func TestReducerWalk_StatePersistsAcrossTransactions(t *testing.T) {
 		&ast.Posting{Account: "Expenses:Food", Amount: neg2},
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn1,
 		txn2,
 	)
@@ -402,8 +402,8 @@ func TestReducerWalk_VisitorEarlyReturn(t *testing.T) {
 	neg2 := mkAmountPtr(t, "-20.00", "USD")
 
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		mkTxn(d1,
 			&ast.Posting{Account: "Assets:Cash", Amount: pos1},
 			&ast.Posting{Account: "Expenses:Food", Amount: neg1},
@@ -436,7 +436,7 @@ func TestReducerWalk_OpenSetsBookingMethod(t *testing.T) {
 	closeDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Stock", "FIFO"),
+		mkOpen(openDate, "Assets:Stock", ast.BookingFIFO),
 		mkClose(closeDate, "Assets:Stock"),
 	)
 
@@ -447,42 +447,6 @@ func TestReducerWalk_OpenSetsBookingMethod(t *testing.T) {
 	}
 	if got, want := r.booking["Assets:Stock"], ast.BookingFIFO; got != want {
 		t.Errorf("booking[Assets:Stock] = %v, want %v", got, want)
-	}
-}
-
-// TestReducerWalk_UnknownBookingMethodContinues verifies that an
-// unparseable booking keyword records an error but does not abort the
-// walk: subsequent transactions still run and the account falls back
-// to BookingDefault.
-func TestReducerWalk_UnknownBookingMethodContinues(t *testing.T) {
-	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
-
-	pos := mkAmountPtr(t, "100.00", "USD")
-	neg := mkAmountPtr(t, "-100.00", "USD")
-	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", "UNKNOWN"),
-		mkOpen(openDate, "Expenses:Food", ""),
-		mkTxn(txnDate,
-			&ast.Posting{Account: "Assets:Cash", Amount: pos},
-			&ast.Posting{Account: "Expenses:Food", Amount: neg},
-		),
-	)
-
-	r := NewReducer(ledger)
-	visited := 0
-	errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
-		visited++
-		return true
-	})
-	if visited != 1 {
-		t.Errorf("visitor called %d times, want 1", visited)
-	}
-	if len(errs) != 1 || errs[0].Code != CodeInvalidBookingMethod {
-		t.Fatalf("Walk errs = %v, want [CodeInvalidBookingMethod]", errs)
-	}
-	if got, want := r.booking["Assets:Cash"], ast.BookingDefault; got != want {
-		t.Errorf("booking[Assets:Cash] = %v, want %v (fallback)", got, want)
 	}
 }
 
@@ -498,8 +462,8 @@ func TestReducerWalk_BeforeNilForFirstTouch(t *testing.T) {
 	neg := mkAmountPtr(t, "-1.00", "USD")
 
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		mkTxn(txnDate,
 			&ast.Posting{Account: "Assets:Cash", Amount: pos},
 			&ast.Posting{Account: "Expenses:Food", Amount: neg},
@@ -531,8 +495,8 @@ func TestReducerWalk_ReusableWalk(t *testing.T) {
 	pos := mkAmountPtr(t, "50.00", "USD")
 	neg := mkAmountPtr(t, "-50.00", "USD")
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		mkTxn(txnDate,
 			&ast.Posting{Account: "Assets:Cash", Amount: pos},
 			&ast.Posting{Account: "Expenses:Food", Amount: neg},
@@ -583,8 +547,8 @@ func TestReducerRun_RetainsFinalState(t *testing.T) {
 	pos2 := mkAmountPtr(t, "25.00", "USD")
 	neg2 := mkAmountPtr(t, "-25.00", "USD")
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		mkTxn(d1,
 			&ast.Posting{Account: "Assets:Cash", Amount: pos1},
 			&ast.Posting{Account: "Expenses:Food", Amount: neg1},
@@ -638,16 +602,14 @@ func TestReducerRun_ClonesErrorsSlice(t *testing.T) {
 	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 
 	// Construct a ledger that produces exactly one error
-	// (CodeInvalidBookingMethod) so we have a non-empty errs slice to
+	// (CodeMultipleAutoPostings) so we have a non-empty errs slice to
 	// mutate.
-	pos := mkAmountPtr(t, "1.00", "USD")
-	neg := mkAmountPtr(t, "-1.00", "USD")
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", "UNKNOWN"),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		mkTxn(txnDate,
-			&ast.Posting{Account: "Assets:Cash", Amount: pos},
-			&ast.Posting{Account: "Expenses:Food", Amount: neg},
+			&ast.Posting{Account: "Assets:Cash"},
+			&ast.Posting{Account: "Expenses:Food"},
 		),
 	)
 
@@ -668,8 +630,8 @@ func TestReducerRun_ClonesErrorsSlice(t *testing.T) {
 	if fresh[0].Code == tampered {
 		t.Errorf("Errors() observed caller mutation; internal slice leaked")
 	}
-	if fresh[0].Code != CodeInvalidBookingMethod {
-		t.Errorf("Errors()[0].Code = %v, want %v", fresh[0].Code, CodeInvalidBookingMethod)
+	if fresh[0].Code != CodeMultipleAutoPostings {
+		t.Errorf("Errors()[0].Code = %v, want %v", fresh[0].Code, CodeMultipleAutoPostings)
 	}
 }
 
@@ -682,8 +644,8 @@ func TestReducerFinal_Untouched(t *testing.T) {
 	pos := mkAmountPtr(t, "5.00", "USD")
 	neg := mkAmountPtr(t, "-5.00", "USD")
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		mkTxn(txnDate,
 			&ast.Posting{Account: "Assets:Cash", Amount: pos},
 			&ast.Posting{Account: "Expenses:Food", Amount: neg},
@@ -726,8 +688,8 @@ func TestReducerInspect_FirstTransaction(t *testing.T) {
 		&ast.Posting{Account: "Expenses:Food", Amount: neg2},
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn1,
 		txn2,
 	)
@@ -790,8 +752,8 @@ func TestReducerInspect_MiddleTransaction(t *testing.T) {
 		&ast.Posting{Account: "Expenses:Food", Amount: n3},
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn1,
 		txn2,
 		txn3,
@@ -868,8 +830,8 @@ func TestReducerInspect_NotFound(t *testing.T) {
 	pos := mkAmountPtr(t, "10.00", "USD")
 	neg := mkAmountPtr(t, "-10.00", "USD")
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		mkTxn(d1,
 			&ast.Posting{Account: "Assets:Cash", Amount: pos},
 			&ast.Posting{Account: "Expenses:Food", Amount: neg},
@@ -918,8 +880,8 @@ func TestReducerInspect_SnapshotIndependence(t *testing.T) {
 		&ast.Posting{Account: "Expenses:Food", Amount: n2},
 	)
 	ledger := mkLedger(
-		mkOpen(openDate, "Assets:Cash", ""),
-		mkOpen(openDate, "Expenses:Food", ""),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
 		txn1,
 		txn2,
 	)

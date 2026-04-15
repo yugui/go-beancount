@@ -80,17 +80,10 @@ func (r *Reducer) Walk(visit VisitFunc) []Error {
 	for _, d := range r.ledger.All() {
 		switch d := d.(type) {
 		case *ast.Open:
-			m, err := d.ResolveBookingMethod()
-			if err != nil {
-				r.errs = append(r.errs, Error{
-					Code:    CodeInvalidBookingMethod,
-					Span:    d.Span,
-					Account: d.Account,
-					Message: fmt.Sprintf("invalid booking method %q: %v", d.Booking, err),
-				})
-				m = ast.BookingDefault
-			}
-			r.booking[d.Account] = m
+			// d.Booking is already a typed BookingMethod (invalid
+			// keywords are rejected by the lowerer), so record it
+			// directly.
+			r.booking[d.Account] = d.Booking
 			// Leave r.state[d.Account] unset; a later augmentation
 			// will create the inventory lazily on first touch.
 		case *ast.Close:

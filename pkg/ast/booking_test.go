@@ -85,38 +85,3 @@ func TestBookingMethodString(t *testing.T) {
 		})
 	}
 }
-
-func TestOpenResolveBookingMethod(t *testing.T) {
-	tests := []struct {
-		name    string
-		booking string
-		want    BookingMethod
-		wantErr bool
-	}{
-		{name: "fifo", booking: "FIFO", want: BookingFIFO},
-		{name: "empty", booking: "", want: BookingDefault},
-		{name: "strict", booking: "STRICT", want: BookingStrict},
-		{name: "invalid", booking: "bogus", wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			o := &Open{Account: Assets, Booking: tt.booking}
-			got, err := o.ResolveBookingMethod()
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("ResolveBookingMethod() = %v, nil; want error", got)
-				}
-				if got != 0 {
-					t.Errorf("ResolveBookingMethod() returned %v on error; want zero value", got)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("ResolveBookingMethod() returned unexpected error: %v", err)
-			}
-			if got != tt.want {
-				t.Errorf("ResolveBookingMethod() = %v; want %v", got, tt.want)
-			}
-		})
-	}
-}
