@@ -371,6 +371,49 @@ func BenchmarkLedgerInsert(b *testing.B) {
 	}
 }
 
+// TestLedgerReplaceAll verifies that ReplaceAll discards existing directives
+// and rebuilds the ledger from the replacement slice, preserving canonical
+// ordering and making removed directives unreachable.
+func TestLedgerReplaceAll(t *testing.T) {
+	d1 := day(t, "2024-01-01")
+	d2 := day(t, "2024-02-01")
+	d3 := day(t, "2024-03-01")
+
+	open1 := &Open{Date: d1, Account: "Assets:Cash"}
+	tx := &Transaction{Date: d2, Narration: "coffee"}
+	price := &Price{Date: d3, Commodity: "USD"}
+
+	l := &Ledger{}
+	l.InsertAll([]Directive{open1, tx, price})
+
+	// Replacement slice: omit tx (delete), add a new open (add),
+	// keep original price (identity passthrough).
+	open2 := &Open{Date: d1, Account: "Assets:Bank"}
+	l.ReplaceAll([]Directive{open1, open2, price})
+
+	// Verify length.
+	if l.Len() != 3 {
+		t.Fatalf("Len = %d, want 3", l.Len())
+	}
+
+	// Verify iteration order: both opens (same date, FIFO by insertion
+	// order within same kind) come before price (later date).
+	got := collect(l)
+	want := []Directive{open1, open2, price}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ReplaceAll: index %d: got %p (%T), want %p (%T)", i, got[i], got[i], want[i], want[i])
+		}
+	}
+
+	// Verify the removed Transaction is not reachable.
+	for i, d := range l.All() {
+		if d == tx {
+			t.Errorf("removed Transaction still reachable at index %d", i)
+		}
+	}
+}
+
 func benchSize(n int) string {
 	switch n {
 	case 1_000:
