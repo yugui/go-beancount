@@ -568,3 +568,438 @@ func TestReducerWalk_ReusableWalk(t *testing.T) {
 		}
 	}
 }
+
+// TestReducerRun_RetainsFinalState runs a multi-transaction ledger via
+// Run and confirms that Final(account) exposes the final inventory for
+// each touched account, matching the per-account state a Walk visitor
+// would have seen on the last transaction.
+func TestReducerRun_RetainsFinalState(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	pos1 := mkAmountPtr(t, "100.00", "USD")
+	neg1 := mkAmountPtr(t, "-100.00", "USD")
+	pos2 := mkAmountPtr(t, "25.00", "USD")
+	neg2 := mkAmountPtr(t, "-25.00", "USD")
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Cash", ""),
+		mkOpen(openDate, "Expenses:Food", ""),
+		mkTxn(d1,
+			&ast.Posting{Account: "Assets:Cash", Amount: pos1},
+			&ast.Posting{Account: "Expenses:Food", Amount: neg1},
+		),
+		mkTxn(d2,
+			&ast.Posting{Account: "Assets:Cash", Amount: pos2},
+			&ast.Posting{Account: "Expenses:Food", Amount: neg2},
+		),
+	)
+
+	// Collect the walk's final per-account state via Walk for reference.
+	refR := NewReducer(ledger)
+	var refFinal map[ast.Account]*Inventory
+	refErrs := refR.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+		refFinal = after
+		return true
+	})
+	if len(refErrs) != 0 {
+		t.Fatalf("reference Walk errs = %v", refErrs)
+	}
+
+	r := NewReducer(ledger)
+	errs := r.Run()
+	if len(errs) != 0 {
+		t.Fatalf("Run errs = %v", errs)
+	}
+
+	for acct, wantInv := range refFinal {
+		got := r.Final(acct)
+		if got == nil {
+			t.Errorf("Final(%s) is nil, want non-nil", acct)
+			continue
+		}
+		if !got.Equal(wantInv) {
+			t.Errorf("Final(%s) does not match last visitor after-snapshot", acct)
+		}
+	}
+
+	// Errors() should mirror the slice Run returned.
+	gotErrs := r.Errors()
+	if len(gotErrs) != len(errs) {
+		t.Errorf("Errors() len = %d, Run len = %d", len(gotErrs), len(errs))
+	}
+}
+
+// TestReducerRun_ClonesErrorsSlice confirms that the slice returned by
+// Errors is independent of the reducer's internal errs slice; mutating
+// it must not be visible on subsequent calls.
+func TestReducerRun_ClonesErrorsSlice(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	// Construct a ledger that produces exactly one error
+	// (CodeInvalidBookingMethod) so we have a non-empty errs slice to
+	// mutate.
+	pos := mkAmountPtr(t, "1.00", "USD")
+	neg := mkAmountPtr(t, "-1.00", "USD")
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Cash", "UNKNOWN"),
+		mkOpen(openDate, "Expenses:Food", ""),
+		mkTxn(txnDate,
+			&ast.Posting{Account: "Assets:Cash", Amount: pos},
+			&ast.Posting{Account: "Expenses:Food", Amount: neg},
+		),
+	)
+
+	r := NewReducer(ledger)
+	errs := r.Run()
+	if len(errs) != 1 {
+		t.Fatalf("Run errs len = %d, want 1", len(errs))
+	}
+	// Mutate the returned slice with a sentinel Code value no real
+	// error ever uses, so a leak would be obvious.
+	const tampered Code = -999
+	errs[0] = Error{Code: tampered, Message: "tampered"}
+
+	fresh := r.Errors()
+	if len(fresh) != 1 {
+		t.Fatalf("Errors() len = %d, want 1", len(fresh))
+	}
+	if fresh[0].Code == tampered {
+		t.Errorf("Errors() observed caller mutation; internal slice leaked")
+	}
+	if fresh[0].Code != CodeInvalidBookingMethod {
+		t.Errorf("Errors()[0].Code = %v, want %v", fresh[0].Code, CodeInvalidBookingMethod)
+	}
+}
+
+// TestReducerFinal_Untouched ensures Final returns nil for an account
+// the ledger never touched.
+func TestReducerFinal_Untouched(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	pos := mkAmountPtr(t, "5.00", "USD")
+	neg := mkAmountPtr(t, "-5.00", "USD")
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Cash", ""),
+		mkOpen(openDate, "Expenses:Food", ""),
+		mkTxn(txnDate,
+			&ast.Posting{Account: "Assets:Cash", Amount: pos},
+			&ast.Posting{Account: "Expenses:Food", Amount: neg},
+		),
+	)
+
+	r := NewReducer(ledger)
+	if errs := r.Run(); len(errs) != 0 {
+		t.Fatalf("Run errs = %v", errs)
+	}
+	if got := r.Final("Assets:Unrelated"); got != nil {
+		t.Errorf("Final(Assets:Unrelated) = %v, want nil", got)
+	}
+	// Sanity: a touched account returns non-nil.
+	if got := r.Final("Assets:Cash"); got == nil {
+		t.Errorf("Final(Assets:Cash) = nil, want non-nil")
+	}
+}
+
+// TestReducerInspect_FirstTransaction inspects the first transaction of
+// a two-transaction ledger: before should hold nil snapshots for newly
+// touched accounts, after should reflect only that transaction's
+// effects, and booked should have the expected two entries.
+func TestReducerInspect_FirstTransaction(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	pos1 := mkAmountPtr(t, "100.00", "USD")
+	neg1 := mkAmountPtr(t, "-100.00", "USD")
+	pos2 := mkAmountPtr(t, "25.00", "USD")
+	neg2 := mkAmountPtr(t, "-25.00", "USD")
+
+	txn1 := mkTxn(d1,
+		&ast.Posting{Account: "Assets:Cash", Amount: pos1},
+		&ast.Posting{Account: "Expenses:Food", Amount: neg1},
+	)
+	txn2 := mkTxn(d2,
+		&ast.Posting{Account: "Assets:Cash", Amount: pos2},
+		&ast.Posting{Account: "Expenses:Food", Amount: neg2},
+	)
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Cash", ""),
+		mkOpen(openDate, "Expenses:Food", ""),
+		txn1,
+		txn2,
+	)
+
+	r := NewReducer(ledger)
+	insp, errs := r.Inspect(txn1)
+	if len(errs) != 0 {
+		t.Fatalf("Inspect errs = %v", errs)
+	}
+	if insp == nil {
+		t.Fatalf("Inspect returned nil Inspection for known txn")
+	}
+	// Before should have nil entries for Assets:Cash and Expenses:Food.
+	if v, ok := insp.Before["Assets:Cash"]; !ok || v != nil {
+		t.Errorf("Before[Assets:Cash] = %v (ok=%v), want nil snapshot", v, ok)
+	}
+	if v, ok := insp.Before["Expenses:Food"]; !ok || v != nil {
+		t.Errorf("Before[Expenses:Food] = %v (ok=%v), want nil snapshot", v, ok)
+	}
+	// After should contain both accounts with non-nil inventories.
+	if insp.After["Assets:Cash"] == nil {
+		t.Errorf("After[Assets:Cash] is nil, want non-nil")
+	}
+	if insp.After["Expenses:Food"] == nil {
+		t.Errorf("After[Expenses:Food] is nil, want non-nil")
+	}
+	if got := len(insp.Booked); got != 2 {
+		t.Errorf("len(Booked) = %d, want 2", got)
+	}
+}
+
+// TestReducerInspect_MiddleTransaction inspects the middle transaction
+// of a three-transaction ledger and verifies that Before reflects the
+// state AFTER the first transaction, and After reflects the state AFTER
+// the second transaction. The third transaction's effects must not be
+// visible on either map.
+func TestReducerInspect_MiddleTransaction(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	d3 := time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC)
+
+	p1 := mkAmountPtr(t, "100.00", "USD")
+	n1 := mkAmountPtr(t, "-100.00", "USD")
+	p2 := mkAmountPtr(t, "25.00", "USD")
+	n2 := mkAmountPtr(t, "-25.00", "USD")
+	p3 := mkAmountPtr(t, "7.00", "USD")
+	n3 := mkAmountPtr(t, "-7.00", "USD")
+
+	txn1 := mkTxn(d1,
+		&ast.Posting{Account: "Assets:Cash", Amount: p1},
+		&ast.Posting{Account: "Expenses:Food", Amount: n1},
+	)
+	txn2 := mkTxn(d2,
+		&ast.Posting{Account: "Assets:Cash", Amount: p2},
+		&ast.Posting{Account: "Expenses:Food", Amount: n2},
+	)
+	txn3 := mkTxn(d3,
+		&ast.Posting{Account: "Assets:Cash", Amount: p3},
+		&ast.Posting{Account: "Expenses:Food", Amount: n3},
+	)
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Cash", ""),
+		mkOpen(openDate, "Expenses:Food", ""),
+		txn1,
+		txn2,
+		txn3,
+	)
+
+	// Reference snapshots: collect the after-state of txn1 and txn2 via
+	// a regular Walk so we can compare them to Inspect's output. Match
+	// visited transactions by pointer identity so this test does not
+	// depend on the visitor call order.
+	refR := NewReducer(ledger)
+	var afterT1, afterT2 map[ast.Account]*Inventory
+	refErrs := refR.Walk(func(got *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+		switch got {
+		case txn1:
+			afterT1 = map[ast.Account]*Inventory{}
+			for k, v := range after {
+				afterT1[k] = v.Clone()
+			}
+		case txn2:
+			afterT2 = map[ast.Account]*Inventory{}
+			for k, v := range after {
+				afterT2[k] = v.Clone()
+			}
+		}
+		return true
+	})
+	if len(refErrs) != 0 {
+		t.Fatalf("reference Walk errs = %v", refErrs)
+	}
+
+	r := NewReducer(ledger)
+	insp, errs := r.Inspect(txn2)
+	if len(errs) != 0 {
+		t.Fatalf("Inspect errs = %v", errs)
+	}
+	if insp == nil {
+		t.Fatalf("Inspect returned nil Inspection for txn2")
+	}
+
+	// Before should match afterT1 for each touched account.
+	for acct, wantInv := range afterT1 {
+		got := insp.Before[acct]
+		if got == nil {
+			t.Errorf("Before[%s] is nil, want snapshot matching txn1 after", acct)
+			continue
+		}
+		if !got.Equal(wantInv) {
+			t.Errorf("Before[%s] does not equal txn1 after snapshot", acct)
+		}
+	}
+	// After should match afterT2 for each touched account.
+	for acct, wantInv := range afterT2 {
+		got := insp.After[acct]
+		if got == nil {
+			t.Errorf("After[%s] is nil, want snapshot matching txn2 after", acct)
+			continue
+		}
+		if !got.Equal(wantInv) {
+			t.Errorf("After[%s] does not equal txn2 after snapshot", acct)
+		}
+	}
+	if got := len(insp.Booked); got != 2 {
+		t.Errorf("len(Booked) = %d, want 2", got)
+	}
+}
+
+// TestReducerInspect_NotFound constructs a ledger with one transaction
+// and inspects a separately constructed (pointer-distinct) transaction.
+// Inspect must report a miss by returning (nil, errs).
+func TestReducerInspect_NotFound(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	pos := mkAmountPtr(t, "10.00", "USD")
+	neg := mkAmountPtr(t, "-10.00", "USD")
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Cash", ""),
+		mkOpen(openDate, "Expenses:Food", ""),
+		mkTxn(d1,
+			&ast.Posting{Account: "Assets:Cash", Amount: pos},
+			&ast.Posting{Account: "Expenses:Food", Amount: neg},
+		),
+	)
+
+	// A pointer-distinct transaction with equivalent fields — Inspect
+	// uses pointer identity, so this must NOT match.
+	otherPos := mkAmountPtr(t, "10.00", "USD")
+	otherNeg := mkAmountPtr(t, "-10.00", "USD")
+	other := mkTxn(d1,
+		&ast.Posting{Account: "Assets:Cash", Amount: otherPos},
+		&ast.Posting{Account: "Expenses:Food", Amount: otherNeg},
+	)
+
+	r := NewReducer(ledger)
+	insp, errs := r.Inspect(other)
+	if insp != nil {
+		t.Errorf("Inspect(other) = %v, want nil", insp)
+	}
+	if len(errs) != 0 {
+		t.Errorf("Inspect(other) errs = %v, want none for clean ledger", errs)
+	}
+}
+
+// TestReducerInspect_SnapshotIndependence confirms that running the
+// reducer again after Inspect does not mutate the returned Inspection:
+// Before, After, and Booked must remain a frozen view of the target
+// transaction's surroundings.
+func TestReducerInspect_SnapshotIndependence(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	p1 := mkAmountPtr(t, "100.00", "USD")
+	n1 := mkAmountPtr(t, "-100.00", "USD")
+	p2 := mkAmountPtr(t, "25.00", "USD")
+	n2 := mkAmountPtr(t, "-25.00", "USD")
+
+	txn1 := mkTxn(d1,
+		&ast.Posting{Account: "Assets:Cash", Amount: p1},
+		&ast.Posting{Account: "Expenses:Food", Amount: n1},
+	)
+	txn2 := mkTxn(d2,
+		&ast.Posting{Account: "Assets:Cash", Amount: p2},
+		&ast.Posting{Account: "Expenses:Food", Amount: n2},
+	)
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Cash", ""),
+		mkOpen(openDate, "Expenses:Food", ""),
+		txn1,
+		txn2,
+	)
+
+	r := NewReducer(ledger)
+	insp, errs := r.Inspect(txn1)
+	if len(errs) != 0 {
+		t.Fatalf("Inspect errs = %v", errs)
+	}
+	if insp == nil {
+		t.Fatalf("Inspect returned nil for txn1")
+	}
+
+	// Snapshot the inspection so we can detect mutation even if the
+	// structures themselves are later altered by reducer internals.
+	beforeSnap := map[ast.Account]*Inventory{}
+	for k, v := range insp.Before {
+		if v == nil {
+			beforeSnap[k] = nil
+		} else {
+			beforeSnap[k] = v.Clone()
+		}
+	}
+	afterSnap := map[ast.Account]*Inventory{}
+	for k, v := range insp.After {
+		if v == nil {
+			afterSnap[k] = nil
+		} else {
+			afterSnap[k] = v.Clone()
+		}
+	}
+	bookedLen := len(insp.Booked)
+
+	// Re-walk with a no-op visitor so reducer state advances past txn2.
+	if errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+		return true
+	}); len(errs) != 0 {
+		t.Fatalf("post-Inspect Walk errs = %v", errs)
+	}
+
+	// Inspection must remain unchanged.
+	if got := len(insp.Before); got != len(beforeSnap) {
+		t.Errorf("Before map size changed: %d, want %d", got, len(beforeSnap))
+	}
+	for k, want := range beforeSnap {
+		got, ok := insp.Before[k]
+		if !ok {
+			t.Errorf("Before[%s] missing after post-Inspect Walk", k)
+			continue
+		}
+		if want == nil {
+			if got != nil {
+				t.Errorf("Before[%s] = %v, want nil", k, got)
+			}
+			continue
+		}
+		if got == nil || !got.Equal(want) {
+			t.Errorf("Before[%s] mutated by post-Inspect Walk", k)
+		}
+	}
+	if got := len(insp.After); got != len(afterSnap) {
+		t.Errorf("After map size changed: %d, want %d", got, len(afterSnap))
+	}
+	for k, want := range afterSnap {
+		got, ok := insp.After[k]
+		if !ok {
+			t.Errorf("After[%s] missing after post-Inspect Walk", k)
+			continue
+		}
+		if want == nil {
+			if got != nil {
+				t.Errorf("After[%s] = %v, want nil", k, got)
+			}
+			continue
+		}
+		if got == nil || !got.Equal(want) {
+			t.Errorf("After[%s] mutated by post-Inspect Walk", k)
+		}
+	}
+	if got := len(insp.Booked); got != bookedLen {
+		t.Errorf("Booked len changed: %d, want %d", got, bookedLen)
+	}
+}

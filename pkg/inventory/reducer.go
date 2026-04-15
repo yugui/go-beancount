@@ -11,9 +11,10 @@ import (
 
 // Reducer streams through an [ast.Ledger], maintaining per-account
 // Inventory state and emitting [BookedPosting] records via a caller-
-// supplied visitor. The primary entry point is [Reducer.Walk]; the
-// higher-level Run / Inspect convenience wrappers will arrive in Phase
-// 5 Step 7.
+// supplied visitor. The primary entry point is [Reducer.Walk]; see
+// [Reducer.Run] for a batch convenience that retains only the final
+// per-account state, and [Reducer.Inspect] for an on-demand single-
+// transaction view.
 //
 // A Reducer is not safe for concurrent use. It is, however, reusable:
 // calling [Reducer.Walk] twice on the same Reducer produces identical
@@ -354,4 +355,105 @@ func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount
 			Message: fmt.Sprintf("auto-balanced posting cannot absorb residual across %d currencies: %v", len(nonZero), nonZero),
 		}}
 	}
+}
+
+// Run walks the ledger without a visitor, retaining only the final
+// per-account inventory state and collected errors. It is equivalent to
+// calling Walk with a visitor that always returns true and ignores its
+// snapshot arguments. Run is O(N) in the number of directives and O(A)
+// in memory, where A is the number of accounts.
+func (r *Reducer) Run() []Error {
+	return r.Walk(nil)
+}
+
+// Final returns the final inventory for the given account after the
+// most recent [Reducer.Run] or [Reducer.Walk], or nil if the account
+// was never touched. The returned *Inventory aliases the reducer's
+// internal state and must not be mutated; callers that need a mutable
+// copy should call [Inventory.Clone].
+func (r *Reducer) Final(account ast.Account) *Inventory {
+	return r.state[account]
+}
+
+// Errors returns the errors collected by the most recent [Reducer.Run]
+// or [Reducer.Walk]. The returned slice is a fresh copy; callers may
+// retain it and mutate it without affecting the reducer.
+func (r *Reducer) Errors() []Error {
+	return append([]Error(nil), r.errs...)
+}
+
+// Inspection holds a single transaction's before/after/booked view as
+// returned by [Reducer.Inspect]. The inventories inside Before and
+// After are independent deep copies; Booked entries alias into the
+// source [ast.Transaction] via their Source field.
+type Inspection struct {
+	Before map[ast.Account]*Inventory
+	After  map[ast.Account]*Inventory
+	Booked []BookedPosting
+}
+
+// Inspect reconstructs a single transaction's view by re-walking the
+// ledger from the start until it reaches txn. It is intended for
+// bean-doctor-style trouble-shooting; each call costs O(N) in the
+// number of directives up to txn.
+//
+// The txn argument is matched by pointer identity against the
+// transactions stored in the ledger. Callers MUST pass the exact
+// *ast.Transaction pointer that appears in the ledger; a freshly
+// constructed transaction with equivalent fields will not match.
+//
+// For repeated inspections over a large ledger, callers should prefer
+// [Reducer.Walk] with a visitor that stops at the target transaction.
+//
+// Returns (nil, errors) if txn is not found in the ledger or if the
+// walk ended before reaching it. The errors slice always contains the
+// errors collected up to (and including) the point where the walk
+// stopped.
+//
+// After Inspect returns, the reducer's internal state reflects the
+// ledger position immediately after the target transaction, not the
+// final state of the ledger. Callers that want to resume full-ledger
+// processing afterwards should call [Reducer.Run] to restore the
+// final state. Every subsequent [Reducer.Walk] or [Reducer.Run] call
+// resets the reducer's internal state at entry, so invoking Run after
+// Inspect fully restores the final ledger state rather than applying
+// additional directives on top of the mid-walk state.
+func (r *Reducer) Inspect(txn *ast.Transaction) (*Inspection, []Error) {
+	if txn == nil {
+		return nil, nil
+	}
+	var hit *Inspection
+	errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		if got != txn {
+			return true
+		}
+		hit = &Inspection{
+			Before: cloneInventoryMap(before),
+			After:  cloneInventoryMap(after),
+			Booked: append([]BookedPosting(nil), booked...),
+		}
+		return false
+	})
+	if hit == nil {
+		return nil, errs
+	}
+	return hit, errs
+}
+
+// cloneInventoryMap copies the (Account -> *Inventory) map used by
+// Walk's before/after snapshots into a fresh map. [Reducer.Walk]
+// already hands the visitor deep-cloned *Inventory values that the
+// callback "may retain", so this function only needs to duplicate the
+// map spine; the values remain safe to retain after Walk resumes.
+// A nil value (Walk's signal that an account was not previously
+// touched) is preserved as nil.
+func cloneInventoryMap(src map[ast.Account]*Inventory) map[ast.Account]*Inventory {
+	if src == nil {
+		return nil
+	}
+	out := make(map[ast.Account]*Inventory, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
