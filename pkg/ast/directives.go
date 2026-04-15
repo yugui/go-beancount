@@ -87,7 +87,7 @@ type Open struct {
 	Date       time.Time
 	Account    Account
 	Currencies []string // optional constraint currencies
-	Booking    string   // optional booking method (e.g. "STRICT", "NONE"); empty if not provided
+	Booking    string   // optional booking method (e.g. "STRICT", "NONE"); empty if not provided. Use ResolveBookingMethod for a typed value.
 	Meta       Metadata
 }
 
