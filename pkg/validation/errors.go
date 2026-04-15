@@ -37,6 +37,9 @@ const (
 	CodeInternalError
 	// CodeInvalidOption indicates a malformed value for a known option key.
 	CodeInvalidOption
+	// CodeInvalidBookingMethod indicates an Open directive's Booking keyword
+	// could not be parsed into a known ast.BookingMethod value.
+	CodeInvalidBookingMethod
 )
 
 // Error is a validation error found in a ledger.

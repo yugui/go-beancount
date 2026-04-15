@@ -15,7 +15,7 @@ type accountState struct {
 	closeDate  time.Time
 	closeSpan  ast.Span
 	currencies []string
-	booking    string
+	booking    ast.BookingMethod
 }
 
 // allowsCurrency reports whether the given currency is permitted by this
@@ -43,11 +43,22 @@ func (c *checker) visitOpen(d *ast.Open) {
 		})
 		return
 	}
+	booking, err := d.ResolveBookingMethod()
+	if err != nil {
+		c.emit(Error{
+			Code:    CodeInvalidBookingMethod,
+			Span:    d.Span,
+			Message: fmt.Sprintf("invalid booking method %q on account %q: %v", d.Booking, d.Account, err),
+		})
+		// Fall through with BookingDefault so the account is still tracked;
+		// downstream validation does not currently depend on the booking
+		// method value.
+	}
 	c.accounts[d.Account] = &accountState{
 		openSpan:   d.Span,
 		openDate:   d.Date,
 		currencies: d.Currencies,
-		booking:    d.Booking,
+		booking:    booking,
 	}
 }
 
