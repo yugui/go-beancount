@@ -37,14 +37,21 @@ func (Plugin) Name() string {
 // Apply never mutates the ledger; it returns Result.Directives == nil so
 // the runner preserves the input verbatim.
 //
-// The validator slice is intentionally empty in this step: Step 8b and
-// 8c of the plugin-layer refactor append the individual validators.
-// Until then the plugin produces only option-parse diagnostics.
+// Validators populated in this step:
+//   - openClose: surfaces duplicate-open diagnostics from the initial
+//     Build pass.
+//   - activeAccounts: enforces open-window references for every
+//     directive type the legacy requireOpen covered.
+//
+// Additional validators (currency, balance, pad) will be appended in
+// subsequent steps of the plugin-layer refactor.
 func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
-	// Build per-run state once. The returned BuildResult is not yet
-	// consumed because no validators are wired in; the underscore
-	// below keeps the package compiling without dropping the work
-	// that Step 8b/8c will need.
+	if err := ctx.Err(); err != nil {
+		return api.Result{}, err
+	}
+
+	// Build per-run state once and share it across the validators that
+	// need an open/close view of the ledger.
 	build := accountstate.Build(in.Directives)
 
 	// Decode raw options to a typed *options.Values. Malformed values
@@ -53,7 +60,8 @@ func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	_, optErrs := options.FromRaw(in.Options)
 
 	validators := []entryValidator{
-		// Step 8b/8c will append validators here.
+		newOpenClose(build),
+		newActiveAccounts(build.State),
 	}
 
 	var errs []api.Error
@@ -75,9 +83,6 @@ func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	for _, v := range validators {
 		errs = append(errs, v.Finish()...)
 	}
-
-	_ = build // silences "declared and not used" until validators consume it
-	_ = ctx   // unused today, consume in later steps
 
 	return api.Result{Errors: errs}, nil
 }

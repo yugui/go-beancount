@@ -3,6 +3,8 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "validations",
     srcs = [
+        "active_accounts.go",
+        "open_close.go",
         "plugin.go",
         "validator.go",
     ],
@@ -12,16 +14,23 @@ go_library(
         "//internal/options",
         "//pkg/ast",
         "//pkg/postproc/api",
+        "//pkg/validation",
         "//pkg/validation/internal/accountstate",
     ],
 )
 
 go_test(
     name = "validations_test",
-    srcs = ["plugin_test.go"],
+    srcs = [
+        "active_accounts_test.go",
+        "open_close_test.go",
+        "plugin_test.go",
+    ],
+    embed = [":validations"],
     deps = [
-        ":validations",
         "//pkg/ast",
         "//pkg/postproc/api",
+        "//pkg/validation",
+        "//pkg/validation/internal/accountstate",
     ],
 )
