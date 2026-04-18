@@ -5,6 +5,7 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/google/go-cmp/cmp"
+	"github.com/yugui/go-beancount/pkg/ast"
 )
 
 // testRegistry constructs a registry that exercises all four kinds so unit
@@ -175,5 +176,88 @@ func TestRegistryRegisterDuplicateKeyErrors(t *testing.T) {
 	}
 	if err := r.register(spec{key: "x", kind: kindString, parse: parseStringOption}); err == nil {
 		t.Errorf("TestRegistryRegisterDuplicateKeyErrors: second register: err = nil, want non-nil")
+	}
+}
+
+// buildRawLedger constructs an ast.Ledger containing the given directives
+// in canonical order for BuildRaw tests.
+func buildRawLedger(ds ...ast.Directive) *ast.Ledger {
+	l := &ast.Ledger{}
+	l.InsertAll(ds)
+	return l
+}
+
+func TestBuildRawNilLedger(t *testing.T) {
+	if got := BuildRaw(nil); got != nil {
+		t.Errorf("TestBuildRawNilLedger: BuildRaw(nil) = %v, want nil", got)
+	}
+}
+
+func TestBuildRawEmptyLedgerReturnsNil(t *testing.T) {
+	l := buildRawLedger()
+	if got := BuildRaw(l); got != nil {
+		t.Errorf("TestBuildRawEmptyLedgerReturnsNil: BuildRaw = %v, want nil", got)
+	}
+}
+
+func TestBuildRawNoOptionDirectivesReturnsNil(t *testing.T) {
+	l := buildRawLedger(&ast.Plugin{Name: "example.com/fake"})
+	if got := BuildRaw(l); got != nil {
+		t.Errorf("TestBuildRawNoOptionDirectivesReturnsNil: BuildRaw = %v, want nil", got)
+	}
+}
+
+func TestBuildRawSingleOption(t *testing.T) {
+	l := buildRawLedger(&ast.Option{Key: "title", Value: "My Ledger"})
+	got := BuildRaw(l)
+	want := map[string]string{"title": "My Ledger"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("TestBuildRawSingleOption: BuildRaw mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestBuildRawDuplicateKeyLastWins(t *testing.T) {
+	l := buildRawLedger(
+		&ast.Option{Key: "title", Value: "first"},
+		&ast.Option{Key: "title", Value: "second"},
+		&ast.Option{Key: "title", Value: "third"},
+	)
+	got := BuildRaw(l)
+	want := map[string]string{"title": "third"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("TestBuildRawDuplicateKeyLastWins: BuildRaw mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestBuildRawMixedKeysPreserved(t *testing.T) {
+	l := buildRawLedger(
+		&ast.Option{Key: "title", Value: "My Ledger"},
+		&ast.Option{Key: "operating_currency", Value: "USD"},
+		&ast.Option{Key: "operating_currency", Value: "JPY"},
+		&ast.Option{Key: "infer_from_cost", Value: "TRUE"},
+	)
+	got := BuildRaw(l)
+	// operating_currency uses last-wins here (raw map semantics), not
+	// StringList accumulation.
+	want := map[string]string{
+		"title":              "My Ledger",
+		"operating_currency": "JPY",
+		"infer_from_cost":    "TRUE",
+	}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("TestBuildRawMixedKeysPreserved: BuildRaw mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestBuildRawIgnoresNonOptionDirectives(t *testing.T) {
+	l := buildRawLedger(
+		&ast.Plugin{Name: "example.com/fake"},
+		&ast.Option{Key: "title", Value: "My Ledger"},
+		&ast.Plugin{Name: "example.com/other"},
+	)
+	got := BuildRaw(l)
+	want := map[string]string{"title": "My Ledger"}
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("TestBuildRawIgnoresNonOptionDirectives: BuildRaw mismatch (-want +got):\n%s", diff)
 	}
 }

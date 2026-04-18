@@ -53,3 +53,30 @@ func Parse(ledger *ast.Ledger) (*Values, []ParseError) {
 	}
 	return v, errs
 }
+
+// BuildRaw walks ledger's directives in canonical order and builds a
+// map[string]string of raw option key/value pairs. Later occurrences of
+// the same key overwrite earlier ones (last-wins semantics) — this
+// differs from the typed StringList accumulation applied by Parse.
+//
+// BuildRaw returns nil if ledger is nil or contains no option
+// directives; it never returns an empty non-nil map. This is the form
+// consumed by plugin runners that pass raw option values through to
+// plugins without type coercion.
+func BuildRaw(ledger *ast.Ledger) map[string]string {
+	if ledger == nil {
+		return nil
+	}
+	var opts map[string]string
+	for _, d := range ledger.All() {
+		o, ok := d.(*ast.Option)
+		if !ok {
+			continue
+		}
+		if opts == nil {
+			opts = make(map[string]string)
+		}
+		opts[o.Key] = o.Value
+	}
+	return opts
+}
