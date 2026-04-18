@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "validations",
+    srcs = [
+        "plugin.go",
+        "validator.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/validation/validations",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/options",
+        "//pkg/ast",
+        "//pkg/postproc/api",
+        "//pkg/validation/internal/accountstate",
+    ],
+)
+
+go_test(
+    name = "validations_test",
+    srcs = ["plugin_test.go"],
+    deps = [
+        ":validations",
+        "//pkg/ast",
+        "//pkg/postproc/api",
+    ],
+)

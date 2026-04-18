@@ -1,9 +1,21 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "accountstate",
-    srcs = ["state.go"],
+    srcs = [
+        "build.go",
+        "state.go",
+    ],
     importpath = "github.com/yugui/go-beancount/pkg/validation/internal/accountstate",
     visibility = ["//pkg/validation:__subpackages__"],
     deps = ["//pkg/ast"],
+)
+
+go_test(
+    name = "accountstate_test",
+    srcs = ["build_test.go"],
+    deps = [
+        ":accountstate",
+        "//pkg/ast",
+    ],
 )
