@@ -37,6 +37,15 @@ const (
 	CodeInternalError
 	// CodeInvalidOption indicates a malformed value for a known option key.
 	CodeInvalidOption
+	// CodeInvalidBookingMethod indicates an Open directive's Booking keyword
+	// could not be parsed into a known ast.BookingMethod value.
+	//
+	// Deprecated: ast.Open.Booking is now typed, and invalid keywords are
+	// reported as parse diagnostics by the lowerer rather than as
+	// validation errors. This constant is retained so existing imports and
+	// the inventory layer's AsValidationError mapping keep compiling; the
+	// validation package no longer emits it.
+	CodeInvalidBookingMethod
 )
 
 // Error is a validation error found in a ledger.

@@ -15,7 +15,7 @@ type accountState struct {
 	closeDate  time.Time
 	closeSpan  ast.Span
 	currencies []string
-	booking    string
+	booking    ast.BookingMethod
 }
 
 // allowsCurrency reports whether the given currency is permitted by this

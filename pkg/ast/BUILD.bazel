@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "account.go",
         "ast.go",
+        "booking.go",
         "directives.go",
         "ledger.go",
         "load.go",
@@ -24,6 +25,7 @@ go_test(
     srcs = [
         "account_test.go",
         "ast_test.go",
+        "booking_test.go",
         "cost_test.go",
         "ledger_test.go",
         "load_test.go",

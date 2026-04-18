@@ -1,6 +1,7 @@
 package ast_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -136,8 +137,8 @@ func TestLower_OpenWithBooking(t *testing.T) {
 	if !ok {
 		t.Fatalf("Lower(open-booking): directive is %T, want *ast.Open", f.Directives[0])
 	}
-	if o.Booking != "STRICT" {
-		t.Errorf("Lower(open-booking): Booking = %q, want %q", o.Booking, "STRICT")
+	if o.Booking != ast.BookingStrict {
+		t.Errorf("Lower(open-booking): Booking = %v, want %v", o.Booking, ast.BookingStrict)
 	}
 	if len(o.Currencies) != 1 || o.Currencies[0] != "USD" {
 		t.Errorf("Lower(open-booking): Currencies = %v, want %v", o.Currencies, []string{"USD"})
@@ -157,8 +158,41 @@ func TestLower_OpenMinimal(t *testing.T) {
 	if len(o.Currencies) != 0 {
 		t.Errorf("Lower(open-minimal): Currencies = %v, want empty", o.Currencies)
 	}
-	if o.Booking != "" {
-		t.Errorf("Lower(open-minimal): Booking = %q, want empty", o.Booking)
+	if o.Booking != ast.BookingDefault {
+		t.Errorf("Lower(open-minimal): Booking = %v, want %v", o.Booking, ast.BookingDefault)
+	}
+}
+
+func TestLower_OpenInvalidBooking(t *testing.T) {
+	cst := syntax.Parse("2024-01-01 open Assets:Bank \"BOGUS\"\n")
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(open-invalid-booking): got %d directives, want 1", len(f.Directives))
+	}
+	o, ok := f.Directives[0].(*ast.Open)
+	if !ok {
+		t.Fatalf("Lower(open-invalid-booking): directive is %T, want *ast.Open", f.Directives[0])
+	}
+	// On a parse error the lowerer must fall back to BookingDefault
+	// so subsequent directives keep processing.
+	if o.Booking != ast.BookingDefault {
+		t.Errorf("Lower(open-invalid-booking): Booking = %v, want %v", o.Booking, ast.BookingDefault)
+	}
+	var found bool
+	for _, d := range f.Diagnostics {
+		if strings.Contains(d.Message, "BOGUS") && strings.Contains(d.Message, "booking method") {
+			found = true
+			if d.Span.Start.Filename != "test.beancount" {
+				t.Errorf("diagnostic Span.Start.Filename = %q, want %q", d.Span.Start.Filename, "test.beancount")
+			}
+			if d.Span.Start.Offset == 0 {
+				t.Errorf("diagnostic Span.Start.Offset = 0, want non-zero token offset")
+			}
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing invalid-booking diagnostic in %v", f.Diagnostics)
 	}
 }
 

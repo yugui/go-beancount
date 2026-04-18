@@ -1,0 +1,43 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "inventory",
+    srcs = [
+        "booking.go",
+        "cost.go",
+        "doc.go",
+        "errors.go",
+        "inventory.go",
+        "matcher.go",
+        "position.go",
+        "reducer.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/inventory",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/validation",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "inventory_test",
+    srcs = [
+        "booking_test.go",
+        "cost_test.go",
+        "errors_test.go",
+        "integration_test.go",
+        "inventory_test.go",
+        "matcher_test.go",
+        "position_test.go",
+        "reducer_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":inventory"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/validation",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

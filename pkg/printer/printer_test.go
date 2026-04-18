@@ -95,7 +95,7 @@ func TestOpen(t *testing.T) {
 			Date:       date("2024-01-01"),
 			Account:    "Assets:Bank",
 			Currencies: []string{"USD", "EUR"},
-			Booking:    "STRICT",
+			Booking:    ast.BookingStrict,
 		})
 		want := "2024-01-01 open Assets:Bank USD,EUR \"STRICT\"\n"
 		if got != want {

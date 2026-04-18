@@ -314,9 +314,9 @@ func TestPostingWeight_CombinedCost(t *testing.T) {
 		Amount:  &units,
 		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total},
 	}
-	w, cur, err := postingWeight(p)
+	w, cur, err := PostingWeight(p)
 	if err != nil {
-		t.Fatalf("postingWeight: unexpected error: %v", err)
+		t.Fatalf("PostingWeight: unexpected error: %v", err)
 	}
 	if cur != "USD" {
 		t.Errorf("currency = %q, want %q", cur, "USD")
@@ -339,9 +339,9 @@ func TestPostingWeight_CombinedCostNegativeUnits(t *testing.T) {
 		Amount:  &units,
 		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total},
 	}
-	w, cur, err := postingWeight(p)
+	w, cur, err := PostingWeight(p)
 	if err != nil {
-		t.Fatalf("postingWeight: unexpected error: %v", err)
+		t.Fatalf("PostingWeight: unexpected error: %v", err)
 	}
 	if cur != "USD" {
 		t.Errorf("currency = %q, want %q", cur, "USD")

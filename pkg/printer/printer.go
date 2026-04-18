@@ -158,8 +158,8 @@ func (p *printer) printOpen(o *ast.Open) {
 	if len(o.Currencies) > 0 {
 		p.printf(" %s", strings.Join(o.Currencies, ","))
 	}
-	if o.Booking != "" {
-		p.printf(" %s", beancountQuote(o.Booking))
+	if o.Booking != ast.BookingDefault {
+		p.printf(" %s", beancountQuote(o.Booking.String()))
 	}
 	p.write("\n")
 	p.printMetadata(o.Meta, p.indent())

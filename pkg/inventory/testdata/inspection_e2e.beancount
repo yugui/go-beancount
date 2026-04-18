@@ -1,0 +1,73 @@
+; inspection_e2e.beancount — fictional ledger for pkg/inventory E2E tests.
+;
+; All account names and commodity symbols in this file are invented for
+; testing purposes. No real-world brokers, funds, or tickers are
+; referenced. USD is used as a neutral cash currency.
+;
+; Scenarios exercised:
+;   - STRICT booking with label-carrying cost specs (BrokerA / ACME).
+;   - FIFO booking with multi-lot reduction under an empty cost spec
+;     ({} form) combined with a price annotation (BrokerB / GIZMO).
+;   - Realized gain computation from @ price on a reducing posting.
+;   - Auto-balanced (nil amount) cash posting inference.
+;
+; Deliberately omitted: the residual-cost `{0 # total CUR}` form.
+; Exercising it would require a zero-cost augmentation lot that this
+; fixture cannot produce naturally without distorting the other
+; scenarios. Unit tests in booking_test.go and cost_test.go already
+; cover the residual-cost arithmetic directly.
+
+option "title" "Inventory E2E Fixture"
+option "operating_currency" "USD"
+
+2024-12-01 open Assets:Investments:BrokerA "STRICT"
+2024-12-01 open Assets:Investments:BrokerB "FIFO"
+2024-12-01 open Assets:Cash                USD
+2024-12-01 open Income:Gains               USD
+2024-12-01 open Equity:Opening-Balances
+
+; Seed cash from opening balances so subsequent purchases have somewhere
+; to debit from.
+2024-12-31 * "Opening cash balance"
+  Assets:Cash                 10000.00 USD
+  Equity:Opening-Balances    -10000.00 USD
+
+; ----- BrokerA / ACME (STRICT, labelled lots) -----
+
+2025-01-05 * "Buy ACME lot A"
+  Assets:Investments:BrokerA        5 ACME {100 USD, "lot-2025a"}
+  Assets:Cash                 -500.00 USD
+
+2025-01-20 * "Buy ACME lot B"
+  Assets:Investments:BrokerA        5 ACME {100 USD, "lot-2025b"}
+  Assets:Cash                 -500.00 USD
+
+; ----- BrokerB / GIZMO (FIFO, two dated lots) -----
+
+2025-01-10 * "Buy GIZMO first lot"
+  Assets:Investments:BrokerB       10 GIZMO {50 USD}
+  Assets:Cash                 -500.00 USD
+
+2025-02-15 * "Buy GIZMO second lot"
+  Assets:Investments:BrokerB       10 GIZMO {55 USD}
+  Assets:Cash                 -550.00 USD
+
+; ----- Reductions -----
+
+; STRICT label-selected sale with a per-unit price annotation. The cash
+; leg is an auto-balanced posting so this transaction also drives the
+; auto-posting inference path. Weight of the reducing posting under the
+; @ price rule is -5 * 120 = -600 USD, so the auto leg should absorb
+; +600.00 USD.
+2025-03-10 * "Sell ACME lot-2025a with auto cash"
+  Assets:Investments:BrokerA       -5 ACME {"lot-2025a"} @ 120 USD
+  Assets:Cash
+
+; FIFO multi-lot reduction under the empty `{}` matcher form. Consuming
+; 12 GIZMO against two lots of 10 + 10 forces the reducer to cross the
+; lot boundary: 10 from the first lot (2025-01-10) and 2 from the second
+; lot (2025-02-15). The explicit cash leg keeps this transaction off the
+; auto-posting path so the two code paths stay cleanly separated.
+2025-04-01 * "Sell GIZMO FIFO crossing lot boundary"
+  Assets:Investments:BrokerB      -12 GIZMO {} @ 60 USD
+  Assets:Cash                  720.00 USD

@@ -58,15 +58,26 @@ func weightFromTotal(units, total *apd.Decimal) (*apd.Decimal, error) {
 	return out, nil
 }
 
-// postingWeight computes the signed weight contributed by a posting to the
-// transaction's currency sums. It returns (nil, "", nil) for auto-postings
-// (Amount == nil). Price or cost annotations convert the weight into the
-// quote currency; in that case the returned decimal is a freshly allocated
-// value, so callers may freely mutate it.
-func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
+// PostingWeight computes the signed weight contributed by a posting to the
+// transaction's currency sums, along with the currency in which that weight
+// is denominated.
+//
+// An auto-posting (p.Amount == nil) returns (nil, "", nil); callers that need
+// to infer the missing amount should perform their own balancing. When p.Price
+// is set, the weight is converted into the price currency. When p.Cost is set
+// (per-unit, total, or the combined "{per # total CUR}" form), the weight is
+// converted into the cost currency.
+//
+// The returned *apd.Decimal is freshly allocated and does not alias any
+// AST field, so callers may mutate it in place (e.g. to negate it when
+// computing an auto-posting residual) without corrupting the source AST.
+func PostingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 	if p.Amount == nil {
 		return nil, "", nil
 	}
+	// This function is used by pkg/inventory to compute auto-posting
+	// residuals; keeping it as the single source of truth avoids
+	// duplicating price/cost weight-calculation logic.
 	num := p.Amount.Number
 	switch {
 	case p.Price != nil:
@@ -129,9 +140,9 @@ func postingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 		}
 		return out, p.Cost.Total.Currency, nil
 	default:
-		// Plain amount: the caller must not mutate the returned pointer
-		// because it aliases the AST. Copy to a fresh value so the
-		// accumulator can safely add in place.
+		// Plain amount: return a fresh copy of the posting's units so the
+		// caller (or the balance accumulator) can safely add or negate in
+		// place without mutating the AST.
 		out := new(apd.Decimal)
 		out.Set(&num)
 		return out, p.Amount.Currency, nil
@@ -266,7 +277,7 @@ func (c *checker) checkBalance(d *ast.Transaction) {
 			autoIdx = i
 			continue
 		}
-		w, cur, err := postingWeight(p)
+		w, cur, err := PostingWeight(p)
 		if err != nil {
 			c.emit(Error{
 				Code:    CodeUnbalancedTransaction,

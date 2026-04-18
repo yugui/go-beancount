@@ -136,6 +136,23 @@ func (l *lowerer) addDiagnostic(n *syntax.Node, msg string) {
 	})
 }
 
+// addTokenDiagnostic records an Error-severity diagnostic scoped to the
+// span of a single token, giving consumers a precise source location for
+// token-level problems (e.g. an invalid booking keyword).
+func (l *lowerer) addTokenDiagnostic(t *syntax.Token, msg string) {
+	l.file.Diagnostics = append(l.file.Diagnostics, Diagnostic{
+		Span: Span{
+			Start: l.posFromToken(t),
+			End: Position{
+				Filename: l.filename,
+				Offset:   t.Pos + len(t.Raw),
+			},
+		},
+		Message:  msg,
+		Severity: Error,
+	})
+}
+
 // addDirective appends a directive to the file.
 func (l *lowerer) addDirective(d Directive) {
 	l.file.Directives = append(l.file.Directives, d)
@@ -319,11 +336,20 @@ func (l *lowerer) lowerOpen(n *syntax.Node) {
 		currencies = append(currencies, ct.Raw)
 	}
 
-	// Optional booking method (STRING token after account).
-	var booking string
+	// Optional booking method (STRING token after account). Parse the
+	// keyword into a typed BookingMethod at lowering time; on failure,
+	// emit a diagnostic scoped to the offending token's span and fall
+	// back to BookingDefault so subsequent directives still process.
+	booking := BookingDefault
 	strTokens := findTokens(n, syntax.STRING)
 	if len(strTokens) > 0 {
-		booking = unquoteString(strTokens[0])
+		raw := unquoteString(strTokens[0])
+		m, err := ParseBookingMethod(raw)
+		if err != nil {
+			l.addTokenDiagnostic(strTokens[0], fmt.Sprintf("invalid booking method %q", raw))
+		} else {
+			booking = m
+		}
 	}
 
 	l.addDirective(&Open{
