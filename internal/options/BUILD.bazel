@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "options",
+    srcs = [
+        "defaults.go",
+        "kinds.go",
+        "options.go",
+        "parse.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/internal/options",
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "options_test",
+    srcs = ["options_test.go"],
+    embed = [":options"],
+    deps = [
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)

@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
@@ -20,7 +21,7 @@ type checker struct {
 	accounts    map[ast.Account]*accountState
 	balances    map[balanceKey]*apd.Decimal
 	pendingPads map[ast.Account]*pendingPad
-	options     *optionValues
+	options     *options.Values
 	errors      []Error
 }
 
@@ -31,7 +32,6 @@ func newChecker(ledger *ast.Ledger) *checker {
 		accounts:    make(map[ast.Account]*accountState),
 		balances:    make(map[balanceKey]*apd.Decimal),
 		pendingPads: make(map[ast.Account]*pendingPad),
-		options:     newOptionValues(defaultOptionRegistry),
 	}
 }
 
@@ -142,22 +142,17 @@ func (c *checker) visitCustom(d *ast.Custom) {
 // collectOptions pre-pass before directive walking begins.
 func (c *checker) visitOption(*ast.Option) {}
 
-// collectOptions runs before the main directive walk, scanning the ledger
-// for option directives and feeding their values into c.options. Unknown
-// keys are silently ignored; parse errors emit CodeInvalidOption.
+// collectOptions pre-walks the ledger to parse option directives.
+// Invalid values emit CodeInvalidOption; unknown keys are silently ignored.
 func (c *checker) collectOptions() {
-	for _, d := range c.ledger.All() {
-		opt, ok := d.(*ast.Option)
-		if !ok {
-			continue
-		}
-		if err := c.options.set(opt.Key, opt.Value); err != nil {
-			c.emit(Error{
-				Code:    CodeInvalidOption,
-				Span:    opt.Span,
-				Message: fmt.Sprintf("invalid option %q: %v", opt.Key, err),
-			})
-		}
+	values, parseErrs := options.Parse(c.ledger)
+	c.options = values
+	for _, pe := range parseErrs {
+		c.emit(Error{
+			Code:    CodeInvalidOption,
+			Span:    pe.Span,
+			Message: fmt.Sprintf("invalid option %q: %v", pe.Key, pe.Err),
+		})
 	}
 }
 
