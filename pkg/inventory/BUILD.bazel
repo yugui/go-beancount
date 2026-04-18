@@ -32,6 +32,7 @@ go_test(
         "matcher_test.go",
         "position_test.go",
         "reducer_test.go",
+        "weight_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":inventory"],

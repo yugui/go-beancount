@@ -303,54 +303,6 @@ func TestInferToleranceFromCostOnlyCostCurrency(t *testing.T) {
 	wantCodes(t, errs, CodeUnbalancedTransaction)
 }
 
-// TestPostingWeight_CombinedCost verifies the combined-form CostSpec
-// `{per # total CUR}` weight: units*per + sign(units)*total.
-func TestPostingWeight_CombinedCost(t *testing.T) {
-	units := amt(10, "GOOG")
-	perUnit := amtStr(t, "502.12", "USD")
-	total := amtStr(t, "9.95", "USD")
-	p := &ast.Posting{
-		Account: "Assets:Brokerage",
-		Amount:  &units,
-		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total},
-	}
-	w, cur, err := PostingWeight(p)
-	if err != nil {
-		t.Fatalf("PostingWeight: unexpected error: %v", err)
-	}
-	if cur != "USD" {
-		t.Errorf("currency = %q, want %q", cur, "USD")
-	}
-	if got := w.Text('f'); got != "5031.15" {
-		t.Errorf("weight = %q, want %q", got, "5031.15")
-	}
-}
-
-// TestPostingWeight_CombinedCostNegativeUnits verifies the combined-form
-// CostSpec weight respects the sign of units for the flat total component.
-// For -10 units: perPart = -5021.20, totalPart = sign(-10)*9.95 = -9.95,
-// sum = -5031.15.
-func TestPostingWeight_CombinedCostNegativeUnits(t *testing.T) {
-	units := amt(-10, "GOOG")
-	perUnit := amtStr(t, "502.12", "USD")
-	total := amtStr(t, "9.95", "USD")
-	p := &ast.Posting{
-		Account: "Assets:Brokerage",
-		Amount:  &units,
-		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total},
-	}
-	w, cur, err := PostingWeight(p)
-	if err != nil {
-		t.Fatalf("PostingWeight: unexpected error: %v", err)
-	}
-	if cur != "USD" {
-		t.Errorf("currency = %q, want %q", cur, "USD")
-	}
-	if got := w.Text('f'); got != "-5031.15" {
-		t.Errorf("weight = %q, want %q", got, "-5031.15")
-	}
-}
-
 // TestTxnTolerance_CombinedCost verifies that when the combined-form
 // CostSpec has different precisions on PerUnit and Total, the inferred
 // cost-based tolerance uses the more precise (more negative) exponent
