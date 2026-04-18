@@ -42,9 +42,13 @@ func (Plugin) Name() string {
 //     Build pass.
 //   - activeAccounts: enforces open-window references for every
 //     directive type the legacy requireOpen covered.
+//   - currencyConstraints: enforces the allowed-currency list declared
+//     by each account's open directive.
+//   - transactionBalances: verifies each transaction balances per
+//     currency and contains at most one auto-posting.
 //
-// Additional validators (currency, balance, pad) will be appended in
-// subsequent steps of the plugin-layer refactor.
+// Additional validators (balance, pad) will be appended in subsequent
+// steps of the plugin-layer refactor.
 func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
@@ -57,11 +61,13 @@ func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	// Decode raw options to a typed *options.Values. Malformed values
 	// become api.Error entries with code "invalid-option"; unknown keys
 	// are silently dropped by FromRaw.
-	_, optErrs := options.FromRaw(in.Options)
+	opts, optErrs := options.FromRaw(in.Options)
 
 	validators := []entryValidator{
 		newOpenClose(build),
 		newActiveAccounts(build.State),
+		newCurrencyConstraints(build.State),
+		newTransactionBalances(opts),
 	}
 
 	var errs []api.Error
