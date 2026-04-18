@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "pad",
+    srcs = ["plugin.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/validation/pad",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/options",
+        "//pkg/ast",
+        "//pkg/postproc/api",
+        "//pkg/validation",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "pad_test",
+    srcs = ["plugin_test.go"],
+    embed = [":pad"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/postproc/api",
+        "//pkg/validation",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
