@@ -7,36 +7,36 @@ import (
 )
 
 // Code identifies a kind of validation error.
-type Code int
+type Code string
 
 const (
 	// CodeAccountNotOpen indicates a directive references an account that has never been opened.
-	CodeAccountNotOpen Code = iota
+	CodeAccountNotOpen Code = "account-not-open"
 	// CodeAccountNotYetOpen indicates a directive references an account on a date before its open directive.
-	CodeAccountNotYetOpen
+	CodeAccountNotYetOpen Code = "account-not-yet-open"
 	// CodeAccountClosed indicates a posting references an account after it has been closed.
-	CodeAccountClosed
+	CodeAccountClosed Code = "account-closed"
 	// CodeDuplicateOpen indicates an account was opened more than once.
-	CodeDuplicateOpen
+	CodeDuplicateOpen Code = "duplicate-open"
 	// CodeUnbalancedTransaction indicates a transaction's postings do not sum to zero.
-	CodeUnbalancedTransaction
+	CodeUnbalancedTransaction Code = "unbalanced-transaction"
 	// CodeMultipleAutoPostings indicates a transaction contains more than one posting
 	// whose amount must be inferred.
-	CodeMultipleAutoPostings
+	CodeMultipleAutoPostings Code = "multiple-auto-postings"
 	// CodeBalanceMismatch indicates a balance assertion did not match the computed balance.
-	CodeBalanceMismatch
+	CodeBalanceMismatch Code = "balance-mismatch"
 	// CodePadUnresolved indicates a pad directive could not be resolved to a balance assertion.
-	CodePadUnresolved
+	CodePadUnresolved Code = "pad-unresolved"
 	// CodeCurrencyNotAllowed indicates a posting uses a currency not permitted by the account's open directive.
-	CodeCurrencyNotAllowed
+	CodeCurrencyNotAllowed Code = "currency-not-allowed"
 	// CodeCustomAssertionFailed indicates a user-defined custom assertion failed.
-	CodeCustomAssertionFailed
+	CodeCustomAssertionFailed Code = "custom-assertion-failed"
 	// CodeInternalError indicates an internal validation failure such as an
 	// arithmetic error from the underlying decimal context. These are not
 	// user-facing ledger problems but signal a bug or pathological input.
-	CodeInternalError
+	CodeInternalError Code = "internal-error"
 	// CodeInvalidOption indicates a malformed value for a known option key.
-	CodeInvalidOption
+	CodeInvalidOption Code = "invalid-option"
 	// CodeInvalidBookingMethod indicates an Open directive's Booking keyword
 	// could not be parsed into a known ast.BookingMethod value.
 	//
@@ -45,7 +45,7 @@ const (
 	// validation errors. This constant is retained so existing imports and
 	// validation.FromInventoryError keep compiling; the validation
 	// package no longer emits it.
-	CodeInvalidBookingMethod
+	CodeInvalidBookingMethod Code = "invalid-booking-method"
 )
 
 // Error is a validation error found in a ledger.
