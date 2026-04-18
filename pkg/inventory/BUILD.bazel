@@ -11,6 +11,7 @@ go_library(
         "matcher.go",
         "position.go",
         "reducer.go",
+        "weight.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/inventory",
     visibility = ["//visibility:public"],
