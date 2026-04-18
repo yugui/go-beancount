@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "postproc",
+    srcs = [
+        "apply.go",
+        "doc.go",
+        "registry.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/postproc",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/postproc/api",
+    ],
+)
+
+go_test(
+    name = "postproc_test",
+    srcs = [
+        "apply_test.go",
+        "registry_test.go",
+    ],
+    embed = [":postproc"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/postproc/api",
+    ],
+)
