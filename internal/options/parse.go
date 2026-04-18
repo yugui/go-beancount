@@ -54,6 +54,36 @@ func Parse(ledger *ast.Ledger) (*Values, []ParseError) {
 	return v, errs
 }
 
+// FromRaw builds a typed *Values from a raw map of option key/value pairs
+// (typically obtained from BuildRaw). Unknown keys are ignored; malformed
+// values produce ParseError entries with a zero Span because the raw map
+// does not carry source locations. A nil or empty map yields a default
+// *Values and no errors.
+//
+// FromRaw is equivalent to Parse(ledger) when raw equals BuildRaw(ledger):
+// because BuildRaw has already condensed duplicate keys to last-wins, each
+// key here is fed to Values.set exactly once. For kindStringList options
+// this means the resulting list contains at most one element, matching
+// what Parse would have produced for a ledger with a single directive for
+// that key.
+func FromRaw(raw map[string]string) (*Values, []ParseError) {
+	v := newValues(defaultRegistry)
+	if len(raw) == 0 {
+		return v, nil
+	}
+	var errs []ParseError
+	for key, value := range raw {
+		if err := v.set(key, value); err != nil {
+			errs = append(errs, ParseError{
+				Key:   key,
+				Value: value,
+				Err:   err,
+			})
+		}
+	}
+	return v, errs
+}
+
 // BuildRaw walks ledger's directives in canonical order and builds a
 // map[string]string of raw option key/value pairs. Later occurrences of
 // the same key overwrite earlier ones (last-wins semantics) — this
