@@ -9,7 +9,17 @@
 // it finds is reported as an [Error] tagged with a [Code] identifying the
 // kind of failure.
 //
-// The entry point is [Check]:
+// New code should drive validation through the 3-plugin pipeline
+// (pad -> balance -> validations) exposed by the subpackages
+// pkg/validation/pad, pkg/validation/balance, and
+// pkg/validation/validations. Each subpackage exports a postproc/api.Plugin
+// whose Apply method consumes the current ledger snapshot and emits
+// api.Error diagnostics. Callers invoke the three plugins in order,
+// committing any non-nil Directives between calls with
+// [ast.Ledger.ReplaceAll] so later plugins observe earlier rewrites.
+//
+// [Check] is the legacy single-entry-point form, retained for backward
+// compatibility while the plugin layer stabilizes:
 //
 //	ledger, err := ast.Load("main.beancount")
 //	if err != nil {
@@ -21,6 +31,10 @@
 //
 // Check returns the errors sorted deterministically by
 // (filename, byte offset, code) so that output is stable across runs.
+// The plugin pipeline does not sort globally — each plugin's Errors
+// slice is emitted in the order its internal walk visits directives,
+// and callers that need a stable global ordering sort by
+// (filename, offset, code) themselves.
 //
 // Callers that need additional, project-specific checks can plug in handlers
 // for beancount's `custom` directive via [RegisterCustomAssertion]. The

@@ -42,7 +42,11 @@ go_test(
     deps = [
         "//internal/options",
         "//pkg/ast",
+        "//pkg/postproc/api",
+        "//pkg/validation/balance",
         "//pkg/validation/internal/tolerance",
+        "//pkg/validation/pad",
+        "//pkg/validation/validations",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_google_go_cmp//cmp",
     ],
