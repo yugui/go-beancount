@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/postproc/api"
 )
@@ -30,7 +31,7 @@ func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
 	if len(plugins) == 0 {
 		return nil
 	}
-	opts := buildOptions(ledger)
+	opts := options.BuildRaw(ledger)
 
 	var errs []api.Error
 	for _, pd := range plugins {
@@ -74,25 +75,6 @@ func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
 		}
 	}
 	return errs
-}
-
-// buildOptions builds the options map from the ledger's option
-// directives, with last-wins semantics for duplicate keys. The snapshot
-// is taken once before any plugin runs and is not updated by plugin
-// mutations.
-func buildOptions(ledger *ast.Ledger) map[string]string {
-	var opts map[string]string
-	for _, d := range ledger.All() {
-		o, ok := d.(*ast.Option)
-		if !ok {
-			continue
-		}
-		if opts == nil {
-			opts = make(map[string]string)
-		}
-		opts[o.Key] = o.Value
-	}
-	return opts
 }
 
 // collectPluginDirectives collects all *ast.Plugin directives from the

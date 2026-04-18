@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
@@ -223,7 +224,11 @@ func TestInferToleranceExponents(t *testing.T) {
 		{"100", "0.5"},
 		{"100.001", "0.0005"},
 	}
-	c := &checker{options: newOptionValues(defaultOptionRegistry)}
+	defaults, errs := options.Parse(nil)
+	if len(errs) != 0 {
+		t.Fatalf("options.Parse(nil): unexpected errors: %v", errs)
+	}
+	c := &checker{options: defaults}
 	for _, tc := range cases {
 		a := amtStr(t, tc.in, "USD")
 		got := c.inferTolerance(a)

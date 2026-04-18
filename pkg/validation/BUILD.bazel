@@ -8,7 +8,6 @@ go_library(
         "custom.go",
         "doc.go",
         "errors.go",
-        "options.go",
         "pad.go",
         "txn.go",
         "validation.go",
@@ -16,6 +15,7 @@ go_library(
     importpath = "github.com/yugui/go-beancount/pkg/validation",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/options",
         "//pkg/ast",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
@@ -28,7 +28,6 @@ go_test(
         "balance_test.go",
         "custom_test.go",
         "integration_test.go",
-        "options_test.go",
         "pad_test.go",
         "txn_test.go",
         "validation_options_test.go",
@@ -37,6 +36,7 @@ go_test(
     data = glob(["testdata/**"]),
     embed = [":validation"],
     deps = [
+        "//internal/options",
         "//pkg/ast",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_google_go_cmp//cmp",
