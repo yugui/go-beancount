@@ -117,3 +117,16 @@ func (l *Ledger) InsertAll(ds []Directive) {
 	})
 	l.entries = grown
 }
+
+// ReplaceAll discards the ledger's current directive contents and replaces
+// them with ds, rebuilding sort keys from each directive's DirSpan,
+// DirKind, and DirDate. Sequence numbers continue from the ledger's
+// monotonic counter so old cached sort keys never collide with new ones.
+//
+// This is the mutation primitive used by the plugin runner: a plugin
+// returns a new []Directive and the runner calls ReplaceAll to commit the
+// change atomically.
+func (l *Ledger) ReplaceAll(ds []Directive) {
+	l.entries = l.entries[:0]
+	l.InsertAll(ds)
+}
