@@ -1,9 +1,10 @@
-package inventory
+package inventory_test
 
 import (
 	"testing"
 
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/validation"
 )
 
@@ -13,27 +14,27 @@ func TestErrorError(t *testing.T) {
 
 	tests := []struct {
 		name string
-		err  Error
+		err  inventory.Error
 		want string
 	}{
 		{
 			name: "span and account",
-			err:  Error{Span: span, Account: acct, Message: "boom"},
+			err:  inventory.Error{Span: span, Account: acct, Message: "boom"},
 			want: "f.bc:12:3: Assets:Cash: boom",
 		},
 		{
 			name: "span only",
-			err:  Error{Span: span, Message: "boom"},
+			err:  inventory.Error{Span: span, Message: "boom"},
 			want: "f.bc:12:3: boom",
 		},
 		{
 			name: "account only",
-			err:  Error{Account: acct, Message: "boom"},
+			err:  inventory.Error{Account: acct, Message: "boom"},
 			want: "Assets:Cash: boom",
 		},
 		{
 			name: "neither",
-			err:  Error{Message: "boom"},
+			err:  inventory.Error{Message: "boom"},
 			want: "boom",
 		},
 	}
@@ -53,14 +54,14 @@ func TestErrorAsValidationError(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		err      Error
+		err      inventory.Error
 		wantCode validation.Code
 		wantMsg  string
 	}{
 		{
 			name: "invalid booking method maps directly",
-			err: Error{
-				Code:    CodeInvalidBookingMethod,
+			err: inventory.Error{
+				Code:    inventory.CodeInvalidBookingMethod,
 				Span:    span,
 				Message: "unknown booking keyword",
 			},
@@ -69,8 +70,8 @@ func TestErrorAsValidationError(t *testing.T) {
 		},
 		{
 			name: "multiple auto postings maps directly",
-			err: Error{
-				Code:    CodeMultipleAutoPostings,
+			err: inventory.Error{
+				Code:    inventory.CodeMultipleAutoPostings,
 				Span:    span,
 				Message: "too many auto postings",
 			},
@@ -79,8 +80,8 @@ func TestErrorAsValidationError(t *testing.T) {
 		},
 		{
 			name: "no matching lot falls back to internal error",
-			err: Error{
-				Code:    CodeNoMatchingLot,
+			err: inventory.Error{
+				Code:    inventory.CodeNoMatchingLot,
 				Span:    span,
 				Message: "no lot",
 			},
@@ -89,8 +90,8 @@ func TestErrorAsValidationError(t *testing.T) {
 		},
 		{
 			name: "reduction exceeds inventory falls back to internal error",
-			err: Error{
-				Code:    CodeReductionExceedsInventory,
+			err: inventory.Error{
+				Code:    inventory.CodeReductionExceedsInventory,
 				Span:    span,
 				Message: "too much",
 			},
@@ -99,8 +100,8 @@ func TestErrorAsValidationError(t *testing.T) {
 		},
 		{
 			name: "account prefix is folded into message",
-			err: Error{
-				Code:    CodeNoMatchingLot,
+			err: inventory.Error{
+				Code:    inventory.CodeNoMatchingLot,
 				Span:    span,
 				Account: acct,
 				Message: "no lot",
@@ -110,8 +111,8 @@ func TestErrorAsValidationError(t *testing.T) {
 		},
 		{
 			name: "account prefix folded in even for mapped codes",
-			err: Error{
-				Code:    CodeInvalidBookingMethod,
+			err: inventory.Error{
+				Code:    inventory.CodeInvalidBookingMethod,
 				Span:    span,
 				Account: acct,
 				Message: "unknown booking keyword",
@@ -123,7 +124,7 @@ func TestErrorAsValidationError(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := tc.err.AsValidationError()
+			got := validation.FromInventoryError(tc.err)
 			if got.Code != tc.wantCode {
 				t.Errorf("Code = %v, want %v", got.Code, tc.wantCode)
 			}

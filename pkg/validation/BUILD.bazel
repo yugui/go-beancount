@@ -8,6 +8,7 @@ go_library(
         "custom.go",
         "doc.go",
         "errors.go",
+        "from_inventory.go",
         "pad.go",
         "txn.go",
         "validation.go",
@@ -17,6 +18,7 @@ go_library(
     deps = [
         "//internal/options",
         "//pkg/ast",
+        "//pkg/inventory",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )
