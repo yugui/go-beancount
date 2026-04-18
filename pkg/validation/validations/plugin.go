@@ -3,10 +3,9 @@
 // ops/validation.py: a suite of independent per-directive validators
 // sharing an account-lifecycle view built once at the top of Apply.
 //
-// The plugin is additive in the current refactor step: it is not yet
-// wired into the postproc registry and the legacy validation.Check()
-// path still runs in parallel. Step 11 of the refactor retires the
-// legacy path.
+// It is the third and final stage of the validation pipeline
+// (pad -> balance -> validations); see the pkg/validation package doc
+// for the recommended wiring.
 package validations
 
 import (
@@ -37,18 +36,19 @@ func (Plugin) Name() string {
 // Apply never mutates the ledger; it returns Result.Directives == nil so
 // the runner preserves the input verbatim.
 //
-// Validators populated in this step:
+// Validators run by Apply:
 //   - openClose: surfaces duplicate-open diagnostics from the initial
 //     Build pass.
 //   - activeAccounts: enforces open-window references for every
-//     directive type the legacy requireOpen covered.
+//     directive type upstream beancount's require-open covers.
 //   - currencyConstraints: enforces the allowed-currency list declared
 //     by each account's open directive.
 //   - transactionBalances: verifies each transaction balances per
 //     currency and contains at most one auto-posting.
 //
-// Additional validators (balance, pad) will be appended in subsequent
-// steps of the plugin-layer refactor.
+// Balance-assertion and pad validation live in sibling packages
+// (pkg/validation/balance and pkg/validation/pad) and run as separate
+// plugins in the pipeline.
 func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err

@@ -98,8 +98,8 @@ func TestPlugin_BalanceMatches(t *testing.T) {
 
 // TestPlugin_BalanceMismatch feeds a balance assertion that differs
 // from the running total by more than the inferred tolerance. Exactly
-// one CodeBalanceMismatch must be emitted, carrying the legacy message
-// wording.
+// one CodeBalanceMismatch must be emitted, carrying the established
+// message wording.
 func TestPlugin_BalanceMismatch(t *testing.T) {
 	pos := amtStr(t, "100.00", "USD")
 	neg := amtStr(t, "-100.00", "USD")
@@ -300,13 +300,13 @@ func TestPlugin_CanceledContext(t *testing.T) {
 	}
 }
 
-// TestPlugin_AutoPostingInferredOnDifferentAccount mirrors the legacy
-// applyPostingWeights behavior (pkg/validation/txn.go:128-213):
-// a transaction with one explicit posting and one auto-posting (no
-// Amount) infers the auto-posting's amount as the negation of the
-// residual and applies it to the auto-posting's account. A subsequent
-// Balance directive against the auto-posting's account must see the
-// inferred amount, not zero.
+// TestPlugin_AutoPostingInferredOnDifferentAccount mirrors upstream
+// beancount's posting-weight application: a transaction with one
+// explicit posting and one auto-posting (no Amount) infers the
+// auto-posting's amount as the negation of the residual and applies
+// it to the auto-posting's account. A subsequent Balance directive
+// against the auto-posting's account must see the inferred amount,
+// not zero.
 func TestPlugin_AutoPostingInferredOnDifferentAccount(t *testing.T) {
 	expl := amtInt(100, "USD")
 	txn := &ast.Transaction{
@@ -387,8 +387,8 @@ func TestPlugin_AutoPostingNoInferenceWhenMultiCurrency(t *testing.T) {
 // transactions with more than one auto-posting (malformed per the
 // validations plugin) do NOT trigger inference in the balance plugin.
 // A subsequent balance assertion against either auto-posting's
-// account must read zero, mirroring legacy's early-return on
-// CodeMultipleAutoPostings before applyPostingWeights.
+// account must read zero: posting-weight application is skipped once
+// CodeMultipleAutoPostings has been flagged.
 func TestPlugin_AutoPostingNoInferenceWhenMultipleAutos(t *testing.T) {
 	expl := amtInt(100, "USD")
 	txn := &ast.Transaction{

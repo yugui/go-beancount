@@ -175,7 +175,8 @@ func TestActiveAccounts_Balance_UnopenedAccount(t *testing.T) {
 
 func TestActiveAccounts_Pad_UnopenedAccounts(t *testing.T) {
 	// Neither account is open → two errors (one per referenced account),
-	// matching the legacy visitPad that calls requireOpen for both.
+	// matching upstream beancount's pad visitor which calls
+	// require-open on both.
 	v := newActiveAccounts(mkState(nil, nil))
 	span := ast.Span{Start: ast.Position{Line: 7, Offset: 70}}
 	d := &ast.Pad{
@@ -291,7 +292,7 @@ func TestActiveAccounts_HappyPath_WithinOpenWindow(t *testing.T) {
 }
 
 func TestActiveAccounts_HappyPath_ExactlyOnOpenDateIsAllowed(t *testing.T) {
-	// Legacy requireOpen uses at.Before(OpenDate) so a date equal to OpenDate
+	// The validator uses at.Before(OpenDate) so a date equal to OpenDate
 	// is valid.
 	state := mkState(map[ast.Account]time.Time{
 		"Assets:Cash": date(2024, 1, 1),
@@ -308,7 +309,7 @@ func TestActiveAccounts_HappyPath_ExactlyOnOpenDateIsAllowed(t *testing.T) {
 }
 
 func TestActiveAccounts_HappyPath_ExactlyOnCloseDateIsAllowed(t *testing.T) {
-	// Legacy requireOpen uses at.After(CloseDate) so a date equal to
+	// The validator uses at.After(CloseDate) so a date equal to
 	// CloseDate is valid (the account is "closed on" but the reference on
 	// the same day is accepted).
 	state := mkState(

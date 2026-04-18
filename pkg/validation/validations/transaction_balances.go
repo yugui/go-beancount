@@ -13,11 +13,11 @@ import (
 	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
 )
 
-// transactionBalances enforces per-currency balance for every transaction,
-// tolerating at most one auto-computed posting. It mirrors
-// pkg/validation/txn.go's checkBalance verbatim, but without maintaining
-// the running per-account balance map (balance assertions live in a
-// separate plugin-layer validator that is scheduled for a later step).
+// transactionBalances enforces per-currency balance for every
+// transaction, tolerating at most one auto-computed posting. It
+// mirrors upstream beancount's check_balance routine, but without
+// maintaining the running per-account balance map (balance assertions
+// live in the sibling pkg/validation/balance plugin).
 //
 // Diagnostics produced:
 //   - CodeMultipleAutoPostings when a transaction has more than one
@@ -25,8 +25,8 @@ import (
 //   - CodeUnbalancedTransaction when the per-currency residual exceeds the
 //     inferred tolerance and no auto-posting absorbs it, or when more than
 //     one residual currency remains for a single auto-posting to absorb.
-//   - CodeInternalError when tolerance inference itself fails (mirrors the
-//     legacy `failed to derive transaction tolerance` path).
+//   - CodeInternalError when tolerance inference itself fails (surfaced
+//     as `failed to derive transaction tolerance`).
 //
 // The validator reads the shared *options.Values so tolerance.Infer can
 // honor the ledger's `inferred_tolerance_multiplier` and
@@ -48,9 +48,10 @@ func newTransactionBalances(opts *options.Values) *transactionBalances {
 func (*transactionBalances) Name() string { return "transaction_balances" }
 
 // ProcessEntry inspects a single directive. Non-transaction directives
-// are ignored. For transactions, it replicates the legacy checkBalance
-// control flow: count auto-postings, compute per-currency weight sums,
-// infer tolerance, and emit at most one diagnostic per failure mode.
+// are ignored. For transactions, it replicates upstream beancount's
+// check_balance control flow: count auto-postings, compute per-currency
+// weight sums, infer tolerance, and emit at most one diagnostic per
+// failure mode.
 func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 	txn, ok := d.(*ast.Transaction)
 	if !ok {
@@ -149,10 +150,9 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 func (*transactionBalances) Finish() []api.Error { return nil }
 
 // currencySum accumulates signed per-currency totals. A nil currencySum
-// panics on write; always initialise with make(currencySum). This
-// duplicates pkg/validation/txn.go's currencySum (kept there for the
-// legacy Check() path) so the plugin does not reach across package
-// boundaries for an unexported helper.
+// panics on write; always initialise with make(currencySum). It is a
+// small helper kept local to this validator to avoid reaching across
+// package boundaries for an unexported type.
 type currencySum map[string]*apd.Decimal
 
 // add adds n to the running total for the given currency.
@@ -179,8 +179,7 @@ func (s currencySum) nonZeroCurrencies() []string {
 	return out
 }
 
-// withinTolerance reports whether |diff| <= tolerance. Mirrors the
-// unexported helper in pkg/validation/balance.go.
+// withinTolerance reports whether |diff| <= tolerance.
 func withinTolerance(diff, tol *apd.Decimal) (bool, error) {
 	abs := new(apd.Decimal)
 	if _, err := apd.BaseContext.Abs(abs, diff); err != nil {

@@ -203,7 +203,7 @@ func TestPlugin_UnresolvedPad(t *testing.T) {
 
 // TestPlugin_ConsecutivePadsSameAccount verifies that two pads on the
 // same account with no intervening balance drop the earlier one with
-// the legacy diagnostic wording.
+// the established diagnostic wording.
 func TestPlugin_ConsecutivePadsSameAccount(t *testing.T) {
 	firstSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 5, Column: 1}}
 	pad1 := &ast.Pad{
@@ -316,9 +316,9 @@ func TestPlugin_MultiPads(t *testing.T) {
 // TestPlugin_PadWithPriorTransactions verifies the synthesized
 // transaction's amount accounts for transactions that moved the
 // account's balance between the pad and its matching balance
-// assertion. Matches legacy TestPadWithInterveningTransaction: the
-// balance assertion is 150 USD, an intervening +50 USD transaction
-// occurs, so the pad must inject +100 USD to make the assertion pass.
+// assertion. The balance assertion is 150 USD, an intervening +50 USD
+// transaction occurs, so the pad must inject +100 USD to make the
+// assertion pass.
 func TestPlugin_PadWithPriorTransactions(t *testing.T) {
 	p := &ast.Pad{
 		Date:       day(2024, 1, 15),
@@ -365,8 +365,7 @@ func TestPlugin_PadWithPriorTransactions(t *testing.T) {
 
 // TestPlugin_PadZeroAdjustment verifies that when a prior transaction
 // already brings the account's balance up to the asserted total, the
-// synthesized transaction carries a zero residual — matching legacy
-// TestPadZeroAdjustmentNeeded.
+// synthesized transaction carries a zero residual.
 func TestPlugin_PadZeroAdjustment(t *testing.T) {
 	pos := amtInt(1000, "USD")
 	neg := amtInt(-1000, "USD")
@@ -410,7 +409,6 @@ func TestPlugin_PadZeroAdjustment(t *testing.T) {
 
 // TestPlugin_PadNotConsumedByDifferentAccount ensures a pending pad on
 // one account is NOT consumed by a balance on a different account.
-// Matches legacy TestPadNotConsumedByDifferentAccountBalance.
 func TestPlugin_PadNotConsumedByDifferentAccount(t *testing.T) {
 	padSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 7, Column: 1}}
 	p := &ast.Pad{

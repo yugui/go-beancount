@@ -20,8 +20,8 @@ import (
 // directive carries a currency-bearing posting in beancount's model.
 // When a posting's account is absent from the lifecycle map, this
 // validator emits nothing and defers to activeAccounts, which surfaces
-// the missing-open as CodeAccountNotOpen. This matches the legacy
-// checker's requireOpen ordering, where the currency check is only
+// the missing-open as CodeAccountNotOpen. This matches upstream
+// beancount's require-open ordering, where the currency check is only
 // reached once the account is confirmed to exist.
 type currencyConstraints struct {
 	state map[ast.Account]*accountstate.State

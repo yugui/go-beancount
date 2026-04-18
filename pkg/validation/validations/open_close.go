@@ -32,8 +32,9 @@ func (*openClose) Name() string { return "open_close" }
 func (*openClose) ProcessEntry(ast.Directive) []api.Error { return nil }
 
 // Finish emits one CodeDuplicateOpen diagnostic per duplicate-open
-// directive recorded in the BuildResult. The message text matches the
-// legacy checker's visitOpen path verbatim for byte-for-byte parity.
+// directive recorded in the BuildResult. The message text matches
+// upstream beancount's open-visit path verbatim for byte-for-byte
+// parity.
 func (v *openClose) Finish() []api.Error {
 	if len(v.result.DuplicateOpens) == 0 {
 		return nil

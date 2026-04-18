@@ -1,5 +1,5 @@
-; good_ledger.beancount — exercises every validation checker and
-; is expected to produce zero validation errors.
+; good_ledger.beancount — exercises every validator in the plugin
+; pipeline and is expected to produce zero validation errors.
 
 option "title" "Good Ledger"
 option "operating_currency" "USD"

@@ -112,7 +112,8 @@ func TestCurrencyConstraints_DisallowedCurrencyEmits(t *testing.T) {
 	if e.Span != postingSpan {
 		t.Errorf("Span = %#v, want %#v", e.Span, postingSpan)
 	}
-	// Message wording must match the legacy requireOpen path verbatim:
+	// Message wording must match upstream beancount's require-open
+	// path verbatim:
 	// fmt.Sprintf("currency %q not allowed for account %q", currency, account).
 	if want := `currency "EUR" not allowed for account "Assets:Cash"`; e.Message != want {
 		t.Errorf("Message = %q, want %q", e.Message, want)
@@ -148,8 +149,8 @@ func TestCurrencyConstraints_PostingSpanFallsBackToTxnSpan(t *testing.T) {
 func TestCurrencyConstraints_AccountMissingFromStateIgnored(t *testing.T) {
 	// When an account has no lifecycle entry (e.g. never opened),
 	// activeAccounts handles the missing-open case and the currency
-	// validator must remain silent. This mirrors the legacy checker's
-	// requireOpen dispatch, where the currency check is skipped via
+	// validator must remain silent. This mirrors upstream beancount's
+	// require-open dispatch, where the currency check is skipped via
 	// early-return once the account lookup fails.
 	state := map[ast.Account]*accountstate.State{
 		"Assets:Open": {

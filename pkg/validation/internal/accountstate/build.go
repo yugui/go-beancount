@@ -28,8 +28,8 @@ func (s *State) AllowsCurrency(currency string) bool {
 // validators that consume this state.
 type BuildResult struct {
 	// State maps each opened account to its canonical lifecycle state.
-	// For duplicate opens the first directive wins, matching the legacy
-	// checker's visitOpen behavior.
+	// For duplicate opens the first directive wins, matching upstream
+	// beancount's open-visit behavior.
 	State map[ast.Account]*State
 
 	// DuplicateOpens lists the *ast.Open directives that re-open an

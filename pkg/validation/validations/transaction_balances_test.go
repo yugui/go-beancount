@@ -179,7 +179,8 @@ func TestTransactionBalances_MultiCurrencyPricedBalances(t *testing.T) {
 
 func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) {
 	// Residual in two currencies and a single auto-posting cannot absorb
-	// both, matching legacy TestUnbalancedMultiCurrencyAutoPosting.
+	// both, matching upstream beancount's unbalanced multi-currency
+	// auto-posting behavior.
 	v := newTransactionBalances(mustDefaults(t))
 	usd := amtDec(100, "USD")
 	eur := amtDec(50, "EUR")
@@ -199,7 +200,7 @@ func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) 
 	if errs[0].Code != string(validation.CodeUnbalancedTransaction) {
 		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeUnbalancedTransaction)
 	}
-	// Legacy wording for multi-currency-auto-posting residual.
+	// Established wording for multi-currency-auto-posting residual.
 	if want := `cannot infer auto-posting amount: residual has 2 non-zero currencies ([EUR USD])`; errs[0].Message != want {
 		t.Errorf("Message = %q, want %q", errs[0].Message, want)
 	}
@@ -219,10 +220,10 @@ func TestTransactionBalances_IgnoresNonTransactionDirectives(t *testing.T) {
 	}
 }
 
-// TestTransactionBalances_MultiplierAffectsResidualTolerance mirrors the
-// legacy TestTxnMultiplierAffectsResidualTolerance: residual of 0.01 USD
-// fails at multiplier 0.5 (default) and passes at multiplier 1. This
-// exercises the tolerance.Infer integration against v.opts.
+// TestTransactionBalances_MultiplierAffectsResidualTolerance verifies
+// that a residual of 0.01 USD fails at multiplier 0.5 (default) and
+// passes at multiplier 1. This exercises the tolerance.Infer
+// integration against v.opts.
 func TestTransactionBalances_MultiplierAffectsResidualTolerance(t *testing.T) {
 	build := func(withOption bool) (*ast.Transaction, *options.Values) {
 		pos := amtStrDec(t, "100.00", "USD")
@@ -263,10 +264,10 @@ func TestTransactionBalances_MultiplierAffectsResidualTolerance(t *testing.T) {
 	}
 }
 
-// TestTransactionBalances_InferToleranceFromCost mirrors the legacy
-// TestInferToleranceFromCost: with infer_tolerance_from_cost enabled, a
-// per-unit cost spec broadens the cost-currency tolerance enough to
-// absorb a residual that would otherwise be reported as unbalanced.
+// TestTransactionBalances_InferToleranceFromCost verifies that with
+// infer_tolerance_from_cost enabled, a per-unit cost spec broadens the
+// cost-currency tolerance enough to absorb a residual that would
+// otherwise be reported as unbalanced.
 func TestTransactionBalances_InferToleranceFromCost(t *testing.T) {
 	build := func(withOption bool) (*ast.Transaction, *options.Values) {
 		units := amtDec(1000, "XYZ")
