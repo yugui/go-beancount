@@ -27,9 +27,6 @@ option "operating_currency" "USD"
 ; Explicit tolerance on a balance assertion.
 2024-02-10 balance Assets:Cash             -50.00 ~ 0.01 USD
 
-; Built-in custom "assert" handler: running balance check.
-2024-02-11 custom "assert" Assets:Cash    -50.00 USD
-
 2024-02-20 note Assets:Bank "Reconciled with statement"
 
 2024-12-31 close Expenses:Food

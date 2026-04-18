@@ -29,8 +29,6 @@ const (
 	CodePadUnresolved Code = "pad-unresolved"
 	// CodeCurrencyNotAllowed indicates a posting uses a currency not permitted by the account's open directive.
 	CodeCurrencyNotAllowed Code = "currency-not-allowed"
-	// CodeCustomAssertionFailed indicates a user-defined custom assertion failed.
-	CodeCustomAssertionFailed Code = "custom-assertion-failed"
 	// CodeInternalError indicates an internal validation failure such as an
 	// arithmetic error from the underlying decimal context. These are not
 	// user-facing ledger problems but signal a bug or pathological input.

@@ -35,9 +35,4 @@
 // slice is emitted in the order its internal walk visits directives,
 // and callers that need a stable global ordering sort by
 // (filename, offset, code) themselves.
-//
-// Callers that need additional, project-specific checks can plug in handlers
-// for beancount's `custom` directive via [RegisterCustomAssertion]. The
-// built-in "assert" handler compares the running balance of an account to an
-// expected amount and is registered automatically at package init time.
 package validation

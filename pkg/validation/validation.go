@@ -69,8 +69,6 @@ func (c *checker) run() []Error {
 			c.visitCommodity(d)
 		case *ast.Query:
 			c.visitQuery(d)
-		case *ast.Custom:
-			c.visitCustom(d)
 		case *ast.Close:
 			c.visitClose(d)
 		case *ast.Price:
@@ -124,19 +122,6 @@ func (c *checker) visitPrice(*ast.Price) {}
 // postings balance per currency (with at most one auto-computed posting).
 func (c *checker) visitTransaction(d *ast.Transaction) {
 	c.checkBalance(d)
-}
-
-// visitCustom dispatches the custom directive to the registered handler, if
-// any. Unknown custom types are silently ignored for forward compatibility.
-func (c *checker) visitCustom(d *ast.Custom) {
-	handler, ok := customAssertions[d.TypeName]
-	if !ok {
-		return
-	}
-	state := &State{c: c}
-	for _, e := range handler.Evaluate(state, d) {
-		c.emit(e)
-	}
 }
 
 // visitOption is a no-op; option directives are consumed by the
