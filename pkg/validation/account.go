@@ -5,26 +5,16 @@ import (
 	"time"
 
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
 
-// accountState tracks the open/close lifecycle of a single account.
-type accountState struct {
-	openSpan   ast.Span
-	openDate   time.Time
-	closed     bool
-	closeDate  time.Time
-	closeSpan  ast.Span
-	currencies []string
-	booking    ast.BookingMethod
-}
-
-// allowsCurrency reports whether the given currency is permitted by this
-// account's open directive. An empty currencies list means "any currency".
-func (s *accountState) allowsCurrency(currency string) bool {
-	if len(s.currencies) == 0 {
+// allowsCurrency reports whether the given currency is permitted by the
+// account's open directive. An empty Currencies list means "any currency".
+func allowsCurrency(s *accountstate.State, currency string) bool {
+	if len(s.Currencies) == 0 {
 		return true
 	}
-	for _, c := range s.currencies {
+	for _, c := range s.Currencies {
 		if c == currency {
 			return true
 		}
@@ -43,11 +33,11 @@ func (c *checker) visitOpen(d *ast.Open) {
 		})
 		return
 	}
-	c.accounts[d.Account] = &accountState{
-		openSpan:   d.Span,
-		openDate:   d.Date,
-		currencies: d.Currencies,
-		booking:    d.Booking,
+	c.accounts[d.Account] = &accountstate.State{
+		OpenSpan:   d.Span,
+		OpenDate:   d.Date,
+		Currencies: d.Currencies,
+		Booking:    d.Booking,
 	}
 }
 
@@ -63,7 +53,7 @@ func (c *checker) visitClose(d *ast.Close) {
 		})
 		return
 	}
-	if st.closed {
+	if st.Closed {
 		c.emit(Error{
 			Code:    CodeAccountClosed,
 			Span:    d.Span,
@@ -71,9 +61,9 @@ func (c *checker) visitClose(d *ast.Close) {
 		})
 		return
 	}
-	st.closed = true
-	st.closeDate = d.Date
-	st.closeSpan = d.Span
+	st.Closed = true
+	st.CloseDate = d.Date
+	st.CloseSpan = d.Span
 }
 
 // requireOpen verifies that an account is open at the given date and, if a
@@ -89,7 +79,7 @@ func (c *checker) requireOpen(account ast.Account, at time.Time, span ast.Span, 
 		})
 		return
 	}
-	if at.Before(st.openDate) {
+	if at.Before(st.OpenDate) {
 		c.emit(Error{
 			Code:    CodeAccountNotYetOpen,
 			Span:    span,
@@ -98,7 +88,7 @@ func (c *checker) requireOpen(account ast.Account, at time.Time, span ast.Span, 
 		// date before open implies not-yet-open; no further checks needed
 		return
 	}
-	if st.closed && at.After(st.closeDate) {
+	if st.Closed && at.After(st.CloseDate) {
 		c.emit(Error{
 			Code:    CodeAccountClosed,
 			Span:    span,
@@ -106,7 +96,7 @@ func (c *checker) requireOpen(account ast.Account, at time.Time, span ast.Span, 
 		})
 		return
 	}
-	if currency != "" && !st.allowsCurrency(currency) {
+	if currency != "" && !allowsCurrency(st, currency) {
 		c.emit(Error{
 			Code:    CodeCurrencyNotAllowed,
 			Span:    span,

@@ -7,6 +7,7 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
 
 // Check runs all semantic validations on the given ledger and returns any
@@ -18,7 +19,7 @@ func Check(ledger *ast.Ledger) []Error {
 // checker holds the state for a single validation pass.
 type checker struct {
 	ledger      *ast.Ledger
-	accounts    map[ast.Account]*accountState
+	accounts    map[ast.Account]*accountstate.State
 	balances    map[balanceKey]*apd.Decimal
 	pendingPads map[ast.Account]*pendingPad
 	options     *options.Values
@@ -29,7 +30,7 @@ type checker struct {
 func newChecker(ledger *ast.Ledger) *checker {
 	return &checker{
 		ledger:      ledger,
-		accounts:    make(map[ast.Account]*accountState),
+		accounts:    make(map[ast.Account]*accountstate.State),
 		balances:    make(map[balanceKey]*apd.Decimal),
 		pendingPads: make(map[ast.Account]*pendingPad),
 	}

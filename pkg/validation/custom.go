@@ -40,7 +40,7 @@ func (s *State) AccountOpen(account ast.Account) bool {
 	if !ok {
 		return false
 	}
-	return !st.closed
+	return !st.Closed
 }
 
 // CustomAssertion implements the logic for a single custom directive type.
