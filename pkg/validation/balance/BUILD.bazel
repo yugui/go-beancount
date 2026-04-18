@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "balance",
+    srcs = ["plugin.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/validation/balance",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/options",
+        "//pkg/ast",
+        "//pkg/postproc/api",
+        "//pkg/validation",
+        "//pkg/validation/internal/tolerance",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "balance_test",
+    srcs = ["plugin_test.go"],
+    embed = [":balance"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/postproc/api",
+        "//pkg/validation",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
