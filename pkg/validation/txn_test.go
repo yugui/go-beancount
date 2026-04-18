@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
 )
 
 // openAccounts returns a slice of Open directives for the given accounts on
@@ -341,13 +342,13 @@ func TestTxnTolerance_CombinedCost(t *testing.T) {
 
 	c := newChecker(ledgerOf(all...))
 	c.collectOptions()
-	tol, err := c.txnTolerance(txn, []string{"USD"})
+	tol, err := tolerance.Infer(txn.Postings, c.options, []string{"USD"})
 	if err != nil {
-		t.Fatalf("txnTolerance: unexpected error: %v", err)
+		t.Fatalf("tolerance.Infer: unexpected error: %v", err)
 	}
 	got := tol["USD"]
 	if got == nil {
-		t.Fatalf("txnTolerance: USD tolerance missing")
+		t.Fatalf("tolerance.Infer: USD tolerance missing")
 	}
 	// Expected: max(units-based, cost-based)
 	//   units-based from cash (exp 0) = 0.5
@@ -377,13 +378,13 @@ func TestTxnTolerance_CombinedCost(t *testing.T) {
 	all2 = append(all2, txn2)
 	c2 := newChecker(ledgerOf(all2...))
 	c2.collectOptions()
-	tol2, err := c2.txnTolerance(txn2, []string{"USD"})
+	tol2, err := tolerance.Infer(txn2.Postings, c2.options, []string{"USD"})
 	if err != nil {
-		t.Fatalf("txnTolerance: unexpected error: %v", err)
+		t.Fatalf("tolerance.Infer: unexpected error: %v", err)
 	}
 	got2 := tol2["USD"]
 	if got2 == nil {
-		t.Fatalf("txnTolerance: USD tolerance missing")
+		t.Fatalf("tolerance.Infer: USD tolerance missing")
 	}
 	// cost-based (using Total's exp -4) = 0.00005
 	// units-based from cash2 (exp -6)   = 0.0000005

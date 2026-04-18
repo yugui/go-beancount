@@ -5,6 +5,7 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
 )
 
 // balanceKey identifies a running balance bucket by (account, currency).
@@ -30,38 +31,11 @@ func (c *checker) apply(account ast.Account, currency string, delta *apd.Decimal
 	return err
 }
 
-// toleranceForExponent returns the inferred tolerance for a value whose
-// least-significant digit sits at exponent e. The result is
-// `inferred_tolerance_multiplier × 10^e`; at the default multiplier 0.5
-// this yields 0.005 for e=-2 and 0.5 for e=0.
-func (c *checker) toleranceForExponent(e int32) *apd.Decimal {
-	mult := c.options.Decimal("inferred_tolerance_multiplier")
-	out := new(apd.Decimal)
-	out.Set(mult)
-	out.Exponent += e
-	return out
-}
-
 // inferTolerance returns the default Beancount tolerance for an amount based
 // on the precision of its least-significant digit and the ledger's
 // configured inferred_tolerance_multiplier.
 func (c *checker) inferTolerance(amount ast.Amount) *apd.Decimal {
-	return c.toleranceForExponent(amount.Number.Exponent)
-}
-
-// maxTolerance returns the larger of a and b. Both are assumed to be
-// non-negative. A nil value is treated as zero.
-func maxTolerance(a, b *apd.Decimal) *apd.Decimal {
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	if a.Cmp(b) >= 0 {
-		return a
-	}
-	return b
+	return tolerance.ForAmount(c.options, amount)
 }
 
 // absDecimal returns |x| as a freshly allocated decimal.
