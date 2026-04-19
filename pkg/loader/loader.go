@@ -30,13 +30,16 @@ import (
 	"github.com/yugui/go-beancount/pkg/postproc"
 	"github.com/yugui/go-beancount/pkg/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation/balance"
+	"github.com/yugui/go-beancount/pkg/validation/document"
 	"github.com/yugui/go-beancount/pkg/validation/pad"
 	"github.com/yugui/go-beancount/pkg/validation/validations"
 )
 
 // preBuiltins are built-in plugins applied before directive-specified plugins
-// in default mode. Reserved for future plugins (e.g. document processing).
-var preBuiltins []api.Plugin
+// in default mode: document directory scanning and file-existence verification.
+var preBuiltins = []api.Plugin{
+	document.Plugin,
+}
 
 // postBuiltins are built-in plugins applied after directive-specified plugins
 // in default mode, in the order: pad → balance → validations.
@@ -72,7 +75,7 @@ func Load(ctx context.Context, filename string) (*ast.Ledger, []api.Error, error
 }
 
 // applyDefault runs the default pipeline:
-//  1. preBuiltins (currently empty; reserved for future built-ins)
+//  1. preBuiltins: document directory scanning and file-existence verification
 //  2. directive-specified plugins via the global registry
 //  3. postBuiltins: pad → balance → validations
 func applyDefault(ctx context.Context, ledger *ast.Ledger, opts map[string]string) []api.Error {
@@ -102,9 +105,14 @@ func applyDefault(ctx context.Context, ledger *ast.Ledger, opts map[string]strin
 
 // runBuiltin applies a single built-in plugin and commits any ledger changes.
 func runBuiltin(ctx context.Context, ledger *ast.Ledger, opts map[string]string, p api.Plugin) []api.Error {
+	var ledgerRoot string
+	if len(ledger.Files) > 0 {
+		ledgerRoot = ledger.Files[0].Filename
+	}
 	res, err := p.Apply(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
+		LedgerRoot: ledgerRoot,
 	})
 	if err != nil {
 		return []api.Error{{
