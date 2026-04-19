@@ -11,6 +11,7 @@ go_library(
         "//pkg/postproc",
         "//pkg/postproc/api",
         "//pkg/validation/balance",
+        "//pkg/validation/document",
         "//pkg/validation/pad",
         "//pkg/validation/validations",
     ],

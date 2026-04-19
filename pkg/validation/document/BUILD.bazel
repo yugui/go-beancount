@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "document",
+    srcs = ["plugin.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/validation/document",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/postproc",
+        "//pkg/postproc/api",
+    ],
+)
+
+go_test(
+    name = "document_test",
+    srcs = ["plugin_test.go"],
+    deps = [
+        ":document",
+        "//pkg/ast",
+        "//pkg/postproc/api",
+    ],
+)
