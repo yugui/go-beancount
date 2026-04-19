@@ -20,8 +20,6 @@ type fakePlugin struct {
 	calls   []api.Input // records each Apply call
 }
 
-func (f *fakePlugin) Name() string { return f.name }
-
 func (f *fakePlugin) Apply(_ context.Context, in api.Input) (api.Result, error) {
 	f.calls = append(f.calls, in)
 	if f.onApply != nil {
@@ -35,7 +33,7 @@ func registerFake(t *testing.T, fakes ...*fakePlugin) {
 	t.Helper()
 	withCleanRegistry(t)
 	for _, f := range fakes {
-		Register(f)
+		Register(f.name, f)
 	}
 }
 

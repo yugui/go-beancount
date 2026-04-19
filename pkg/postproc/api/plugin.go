@@ -9,23 +9,23 @@ import (
 )
 
 // Plugin transforms a beancount ledger in response to a `plugin "name"`
-// directive. The runner calls Apply once per directive that references
-// Name(). Implementations are called sequentially; the runner never
-// invokes Apply concurrently on the same instance.
+// directive. The runner calls Apply once per matching directive.
+// Implementations are called sequentially; the runner never invokes
+// Apply concurrently on the same instance.
 type Plugin interface {
-	// Name returns the plugin name that matches the first argument of
-	// a beancount plugin directive. By convention, plugin names use the
-	// Go fully-qualified package path of the implementing package (e.g.
-	// "github.com/yugui/go-beancount/plugins/auto_accounts"). When
-	// multiple instances of the same type are registered, prefix with
-	// the package path and append a distinguishing suffix.
-	Name() string
-
 	// Apply transforms the ledger. It receives the current state via in
 	// and returns the transformation result. A non-nil error indicates a
 	// fatal plugin failure; the runner wraps it into an [Error] with Code
 	// "plugin-failed" and leaves the ledger unchanged for this plugin.
 	Apply(ctx context.Context, in Input) (Result, error)
+}
+
+// PluginFunc adapts an ordinary function to the [Plugin] interface.
+type PluginFunc func(ctx context.Context, in Input) (Result, error)
+
+// Apply calls f(ctx, in).
+func (f PluginFunc) Apply(ctx context.Context, in Input) (Result, error) {
+	return f(ctx, in)
 }
 
 // Input is the read-only snapshot passed to each [Plugin.Apply] call.

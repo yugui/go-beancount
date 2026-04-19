@@ -8,11 +8,8 @@ import (
 )
 
 // stubPlugin is a minimal api.Plugin for registry tests.
-type stubPlugin struct {
-	name string
-}
+type stubPlugin struct{}
 
-func (s *stubPlugin) Name() string { return s.name }
 func (s *stubPlugin) Apply(_ context.Context, _ api.Input) (api.Result, error) {
 	return api.Result{}, nil
 }
@@ -26,8 +23,8 @@ func withCleanRegistry(t *testing.T) {
 
 func TestRegister_LookupRoundTrip(t *testing.T) {
 	withCleanRegistry(t)
-	p := &stubPlugin{name: "example.com/test/roundtrip"}
-	Register(p)
+	p := &stubPlugin{}
+	Register("example.com/test/roundtrip", p)
 
 	got, ok := lookup("example.com/test/roundtrip")
 	if !ok {
@@ -49,12 +46,12 @@ func TestRegister_LookupMissing(t *testing.T) {
 
 func TestRegister_DuplicatePanics(t *testing.T) {
 	withCleanRegistry(t)
-	Register(&stubPlugin{name: "example.com/test/dup"})
+	Register("example.com/test/dup", &stubPlugin{})
 
 	defer func() {
 		if r := recover(); r == nil {
 			t.Fatal("Register did not panic on duplicate name")
 		}
 	}()
-	Register(&stubPlugin{name: "example.com/test/dup"})
+	Register("example.com/test/dup", &stubPlugin{})
 }
