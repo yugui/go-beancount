@@ -25,3 +25,31 @@ After adding or modifying `.go` files or dependencies, always run Gazelle to reg
 ## Go Module
 
 `github.com/yugui/go-beancount` — Go 1.24.2
+
+## Git Workflow
+
+### Commit Message Style
+
+Commit messages and PR descriptions must convey **why** the change was made, what
+**behavior or feature** it realizes, and any **design intent, tradeoffs, or
+alternatives considered**. Do not narrate internal implementation details.
+Mention implementation only when a significant design decision was made — briefly
+describe the overall design choice, not the mechanics.
+
+Structure:
+- **Subject line**: concise statement of purpose or effect (imperative mood)
+- **Body** (when needed): motivation, realized behavior, design rationale,
+  rejected alternatives
+
+Do NOT write:
+- Descriptions of what the code does mechanically ("add a loop over X")
+- References to internal variable names, function names, or file structure
+  unless they represent a key design decision
+
+### Clean Commit History
+
+When revising code in response to code review feedback, **amend or fixup the
+original commit** rather than adding a new standalone commit. Use
+`git commit --amend` for the most recent commit, or `git rebase -i` with
+`fixup`/`squash` to fold fixes into the appropriate earlier commit. Only create
+a new commit for review feedback if it represents a genuinely independent change.
