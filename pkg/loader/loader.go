@@ -105,9 +105,14 @@ func applyDefault(ctx context.Context, ledger *ast.Ledger, opts map[string]strin
 
 // runBuiltin applies a single built-in plugin and commits any ledger changes.
 func runBuiltin(ctx context.Context, ledger *ast.Ledger, opts map[string]string, p api.Plugin) []api.Error {
+	var ledgerRoot string
+	if len(ledger.Files) > 0 {
+		ledgerRoot = ledger.Files[0].Filename
+	}
 	res, err := p.Apply(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
+		LedgerRoot: ledgerRoot,
 	})
 	if err != nil {
 		return []api.Error{{

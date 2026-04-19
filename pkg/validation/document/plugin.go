@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/postproc"
@@ -44,15 +45,49 @@ var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result,
 		if !ok {
 			continue
 		}
-		if _, err := os.Stat(doc.Path); err != nil {
+		path := resolvePath(doc.Path, doc.Span.Start.Filename, in.LedgerRoot)
+		if _, err := os.Stat(path); err != nil {
 			errs = append(errs, api.Error{
 				Code:    CodeDocumentMissing,
 				Span:    doc.Span,
-				Message: fmt.Sprintf("document %q does not exist", doc.Path),
+				Message: fmt.Sprintf("document %q does not exist", path),
 			})
 		}
 	}
 	return api.Result{Errors: errs}, nil
+}
+
+// resolvePath resolves docPath to an absolute path using the following chain:
+//
+//  1. If docPath is already absolute, return it as-is.
+//  2. Otherwise, anchor it to the directory of spanFilename.
+//  3. If spanFilename is itself relative (or empty), first resolve it against
+//     the directory of ledgerRoot.
+//  4. If ledgerRoot is also relative (or empty), resolve it against the
+//     process working directory.
+func resolvePath(docPath, spanFilename, ledgerRoot string) string {
+	if filepath.IsAbs(docPath) {
+		return docPath
+	}
+
+	var baseDir string
+	if filepath.IsAbs(spanFilename) {
+		baseDir = filepath.Dir(spanFilename)
+	} else {
+		rootAbs := ledgerRoot
+		if !filepath.IsAbs(rootAbs) {
+			cwd, _ := os.Getwd()
+			rootAbs = filepath.Join(cwd, rootAbs)
+		}
+		rootDir := filepath.Dir(rootAbs)
+		if spanFilename == "" {
+			baseDir = rootDir
+		} else {
+			baseDir = filepath.Dir(filepath.Join(rootDir, spanFilename))
+		}
+	}
+
+	return filepath.Join(baseDir, docPath)
 }
 
 func init() {

@@ -115,6 +115,125 @@ func TestPlugin_DocumentMissing(t *testing.T) {
 	}
 }
 
+// TestPlugin_RelativePathAbsoluteSpan verifies that a relative doc.Path is
+// resolved against the directory of the span's source file when that filename
+// is absolute.
+func TestPlugin_RelativePathAbsoluteSpan(t *testing.T) {
+	dir := t.TempDir()
+	filename := "invoice.pdf"
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	doc := &ast.Document{
+		Span:    ast.Span{Start: ast.Position{Filename: filepath.Join(dir, "main.beancount")}},
+		Date:    date(2024, 1, 5),
+		Account: "Assets:Cash",
+		Path:    filename,
+	}
+	res, err := document.Plugin(context.Background(), api.Input{
+		Directives: seqOf([]ast.Directive{doc}),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Errors) != 0 {
+		t.Errorf("Errors = %v, want empty", res.Errors)
+	}
+}
+
+// TestPlugin_RelativePathRelativeSpanAbsoluteLedgerRoot verifies the
+// resolution chain when doc.Path and the span source filename are both
+// relative: they are resolved through the absolute ledger root directory.
+func TestPlugin_RelativePathRelativeSpanAbsoluteLedgerRoot(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	filename := "invoice.pdf"
+	if err := os.WriteFile(filepath.Join(subDir, filename), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// span filename "sub/include.beancount" is relative to dir/main.beancount's dir,
+	// so the resolved base is dir/sub/ and the file is dir/sub/invoice.pdf.
+	doc := &ast.Document{
+		Span:    ast.Span{Start: ast.Position{Filename: "sub/include.beancount"}},
+		Date:    date(2024, 1, 5),
+		Account: "Assets:Cash",
+		Path:    filename,
+	}
+	res, err := document.Plugin(context.Background(), api.Input{
+		Directives: seqOf([]ast.Directive{doc}),
+		LedgerRoot: filepath.Join(dir, "main.beancount"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Errors) != 0 {
+		t.Errorf("Errors = %v, want empty", res.Errors)
+	}
+}
+
+// TestPlugin_RelativePathNoSpan verifies that when the span has no source
+// filename, a relative doc.Path is resolved relative to the ledger root's
+// directory.
+func TestPlugin_RelativePathNoSpan(t *testing.T) {
+	dir := t.TempDir()
+	filename := "invoice.pdf"
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	doc := &ast.Document{
+		Date:    date(2024, 1, 5),
+		Account: "Assets:Cash",
+		Path:    filename,
+	}
+	res, err := document.Plugin(context.Background(), api.Input{
+		Directives: seqOf([]ast.Directive{doc}),
+		LedgerRoot: filepath.Join(dir, "main.beancount"),
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Errors) != 0 {
+		t.Errorf("Errors = %v, want empty", res.Errors)
+	}
+}
+
+// TestPlugin_RelativePathAllRelative verifies the fallback to the process
+// working directory when all paths in the resolution chain are relative.
+func TestPlugin_RelativePathAllRelative(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	filename := "invoice.pdf"
+	if err := os.WriteFile(filepath.Join(subDir, filename), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	// With cwd=dir: ledger root "main.beancount" → dir/main.beancount,
+	// span "sub/include.beancount" → dir/sub/include.beancount,
+	// doc path "invoice.pdf" → dir/sub/invoice.pdf.
+	doc := &ast.Document{
+		Span:    ast.Span{Start: ast.Position{Filename: "sub/include.beancount"}},
+		Date:    date(2024, 1, 5),
+		Account: "Assets:Cash",
+		Path:    filename,
+	}
+	res, err := document.Plugin(context.Background(), api.Input{
+		Directives: seqOf([]ast.Directive{doc}),
+		LedgerRoot: "main.beancount",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Errors) != 0 {
+		t.Errorf("Errors = %v, want empty", res.Errors)
+	}
+}
+
 // TestPlugin_MultipleDocuments confirms that each Document directive is
 // checked independently: one existing and one missing file produce exactly
 // one error for the missing one.
