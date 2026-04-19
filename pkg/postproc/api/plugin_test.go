@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
@@ -26,11 +27,11 @@ func TestPluginFunc_Apply(t *testing.T) {
 	if err != wantErr {
 		t.Errorf("Apply err = %v, want %v", err, wantErr)
 	}
-	if len(got.Errors) != 1 || got.Errors[0].Code != "x" {
-		t.Errorf("Apply result = %+v, want %+v", got, wantResult)
+	if diff := cmp.Diff(wantResult, got); diff != "" {
+		t.Errorf("Apply() mismatch (-want +got):\n%s", diff)
 	}
 	if gotCtx != ctx {
-		t.Error("Apply did not pass ctx through")
+		t.Errorf("Apply() gotCtx = %v, want %v", gotCtx, ctx)
 	}
 	if gotIn.Config != "cfg" {
 		t.Errorf("Apply Input.Config = %q, want %q", gotIn.Config, "cfg")
