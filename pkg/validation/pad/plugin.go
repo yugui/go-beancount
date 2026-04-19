@@ -9,14 +9,15 @@
 // does not re-verify the downstream Balance directive — that is the
 // balance plugin's job.
 //
-// Divergence from upstream beancount: upstream does NOT materialize a
-// synthetic transaction; it adjusts the running-balance map directly
-// inside the balance-assertion visit. This plugin ports that behavior
-// to the plugin pipeline by synthesizing an *ast.Transaction so that
-// the balance plugin, which walks transaction postings, can satisfy
-// the assertion uniformly. The residual amount the synthetic
-// transaction carries is identical to the delta upstream's pad
-// resolution applies at balance.Date.
+// Relation to upstream beancount: upstream beancount/ops/pad.py is a
+// standard plugin registered via __plugins__ = ("pad",) that also
+// materializes synthetic data.Transaction entries flagged with
+// flags.FLAG_PADDING and inserts them immediately after the
+// originating Pad directive. This plugin is a Go port producing the
+// equivalent output shape. One remaining difference: upstream sorts
+// entries per-account via realization.postings_by_account before
+// walking, while this plugin walks directive-order in a single pass.
+// Both approaches reach the same resolved/unresolved outcome.
 package pad
 
 import (

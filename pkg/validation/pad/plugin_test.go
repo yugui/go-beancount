@@ -116,12 +116,15 @@ func TestPlugin_ResolvedPad(t *testing.T) {
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
 	}
-	if len(res.Directives) != 2 {
-		t.Fatalf("len(Result.Directives) = %d, want 2 (synth txn + balance)", len(res.Directives))
+	if len(res.Directives) != 3 {
+		t.Fatalf("len(Result.Directives) = %d, want 3 (pad + synth txn + balance)", len(res.Directives))
 	}
-	tx, ok := res.Directives[0].(*ast.Transaction)
+	if _, ok := res.Directives[0].(*ast.Pad); !ok {
+		t.Errorf("Result.Directives[0] = %T, want *ast.Pad (original pad retained)", res.Directives[0])
+	}
+	tx, ok := res.Directives[1].(*ast.Transaction)
 	if !ok {
-		t.Fatalf("Result.Directives[0] = %T, want *ast.Transaction", res.Directives[0])
+		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
 	}
 	if !tx.Date.Equal(p.Date) {
 		t.Errorf("synth.Date = %v, want %v (= pad.Date)", tx.Date, p.Date)
@@ -159,8 +162,8 @@ func TestPlugin_ResolvedPad(t *testing.T) {
 		t.Errorf("synth.Postings[1].Amount.Number = %q, want %q", got, "-1000")
 	}
 	// Balance directive must remain in place.
-	if _, ok := res.Directives[1].(*ast.Balance); !ok {
-		t.Errorf("Result.Directives[1] = %T, want *ast.Balance", res.Directives[1])
+	if _, ok := res.Directives[2].(*ast.Balance); !ok {
+		t.Errorf("Result.Directives[2] = %T, want *ast.Balance", res.Directives[2])
 	}
 }
 
@@ -242,17 +245,20 @@ func TestPlugin_ConsecutivePadsSameAccount(t *testing.T) {
 		t.Errorf("Message = %q, want %q", e.Message, wantMsg)
 	}
 	// pad2 must have been resolved; the output should contain the
-	// synthesized transaction at pad2's position, the dropped pad1
-	// left in place, and the balance directive.
-	if len(res.Directives) != 3 {
-		t.Fatalf("len(Result.Directives) = %d, want 3", len(res.Directives))
+	// dropped pad1 still in place, pad2 itself, the synthesized
+	// transaction immediately after pad2, and the balance directive.
+	if len(res.Directives) != 4 {
+		t.Fatalf("len(Result.Directives) = %d, want 4", len(res.Directives))
 	}
 	if _, ok := res.Directives[0].(*ast.Pad); !ok {
 		t.Errorf("Result.Directives[0] = %T, want *ast.Pad (dropped first pad remains)", res.Directives[0])
 	}
-	tx, ok := res.Directives[1].(*ast.Transaction)
+	if _, ok := res.Directives[1].(*ast.Pad); !ok {
+		t.Errorf("Result.Directives[1] = %T, want *ast.Pad (resolved pad2 retained)", res.Directives[1])
+	}
+	tx, ok := res.Directives[2].(*ast.Transaction)
 	if !ok {
-		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction (synth for pad2)", res.Directives[1])
+		t.Fatalf("Result.Directives[2] = %T, want *ast.Transaction (synth for pad2)", res.Directives[2])
 	}
 	if tx.Postings[1].Account != "Equity:OtherOpening" {
 		t.Errorf("synth.Postings[1].Account = %q, want %q", tx.Postings[1].Account, "Equity:OtherOpening")
@@ -291,19 +297,25 @@ func TestPlugin_MultiPads(t *testing.T) {
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
 	}
-	if len(res.Directives) != 4 {
-		t.Fatalf("len(Result.Directives) = %d, want 4", len(res.Directives))
+	if len(res.Directives) != 6 {
+		t.Fatalf("len(Result.Directives) = %d, want 6 (pad1, synth1, bal1, pad2, synth2, bal2)", len(res.Directives))
 	}
-	tx1, ok := res.Directives[0].(*ast.Transaction)
+	if _, ok := res.Directives[0].(*ast.Pad); !ok {
+		t.Errorf("Result.Directives[0] = %T, want *ast.Pad (pad1 retained)", res.Directives[0])
+	}
+	tx1, ok := res.Directives[1].(*ast.Transaction)
 	if !ok {
-		t.Fatalf("Result.Directives[0] = %T, want *ast.Transaction", res.Directives[0])
+		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
 	}
 	if got := tx1.Postings[0].Amount.Number.String(); got != "1000" {
 		t.Errorf("tx1 target amount = %q, want %q", got, "1000")
 	}
-	tx2, ok := res.Directives[2].(*ast.Transaction)
+	if _, ok := res.Directives[3].(*ast.Pad); !ok {
+		t.Errorf("Result.Directives[3] = %T, want *ast.Pad (pad2 retained)", res.Directives[3])
+	}
+	tx2, ok := res.Directives[4].(*ast.Transaction)
 	if !ok {
-		t.Fatalf("Result.Directives[2] = %T, want *ast.Transaction", res.Directives[2])
+		t.Fatalf("Result.Directives[4] = %T, want *ast.Transaction", res.Directives[4])
 	}
 	if got := tx2.Postings[0].Amount.Number.String(); got != "500" {
 		t.Errorf("tx2 target amount = %q, want %q", got, "500")
@@ -348,12 +360,15 @@ func TestPlugin_PadWithPriorTransactions(t *testing.T) {
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
 	}
-	if len(res.Directives) != 3 {
-		t.Fatalf("len(Result.Directives) = %d, want 3", len(res.Directives))
+	if len(res.Directives) != 4 {
+		t.Fatalf("len(Result.Directives) = %d, want 4 (pad, synth, txn, bal)", len(res.Directives))
 	}
-	tx, ok := res.Directives[0].(*ast.Transaction)
+	if _, ok := res.Directives[0].(*ast.Pad); !ok {
+		t.Errorf("Result.Directives[0] = %T, want *ast.Pad (original pad retained)", res.Directives[0])
+	}
+	tx, ok := res.Directives[1].(*ast.Transaction)
 	if !ok {
-		t.Fatalf("Result.Directives[0] = %T, want *ast.Transaction", res.Directives[0])
+		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
 	}
 	if got := tx.Postings[0].Amount.Number.String(); got != "100" {
 		t.Errorf("synth target amount = %q, want %q (150 expected - 50 intervening)", got, "100")
@@ -395,12 +410,15 @@ func TestPlugin_PadZeroAdjustment(t *testing.T) {
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
 	}
-	if len(res.Directives) != 3 {
-		t.Fatalf("len(Result.Directives) = %d, want 3", len(res.Directives))
+	if len(res.Directives) != 4 {
+		t.Fatalf("len(Result.Directives) = %d, want 4 (txn, pad, synth, bal)", len(res.Directives))
 	}
-	tx, ok := res.Directives[1].(*ast.Transaction)
+	if _, ok := res.Directives[1].(*ast.Pad); !ok {
+		t.Errorf("Result.Directives[1] = %T, want *ast.Pad (original pad retained)", res.Directives[1])
+	}
+	tx, ok := res.Directives[2].(*ast.Transaction)
 	if !ok {
-		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
+		t.Fatalf("Result.Directives[2] = %T, want *ast.Transaction", res.Directives[2])
 	}
 	if got := tx.Postings[0].Amount.Number.String(); got != "0" {
 		t.Errorf("synth target amount = %q, want %q (prior txn already covers assertion)", got, "0")
