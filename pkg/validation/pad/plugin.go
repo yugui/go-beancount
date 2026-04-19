@@ -129,6 +129,8 @@ var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result,
 	return api.Result{Directives: out, Errors: errs}, nil
 }
 
+// init registers Plugin under its canonical package-path name so that
+// beancount `plugin "..."` directives can activate it.
 func init() {
 	postproc.Register("github.com/yugui/go-beancount/pkg/validation/pad", Plugin)
 }

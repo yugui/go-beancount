@@ -49,7 +49,7 @@ func runPipeline(t *testing.T, ledger *ast.Ledger) []api.Error {
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("pad.Plugin.Apply: %v", err)
+		t.Fatalf("pad.Plugin: %v", err)
 	}
 	if padRes.Directives != nil {
 		ledger.ReplaceAll(padRes.Directives)

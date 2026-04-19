@@ -42,7 +42,7 @@ func loadInspectionFixture(t *testing.T) *ast.Ledger {
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("pad.Plugin.Apply on %q: %v", path, err)
+		t.Fatalf("pad.Plugin on %q: %v", path, err)
 	}
 	if padRes.Directives != nil {
 		ledger.ReplaceAll(padRes.Directives)
