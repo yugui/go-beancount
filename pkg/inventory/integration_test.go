@@ -7,75 +7,32 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
-	"github.com/yugui/go-beancount/pkg/postproc/api"
-	"github.com/yugui/go-beancount/pkg/validation/balance"
-	"github.com/yugui/go-beancount/pkg/validation/pad"
-	"github.com/yugui/go-beancount/pkg/validation/validations"
+	"github.com/yugui/go-beancount/pkg/loader"
 )
 
 // loadInspectionFixture loads testdata/inspection_e2e.beancount, asserts
-// no parse/lower diagnostics, and runs the pad -> balance -> validations
-// plugin pipeline on it. A fixture that no longer parses cleanly — or
-// trips any pipeline diagnostic — is a fixture bug and fails the test
-// before the inventory layer is even reached.
+// no parse/lower diagnostics, runs the default plugin pipeline, and fails
+// the test if any pipeline diagnostic is produced.
 func loadInspectionFixture(t *testing.T) *ast.Ledger {
 	t.Helper()
 	path := filepath.Join("testdata", "inspection_e2e.beancount")
-	ledger, err := ast.Load(path)
+	ctx := context.Background()
+	ledger, errs, err := loader.Load(ctx, path)
 	if err != nil {
-		t.Fatalf("ast.Load(%q): %v", path, err)
+		t.Fatalf("loader.Load(%q): %v", path, err)
 	}
 	for _, d := range ledger.Diagnostics {
 		if d.Severity == ast.Error {
-			t.Fatalf("ast.Load(%q): diagnostic: %s", path, d.Message)
+			t.Fatalf("loader.Load(%q): diagnostic: %s", path, d.Message)
 		}
 	}
-
-	ctx := context.Background()
-	opts := options.BuildRaw(ledger)
-
-	padRes, err := pad.Plugin(ctx, api.Input{
-		Directives: ledger.All(),
-		Options:    opts,
-	})
-	if err != nil {
-		t.Fatalf("pad.Plugin on %q: %v", path, err)
-	}
-	if padRes.Directives != nil {
-		ledger.ReplaceAll(padRes.Directives)
-	}
-
-	balRes, err := balance.Plugin(ctx, api.Input{
-		Directives: ledger.All(),
-		Options:    opts,
-	})
-	if err != nil {
-		t.Fatalf("balance.Plugin on %q: %v", path, err)
-	}
-	if balRes.Directives != nil {
-		ledger.ReplaceAll(balRes.Directives)
-	}
-
-	valRes, err := validations.Plugin(ctx, api.Input{
-		Directives: ledger.All(),
-		Options:    opts,
-	})
-	if err != nil {
-		t.Fatalf("validations.Plugin on %q: %v", path, err)
-	}
-
-	var all []api.Error
-	all = append(all, padRes.Errors...)
-	all = append(all, balRes.Errors...)
-	all = append(all, valRes.Errors...)
-	if len(all) != 0 {
-		for _, e := range all {
+	if len(errs) != 0 {
+		for _, e := range errs {
 			t.Logf("pipeline error: %s", e)
 		}
-		t.Fatalf("validation pipeline on %q: got %d errors, want 0", path, len(all))
+		t.Fatalf("loader.Load(%q): got %d errors, want 0", path, len(errs))
 	}
 	return ledger
 }
