@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "loader",
+    srcs = ["loader.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/loader",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/options",
+        "//pkg/ast",
+        "//pkg/postproc",
+        "//pkg/postproc/api",
+        "//pkg/validation/balance",
+        "//pkg/validation/pad",
+        "//pkg/validation/validations",
+    ],
+)

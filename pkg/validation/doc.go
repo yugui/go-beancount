@@ -22,17 +22,16 @@
 //     constraints, transaction balancing).
 //
 // Each subpackage exports a postproc/api.Plugin value that consumes
-// the current ledger snapshot and emits api.Error diagnostics. Callers
-// invoke the three plugins in order, committing any non-nil
-// Result.Directives with [ast.Ledger.ReplaceAll] so later plugins observe
-// earlier rewrites, and merging Result.Errors from each call.
+// the current ledger snapshot and emits api.Error diagnostics.
 //
-// A typical wiring looks like:
+// The simplest way to load and validate a ledger is via pkg/loader:
 //
-//	ledger, err := ast.Load("main.beancount")
-//	if err != nil {
-//		log.Fatal(err)
-//	}
+//	ledger, errs, err := loader.Load(ctx, "main.beancount")
+//
+// For fine-grained control, wire the plugins manually in order
+// (pad → balance → validations), committing any non-nil Result.Directives
+// with [ast.Ledger.ReplaceAll] so later plugins observe earlier rewrites:
+//
 //	ctx := context.Background()
 //	opts := options.BuildRaw(ledger)
 //
