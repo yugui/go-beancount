@@ -32,18 +32,10 @@ func seqOf(directives []ast.Directive) iter.Seq2[int, ast.Directive] {
 	}
 }
 
-func TestPlugin_Name_Stable(t *testing.T) {
-	got := validations.Plugin{}.Name()
-	want := "github.com/yugui/go-beancount/pkg/validation/validations"
-	if got != want {
-		t.Errorf("Plugin{}.Name() = %q, want %q", got, want)
-	}
-}
-
 func TestPlugin_EmptyLedger(t *testing.T) {
-	res, err := validations.Plugin{}.Apply(context.Background(), api.Input{})
+	res, err := validations.Plugin(context.Background(), api.Input{})
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 	if res.Directives != nil {
 		t.Errorf("Result.Directives = %v, want nil (plugin does not mutate the ledger)", res.Directives)
@@ -61,9 +53,9 @@ func TestPlugin_NoValidatorsNoErrors(t *testing.T) {
 	in := api.Input{
 		Directives: seqOf([]ast.Directive{open}),
 	}
-	res, err := validations.Plugin{}.Apply(context.Background(), in)
+	res, err := validations.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty (no validators registered)", res.Errors)
@@ -86,9 +78,9 @@ func TestPlugin_DuplicateOpen(t *testing.T) {
 	in := api.Input{
 		Directives: seqOf([]ast.Directive{d1, d2}),
 	}
-	res, err := validations.Plugin{}.Apply(context.Background(), in)
+	res, err := validations.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -121,9 +113,9 @@ func TestPlugin_ReferenceBeforeOpen(t *testing.T) {
 	in := api.Input{
 		Directives: seqOf([]ast.Directive{open, bal}),
 	}
-	res, err := validations.Plugin{}.Apply(context.Background(), in)
+	res, err := validations.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -150,9 +142,9 @@ func TestPlugin_ReferenceOnUnopenedAccount(t *testing.T) {
 	in := api.Input{
 		Directives: seqOf([]ast.Directive{bal}),
 	}
-	res, err := validations.Plugin{}.Apply(context.Background(), in)
+	res, err := validations.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -165,9 +157,9 @@ func TestPlugin_ReferenceOnUnopenedAccount(t *testing.T) {
 func TestPlugin_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := validations.Plugin{}.Apply(ctx, api.Input{})
+	_, err := validations.Plugin(ctx, api.Input{})
 	if err == nil {
-		t.Fatalf("Apply on canceled ctx returned nil error, want non-nil")
+		t.Fatalf("validations.Plugin on canceled ctx returned nil error, want non-nil")
 	}
 }
 
@@ -180,9 +172,9 @@ func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 			"inferred_tolerance_multiplier": "not-a-decimal",
 		},
 	}
-	res, err := validations.Plugin{}.Apply(context.Background(), in)
+	res, err := validations.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -224,9 +216,9 @@ func TestPlugin_CurrencyNotAllowed(t *testing.T) {
 		},
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{open1, open2, txn})}
-	res, err := validations.Plugin{}.Apply(context.Background(), in)
+	res, err := validations.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -265,9 +257,9 @@ func TestPlugin_UnbalancedTransaction(t *testing.T) {
 		},
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{open1, open2, txn})}
-	res, err := validations.Plugin{}.Apply(context.Background(), in)
+	res, err := validations.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -352,9 +344,9 @@ func TestPlugin_AllFourValidatorsInterleave(t *testing.T) {
 	}
 
 	in := api.Input{Directives: seqOf([]ast.Directive{openA1, openA2, openB, txnCur, txnUnb, note})}
-	res, err := validations.Plugin{}.Apply(context.Background(), in)
+	res, err := validations.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("validations.Plugin: unexpected error %v", err)
 	}
 
 	got := make(map[string]int, len(res.Errors))

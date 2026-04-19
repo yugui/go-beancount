@@ -21,7 +21,7 @@
 //     (open/close accounting, active-account enforcement, allowed-currency
 //     constraints, transaction balancing).
 //
-// Each subpackage exports a postproc/api.Plugin whose Apply method consumes
+// Each subpackage exports a postproc/api.Plugin value that consumes
 // the current ledger snapshot and emits api.Error diagnostics. Callers
 // invoke the three plugins in order, committing any non-nil
 // Result.Directives with [ast.Ledger.ReplaceAll] so later plugins observe
@@ -37,7 +37,7 @@
 //	opts := options.BuildRaw(ledger)
 //
 //	var errs []api.Error
-//	for _, p := range []api.Plugin{pad.Plugin{}, balance.Plugin{}, validations.Plugin{}} {
+//	for _, p := range []api.Plugin{pad.Plugin, balance.Plugin, validations.Plugin} {
 //		res, err := p.Apply(ctx, api.Input{
 //			Directives: ledger.All(),
 //			Options:    opts,

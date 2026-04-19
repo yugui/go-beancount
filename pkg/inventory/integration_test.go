@@ -59,12 +59,12 @@ func loadInspectionFixture(t *testing.T) *ast.Ledger {
 		ledger.ReplaceAll(balRes.Directives)
 	}
 
-	valRes, err := validations.Plugin{}.Apply(ctx, api.Input{
+	valRes, err := validations.Plugin(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("validations.Plugin.Apply on %q: %v", path, err)
+		t.Fatalf("validations.Plugin on %q: %v", path, err)
 	}
 
 	var all []api.Error

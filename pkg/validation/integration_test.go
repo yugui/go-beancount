@@ -66,12 +66,12 @@ func runPipeline(t *testing.T, ledger *ast.Ledger) []api.Error {
 		ledger.ReplaceAll(balRes.Directives)
 	}
 
-	valRes, err := validations.Plugin{}.Apply(ctx, api.Input{
+	valRes, err := validations.Plugin(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("validations.Plugin.Apply: %v", err)
+		t.Fatalf("validations.Plugin: %v", err)
 	}
 
 	var all []api.Error
