@@ -44,7 +44,7 @@ func runPipeline(t *testing.T, ledger *ast.Ledger) []api.Error {
 	ctx := context.Background()
 	opts := options.BuildRaw(ledger)
 
-	padRes, err := pad.Plugin{}.Apply(ctx, api.Input{
+	padRes, err := pad.Plugin(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
