@@ -13,43 +13,18 @@ import (
 	"fmt"
 
 	"github.com/yugui/go-beancount/internal/options"
+	"github.com/yugui/go-beancount/pkg/postproc"
 	"github.com/yugui/go-beancount/pkg/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
 
-// Plugin runs the validations-layer checks: open/close accounting,
-// active-account enforcement, allowed-currency constraints, and
-// transaction balancing. It mirrors upstream beancount's
-// ops/validation.py, split into independent entryValidator
-// implementations so each check is unit-testable in isolation.
-type Plugin struct{}
-
-// Name returns the canonical plugin name. The string matches the Go
-// package import path so plugin directives can reference the plugin by
-// its fully-qualified identity.
-func (Plugin) Name() string {
-	return "github.com/yugui/go-beancount/pkg/validation/validations"
-}
-
-// Apply constructs per-run account state, fans each directive out to the
-// registered entryValidator list, and collects their diagnostics.
-// Apply never mutates the ledger; it returns Result.Directives == nil so
-// the runner preserves the input verbatim.
-//
-// Validators run by Apply:
-//   - openClose: surfaces duplicate-open diagnostics from the initial
-//     Build pass.
-//   - activeAccounts: enforces open-window references for every
-//     directive type upstream beancount's require-open covers.
-//   - currencyConstraints: enforces the allowed-currency list declared
-//     by each account's open directive.
-//   - transactionBalances: verifies each transaction balances per
-//     currency and contains at most one auto-posting.
-//
-// Balance-assertion and pad validation live in sibling packages
-// (pkg/validation/balance and pkg/validation/pad) and run as separate
-// plugins in the pipeline.
-func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
+// Plugin runs the validations-layer checks against the input ledger:
+// open/close consistency, postings against active accounts, allowed
+// currency constraints, and transaction balancing. It never mutates
+// the ledger; it returns a Result with a nil Directives field so the
+// runner preserves the input verbatim, and reports issues only via
+// the Errors slice.
+var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
 	}
@@ -91,4 +66,11 @@ func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 
 	return api.Result{Errors: errs}, nil
+}
+
+// init registers Plugin in the global registry so that, once this
+// package is imported, a beancount `plugin "..."` directive can
+// activate it by name.
+func init() {
+	postproc.Register("github.com/yugui/go-beancount/pkg/validation/validations", Plugin)
 }

@@ -37,34 +37,34 @@ func loadInspectionFixture(t *testing.T) *ast.Ledger {
 	ctx := context.Background()
 	opts := options.BuildRaw(ledger)
 
-	padRes, err := pad.Plugin{}.Apply(ctx, api.Input{
+	padRes, err := pad.Plugin(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("pad.Plugin.Apply on %q: %v", path, err)
+		t.Fatalf("pad.Plugin on %q: %v", path, err)
 	}
 	if padRes.Directives != nil {
 		ledger.ReplaceAll(padRes.Directives)
 	}
 
-	balRes, err := balance.Plugin{}.Apply(ctx, api.Input{
+	balRes, err := balance.Plugin(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("balance.Plugin.Apply on %q: %v", path, err)
+		t.Fatalf("balance.Plugin on %q: %v", path, err)
 	}
 	if balRes.Directives != nil {
 		ledger.ReplaceAll(balRes.Directives)
 	}
 
-	valRes, err := validations.Plugin{}.Apply(ctx, api.Input{
+	valRes, err := validations.Plugin(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("validations.Plugin.Apply on %q: %v", path, err)
+		t.Fatalf("validations.Plugin on %q: %v", path, err)
 	}
 
 	var all []api.Error

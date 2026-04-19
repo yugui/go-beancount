@@ -29,49 +29,14 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/postproc"
 	"github.com/yugui/go-beancount/pkg/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
 )
 
-// Plugin synthesizes balancing transactions for pad directives. It
-// runs BEFORE the balance plugin in the postproc pipeline so that the
-// balance plugin sees the synthesized transactions and finds the
-// downstream assertions satisfied.
-type Plugin struct{}
-
-// Name returns the canonical plugin name. The string matches the Go
-// package import path so plugin directives can reference the plugin by
-// its fully-qualified identity.
-func (Plugin) Name() string {
-	return "github.com/yugui/go-beancount/pkg/validation/pad"
-}
-
-// balanceKey identifies a running balance bucket by (account, currency).
-// The pad plugin keeps its own running-balance map (in the native
-// currency of each posting) in order to compute per-pad residuals.
-type balanceKey struct {
-	Account  ast.Account
-	Currency string
-}
-
-// pendingPad tracks a pad directive awaiting resolution by a matching
-// balance assertion on the same target account. Source order is
-// preserved via the index so the output slice can reinstate the
-// synthesized transaction at the pad's original position.
-type pendingPad struct {
-	dir   *ast.Pad
-	index int
-}
-
-// Apply walks in.Directives in canonical order. It consumes each
-// *ast.Pad by pairing it with the next subsequent *ast.Balance on the
-// same account, synthesizes a balancing *ast.Transaction dated at
-// pad.Date, and emits pad-unresolved diagnostics for pads that have no
-// matching balance assertion. The returned ledger keeps every Pad
-// directive in place; resolved Pads are followed by their synthesized
-// Transaction at the next slot, matching upstream beancount's final
-// loop in beancount/ops/pad.py.
-func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
+// Plugin transforms a beancount ledger by synthesizing padding
+// transactions to resolve `pad`/`balance` discrepancies.
+var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
 	}
@@ -162,6 +127,30 @@ func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		}
 	}
 	return api.Result{Directives: out, Errors: errs}, nil
+}
+
+// init registers Plugin in the global registry so that, once this
+// package is imported, a beancount `plugin "..."` directive can
+// activate it by name.
+func init() {
+	postproc.Register("github.com/yugui/go-beancount/pkg/validation/pad", Plugin)
+}
+
+// balanceKey identifies a running balance bucket by (account, currency).
+// The pad plugin keeps its own running-balance map (in the native
+// currency of each posting) in order to compute per-pad residuals.
+type balanceKey struct {
+	Account  ast.Account
+	Currency string
+}
+
+// pendingPad tracks a pad directive awaiting resolution by a matching
+// balance assertion on the same target account. Source order is
+// preserved via the index so the output slice can reinstate the
+// synthesized transaction at the pad's original position.
+type pendingPad struct {
+	dir   *ast.Pad
+	index int
 }
 
 // applyTransaction accumulates tx's postings into balances and infers

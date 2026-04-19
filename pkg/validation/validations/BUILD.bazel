@@ -16,6 +16,7 @@ go_library(
         "//internal/options",
         "//pkg/ast",
         "//pkg/inventory",
+        "//pkg/postproc",
         "//pkg/postproc/api",
         "//pkg/validation",
         "//pkg/validation/internal/accountstate",

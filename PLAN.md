@@ -101,7 +101,7 @@ The abstract syntax tree represents the semantic structure of a ledger, divorced
   - `infer_tolerance_from_cost` (bool, default `false`) — when enabled, postings with a cost spec additionally contribute `|units| × (multiplier × 10^costExp)` to the residual tolerance of the cost currency.
   - `inferred_tolerance_default` is **not** supported.
 - **Generic option directive registry:** a package-internal registry (`pkg/validation/options.go`) reads `option` directives in a pre-pass before the directive walk, with typed accessors (String/Bool/Decimal/StringList). Unknown keys are silently ignored (Beancount parity); malformed values emit `CodeInvalidOption`. `operating_currency` is registered but not yet consumed. New options are added by registering a spec, not by threading ad-hoc fields through the checker.
-- **API:** the three `postproc/api.Plugin` implementations `pad.Plugin{}`, `balance.Plugin{}`, and `validations.Plugin{}` exported from `pkg/validation/{pad,balance,validations}`. Callers invoke them in that order against a ledger snapshot (`ledger.All()` fed into `api.Input.Directives`), committing any non-nil `Result.Directives` back via `ast.Ledger.ReplaceAll` between stages and merging `Result.Errors` for structured diagnostics with source locations.
+- **API:** the three `postproc/api.Plugin` values `pad.Plugin`, `balance.Plugin`, and `validations.Plugin` exported from `pkg/validation/{pad,balance,validations}`. Callers invoke them in that order against a ledger snapshot (`ledger.All()` fed into `api.Input.Directives`), committing any non-nil `Result.Directives` back via `ast.Ledger.ReplaceAll` between stages and merging `Result.Errors` for structured diagnostics with source locations.
 
 ---
 
