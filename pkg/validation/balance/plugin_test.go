@@ -436,6 +436,317 @@ func TestPlugin_AutoPostingNoInferenceWhenMultipleAutos(t *testing.T) {
 	}
 }
 
+// TestPlugin_ToleranceMultiplierZero pins the contract that setting
+// inferred_tolerance_multiplier to "0" disables inferred tolerance
+// entirely: any non-zero residual must surface as a mismatch, even
+// one that would be within tolerance under the default 0.5
+// multiplier. The plugin computes inferred tolerance from the
+// ASSERTION's amount exponent (tolerance.ForAmount called on
+// bal.Amount in checkBalance), not the posting's. Here
+// bal.Amount.Number is "100.00" so exp(bal.Amount.Number) = -2, so:
+//   - default multiplier 0.5 -> tol = 0.5 * 10^-2 = 0.005
+//   - multiplier 0           -> tol = 0   * 10^-2 = 0
+//
+// The running balance is 100.004 USD; diff = |100.00 - 100.004| =
+// 0.004, which is within 0.005 (default) but strictly greater than
+// 0 (multiplier=0), so exactly one CodeBalanceMismatch must fire.
+func TestPlugin_ToleranceMultiplierZero(t *testing.T) {
+	pos := amtStr(t, "100.004", "USD")
+	neg := amtStr(t, "-100.004", "USD")
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &pos},
+			{Account: "Expenses:Food", Amount: &neg},
+		},
+	}
+	balSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 10, Column: 1}}
+	bal := &ast.Balance{
+		Span:    balSpan,
+		Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Cash",
+		Amount:  amtStr(t, "100.00", "USD"),
+	}
+	in := api.Input{
+		Options:    map[string]string{"inferred_tolerance_multiplier": "0"},
+		Directives: seqOf([]ast.Directive{txn, bal}),
+	}
+	res, err := balance.Plugin{}.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Apply: unexpected error %v", err)
+	}
+	if len(res.Errors) != 1 {
+		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	}
+	e := res.Errors[0]
+	if e.Code != string(validation.CodeBalanceMismatch) {
+		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
+	}
+	if e.Span != balSpan {
+		t.Errorf("Span = %#v, want %#v", e.Span, balSpan)
+	}
+	wantMsg := "balance assertion failed: account Assets:Cash: expected 100.00 USD, got 100.004 USD"
+	if e.Message != wantMsg {
+		t.Errorf("Message = %q, want %q", e.Message, wantMsg)
+	}
+}
+
+// TestPlugin_ToleranceMultiplierRelaxed pins the contract that
+// setting inferred_tolerance_multiplier > default relaxes the
+// inferred tolerance. The plugin computes inferred tolerance from
+// the ASSERTION's amount exponent (tolerance.ForAmount called on
+// bal.Amount in checkBalance), not the posting's. Here
+// bal.Amount.Number is "100.00" so exp(bal.Amount.Number) = -2, so:
+//   - default multiplier 0.5 -> tol = 0.5 * 10^-2 = 0.005
+//   - multiplier 2.0         -> tol = 2.0 * 10^-2 = 0.02
+//
+// The running balance is 100.009 USD; diff = |100.00 - 100.009| =
+// 0.009, which is strictly greater than 0.005 (fails under the
+// default) but strictly less than 0.02 (passes under multiplier=2.0).
+// The "default_multiplier_rejects" sub-case is a negative control
+// that proves the same inputs would fail without the option, so the
+// relaxed sub-case actually exercises the option rather than being a
+// trivial pass.
+func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
+	// Shared numeric inputs: the running balance is 100.009 USD and
+	// the assertion is 100.00 USD, so diff = 0.009 at exp -2.
+	t.Run("default_multiplier_rejects", func(t *testing.T) {
+		pos := amtStr(t, "100.009", "USD")
+		neg := amtStr(t, "-100.009", "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &pos},
+				{Account: "Expenses:Food", Amount: &neg},
+			},
+		}
+		bal := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:Cash",
+			Amount:  amtStr(t, "100.00", "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Plugin{}.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Apply: unexpected error %v", err)
+		}
+		if len(res.Errors) != 1 {
+			t.Fatalf("len(Result.Errors) = %d, want 1 (diff 0.009 exceeds default tol 0.005); errors = %v", len(res.Errors), res.Errors)
+		}
+		if got, want := res.Errors[0].Code, string(validation.CodeBalanceMismatch); got != want {
+			t.Errorf("Code = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("relaxed_multiplier_accepts", func(t *testing.T) {
+		pos := amtStr(t, "100.009", "USD")
+		neg := amtStr(t, "-100.009", "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &pos},
+				{Account: "Expenses:Food", Amount: &neg},
+			},
+		}
+		bal := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:Cash",
+			Amount:  amtStr(t, "100.00", "USD"),
+		}
+		in := api.Input{
+			Options:    map[string]string{"inferred_tolerance_multiplier": "2.0"},
+			Directives: seqOf([]ast.Directive{txn, bal}),
+		}
+		res, err := balance.Plugin{}.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Apply: unexpected error %v", err)
+		}
+		if len(res.Errors) != 0 {
+			t.Errorf("Result.Errors = %v, want empty (diff 0.009 within relaxed tol 0.02)", res.Errors)
+		}
+	})
+}
+
+// TestPlugin_ExplicitToleranceZero confirms that an explicit
+// Tolerance of zero on the Balance directive requires an exact
+// match, regardless of what the inferred tolerance would have been.
+// Two sub-ledgers exercise the two sides of the boundary.
+func TestPlugin_ExplicitToleranceZero(t *testing.T) {
+	t.Run("exact match passes with explicit zero tolerance", func(t *testing.T) {
+		pos := amtStr(t, "100.00", "USD")
+		neg := amtStr(t, "-100.00", "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &pos},
+				{Account: "Expenses:Food", Amount: &neg},
+			},
+		}
+		tol := new(apd.Decimal) // zero
+		bal := &ast.Balance{
+			Date:      time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account:   "Assets:Cash",
+			Amount:    amtStr(t, "100.00", "USD"),
+			Tolerance: tol,
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Plugin{}.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Apply: unexpected error %v", err)
+		}
+		if len(res.Errors) != 0 {
+			t.Errorf("Result.Errors = %v, want empty (exact match must pass with tol=0)", res.Errors)
+		}
+	})
+
+	t.Run("tiny residual fails with explicit zero tolerance", func(t *testing.T) {
+		pos := amtStr(t, "100.001", "USD")
+		neg := amtStr(t, "-100.001", "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &pos},
+				{Account: "Expenses:Food", Amount: &neg},
+			},
+		}
+		tol := new(apd.Decimal) // zero
+		balSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 77, Column: 1}}
+		bal := &ast.Balance{
+			Span:      balSpan,
+			Date:      time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account:   "Assets:Cash",
+			Amount:    amtStr(t, "100.000", "USD"),
+			Tolerance: tol,
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Plugin{}.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Apply: unexpected error %v", err)
+		}
+		if len(res.Errors) != 1 {
+			t.Fatalf("len(Result.Errors) = %d, want 1 (tol=0 must reject any non-zero diff); errors = %v", len(res.Errors), res.Errors)
+		}
+		e := res.Errors[0]
+		if e.Code != string(validation.CodeBalanceMismatch) {
+			t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
+		}
+		if e.Span != balSpan {
+			t.Errorf("Span = %#v, want %#v", e.Span, balSpan)
+		}
+		wantMsg := "balance assertion failed: account Assets:Cash: expected 100.000 USD, got 100.001 USD"
+		if e.Message != wantMsg {
+			t.Errorf("Message = %q, want %q", e.Message, wantMsg)
+		}
+	})
+}
+
+// TestPlugin_MultiCurrencyIsolation confirms the per-(account,
+// currency) bucketing of the running balance: depositing 100 USD
+// and 50 EUR into the same account makes a 100 USD assertion pass
+// without being "diluted" by the EUR balance, and a 999 EUR
+// assertion on the same account fails independently. Crucially,
+// the USD assertion is NOT swept against any aggregate that
+// includes EUR, and the EUR mismatch does NOT mask the USD check.
+//
+// Each sub-test constructs its own *ast.Transaction values so no
+// pointer state is shared across sub-tests.
+func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
+	t.Run("USD assertion unaffected by EUR balance", func(t *testing.T) {
+		usd := amtInt(100, "USD")
+		usdNeg := amtInt(-100, "USD")
+		txnUSD := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &usd},
+				{Account: "Income:Salary", Amount: &usdNeg},
+			},
+		}
+		eur := amtInt(50, "EUR")
+		eurNeg := amtInt(-50, "EUR")
+		txnEUR := &ast.Transaction{
+			Date: time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &eur},
+				{Account: "Income:Salary", Amount: &eurNeg},
+			},
+		}
+		bal := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:Cash",
+			Amount:  amtInt(100, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txnUSD, txnEUR, bal})}
+		res, err := balance.Plugin{}.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Apply: unexpected error %v", err)
+		}
+		if len(res.Errors) != 0 {
+			t.Errorf("Result.Errors = %v, want empty (USD bucket must be isolated from EUR)", res.Errors)
+		}
+	})
+
+	t.Run("EUR mismatch does not mask passing USD", func(t *testing.T) {
+		usd := amtInt(100, "USD")
+		usdNeg := amtInt(-100, "USD")
+		txnUSD := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &usd},
+				{Account: "Income:Salary", Amount: &usdNeg},
+			},
+		}
+		eur := amtInt(50, "EUR")
+		eurNeg := amtInt(-50, "EUR")
+		txnEUR := &ast.Transaction{
+			Date: time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &eur},
+				{Account: "Income:Salary", Amount: &eurNeg},
+			},
+		}
+		balUSD := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:Cash",
+			Amount:  amtInt(100, "USD"),
+		}
+		balSpanEUR := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 55, Column: 1}}
+		balEUR := &ast.Balance{
+			Span:    balSpanEUR,
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:Cash",
+			Amount:  amtInt(999, "EUR"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txnUSD, txnEUR, balUSD, balEUR})}
+		res, err := balance.Plugin{}.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("Apply: unexpected error %v", err)
+		}
+		if len(res.Errors) != 1 {
+			t.Fatalf("len(Result.Errors) = %d, want 1 (only EUR assertion should fail); errors = %v", len(res.Errors), res.Errors)
+		}
+		e := res.Errors[0]
+		if e.Code != string(validation.CodeBalanceMismatch) {
+			t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
+		}
+		if e.Span != balSpanEUR {
+			t.Errorf("Span = %#v, want %#v (the EUR assertion, not the USD one)", e.Span, balSpanEUR)
+		}
+		wantMsg := "balance assertion failed: account Assets:Cash: expected 999 EUR, got 50 EUR"
+		if e.Message != wantMsg {
+			t.Errorf("Message = %q, want %q", e.Message, wantMsg)
+		}
+	})
+}
+
 // TestPlugin_OptionsFromRawParseError confirms malformed options
 // surface as api.Error{Code: "invalid-option"}, matching the
 // validations plugin's contract.
