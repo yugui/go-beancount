@@ -23,39 +23,16 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/postproc"
 	"github.com/yugui/go-beancount/pkg/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
 )
 
 // Plugin runs the balance-assertion check as a postproc plugin. It
-// does not mutate the ledger; Apply returns Result.Directives == nil
-// so the runner preserves the input verbatim.
-type Plugin struct{}
-
-// Name returns the canonical plugin name. The string matches the Go
-// package import path so plugin directives can reference the plugin
-// by its fully-qualified identity.
-func (Plugin) Name() string {
-	return "github.com/yugui/go-beancount/pkg/validation/balance"
-}
-
-// balanceKey identifies a running balance bucket by (account, currency).
-// It is kept local to this plugin so the running-balance map does not
-// need to reach across package boundaries for an unexported helper.
-type balanceKey struct {
-	Account  ast.Account
-	Currency string
-}
-
-// Apply walks in.Directives in canonical order, maintaining a
-// per-(account, currency) running balance from every transaction
-// posting and verifying every *ast.Balance assertion against that
-// running balance. The plugin emits exclusively CodeBalanceMismatch
-// (and internal-error / invalid-option for infrastructure failures);
-// open/close, active-account, currency-allowlist, and transaction-
-// balancing diagnostics are owned by the validations plugin.
-func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
+// does not mutate the ledger; the function returns Result.Directives
+// == nil so the runner preserves the input verbatim.
+var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
 	}
@@ -77,6 +54,20 @@ func (Plugin) Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 
 	return api.Result{Errors: errs}, nil
+}
+
+// init registers Plugin under its canonical package-path name so that
+// beancount `plugin "..."` directives can activate it.
+func init() {
+	postproc.Register("github.com/yugui/go-beancount/pkg/validation/balance", Plugin)
+}
+
+// balanceKey identifies a running balance bucket by (account, currency).
+// It is kept local to this plugin so the running-balance map does not
+// need to reach across package boundaries for an unexported helper.
+type balanceKey struct {
+	Account  ast.Account
+	Currency string
 }
 
 // parseOptions wraps options.FromRaw and converts any parse failures

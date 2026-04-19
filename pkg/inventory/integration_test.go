@@ -48,12 +48,12 @@ func loadInspectionFixture(t *testing.T) *ast.Ledger {
 		ledger.ReplaceAll(padRes.Directives)
 	}
 
-	balRes, err := balance.Plugin{}.Apply(ctx, api.Input{
+	balRes, err := balance.Plugin(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("balance.Plugin.Apply on %q: %v", path, err)
+		t.Fatalf("balance.Plugin on %q: %v", path, err)
 	}
 	if balRes.Directives != nil {
 		ledger.ReplaceAll(balRes.Directives)

@@ -55,12 +55,12 @@ func runPipeline(t *testing.T, ledger *ast.Ledger) []api.Error {
 		ledger.ReplaceAll(padRes.Directives)
 	}
 
-	balRes, err := balance.Plugin{}.Apply(ctx, api.Input{
+	balRes, err := balance.Plugin(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("balance.Plugin.Apply: %v", err)
+		t.Fatalf("balance.Plugin: %v", err)
 	}
 	if balRes.Directives != nil {
 		ledger.ReplaceAll(balRes.Directives)

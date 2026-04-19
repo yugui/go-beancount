@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//internal/options",
         "//pkg/ast",
+        "//pkg/postproc",
         "//pkg/postproc/api",
         "//pkg/validation",
         "//pkg/validation/internal/tolerance",
