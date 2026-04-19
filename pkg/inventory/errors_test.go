@@ -65,7 +65,7 @@ func TestErrorAsValidationError(t *testing.T) {
 				Span:    span,
 				Message: "unknown booking keyword",
 			},
-			wantCode: validation.CodeInvalidBookingMethod,
+			wantCode: "invalid-booking-method",
 			wantMsg:  "unknown booking keyword",
 		},
 		{
@@ -117,7 +117,7 @@ func TestErrorAsValidationError(t *testing.T) {
 				Account: acct,
 				Message: "unknown booking keyword",
 			},
-			wantCode: validation.CodeInvalidBookingMethod,
+			wantCode: "invalid-booking-method",
 			wantMsg:  "Assets:Cash: unknown booking keyword",
 		},
 	}

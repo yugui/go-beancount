@@ -39,6 +39,7 @@ go_test(
     deps = [
         "//pkg/ast",
         "//pkg/loader",
+        "//pkg/validation",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )

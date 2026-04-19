@@ -19,8 +19,8 @@ go_library(
 go_test(
     name = "balance_test",
     srcs = ["plugin_test.go"],
-    embed = [":balance"],
     deps = [
+        ":balance",
         "//pkg/ast",
         "//pkg/postproc/api",
         "//pkg/validation",

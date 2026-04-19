@@ -19,8 +19,8 @@ go_test(
     name = "validation_test",
     srcs = ["integration_test.go"],
     data = glob(["testdata/**"]),
-    embed = [":validation"],
     deps = [
+        ":validation",
         "//internal/options",
         "//pkg/ast",
         "//pkg/postproc/api",

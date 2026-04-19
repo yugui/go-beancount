@@ -49,15 +49,6 @@ func (p *parser) at(kinds ...TokenKind) bool {
 	return false
 }
 
-// consumeIf consumes and returns the token if it matches, otherwise returns nil.
-func (p *parser) consumeIf(kind TokenKind) *Token {
-	if p.tok.Kind == kind {
-		tok := p.advance()
-		return &tok
-	}
-	return nil
-}
-
 // errorf records a parse error at the current token position.
 func (p *parser) errorf(format string, args ...any) {
 	p.errors = append(p.errors, Error{
