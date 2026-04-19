@@ -261,3 +261,161 @@ func TestBuildRawIgnoresNonOptionDirectives(t *testing.T) {
 		t.Errorf("TestBuildRawIgnoresNonOptionDirectives: BuildRaw mismatch (-want +got):\n%s", diff)
 	}
 }
+
+func TestFromRaw_EmptyMap(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   map[string]string
+	}{
+		{name: "nil", in: nil},
+		{name: "empty", in: map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v, errs := FromRaw(tc.in)
+			if v == nil {
+				t.Fatalf("TestFromRaw_EmptyMap[%s]: *Values = nil, want non-nil", tc.name)
+			}
+			if errs != nil {
+				t.Errorf("TestFromRaw_EmptyMap[%s]: errs = %v, want nil", tc.name, errs)
+			}
+			// The returned *Values must expose the defaultRegistry's defaults.
+			if got := v.StringList("operating_currency"); got != nil {
+				t.Errorf("TestFromRaw_EmptyMap[%s]: operating_currency = %v, want nil", tc.name, got)
+			}
+			if got := v.Bool("infer_tolerance_from_cost"); got != false {
+				t.Errorf("TestFromRaw_EmptyMap[%s]: infer_tolerance_from_cost = %v, want false", tc.name, got)
+			}
+			d := v.Decimal("inferred_tolerance_multiplier")
+			if d == nil || d.String() != "0.5" {
+				t.Errorf("TestFromRaw_EmptyMap[%s]: inferred_tolerance_multiplier = %v, want 0.5", tc.name, d)
+			}
+		})
+	}
+}
+
+func TestFromRaw_ValidKeys(t *testing.T) {
+	raw := map[string]string{
+		"operating_currency":            "USD",
+		"inferred_tolerance_multiplier": "0.25",
+		"infer_tolerance_from_cost":     "TRUE",
+	}
+	v, errs := FromRaw(raw)
+	if errs != nil {
+		t.Fatalf("TestFromRaw_ValidKeys: errs = %v, want nil", errs)
+	}
+	if got := v.StringList("operating_currency"); !cmp.Equal(got, []string{"USD"}) {
+		t.Errorf("TestFromRaw_ValidKeys: operating_currency = %v, want [USD]", got)
+	}
+	d := v.Decimal("inferred_tolerance_multiplier")
+	if d == nil || d.String() != "0.25" {
+		t.Errorf("TestFromRaw_ValidKeys: inferred_tolerance_multiplier = %v, want 0.25", d)
+	}
+	if got := v.Bool("infer_tolerance_from_cost"); got != true {
+		t.Errorf("TestFromRaw_ValidKeys: infer_tolerance_from_cost = %v, want true", got)
+	}
+}
+
+func TestFromRaw_MalformedValue(t *testing.T) {
+	raw := map[string]string{
+		"inferred_tolerance_multiplier": "not-a-number",
+	}
+	v, errs := FromRaw(raw)
+	if v == nil {
+		t.Fatalf("TestFromRaw_MalformedValue: *Values = nil, want non-nil")
+	}
+	if len(errs) != 1 {
+		t.Fatalf("TestFromRaw_MalformedValue: len(errs) = %d, want 1 (errs=%v)", len(errs), errs)
+	}
+	got := errs[0]
+	if got.Key != "inferred_tolerance_multiplier" {
+		t.Errorf("TestFromRaw_MalformedValue: Key = %q, want %q", got.Key, "inferred_tolerance_multiplier")
+	}
+	if got.Value != "not-a-number" {
+		t.Errorf("TestFromRaw_MalformedValue: Value = %q, want %q", got.Value, "not-a-number")
+	}
+	if got.Err == nil {
+		t.Errorf("TestFromRaw_MalformedValue: Err = nil, want non-nil")
+	}
+	// FromRaw has no source locations, so Span must be the zero value.
+	if got.Span != (ast.Span{}) {
+		t.Errorf("TestFromRaw_MalformedValue: Span = %v, want zero", got.Span)
+	}
+	// The malformed key must not have been stored.
+	if _, ok := v.values["inferred_tolerance_multiplier"]; ok {
+		t.Errorf("TestFromRaw_MalformedValue: malformed value was stored")
+	}
+}
+
+func TestFromRaw_UnknownKey(t *testing.T) {
+	raw := map[string]string{
+		"no_such_option": "whatever",
+		"another_bogus":  "value",
+	}
+	v, errs := FromRaw(raw)
+	if v == nil {
+		t.Fatalf("TestFromRaw_UnknownKey: *Values = nil, want non-nil")
+	}
+	if errs != nil {
+		t.Errorf("TestFromRaw_UnknownKey: errs = %v, want nil", errs)
+	}
+	if _, ok := v.values["no_such_option"]; ok {
+		t.Errorf("TestFromRaw_UnknownKey: unknown key was stored")
+	}
+}
+
+func TestFromRaw_EquivalentToParse(t *testing.T) {
+	// Ledger with a duplicate scalar (infer_tolerance_from_cost) to exercise
+	// last-wins, plus one occurrence of each other recognized key. We use a
+	// single operating_currency value because BuildRaw collapses duplicate
+	// list keys to last-wins, which would diverge from Parse's accumulation.
+	l := buildRawLedger(
+		&ast.Option{Key: "operating_currency", Value: "USD"},
+		&ast.Option{Key: "inferred_tolerance_multiplier", Value: "0.75"},
+		&ast.Option{Key: "infer_tolerance_from_cost", Value: "FALSE"},
+		&ast.Option{Key: "infer_tolerance_from_cost", Value: "TRUE"},
+	)
+
+	fromParse, parseErrs := Parse(l)
+	fromRaw, rawErrs := FromRaw(BuildRaw(l))
+
+	if len(parseErrs) != 0 {
+		t.Fatalf("TestFromRaw_EquivalentToParse: Parse errs = %v, want none", parseErrs)
+	}
+	if len(rawErrs) != 0 {
+		t.Fatalf("TestFromRaw_EquivalentToParse: FromRaw errs = %v, want none", rawErrs)
+	}
+
+	// Compare field-by-field: both bind the same defaultRegistry, and their
+	// stored maps should agree key-for-key. *apd.Decimal values compare by
+	// reflect.DeepEqual only when their coefficients and exponents match, so
+	// we compare decimals via their string representation.
+	if fromParse.reg != fromRaw.reg {
+		t.Errorf("TestFromRaw_EquivalentToParse: reg pointers differ")
+	}
+	if len(fromParse.values) != len(fromRaw.values) {
+		t.Fatalf("TestFromRaw_EquivalentToParse: value count: Parse=%d FromRaw=%d", len(fromParse.values), len(fromRaw.values))
+	}
+	for k, pv := range fromParse.values {
+		rv, ok := fromRaw.values[k]
+		if !ok {
+			t.Errorf("TestFromRaw_EquivalentToParse: key %q missing from FromRaw", k)
+			continue
+		}
+		// *apd.Decimal doesn't compare cleanly with DeepEqual across
+		// independent allocations, so compare by string form.
+		if pd, isDec := pv.(*apd.Decimal); isDec {
+			rd, ok := rv.(*apd.Decimal)
+			if !ok {
+				t.Errorf("TestFromRaw_EquivalentToParse: key %q: types differ (Parse=%T FromRaw=%T)", k, pv, rv)
+				continue
+			}
+			if pd.String() != rd.String() {
+				t.Errorf("TestFromRaw_EquivalentToParse: key %q: Parse=%s FromRaw=%s", k, pd.String(), rd.String())
+			}
+			continue
+		}
+		if diff := cmp.Diff(pv, rv); diff != "" {
+			t.Errorf("TestFromRaw_EquivalentToParse: key %q mismatch (-Parse +FromRaw):\n%s", k, diff)
+		}
+	}
+}

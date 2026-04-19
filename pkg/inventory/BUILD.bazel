@@ -11,12 +11,12 @@ go_library(
         "matcher.go",
         "position.go",
         "reducer.go",
+        "weight.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/inventory",
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/ast",
-        "//pkg/validation",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )
@@ -32,12 +32,18 @@ go_test(
         "matcher_test.go",
         "position_test.go",
         "reducer_test.go",
+        "weight_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":inventory"],
     deps = [
+        "//internal/options",
         "//pkg/ast",
+        "//pkg/postproc/api",
         "//pkg/validation",
+        "//pkg/validation/balance",
+        "//pkg/validation/pad",
+        "//pkg/validation/validations",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )

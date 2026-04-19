@@ -3,42 +3,29 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "validation",
     srcs = [
-        "account.go",
-        "balance.go",
-        "custom.go",
         "doc.go",
         "errors.go",
-        "pad.go",
-        "txn.go",
-        "validation.go",
+        "from_inventory.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/validation",
     visibility = ["//visibility:public"],
     deps = [
-        "//internal/options",
         "//pkg/ast",
-        "@com_github_cockroachdb_apd_v3//:apd",
+        "//pkg/inventory",
     ],
 )
 
 go_test(
     name = "validation_test",
-    srcs = [
-        "account_test.go",
-        "balance_test.go",
-        "custom_test.go",
-        "integration_test.go",
-        "pad_test.go",
-        "txn_test.go",
-        "validation_options_test.go",
-        "validation_test.go",
-    ],
+    srcs = ["integration_test.go"],
     data = glob(["testdata/**"]),
     embed = [":validation"],
     deps = [
         "//internal/options",
         "//pkg/ast",
-        "@com_github_cockroachdb_apd_v3//:apd",
-        "@com_github_google_go_cmp//cmp",
+        "//pkg/postproc/api",
+        "//pkg/validation/balance",
+        "//pkg/validation/pad",
+        "//pkg/validation/validations",
     ],
 )

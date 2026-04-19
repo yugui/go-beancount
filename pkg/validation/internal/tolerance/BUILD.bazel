@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "tolerance",
+    srcs = [
+        "doc.go",
+        "tolerance.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/validation/internal/tolerance",
+    visibility = ["//pkg/validation:__subpackages__"],
+    deps = [
+        "//internal/options",
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "tolerance_test",
+    srcs = ["tolerance_test.go"],
+    deps = [
+        ":tolerance",
+        "//internal/options",
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

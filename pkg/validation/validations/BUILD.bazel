@@ -1,0 +1,45 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "validations",
+    srcs = [
+        "active_accounts.go",
+        "currency_constraints.go",
+        "open_close.go",
+        "plugin.go",
+        "transaction_balances.go",
+        "validator.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/validation/validations",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/options",
+        "//pkg/ast",
+        "//pkg/inventory",
+        "//pkg/postproc/api",
+        "//pkg/validation",
+        "//pkg/validation/internal/accountstate",
+        "//pkg/validation/internal/tolerance",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "validations_test",
+    srcs = [
+        "active_accounts_test.go",
+        "currency_constraints_test.go",
+        "open_close_test.go",
+        "plugin_test.go",
+        "transaction_balances_test.go",
+    ],
+    embed = [":validations"],
+    deps = [
+        "//internal/options",
+        "//pkg/ast",
+        "//pkg/postproc/api",
+        "//pkg/validation",
+        "//pkg/validation/internal/accountstate",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

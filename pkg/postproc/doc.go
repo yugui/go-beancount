@@ -12,7 +12,12 @@
 //	ledger, err := ast.Load(path)
 //	if err != nil { ... }
 //	pluginErrs := postproc.Apply(ctx, ledger)
-//	validationErrs := validation.Check(ledger)
+//	// Semantic validation is itself a 3-plugin pipeline: pad, balance,
+//	// validations. Callers apply them in order, feeding each plugin the
+//	// current ledger contents via api.Input and committing any returned
+//	// Directives with ast.Ledger.ReplaceAll between calls. See
+//	// pkg/validation/pad, pkg/validation/balance, and
+//	// pkg/validation/validations for the individual api.Plugin types.
 //
 // Plugin names follow Go fully-qualified package path convention (e.g.
 // "github.com/yugui/go-beancount/plugins/auto_accounts") to avoid

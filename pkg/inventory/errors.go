@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/validation"
 )
 
 // Code identifies a kind of inventory error.
@@ -55,7 +54,9 @@ const (
 //
 // The shape mirrors validation.Error so the two can be surfaced through a
 // common diagnostics channel, plus an Account field that records which
-// account's inventory was being mutated when the error was detected.
+// account's inventory was being mutated when the error was detected. See
+// validation.FromInventoryError for the bridge that maps an Error to a
+// validation.Error.
 type Error struct {
 	Code    Code
 	Span    ast.Span
@@ -86,32 +87,5 @@ func (e Error) Error() string {
 		return fmt.Sprintf("%s: %s", e.Account, e.Message)
 	default:
 		return e.Message
-	}
-}
-
-// AsValidationError converts e into a validation.Error so that a
-// future unified diagnostics layer can present inventory and validation
-// errors through one channel. Codes without a direct equivalent in the
-// validation layer map to validation.CodeInternalError. The span and
-// message are preserved; the account name, if any, is folded into the
-// message so it survives the lossy conversion.
-func (e Error) AsValidationError() validation.Error {
-	var vc validation.Code
-	switch e.Code {
-	case CodeInvalidBookingMethod:
-		vc = validation.CodeInvalidBookingMethod
-	case CodeMultipleAutoPostings:
-		vc = validation.CodeMultipleAutoPostings
-	default:
-		vc = validation.CodeInternalError
-	}
-	msg := e.Message
-	if e.Account != "" {
-		msg = fmt.Sprintf("%s: %s", e.Account, msg)
-	}
-	return validation.Error{
-		Code:    vc,
-		Span:    e.Span,
-		Message: msg,
 	}
 }

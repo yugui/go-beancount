@@ -5,7 +5,6 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/validation"
 )
 
 // Reducer streams through an [ast.Ledger], maintaining per-account
@@ -260,7 +259,7 @@ func (r *Reducer) ensureInventory(acct ast.Account) *Inventory {
 // currency (or one that has more than one non-zero currency) is
 // rejected with [CodeUnresolvableAutoPosting].
 //
-// The decimal returned by [validation.PostingWeight] is always a fresh
+// The decimal returned by [PostingWeight] is always a fresh
 // allocation, so negating it in place does not corrupt the AST.
 func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount, []Error) {
 	sums := map[string]*apd.Decimal{}
@@ -277,7 +276,7 @@ func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount
 			// reaching computeResidual.
 			continue
 		}
-		w, cur, err := validation.PostingWeight(p)
+		w, cur, err := PostingWeight(p)
 		if err != nil {
 			return ast.Amount{}, []Error{{
 				Code:    CodeInternalError,

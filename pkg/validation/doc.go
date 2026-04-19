@@ -6,24 +6,53 @@
 // transactions must balance per currency, balance assertions must match the
 // running balance (within the inferred or explicit tolerance), pad directives
 // must be followed by a matching balance assertion, and so on. Each problem
-// it finds is reported as an [Error] tagged with a [Code] identifying the
-// kind of failure.
+// it finds is reported as a postproc/api.Error tagged with a Code identifying
+// the kind of failure.
 //
-// The entry point is [Check]:
+// Validation is delivered as a three-plugin pipeline implemented in
+// subpackages:
+//
+//   - pkg/validation/pad resolves pad directives into synthesized
+//     transactions against the following balance assertion.
+//   - pkg/validation/balance verifies balance assertions against the
+//     running per-account balance and consumes the pad-synthesized
+//     residuals.
+//   - pkg/validation/validations runs the per-directive validators
+//     (open/close accounting, active-account enforcement, allowed-currency
+//     constraints, transaction balancing).
+//
+// Each subpackage exports a postproc/api.Plugin whose Apply method consumes
+// the current ledger snapshot and emits api.Error diagnostics. Callers
+// invoke the three plugins in order, committing any non-nil
+// Result.Directives with [ast.Ledger.ReplaceAll] so later plugins observe
+// earlier rewrites, and merging Result.Errors from each call.
+//
+// A typical wiring looks like:
 //
 //	ledger, err := ast.Load("main.beancount")
 //	if err != nil {
 //		log.Fatal(err)
 //	}
-//	for _, e := range validation.Check(ledger) {
-//		fmt.Println(e)
+//	ctx := context.Background()
+//	opts := options.BuildRaw(ledger)
+//
+//	var errs []api.Error
+//	for _, p := range []api.Plugin{pad.Plugin{}, balance.Plugin{}, validations.Plugin{}} {
+//		res, err := p.Apply(ctx, api.Input{
+//			Directives: ledger.All(),
+//			Options:    opts,
+//		})
+//		if err != nil {
+//			log.Fatal(err)
+//		}
+//		if res.Directives != nil {
+//			ledger.ReplaceAll(res.Directives)
+//		}
+//		errs = append(errs, res.Errors...)
 //	}
 //
-// Check returns the errors sorted deterministically by
-// (filename, byte offset, code) so that output is stable across runs.
-//
-// Callers that need additional, project-specific checks can plug in handlers
-// for beancount's `custom` directive via [RegisterCustomAssertion]. The
-// built-in "assert" handler compares the running balance of an account to an
-// expected amount and is registered automatically at package init time.
+// The pipeline does not sort globally — each plugin's Errors slice is
+// emitted in the order its internal walk visits directives, and callers
+// that need a stable global ordering sort by (filename, offset, code)
+// themselves.
 package validation
