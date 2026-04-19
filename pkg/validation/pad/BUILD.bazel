@@ -18,8 +18,8 @@ go_library(
 go_test(
     name = "pad_test",
     srcs = ["plugin_test.go"],
-    embed = [":pad"],
     deps = [
+        ":pad",
         "//pkg/ast",
         "//pkg/postproc/api",
         "//pkg/validation",
