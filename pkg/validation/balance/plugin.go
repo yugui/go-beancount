@@ -30,8 +30,8 @@ import (
 )
 
 // Plugin runs the balance-assertion check as a postproc plugin. It
-// does not mutate the ledger; the function returns Result.Directives
-// == nil so the runner preserves the input verbatim.
+// does not mutate the ledger; the function returns a Result with a nil
+// Directives field so the runner preserves the input verbatim.
 var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err

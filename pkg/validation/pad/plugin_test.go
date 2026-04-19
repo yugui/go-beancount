@@ -40,7 +40,7 @@ func day(y int, m time.Month, d int) time.Time {
 func TestPlugin_EmptyLedger(t *testing.T) {
 	res, err := pad.Plugin(context.Background(), api.Input{})
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if res.Directives != nil {
 		t.Errorf("Result.Directives = %v, want nil (no change on empty ledger)", res.Directives)
@@ -72,7 +72,7 @@ func TestPlugin_NoPads(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if res.Directives != nil {
 		t.Errorf("Result.Directives = %v, want nil (no pads means no mutation)", res.Directives)
@@ -103,7 +103,7 @@ func TestPlugin_ResolvedPad(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{p, bal})}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
@@ -173,7 +173,7 @@ func TestPlugin_UnresolvedPad(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{p})}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -220,7 +220,7 @@ func TestPlugin_ConsecutivePadsSameAccount(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{pad1, pad2, bal})}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -284,7 +284,7 @@ func TestPlugin_MultiPads(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{pad1, bal1, pad2, bal2})}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
@@ -347,7 +347,7 @@ func TestPlugin_PadWithPriorTransactions(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{p, txn, bal})}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
@@ -397,7 +397,7 @@ func TestPlugin_PadZeroAdjustment(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, p, bal})}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
@@ -435,7 +435,7 @@ func TestPlugin_PadNotConsumedByDifferentAccount(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{p, otherBal})}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -455,7 +455,7 @@ func TestPlugin_CanceledContext(t *testing.T) {
 	cancel()
 	_, err := pad.Plugin(ctx, api.Input{})
 	if err == nil {
-		t.Fatalf("Apply on canceled ctx returned nil error, want non-nil")
+		t.Fatalf("pad.Plugin on canceled ctx returned nil error, want non-nil")
 	}
 }
 
@@ -470,7 +470,7 @@ func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	}
 	res, err := pad.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("pad.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)

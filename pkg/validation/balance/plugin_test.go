@@ -49,7 +49,7 @@ func seqOf(directives []ast.Directive) iter.Seq2[int, ast.Directive] {
 func TestPlugin_EmptyLedger(t *testing.T) {
 	res, err := balance.Plugin(context.Background(), api.Input{})
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if res.Directives != nil {
 		t.Errorf("Result.Directives = %v, want nil (plugin does not mutate the ledger)", res.Directives)
@@ -81,7 +81,7 @@ func TestPlugin_BalanceMatches(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
@@ -113,7 +113,7 @@ func TestPlugin_BalanceMismatch(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -154,7 +154,7 @@ func TestPlugin_BalanceWithinTolerance(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
@@ -198,7 +198,7 @@ func TestPlugin_MultipleAccounts(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn1, txn2, balCash, balSalary})}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty", res.Errors)
@@ -220,7 +220,7 @@ func TestPlugin_BalanceOnUnopenedAccount_NoError(t *testing.T) {
 		in := api.Input{Directives: seqOf([]ast.Directive{bal})}
 		res, err := balance.Plugin(context.Background(), in)
 		if err != nil {
-			t.Fatalf("Apply: unexpected error %v", err)
+			t.Fatalf("balance.Plugin: unexpected error %v", err)
 		}
 		if len(res.Errors) != 0 {
 			t.Errorf("Result.Errors = %v, want empty", res.Errors)
@@ -236,7 +236,7 @@ func TestPlugin_BalanceOnUnopenedAccount_NoError(t *testing.T) {
 		in := api.Input{Directives: seqOf([]ast.Directive{bal})}
 		res, err := balance.Plugin(context.Background(), in)
 		if err != nil {
-			t.Fatalf("Apply: unexpected error %v", err)
+			t.Fatalf("balance.Plugin: unexpected error %v", err)
 		}
 		if len(res.Errors) != 1 {
 			t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -274,7 +274,7 @@ func TestPlugin_ExplicitTolerance(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty (diff 0.0009 within explicit tol 0.001)", res.Errors)
@@ -288,7 +288,7 @@ func TestPlugin_CanceledContext(t *testing.T) {
 	cancel()
 	_, err := balance.Plugin(ctx, api.Input{})
 	if err == nil {
-		t.Fatalf("Apply on canceled ctx returned nil error, want non-nil")
+		t.Fatalf("balance.Plugin on canceled ctx returned nil error, want non-nil")
 	}
 }
 
@@ -317,7 +317,7 @@ func TestPlugin_AutoPostingInferredOnDifferentAccount(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 0 {
 		t.Errorf("Result.Errors = %v, want empty (auto-posting should be inferred as -100 USD on Assets:Cash)", res.Errors)
@@ -359,7 +359,7 @@ func TestPlugin_AutoPostingNoInferenceWhenMultiCurrency(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, balUSD, balZero})}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1 (only balUSD should mismatch); errors = %v", len(res.Errors), res.Errors)
@@ -414,7 +414,7 @@ func TestPlugin_AutoPostingNoInferenceWhenMultipleAutos(t *testing.T) {
 	in := api.Input{Directives: seqOf([]ast.Directive{txn, balCashZero, balSavingsZero, balCashNonZero})}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1 (only balCashNonZero should mismatch); errors = %v", len(res.Errors), res.Errors)
@@ -466,7 +466,7 @@ func TestPlugin_ToleranceMultiplierZero(t *testing.T) {
 	}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
@@ -522,7 +522,7 @@ func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
 		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 		res, err := balance.Plugin(context.Background(), in)
 		if err != nil {
-			t.Fatalf("Apply: unexpected error %v", err)
+			t.Fatalf("balance.Plugin: unexpected error %v", err)
 		}
 		if len(res.Errors) != 1 {
 			t.Fatalf("len(Result.Errors) = %d, want 1 (diff 0.009 exceeds default tol 0.005); errors = %v", len(res.Errors), res.Errors)
@@ -554,7 +554,7 @@ func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
 		}
 		res, err := balance.Plugin(context.Background(), in)
 		if err != nil {
-			t.Fatalf("Apply: unexpected error %v", err)
+			t.Fatalf("balance.Plugin: unexpected error %v", err)
 		}
 		if len(res.Errors) != 0 {
 			t.Errorf("Result.Errors = %v, want empty (diff 0.009 within relaxed tol 0.02)", res.Errors)
@@ -588,7 +588,7 @@ func TestPlugin_ExplicitToleranceZero(t *testing.T) {
 		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 		res, err := balance.Plugin(context.Background(), in)
 		if err != nil {
-			t.Fatalf("Apply: unexpected error %v", err)
+			t.Fatalf("balance.Plugin: unexpected error %v", err)
 		}
 		if len(res.Errors) != 0 {
 			t.Errorf("Result.Errors = %v, want empty (exact match must pass with tol=0)", res.Errors)
@@ -618,7 +618,7 @@ func TestPlugin_ExplicitToleranceZero(t *testing.T) {
 		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
 		res, err := balance.Plugin(context.Background(), in)
 		if err != nil {
-			t.Fatalf("Apply: unexpected error %v", err)
+			t.Fatalf("balance.Plugin: unexpected error %v", err)
 		}
 		if len(res.Errors) != 1 {
 			t.Fatalf("len(Result.Errors) = %d, want 1 (tol=0 must reject any non-zero diff); errors = %v", len(res.Errors), res.Errors)
@@ -677,7 +677,7 @@ func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
 		in := api.Input{Directives: seqOf([]ast.Directive{txnUSD, txnEUR, bal})}
 		res, err := balance.Plugin(context.Background(), in)
 		if err != nil {
-			t.Fatalf("Apply: unexpected error %v", err)
+			t.Fatalf("balance.Plugin: unexpected error %v", err)
 		}
 		if len(res.Errors) != 0 {
 			t.Errorf("Result.Errors = %v, want empty (USD bucket must be isolated from EUR)", res.Errors)
@@ -720,7 +720,7 @@ func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
 		in := api.Input{Directives: seqOf([]ast.Directive{txnUSD, txnEUR, balUSD, balEUR})}
 		res, err := balance.Plugin(context.Background(), in)
 		if err != nil {
-			t.Fatalf("Apply: unexpected error %v", err)
+			t.Fatalf("balance.Plugin: unexpected error %v", err)
 		}
 		if len(res.Errors) != 1 {
 			t.Fatalf("len(Result.Errors) = %d, want 1 (only EUR assertion should fail); errors = %v", len(res.Errors), res.Errors)
@@ -750,7 +750,7 @@ func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	}
 	res, err := balance.Plugin(context.Background(), in)
 	if err != nil {
-		t.Fatalf("Apply: unexpected error %v", err)
+		t.Fatalf("balance.Plugin: unexpected error %v", err)
 	}
 	if len(res.Errors) != 1 {
 		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
