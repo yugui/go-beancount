@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_binary")
+
+go_binary(
+    name = "noinit",
+    srcs = ["plugin.go"],
+    cgo = True,
+    gotags = ["testhelpers"],
+    linkmode = "plugin",
+    out = "noinit.so",
+    testonly = True,
+    visibility = ["//pkg/postproc/goplug:__pkg__"],
+    deps = ["//pkg/postproc/goplug"],
+)

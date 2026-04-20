@@ -16,6 +16,30 @@ go_library(
     ],
 )
 
+# postproc_testhelpers is a test-only variant of :postproc that adds
+# ResetForTest. It exists so pkg/postproc/goplug tests (and any future
+# out-of-package test binary) can isolate the registry between cases
+# without the helper leaking into production builds. The `testonly`
+# attribute prevents any non-testonly target from depending on it.
+go_library(
+    name = "postproc_testhelpers",
+    srcs = [
+        "apply.go",
+        "doc.go",
+        "registry.go",
+        "testhelpers.go",
+    ],
+    gotags = ["testhelpers"],
+    importpath = "github.com/yugui/go-beancount/pkg/postproc",
+    testonly = True,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/options",
+        "//pkg/ast",
+        "//pkg/postproc/api",
+    ],
+)
+
 go_test(
     name = "postproc_test",
     srcs = [

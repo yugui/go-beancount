@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "goplug",
+    srcs = [
+        "doc.go",
+        "goplug.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/postproc/goplug",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "goplug_test",
+    srcs = ["goplug_test.go"],
+    data = [
+        "//pkg/postproc/goplug/testdata/badapiversion",
+        "//pkg/postproc/goplug/testdata/badinitsig",
+        "//pkg/postproc/goplug/testdata/badmanifest",
+        "//pkg/postproc/goplug/testdata/emptyname",
+        "//pkg/postproc/goplug/testdata/initerrors",
+        "//pkg/postproc/goplug/testdata/noinit",
+        "//pkg/postproc/goplug/testdata/nomanifest",
+        "//pkg/postproc/goplug/testdata/ok",
+    ],
+    gotags = ["testhelpers"],
+    deps = [
+        ":goplug",
+        "//pkg/ast",
+        "//pkg/postproc:postproc_testhelpers",
+    ],
+)
