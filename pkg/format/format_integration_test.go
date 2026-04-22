@@ -35,11 +35,10 @@ func TestGoldenDefault(t *testing.T) {
 		goldenFile := filepath.Join(testdataDir, base+".golden.beancount")
 
 		t.Run(base, func(t *testing.T) {
-			src, err := os.ReadFile(filepath.Join(testdataDir, name))
+			got, err := format.FormatFile(filepath.Join(testdataDir, name))
 			if err != nil {
-				t.Fatalf("reading input: %v", err)
+				t.Fatalf("formatting input: %v", err)
 			}
-			got := format.Format(string(src))
 
 			if *update {
 				if err := os.WriteFile(goldenFile, []byte(got), 0o644); err != nil {
@@ -60,11 +59,10 @@ func TestGoldenDefault(t *testing.T) {
 }
 
 func TestGoldenCommaGrouping(t *testing.T) {
-	src, err := os.ReadFile("testdata/comma.beancount")
+	got, err := format.FormatFile("testdata/comma.beancount", format.WithCommaGrouping(true))
 	if err != nil {
-		t.Fatalf("reading input: %v", err)
+		t.Fatalf("formatting input: %v", err)
 	}
-	got := format.Format(string(src), format.WithCommaGrouping(true))
 
 	goldenFile := "testdata/comma.golden.beancount"
 	if *update {

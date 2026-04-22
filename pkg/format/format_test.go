@@ -1,6 +1,9 @@
 package format
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -365,5 +368,58 @@ func TestFormatStringPreservation(t *testing.T) {
 				t.Errorf("Format(%q) changed string content:\ngot:  %q\nwant: %q", tt.src, got, tt.src)
 			}
 		})
+	}
+}
+
+func TestFormatReader(t *testing.T) {
+	src := "2024-01-01 open Assets:Bank\n"
+	got, err := FormatReader(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("FormatReader: %v", err)
+	}
+	if want := Format(src); got != want {
+		t.Errorf("FormatReader output differs from Format:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+// failingReader returns its configured error on the first Read call.
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestFormatReaderError(t *testing.T) {
+	want := errors.New("boom")
+	got, err := FormatReader(failingReader{err: want})
+	if got != "" {
+		t.Errorf("FormatReader(failingReader{err: %v}) returned non-empty string %q, want \"\"", want, got)
+	}
+	if !errors.Is(err, want) {
+		t.Errorf("FormatReader(failingReader{err: %v}) error = %v, want %v", want, err, want)
+	}
+}
+
+func TestFormatFile(t *testing.T) {
+	src := "2024-01-01 open Assets:Bank\n"
+	path := filepath.Join(t.TempDir(), "a.beancount")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	got, err := FormatFile(path)
+	if err != nil {
+		t.Fatalf("FormatFile: %v", err)
+	}
+	if want := Format(src); got != want {
+		t.Errorf("FormatFile output differs from Format:\ngot:  %q\nwant: %q", got, want)
+	}
+}
+
+func TestFormatFileNotFound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist.beancount")
+	got, err := FormatFile(path)
+	if got != "" {
+		t.Errorf("FormatFile(%q) returned non-empty string %q, want \"\"", path, got)
+	}
+	if err == nil {
+		t.Errorf("FormatFile(%q) returned nil error, want non-nil", path)
 	}
 }
