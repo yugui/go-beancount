@@ -2,7 +2,6 @@ package ast
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 
 	"github.com/yugui/go-beancount/pkg/syntax"
@@ -54,7 +53,7 @@ func (ld *loader) loadFile(absPath string) {
 	ld.visited[absPath] = true
 
 	// Read and parse the file
-	data, err := os.ReadFile(absPath)
+	cst, err := syntax.ParseFile(absPath)
 	if err != nil {
 		ld.diagnostics = append(ld.diagnostics, Diagnostic{
 			Message:  fmt.Sprintf("reading file %s: %v", absPath, err),
@@ -63,7 +62,6 @@ func (ld *loader) loadFile(absPath string) {
 		return
 	}
 
-	cst := syntax.Parse(string(data))
 	file := Lower(absPath, cst)
 	ld.files = append(ld.files, file)
 

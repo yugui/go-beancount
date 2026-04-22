@@ -68,11 +68,10 @@ func run(args []string, stdin io.Reader, stdout io.Writer) error {
 
 // formatReader reads from r, formats, and writes to w.
 func formatReader(r io.Reader, w io.Writer, opts []format.Option) error {
-	src, err := io.ReadAll(r)
+	result, err := format.FormatReader(r, opts...)
 	if err != nil {
-		return fmt.Errorf("reading stdin: %w", err)
+		return fmt.Errorf("formatting stdin: %w", err)
 	}
-	result := format.Format(string(src), opts...)
 	_, err = io.WriteString(w, result)
 	return err
 }
@@ -80,12 +79,10 @@ func formatReader(r io.Reader, w io.Writer, opts []format.Option) error {
 // formatFile formats a single file. If writeInPlace is true, the result is
 // written back to the file atomically. Otherwise it is written to w.
 func formatFile(path string, writeInPlace, multiFile, needSeparator bool, w io.Writer, opts []format.Option) error {
-	src, err := os.ReadFile(path)
+	result, err := format.FormatFile(path, opts...)
 	if err != nil {
 		return err
 	}
-
-	result := format.Format(string(src), opts...)
 
 	if writeInPlace {
 		return atomicWrite(path, []byte(result))

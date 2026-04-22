@@ -1,6 +1,7 @@
 package format
 
 import (
+	"io"
 	"strings"
 
 	"github.com/yugui/go-beancount/internal/formatopt"
@@ -10,16 +11,43 @@ import (
 // Format formats a beancount source string using the CST.
 // It parses, applies formatting rules, and returns the formatted source.
 func Format(src string, opts ...Option) string {
-	file := syntax.Parse(src)
-	o := formatopt.Resolve(opts)
-	f := &formatter{opts: o}
-	f.formatFile(file.Root)
-	return file.Root.FullText()
+	return newFormatter(opts...).apply(syntax.Parse(src))
+}
+
+// FormatReader reads the entire contents of r and returns the formatted
+// beancount source. Read errors are returned unwrapped.
+func FormatReader(r io.Reader, opts ...Option) (string, error) {
+	file, err := syntax.ParseReader(r)
+	if err != nil {
+		return "", err
+	}
+	return newFormatter(opts...).apply(file), nil
+}
+
+// FormatFile opens path and returns its formatted contents. Open/read
+// errors are returned unwrapped.
+func FormatFile(path string, opts ...Option) (string, error) {
+	file, err := syntax.ParseFile(path)
+	if err != nil {
+		return "", err
+	}
+	return newFormatter(opts...).apply(file), nil
 }
 
 // formatter applies formatting rules to a parsed beancount CST.
 type formatter struct {
 	opts formatopt.Options
+}
+
+// newFormatter constructs a formatter with the given options resolved.
+func newFormatter(opts ...Option) *formatter {
+	return &formatter{opts: formatopt.Resolve(opts)}
+}
+
+// apply formats file in place and returns its reconstructed text.
+func (f *formatter) apply(file *syntax.File) string {
+	f.formatFile(file.Root)
+	return file.Root.FullText()
 }
 
 // formatFile processes the top-level FileNode.

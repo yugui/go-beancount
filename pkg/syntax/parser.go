@@ -1,6 +1,10 @@
 package syntax
 
-import "fmt"
+import (
+	"fmt"
+	"io"
+	"os"
+)
 
 // Parse parses a beancount source string into a concrete syntax tree.
 func Parse(src string) *File {
@@ -10,6 +14,29 @@ func Parse(src string) *File {
 	}
 	p.advance() // read first token into p.tok
 	return p.parseFile()
+}
+
+// ParseReader reads the entire contents of r and parses it as beancount
+// source. Read errors are returned unwrapped; parse errors are surfaced
+// through the returned File's Errors field.
+func ParseReader(r io.Reader) (*File, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(string(data)), nil
+}
+
+// ParseFile opens path and parses its contents as beancount source. The file
+// is closed before ParseFile returns. Open/read errors are returned unwrapped;
+// parse errors are surfaced through the returned File's Errors field.
+func ParseFile(path string) (*File, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return ParseReader(f)
 }
 
 type parser struct {

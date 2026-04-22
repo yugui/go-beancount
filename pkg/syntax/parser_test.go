@@ -1,6 +1,9 @@
 package syntax
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -1341,4 +1344,58 @@ func TestParseAmountInPriceDirective(t *testing.T) {
 	f := Parse(src)
 	assertNoErrors(t, f)
 	assertRoundTrip(t, src, f)
+}
+
+func TestParseReader(t *testing.T) {
+	src := "option \"title\" \"x\"\n"
+	f, err := ParseReader(strings.NewReader(src))
+	if err != nil {
+		t.Fatalf("ParseReader returned error: %v", err)
+	}
+	assertNoErrors(t, f)
+	assertRoundTrip(t, src, f)
+}
+
+// failingReader returns its configured error on the first Read call.
+type failingReader struct{ err error }
+
+func (r failingReader) Read([]byte) (int, error) { return 0, r.err }
+
+func TestParseReaderError(t *testing.T) {
+	want := errors.New("boom")
+	f, err := ParseReader(failingReader{err: want})
+	if f != nil {
+		t.Errorf("ParseReader(failingReader{err: %v}) returned non-nil File, want nil", want)
+	}
+	if !errors.Is(err, want) {
+		t.Errorf("ParseReader(failingReader{err: %v}) error = %v, want %v", want, err, want)
+	}
+}
+
+func TestParseFile(t *testing.T) {
+	src := "2024-01-01 open Assets:Bank\n"
+	path := filepath.Join(t.TempDir(), "a.beancount")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	f, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile(%q): %v", path, err)
+	}
+	assertNoErrors(t, f)
+	if f.Root.FindNode(OpenDirective) == nil {
+		t.Errorf("ParseFile(%q): expected OpenDirective node in result", path)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseFileNotFound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "does-not-exist.beancount")
+	f, err := ParseFile(path)
+	if f != nil {
+		t.Errorf("ParseFile(%q) returned non-nil File, want nil", path)
+	}
+	if err == nil {
+		t.Errorf("ParseFile(%q) returned nil error, want non-nil", path)
+	}
 }
