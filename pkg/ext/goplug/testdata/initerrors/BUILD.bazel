@@ -1,0 +1,20 @@
+load("@rules_go//go:def.bzl", "go_binary")
+load("//pkg/ext/goplug:fixture_constraints.bzl", "PLUGIN_COMPATIBLE_PLATFORMS")
+
+# Plugin fixtures are hand-authored: they need linkmode=plugin, cgo=True,
+# and a .so out name that gazelle's generator doesn't produce. Ignore
+# keeps gazelle from rewriting the target into its standard shape.
+# gazelle:ignore
+
+go_binary(
+    name = "initerrors",
+    srcs = ["plugin.go"],
+    cgo = True,
+    gotags = ["testhelpers"],
+    linkmode = "plugin",
+    out = "initerrors.so",
+    target_compatible_with = PLUGIN_COMPATIBLE_PLATFORMS,
+    testonly = True,
+    visibility = ["//pkg/ext/goplug:__pkg__"],
+    deps = ["//pkg/ext/goplug"],
+)

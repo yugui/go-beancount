@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+load(":fixture_constraints.bzl", "PLUGIN_COMPATIBLE_PLATFORMS")
+
+go_library(
+    name = "goplug",
+    srcs = [
+        "doc.go",
+        "goplug.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/ext/goplug",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "goplug_test",
+    srcs = ["goplug_test.go"],
+    data = [
+        "//pkg/ext/goplug/testdata/badapiversion",
+        "//pkg/ext/goplug/testdata/badinitsig",
+        "//pkg/ext/goplug/testdata/badmanifest",
+        "//pkg/ext/goplug/testdata/emptyname",
+        "//pkg/ext/goplug/testdata/initerrors",
+        "//pkg/ext/goplug/testdata/noinit",
+        "//pkg/ext/goplug/testdata/nomanifest",
+        "//pkg/ext/goplug/testdata/ok",
+    ],
+    gotags = ["testhelpers"],
+    target_compatible_with = PLUGIN_COMPATIBLE_PLATFORMS,
+    deps = [
+        ":goplug",
+        "//pkg/ast",
+        "//pkg/ext/postproc",
+    ],
+)

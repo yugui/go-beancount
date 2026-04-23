@@ -8,8 +8,8 @@ go_library(
     deps = [
         "//internal/options",
         "//pkg/ast",
-        "//pkg/postproc",
-        "//pkg/postproc/api",
+        "//pkg/ext/postproc",
+        "//pkg/ext/postproc/api",
         "//pkg/validation",
         "//pkg/validation/internal/tolerance",
         "@com_github_cockroachdb_apd_v3//:apd",
@@ -22,7 +22,7 @@ go_test(
     deps = [
         ":balance",
         "//pkg/ast",
-        "//pkg/postproc/api",
+        "//pkg/ext/postproc/api",
         "//pkg/validation",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],

@@ -23,7 +23,7 @@ go_test(
         ":validation",
         "//internal/options",
         "//pkg/ast",
-        "//pkg/postproc/api",
+        "//pkg/ext/postproc/api",
         "//pkg/validation/balance",
         "//pkg/validation/pad",
         "//pkg/validation/validations",

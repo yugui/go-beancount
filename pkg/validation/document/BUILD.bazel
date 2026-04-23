@@ -7,8 +7,8 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/ast",
-        "//pkg/postproc",
-        "//pkg/postproc/api",
+        "//pkg/ext/postproc",
+        "//pkg/ext/postproc/api",
     ],
 )
 
@@ -18,6 +18,6 @@ go_test(
     deps = [
         ":document",
         "//pkg/ast",
-        "//pkg/postproc/api",
+        "//pkg/ext/postproc/api",
     ],
 )

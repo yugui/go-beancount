@@ -2,7 +2,7 @@ package validations
 
 import (
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/postproc/api"
+	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
 // entryValidator is the contract implemented by each of the per-check

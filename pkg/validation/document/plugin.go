@@ -22,8 +22,8 @@ import (
 	"path/filepath"
 
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/postproc"
-	"github.com/yugui/go-beancount/pkg/postproc/api"
+	"github.com/yugui/go-beancount/pkg/ext/postproc"
+	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
 // CodeDocumentMissing is emitted when a Document directive references a path
