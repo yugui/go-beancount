@@ -19,6 +19,17 @@ jobs:
           restore-keys: bazel-${{ runner.os }}-
       - run: bazel test //... --test_output=errors
 
+  go-test:
+    name: go test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+
   fmt:
     name: go fmt
     runs-on: ubuntu-latest
