@@ -13,8 +13,8 @@ import (
 	"fmt"
 
 	"github.com/yugui/go-beancount/internal/options"
-	"github.com/yugui/go-beancount/pkg/postproc"
-	"github.com/yugui/go-beancount/pkg/postproc/api"
+	"github.com/yugui/go-beancount/pkg/ext/postproc"
+	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
 

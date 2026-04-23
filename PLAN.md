@@ -12,7 +12,7 @@ The system is layered. Higher layers depend on lower layers; each layer is indep
 ├───────────────┬────────────┬─────────────────┬──────────────┤
 │  pkg/quote    │            │                 │  pkg/query    │  Mid-level
 │  pkg/importer │ pkg/format │ pkg/validation  │  pkg/printer  │
-│  pkg/postproc │            │                 │               │
+│  pkg/ext      │            │                 │               │
 ├───────────────┴────────────┴─────────────────┴──────────────┤
 │                        pkg/inventory                         │  Semantic
 ├──────────────────────────────────────────────────────────────┤
@@ -124,11 +124,11 @@ Lot-based inventory tracking is required for capital gains, cost basis reporting
 
 ---
 
-## Phase 6: Plugin System (`pkg/postproc`)
+## Phase 6: Plugin System (`pkg/ext`)
 
 **Dependencies:** none (developed in parallel with other phases)
 
-Beancount calls its post-parse/pre-validation transformation hooks "plugins". Each `plugin "name"` directive names a Go symbol that receives the directive list and returns a new one. go-beancount implements this in `pkg/postproc` (named to avoid collision with the Go standard library `plugin` package). Three sub-phases, delivered as independent PRs.
+Beancount calls its post-parse/pre-validation transformation hooks "plugins". Each `plugin "name"` directive names a Go symbol that receives the directive list and returns a new one. go-beancount implements this under `pkg/ext`, a neutral umbrella for plugin framework packages. The name avoids collision with the Go standard library `plugin` package. Three sub-phases, delivered as independent PRs.
 
 ### Phase 6a: Narrow beancount plugins (in-process Go)
 
@@ -136,12 +136,12 @@ Beancount calls its post-parse/pre-validation transformation hooks "plugins". Ea
 
 The core postprocessor framework. Plugins are Go types registered at init time and invoked in source order on the parsed ledger.
 
-- `pkg/postproc/api`: stable `Plugin` interface plus `Input`, `Result`, `Error` types. Kept minimal so 6b/6c loaders can compile against it without pulling in the runner.
-- `pkg/postproc`: `Register` (init-time, panics on duplicate) and `Apply(ctx, *ast.Ledger)` (walks `*ast.Plugin` directives, invokes each registered plugin, commits `Result.Directives` via `ast.Ledger.ReplaceAll` so later plugins see earlier output).
+- `pkg/ext/postproc/api`: stable `Plugin` interface plus `Input`, `Result`, `Error` types. Kept minimal so 6b/6c loaders can compile against it without pulling in the runner.
+- `pkg/ext/postproc`: `Register` (init-time, panics on duplicate) and `Apply(ctx, *ast.Ledger)` (walks `*ast.Plugin` directives, invokes each registered plugin, commits `Result.Directives` via `ast.Ledger.ReplaceAll` so later plugins see earlier output).
 - Plugin names follow Go fully-qualified package path convention (e.g. `github.com/yugui/go-beancount/plugins/auto_accounts`) to avoid collisions.
 - Runner-emitted diagnostics: `plugin-not-registered`, `plugin-failed`, `plugin-canceled`.
 
-### Phase 6b: Go `.so` loader (`pkg/postproc/goplug`)
+### Phase 6b: Go `.so` loader (`pkg/ext/goplug`)
 
 Load plugins from `.so` files built with `go build -buildmode=plugin`, so third parties can ship plugins without forking go-beancount.
 
@@ -149,7 +149,7 @@ Load plugins from `.so` files built with `go build -buildmode=plugin`, so third 
 - `.so` files must be built against the same `go-beancount` module version and Go toolchain — constraints documented explicitly.
 - Opt-in: the loader is invoked only when the CLI (or an embedder) passes `--plugin-so=<path>`.
 
-### Phase 6c: External-process loader (`pkg/postproc/extproc`)
+### Phase 6c: External-process loader (`pkg/ext/extproc`)
 
 For plugins that cannot be `.so` files (different Go toolchain, non-Go implementation, sandboxing).
 
@@ -160,10 +160,10 @@ For plugins that cannot be `.so` files (different Go toolchain, non-Go implement
 
 ### Deliverables
 
-- `pkg/postproc/api`: stable interface (6a — done).
-- `pkg/postproc`: registry + runner (6a — done).
-- `pkg/postproc/goplug`: `.so` loader (6b).
-- `pkg/postproc/extproc`: external-process host + SDK (6c).
+- `pkg/ext/postproc/api`: stable interface (6a — done).
+- `pkg/ext/postproc`: registry + runner (6a — done).
+- `pkg/ext/goplug`: `.so` loader (6b).
+- `pkg/ext/extproc`: external-process host + SDK (6c).
 
 ---
 
@@ -311,7 +311,7 @@ Phase 3:  pkg/format          (Phase 1, 2)
           cmd/beanfmt         (Phase 3)
 Phase 4:  pkg/validation      (Phase 2)
 Phase 5:  pkg/inventory       (Phase 2, 4)
-Phase 6:  pkg/postproc        (no deps)
+Phase 6:  pkg/ext             (no deps)
 Phase 7:  pkg/quote           (Phase 6)
 Phase 8:  pkg/importer        (Phase 2, 6)
 Phase 9:  pkg/query           (Phase 2, 4, 5)
