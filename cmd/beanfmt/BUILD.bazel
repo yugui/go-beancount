@@ -1,4 +1,5 @@
-load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
 
 go_library(
     name = "beanfmt_lib",
@@ -14,8 +15,10 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
-go_test(
-    name = "beanfmt_test",
-    srcs = ["main_test.go"],
-    embed = [":beanfmt_lib"],
+# keep
+sh_test(
+    name = "beanfmt_e2e_test",
+    srcs = ["beanfmt_e2e_test.sh"],
+    args = ["$(rootpath :beanfmt)"],
+    data = [":beanfmt"],
 )
