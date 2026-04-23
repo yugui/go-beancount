@@ -1,0 +1,37 @@
+# gazelle:ignore
+
+load("@rules_go//go:def.bzl", "go_binary", "go_test")
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+
+go_binary(
+    name = "beancheck",
+    srcs = ["main.go"],
+    importpath = "github.com/yugui/go-beancount/cmd/beancheck",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/postproc/api",
+        "//pkg/loader",
+    ],
+)
+
+go_test(
+    name = "beancheck_test",
+    srcs = [
+        "main.go",
+        "main_test.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/cmd/beancheck",
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/postproc/api",
+        "//pkg/loader",
+    ],
+)
+
+sh_test(
+    name = "beancheck_e2e_test",
+    srcs = ["beancheck_e2e_test.sh"],
+    args = ["$(rootpath :beancheck)"],
+    data = [":beancheck"],
+)
