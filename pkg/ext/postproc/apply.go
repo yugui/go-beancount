@@ -33,11 +33,6 @@ func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
 	}
 	opts := options.BuildRaw(ledger)
 
-	var ledgerRoot string
-	if len(ledger.Files) > 0 {
-		ledgerRoot = ledger.Files[0].Filename
-	}
-
 	var errs []api.Error
 	for _, pd := range plugins {
 		if err := ctx.Err(); err != nil {
@@ -64,7 +59,6 @@ func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
 			Options:    opts,
 			Config:     pd.Config,
 			Directive:  pd,
-			LedgerRoot: ledgerRoot,
 		})
 		if err != nil {
 			errs = append(errs, api.Error{
