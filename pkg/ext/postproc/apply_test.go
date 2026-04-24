@@ -454,7 +454,7 @@ func TestApply_IteratorIsLive(t *testing.T) {
 }
 
 func TestApply_Integration(t *testing.T) {
-	// End-to-end test with ast.Load. Write a beancount fixture
+	// End-to-end test with ast.LoadFile. Write a beancount fixture
 	// containing a plugin directive and some real directives.
 	dir := t.TempDir()
 	content := `option "title" "Integration Test"
@@ -483,9 +483,9 @@ plugin "example.com/fake/auto_open"
 	}
 	registerFake(t, fake)
 
-	ledger, err := ast.Load(path)
+	ledger, err := ast.LoadFile(path)
 	if err != nil {
-		t.Fatalf("ast.Load: %v", err)
+		t.Fatalf("ast.LoadFile(%q): %v", path, err)
 	}
 	lenBefore := ledger.Len()
 

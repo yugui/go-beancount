@@ -52,11 +52,23 @@ type Input struct {
 	// provided for source-location-aware error reporting.
 	Directive *ast.Plugin
 
+	// Ledger is the loaded ledger. It lets plugins call helpers such as
+	// [ast.ResolvePath] that need the full ledger context. Plugins must
+	// treat it as read-only with respect to its directive contents — any
+	// mutation must go through [Result.Directives].
+	//
+	// Ledger may be nil when Input is constructed without a backing
+	// ledger, for example in unit tests that build directives directly.
+	// Plugins should pass it through to ledger-tolerant helpers
+	// ([ast.ResolvePath] handles nil) or skip the dependent step rather
+	// than panicking.
+	Ledger *ast.Ledger
+
 	// LedgerRoot is the filename of the root ledger file (the first file
-	// in the load order). Plugins that resolve relative file paths — such
-	// as the document plugin — use this as the anchor when a directive's
-	// source filename is itself relative. Empty when the ledger has no
-	// files.
+	// in the load order).
+	//
+	// Deprecated: Use Ledger together with [ast.ResolvePath] instead.
+	// LedgerRoot may be removed in a future release.
 	LedgerRoot string
 }
 

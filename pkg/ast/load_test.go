@@ -3,6 +3,7 @@ package ast_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -15,9 +16,9 @@ func TestLoad_SingleFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledger, err := ast.Load(root)
+	ledger, err := ast.LoadFile(root)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("LoadFile(%q): %v", root, err)
 	}
 	if got := len(ledger.Files); got != 1 {
 		t.Errorf("Files count = %d, want 1", got)
@@ -46,9 +47,9 @@ func TestLoad_WithInclude(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledger, err := ast.Load(root)
+	ledger, err := ast.LoadFile(root)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("LoadFile(%q): %v", root, err)
 	}
 	if got := len(ledger.Files); got != 2 {
 		t.Errorf("Files count = %d, want 2", got)
@@ -71,18 +72,25 @@ func TestLoad_CircularInclude(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledger, err := ast.Load(a)
+	ledger, err := ast.LoadFile(a)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("LoadFile(%q): %v", a, err)
 	}
+	// TODO(diag-code): Diagnostic carries no machine-readable code
+	// today, so the test matches on the message substring. Switch to a
+	// typed comparison when a Code/Kind field is added.
 	found := false
 	for _, d := range ledger.Diagnostics {
-		if d.Severity == ast.Error {
+		if d.Severity == ast.Error && strings.Contains(d.Message, "circular include") {
 			found = true
+			break
 		}
 	}
 	if !found {
-		t.Error("expected diagnostic for circular include")
+		t.Errorf("LoadFile(%q): no circular-include diagnostic; got %d diagnostics", a, len(ledger.Diagnostics))
+		for _, d := range ledger.Diagnostics {
+			t.Logf("  %s", d.Message)
+		}
 	}
 }
 
@@ -93,12 +101,12 @@ func TestLoad_MissingInclude(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledger, err := ast.Load(root)
+	ledger, err := ast.LoadFile(root)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("LoadFile(%q): %v", root, err)
 	}
-	if len(ledger.Diagnostics) == 0 {
-		t.Error("expected diagnostic for missing include file")
+	if got := len(ledger.Diagnostics); got == 0 {
+		t.Errorf("LoadFile(%q): got %d diagnostics, want at least 1 for missing include file", root, got)
 	}
 }
 
@@ -119,9 +127,9 @@ func TestLoad_NestedIncludes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledger, err := ast.Load(a)
+	ledger, err := ast.LoadFile(a)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("LoadFile(%q): %v", a, err)
 	}
 	if got := len(ledger.Files); got != 3 {
 		t.Errorf("Files count = %d, want 3", got)
@@ -150,9 +158,9 @@ func TestLoad_WithHeadings(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ledger, err := ast.Load(root)
+	ledger, err := ast.LoadFile(root)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("LoadFile(%q): %v", root, err)
 	}
 	if got := ledger.Len(); got != 3 {
 		t.Errorf("Directives count = %d, want 3 (headings should be trivia, not directives)", got)
@@ -166,8 +174,26 @@ func TestLoad_WithHeadings(t *testing.T) {
 }
 
 func TestLoad_FileNotFound(t *testing.T) {
-	_, err := ast.Load("/nonexistent/path/file.beancount")
-	// Should not panic. The root file not being found results in
-	// a Ledger with diagnostics (not a returned error).
-	_ = err
+	// The root file not being found results in a Ledger with an error
+	// diagnostic, not a returned error: callers can still inspect any
+	// directives loaded before the failure.
+	const path = "/nonexistent/path/file.beancount"
+	ledger, err := ast.LoadFile(path)
+	if err != nil {
+		t.Fatalf("LoadFile(%q): unexpected error return: %v", path, err)
+	}
+	if ledger == nil {
+		t.Fatalf("LoadFile(%q): ledger is nil, want non-nil", path)
+	}
+	found := false
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("LoadFile(%q): no error diagnostic for missing root file; got %d diagnostics",
+			path, len(ledger.Diagnostics))
+	}
 }

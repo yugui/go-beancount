@@ -141,6 +141,12 @@ func TestPlugin_RelativePathAbsoluteSpan(t *testing.T) {
 	}
 }
 
+// ledgerWithRoot returns a ledger whose root file is at root, suitable for
+// constructing api.Input.Ledger in tests that exercise path resolution.
+func ledgerWithRoot(root string) *ast.Ledger {
+	return &ast.Ledger{Files: []*ast.File{{Filename: root}}}
+}
+
 // TestPlugin_RelativePathRelativeSpanAbsoluteLedgerRoot verifies the
 // resolution chain when doc.Path and the span source filename are both
 // relative: they are resolved through the absolute ledger root directory.
@@ -164,7 +170,7 @@ func TestPlugin_RelativePathRelativeSpanAbsoluteLedgerRoot(t *testing.T) {
 	}
 	res, err := document.Plugin(context.Background(), api.Input{
 		Directives: seqOf([]ast.Directive{doc}),
-		LedgerRoot: filepath.Join(dir, "main.beancount"),
+		Ledger:     ledgerWithRoot(filepath.Join(dir, "main.beancount")),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -190,7 +196,7 @@ func TestPlugin_RelativePathNoSpan(t *testing.T) {
 	}
 	res, err := document.Plugin(context.Background(), api.Input{
 		Directives: seqOf([]ast.Directive{doc}),
-		LedgerRoot: filepath.Join(dir, "main.beancount"),
+		Ledger:     ledgerWithRoot(filepath.Join(dir, "main.beancount")),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -224,7 +230,7 @@ func TestPlugin_RelativePathAllRelative(t *testing.T) {
 	}
 	res, err := document.Plugin(context.Background(), api.Input{
 		Directives: seqOf([]ast.Directive{doc}),
-		LedgerRoot: "main.beancount",
+		Ledger:     ledgerWithRoot("main.beancount"),
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

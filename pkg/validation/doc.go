@@ -26,7 +26,7 @@
 //
 // The simplest way to load and validate a ledger is via pkg/loader:
 //
-//	ledger, errs, err := loader.Load(ctx, "main.beancount")
+//	ledger, errs, err := loader.LoadFile(ctx, "main.beancount")
 //
 // For fine-grained control, wire the plugins manually in order
 // (pad → balance → validations), committing any non-nil Result.Directives

@@ -33,6 +33,8 @@ func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
 	}
 	opts := options.BuildRaw(ledger)
 
+	// LedgerRoot is deprecated; populated only until existing plugins
+	// migrate to api.Input.Ledger.
 	var ledgerRoot string
 	if len(ledger.Files) > 0 {
 		ledgerRoot = ledger.Files[0].Filename
@@ -65,6 +67,7 @@ func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
 			Config:     pd.Config,
 			Directive:  pd,
 			LedgerRoot: ledgerRoot,
+			Ledger:     ledger,
 		})
 		if err != nil {
 			errs = append(errs, api.Error{
