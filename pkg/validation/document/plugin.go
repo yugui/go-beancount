@@ -45,7 +45,7 @@ var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result,
 		if !ok {
 			continue
 		}
-		path := resolvePath(doc.Path, doc.Span.Start.Filename, in.LedgerRoot)
+		path := resolvePath(doc.Path, doc.Span.Start.Filename)
 		if _, err := os.Stat(path); err != nil {
 			errs = append(errs, api.Error{
 				Code:    CodeDocumentMissing,
@@ -57,37 +57,15 @@ var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result,
 	return api.Result{Errors: errs}, nil
 }
 
-// resolvePath resolves docPath to an absolute path using the following chain:
-//
-//  1. If docPath is already absolute, return it as-is.
-//  2. Otherwise, anchor it to the directory of spanFilename.
-//  3. If spanFilename is itself relative (or empty), first resolve it against
-//     the directory of ledgerRoot.
-//  4. If ledgerRoot is also relative (or empty), resolve it against the
-//     process working directory.
-func resolvePath(docPath, spanFilename, ledgerRoot string) string {
+// resolvePath resolves docPath to an absolute path. If docPath is already
+// absolute it is returned as-is; otherwise it is anchored to the directory
+// of spanFilename (which is always absolute when the ledger comes through
+// ast.Load).
+func resolvePath(docPath, spanFilename string) string {
 	if filepath.IsAbs(docPath) {
 		return docPath
 	}
-
-	var baseDir string
-	if filepath.IsAbs(spanFilename) {
-		baseDir = filepath.Dir(spanFilename)
-	} else {
-		rootAbs := ledgerRoot
-		if !filepath.IsAbs(rootAbs) {
-			cwd, _ := os.Getwd()
-			rootAbs = filepath.Join(cwd, rootAbs)
-		}
-		rootDir := filepath.Dir(rootAbs)
-		if spanFilename == "" {
-			baseDir = rootDir
-		} else {
-			baseDir = filepath.Dir(filepath.Join(rootDir, spanFilename))
-		}
-	}
-
-	return filepath.Join(baseDir, docPath)
+	return filepath.Join(filepath.Dir(spanFilename), docPath)
 }
 
 func init() {

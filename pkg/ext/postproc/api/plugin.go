@@ -51,13 +51,6 @@ type Input struct {
 	// Directive is the *ast.Plugin directive that triggered this call,
 	// provided for source-location-aware error reporting.
 	Directive *ast.Plugin
-
-	// LedgerRoot is the filename of the root ledger file (the first file
-	// in the load order). Plugins that resolve relative file paths — such
-	// as the document plugin — use this as the anchor when a directive's
-	// source filename is itself relative. Empty when the ledger has no
-	// files.
-	LedgerRoot string
 }
 
 // Result is what a [Plugin] returns to the runner. Errors never halt the
