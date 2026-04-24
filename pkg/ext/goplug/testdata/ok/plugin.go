@@ -6,9 +6,9 @@ package main
 import (
 	"context"
 
+	"github.com/yugui/go-beancount/pkg/ext/goplug"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
-	"github.com/yugui/go-beancount/pkg/ext/goplug"
 )
 
 // pluginName is the registry key the plugin uses. The test hardcodes
