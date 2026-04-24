@@ -1,0 +1,13 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "std",
+    srcs = ["doc.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/ext/postproc/std",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ext/postproc/std/checkclosing",
+        "//pkg/ext/postproc/std/checkcommodity",
+        "//pkg/ext/postproc/std/checkdrained",
+    ],
+)

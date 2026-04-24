@@ -158,12 +158,80 @@ For plugins that cannot be `.so` files (different Go toolchain, non-Go implement
 - Go SDK for the child side so plugin authors can write a plain `main` that wraps an `api.Plugin` implementation.
 - Opt-in via `--plugin-extproc=<path>`.
 
+### Phase 6d: Standard plugin library (`pkg/ext/postproc/std`)
+
+Go ports of the plugins shipped in upstream `beancount/plugins/*.py`. Each
+port lives in its own subpackage under `pkg/ext/postproc/std/<name>/` so
+that users can depend on an individual plugin without pulling in the rest.
+The umbrella `pkg/ext/postproc/std` package has no runtime code; its sole
+purpose is to blank-import every port so a single import activates the
+whole library.
+
+- **Location and naming.** Plugins live at
+  `pkg/ext/postproc/std/<name>/`, where `<name>` is the upstream Python
+  module's base name with underscores removed (e.g. `check_commodity` →
+  `checkcommodity`). Package identifiers may not contain underscores in
+  idiomatic Go; concatenating the upstream name preserves traceability
+  without introducing a parallel naming scheme.
+- **Dual registration.** Each ported plugin registers under two names:
+  the upstream Python module path (e.g. `beancount.plugins.check_commodity`)
+  so existing ledger files referencing beancount's plugin directives work
+  unchanged, and the Go import path
+  (`github.com/yugui/go-beancount/pkg/ext/postproc/std/checkcommodity`) so
+  go-beancount-native ledgers can follow Phase 6a's package-path
+  convention. This is an explicit exception to the single-name policy in
+  Phase 6a for upstream ports; it exists so the drop-in compatibility
+  that motivates porting these plugins is available by default.
+- **Umbrella package.** `pkg/ext/postproc/std/doc.go` blank-imports every
+  ported subpackage. Programs that want the entire standard library
+  available write `import _ "github.com/yugui/go-beancount/pkg/ext/postproc/std"`;
+  programs that want only a subset blank-import individual subpackages.
+- **Upstream attribution.** Every ported plugin preserves the upstream
+  `__copyright__` and `__license__` in its package `doc.go`. The project
+  is GPL-2, matching upstream.
+- **Deviations policy.** Any semantic or configuration-format departure
+  from upstream is documented in the plugin's `doc.go`. For example,
+  `check_commodity` takes JSON instead of a Python `eval`-parsed dict for
+  its `{account_regex: currency_regex}` ignore map — safer and more
+  idiomatic in Go. `check_drained` currently hardcodes the beancount
+  default balance-sheet roots (`Assets`, `Liabilities`, `Equity`) pending
+  a go-beancount options-registry extension for
+  `name_assets`/`name_liabilities`/`name_equity`.
+- **Initial scope.** The first batch ports three plugins:
+  - `checkcommodity` — diagnostic for commodities used without a
+    matching `Commodity` directive, with ignore-map support.
+  - `checkdrained` — synthesizes zero-balance assertions after every
+    `close` of a balance-sheet account.
+  - `checkclosing` — expands `closing: TRUE` posting metadata into a
+    zero-balance assertion dated transaction+1 day, stripping the
+    metadata key from a cloned posting.
+- **Future ports.** The upstream library has ~25 plugins; they fall into
+  three shapes that share boilerplate:
+  - *Diagnostic-only* (no new directives): `coherent_cost`, `leafonly`,
+    `noduplicates`, `nounused`, `onecommodity`, `sellgains`,
+    `unique_prices`, `valid_acctconfig`, `pedantic` (meta).
+  - *Synthesizing* (insert directives): `auto`, `auto_accounts`,
+    `close_tree`, `fill_account`, `ira_contribs`, `mark_unverified`,
+    `tag_pending`, `unrealized`, `forecast`, `implicit_prices`,
+    `split_expenses`, `book_conversions`.
+  - *Filtering / transforming*: `exclude_tag`, `commodity_attr`.
+- **Acceptance criteria for each future port.** (a) registered under
+  both the upstream and Go-path names, (b) blank-imported from the
+  umbrella `std` package, (c) unit tests alongside the plugin, (d)
+  deviations documented in `doc.go`, (e) upstream copyright preserved.
+  Ports that can't follow one of these criteria (e.g. behavior that
+  depends on unported framework features) note the gap in their `doc.go`
+  and open a TODO rather than silently diverging.
+
 ### Deliverables
 
 - `pkg/ext/postproc/api`: stable interface (6a — done).
 - `pkg/ext/postproc`: registry + runner (6a — done).
 - `pkg/ext/goplug`: `.so` loader (6b).
 - `pkg/ext/extproc`: external-process host + SDK (6c).
+- `pkg/ext/postproc/std`: Go ports of upstream's standard plugin
+  library, each as a blank-importable subpackage, aggregated by the
+  umbrella `std` package (6d).
 
 ---
 
