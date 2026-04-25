@@ -10,11 +10,13 @@ go_library(
         "ledger.go",
         "load.go",
         "lower.go",
+        "option.go",
         "order.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/ast",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/loadopt",
         "//pkg/syntax",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],

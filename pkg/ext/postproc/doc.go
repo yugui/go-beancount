@@ -9,7 +9,7 @@
 //
 // Usage:
 //
-//	ledger, err := ast.Load(path)
+//	ledger, err := ast.LoadFile(path)
 //	if err != nil { ... }
 //	pluginErrs := postproc.Apply(ctx, ledger)
 //	// Semantic validation is itself a 3-plugin pipeline: pad, balance,

@@ -483,9 +483,9 @@ plugin "example.com/fake/auto_open"
 	}
 	registerFake(t, fake)
 
-	ledger, err := ast.Load(path)
+	ledger, err := ast.LoadFile(path)
 	if err != nil {
-		t.Fatalf("ast.Load: %v", err)
+		t.Fatalf("ast.LoadFile: %v", err)
 	}
 	lenBefore := ledger.Len()
 

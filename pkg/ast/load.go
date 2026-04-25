@@ -2,57 +2,94 @@ package ast
 
 import (
 	"fmt"
+	"io"
 	"path/filepath"
 
+	"github.com/yugui/go-beancount/internal/loadopt"
 	"github.com/yugui/go-beancount/pkg/syntax"
 )
 
-// Load reads and parses the beancount file at the given path, recursively
-// resolving include directives. It returns a Ledger whose directives are
-// ordered canonically by (date, kind, filename, offset) and accessible via
-// Ledger.All.
-//
-// Include paths are resolved relative to the directory of the file
-// containing the include directive.
-func Load(filename string) (*Ledger, error) {
-	absPath, err := filepath.Abs(filename)
+// Load parses src as beancount source and recursively resolves include
+// directives. Spans use a virtual filename ("<input>" by default; override
+// with WithFilename). Relative include paths require WithBaseDir; without
+// it they produce a diagnostic and are skipped.
+func Load(src string, opts ...LoadOption) (*Ledger, error) {
+	o := loadopt.Resolve(opts)
+	ld := newLoader()
+	ld.visited[o.VirtualFilename] = true
+	ld.loadCST(syntax.Parse(src), o.VirtualFilename, o.BaseDir)
+	return ld.finish(), nil
+}
+
+// LoadReader reads r in its entirety and behaves like Load on the result.
+// Read errors from r are returned unwrapped.
+func LoadReader(r io.Reader, opts ...LoadOption) (*Ledger, error) {
+	cst, err := syntax.ParseReader(r)
 	if err != nil {
-		return nil, fmt.Errorf("resolving path %q: %w", filename, err)
+		return nil, err
 	}
+	o := loadopt.Resolve(opts)
+	ld := newLoader()
+	ld.visited[o.VirtualFilename] = true
+	ld.loadCST(cst, o.VirtualFilename, o.BaseDir)
+	return ld.finish(), nil
+}
 
-	l := &loader{
-		visited: make(map[string]bool),
+// LoadFile reads and parses the beancount file at path, recursively
+// resolving include directives. Include paths are resolved relative to the
+// directory of the file containing the include directive. The absolute path
+// is recorded in spans unless overridden with WithFilename, and the file's
+// directory is used as the base directory unless overridden with
+// WithBaseDir.
+func LoadFile(path string, opts ...LoadOption) (*Ledger, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving path %q: %w", path, err)
 	}
-	l.loadFile(absPath)
+	defaults := []LoadOption{
+		WithFilename(absPath),
+		WithBaseDir(filepath.Dir(absPath)),
+	}
+	o := loadopt.Resolve(append(defaults, opts...))
 
-	ledger := &Ledger{
-		Files:       l.files,
-		Diagnostics: l.diagnostics,
-	}
-	// Bulk-insert all collected directives in a single stable sort.
-	ledger.InsertAll(l.directives)
-	return ledger, nil
+	ld := newLoader()
+	ld.loadFile(absPath, o.VirtualFilename, o.BaseDir)
+	return ld.finish(), nil
 }
 
 type loader struct {
-	visited     map[string]bool // absolute paths already loaded (cycle detection)
+	visited     map[string]bool // filenames already loaded (cycle detection)
 	files       []*File
 	directives  []Directive
 	diagnostics []Diagnostic
 }
 
-func (ld *loader) loadFile(absPath string) {
-	// Cycle detection
-	if ld.visited[absPath] {
+func newLoader() *loader {
+	return &loader{visited: make(map[string]bool)}
+}
+
+func (ld *loader) finish() *Ledger {
+	ledger := &Ledger{
+		Files:       ld.files,
+		Diagnostics: ld.diagnostics,
+	}
+	ledger.InsertAll(ld.directives)
+	return ledger
+}
+
+// loadFile parses absPath through syntax.ParseFile and merges the result
+// into the loader. filename is the cycle-detection key and span filename
+// (typically absPath but may be overridden); baseDir anchors the includes
+// contained in the loaded file.
+func (ld *loader) loadFile(absPath, filename, baseDir string) {
+	if ld.visited[filename] {
 		ld.diagnostics = append(ld.diagnostics, Diagnostic{
-			Message:  fmt.Sprintf("circular include detected: %s", absPath),
+			Message:  fmt.Sprintf("circular include detected: %s", filename),
 			Severity: Error,
 		})
 		return
 	}
-	ld.visited[absPath] = true
-
-	// Read and parse the file
+	ld.visited[filename] = true
 	cst, err := syntax.ParseFile(absPath)
 	if err != nil {
 		ld.diagnostics = append(ld.diagnostics, Diagnostic{
@@ -61,35 +98,49 @@ func (ld *loader) loadFile(absPath string) {
 		})
 		return
 	}
+	ld.loadCST(cst, filename, baseDir)
+}
 
-	file := Lower(absPath, cst)
+// loadCST lowers cst, records its file and diagnostics, and recursively
+// resolves any include directives it contains. Cycle detection is the
+// responsibility of the caller (already done by loadFile or by the
+// top-level entry point).
+func (ld *loader) loadCST(cst *syntax.File, filename, baseDir string) {
+	file := Lower(filename, cst)
 	ld.files = append(ld.files, file)
-
-	// Merge diagnostics from lowering.
 	ld.diagnostics = append(ld.diagnostics, file.Diagnostics...)
 
-	// Process directives: merge non-Include directives, recurse on Includes.
-	dir := filepath.Dir(absPath)
 	for _, d := range file.Directives {
 		inc, ok := d.(*Include)
 		if !ok {
 			ld.directives = append(ld.directives, d)
 			continue
 		}
-		// Resolve include path relative to the current file's directory.
-		incPath := inc.Path
-		if !filepath.IsAbs(incPath) {
-			incPath = filepath.Join(dir, incPath)
-		}
-		incAbs, err := filepath.Abs(incPath)
-		if err != nil {
+		ld.handleInclude(inc, baseDir)
+	}
+}
+
+func (ld *loader) handleInclude(inc *Include, baseDir string) {
+	incPath := inc.Path
+	if !filepath.IsAbs(incPath) {
+		if baseDir == "" {
 			ld.diagnostics = append(ld.diagnostics, Diagnostic{
 				Span:     inc.Span,
-				Message:  fmt.Sprintf("resolving include path %q: %v", inc.Path, err),
+				Message:  fmt.Sprintf("cannot resolve relative include %q: no base directory configured (use WithBaseDir)", inc.Path),
 				Severity: Error,
 			})
-			continue
+			return
 		}
-		ld.loadFile(incAbs)
+		incPath = filepath.Join(baseDir, incPath)
 	}
+	incAbs, err := filepath.Abs(incPath)
+	if err != nil {
+		ld.diagnostics = append(ld.diagnostics, Diagnostic{
+			Span:     inc.Span,
+			Message:  fmt.Sprintf("resolving include path %q: %v", inc.Path, err),
+			Severity: Error,
+		})
+		return
+	}
+	ld.loadFile(incAbs, incAbs, filepath.Dir(incAbs))
 }

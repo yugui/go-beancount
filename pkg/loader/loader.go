@@ -1,8 +1,15 @@
 // Package loader provides a high-level entry point for loading beancount
-// files with plugin processing, mirroring beancount's upstream loader.py.
+// source with plugin processing, mirroring beancount's upstream loader.py.
 //
-// The primary entry point is [Load], which calls [ast.Load] and then applies
-// plugins according to the plugin_processing_mode option found in the ledger:
+// Three entry points mirror the syntax and format packages:
+//
+//   - [Load] reads from an in-memory string,
+//   - [LoadReader] reads from an io.Reader,
+//   - [LoadFile] reads from a filesystem path.
+//
+// Each parses the source via the corresponding ast.Load* function and then
+// applies plugins according to the plugin_processing_mode option found in
+// the ledger:
 //
 //   - "raw": applies only the plugin directives present in the ledger, in
 //     canonical order, via the global postproc registry.
@@ -12,7 +19,7 @@
 //
 // Example:
 //
-//	ledger, errs, err := loader.Load(ctx, "main.beancount")
+//	ledger, errs, err := loader.LoadFile(ctx, "main.beancount")
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
@@ -24,6 +31,7 @@ package loader
 import (
 	"context"
 	"fmt"
+	"io"
 
 	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -49,18 +57,39 @@ var postBuiltins = []api.Plugin{
 	validations.Plugin,
 }
 
-// Load parses filename via [ast.Load] and applies the plugin pipeline
-// controlled by the plugin_processing_mode option in the ledger.
-//
-// It returns the processed ledger, any plugin diagnostics, and a non-nil
-// error only if the file could not be read or parsed at all. Plugin errors
-// are returned in the []api.Error slice and never cause the error return to
-// be non-nil.
-func Load(ctx context.Context, filename string) (*ast.Ledger, []api.Error, error) {
-	ledger, err := ast.Load(filename)
+// Load parses src via [ast.Load] and applies the plugin pipeline.
+// See the package documentation for the pipeline and return-value contract.
+func Load(ctx context.Context, src string, opts ...Option) (*ast.Ledger, []api.Error, error) {
+	ledger, err := ast.Load(src, opts...)
 	if err != nil {
 		return nil, nil, err
 	}
+	return runPipeline(ctx, ledger)
+}
+
+// LoadReader parses r via [ast.LoadReader] and applies the plugin pipeline.
+func LoadReader(ctx context.Context, r io.Reader, opts ...Option) (*ast.Ledger, []api.Error, error) {
+	ledger, err := ast.LoadReader(r, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return runPipeline(ctx, ledger)
+}
+
+// LoadFile parses path via [ast.LoadFile] and applies the plugin pipeline.
+func LoadFile(ctx context.Context, path string, opts ...Option) (*ast.Ledger, []api.Error, error) {
+	ledger, err := ast.LoadFile(path, opts...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return runPipeline(ctx, ledger)
+}
+
+// runPipeline applies the plugin pipeline to a freshly loaded ledger and
+// returns the processed ledger together with plugin diagnostics. Plugin
+// errors surface in the []api.Error slice; the returned error is always
+// nil (load failures are handled by the caller).
+func runPipeline(ctx context.Context, ledger *ast.Ledger) (*ast.Ledger, []api.Error, error) {
 
 	rawOpts := options.BuildRaw(ledger)
 

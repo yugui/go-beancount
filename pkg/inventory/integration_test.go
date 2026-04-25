@@ -19,20 +19,20 @@ func loadInspectionFixture(t *testing.T) *ast.Ledger {
 	t.Helper()
 	path := filepath.Join("testdata", "inspection_e2e.beancount")
 	ctx := context.Background()
-	ledger, errs, err := loader.Load(ctx, path)
+	ledger, errs, err := loader.LoadFile(ctx, path)
 	if err != nil {
-		t.Fatalf("loader.Load(%q): %v", path, err)
+		t.Fatalf("loader.LoadFile(%q): %v", path, err)
 	}
 	for _, d := range ledger.Diagnostics {
 		if d.Severity == ast.Error {
-			t.Fatalf("loader.Load(%q): diagnostic: %s", path, d.Message)
+			t.Fatalf("loader.LoadFile(%q): diagnostic: %s", path, d.Message)
 		}
 	}
 	if len(errs) != 0 {
 		for _, e := range errs {
 			t.Logf("pipeline error: %s", e)
 		}
-		t.Fatalf("loader.Load(%q): got %d errors, want 0", path, len(errs))
+		t.Fatalf("loader.LoadFile(%q): got %d errors, want 0", path, len(errs))
 	}
 	return ledger
 }
