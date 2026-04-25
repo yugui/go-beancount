@@ -50,10 +50,9 @@ func main() {
 func run(ctx context.Context, args []string, strict bool, stderr io.Writer) int {
 	switch len(args) {
 	case 0:
-		// TODO: support reading the ledger from stdin once the loader
-		// package exposes an io.Reader entry point. Until then, require
-		// a file argument so the behavior is explicit rather than
-		// silently undefined.
+		// TODO: wire stdin to loader.LoadReader. The entry point now
+		// exists, but stdin handling and base-directory configuration
+		// are deferred to a follow-up so behavior stays explicit.
 		fmt.Fprintln(stderr, "beancheck: no file argument (stdin not yet supported)")
 		fmt.Fprintln(stderr, "Usage: beancheck [flags] <file>")
 		return 2
@@ -70,7 +69,7 @@ func run(ctx context.Context, args []string, strict bool, stderr io.Writer) int 
 // checker meta-failure (exit 2); all ledger content problems surface as
 // diagnostics and exit 1.
 func check(ctx context.Context, filename string, strict bool, stderr io.Writer) int {
-	ledger, pluginErrs, err := loader.Load(ctx, filename)
+	ledger, pluginErrs, err := loader.LoadFile(ctx, filename)
 	if err != nil {
 		fmt.Fprintf(stderr, "beancheck: %v\n", err)
 		return 2

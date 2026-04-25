@@ -22,13 +22,13 @@ import (
 func loadFixture(t *testing.T, name string) *ast.Ledger {
 	t.Helper()
 	path := filepath.Join("testdata", name)
-	ledger, err := ast.Load(path)
+	ledger, err := ast.LoadFile(path)
 	if err != nil {
-		t.Fatalf("ast.Load(%q): %v", path, err)
+		t.Fatalf("ast.LoadFile(%q): %v", path, err)
 	}
 	for _, d := range ledger.Diagnostics {
 		if d.Severity == ast.Error {
-			t.Fatalf("ast.Load(%q): diagnostic: %s", path, d.Message)
+			t.Fatalf("ast.LoadFile(%q): diagnostic: %s", path, d.Message)
 		}
 	}
 	return ledger

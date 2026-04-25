@@ -1,0 +1,8 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "loadopt",
+    srcs = ["options.go"],
+    importpath = "github.com/yugui/go-beancount/internal/loadopt",
+    visibility = ["//:__subpackages__"],
+)

@@ -1,8 +1,11 @@
-load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "loader",
-    srcs = ["loader.go"],
+    srcs = [
+        "loader.go",
+        "option.go",
+    ],
     importpath = "github.com/yugui/go-beancount/pkg/loader",
     visibility = ["//visibility:public"],
     deps = [
@@ -14,5 +17,14 @@ go_library(
         "//pkg/validation/document",
         "//pkg/validation/pad",
         "//pkg/validation/validations",
+    ],
+)
+
+go_test(
+    name = "loader_test",
+    srcs = ["loader_test.go"],
+    deps = [
+        ":loader",
+        "//pkg/ast",
     ],
 )
