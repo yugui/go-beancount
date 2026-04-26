@@ -10,5 +10,6 @@ go_library(
         "//pkg/ext/postproc/std/checkclosing",
         "//pkg/ext/postproc/std/checkcommodity",
         "//pkg/ext/postproc/std/checkdrained",
+        "//pkg/ext/postproc/std/leafonly",
     ],
 )
