@@ -6,6 +6,7 @@ go_library(
     importpath = "github.com/yugui/go-beancount/pkg/ext/postproc/std",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/ext/postproc/std/autoaccounts",
         "//pkg/ext/postproc/std/checkclosing",
         "//pkg/ext/postproc/std/checkcommodity",
         "//pkg/ext/postproc/std/checkdrained",
