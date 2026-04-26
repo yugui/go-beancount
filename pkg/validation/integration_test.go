@@ -3,11 +3,13 @@ package validation_test
 import (
 	"cmp"
 	"context"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	gocmp "github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
@@ -39,7 +41,7 @@ func loadFixture(t *testing.T, name string) *ast.Ledger {
 // pipeline order. ledger is mutated in place via ReplaceAll whenever a
 // plugin returns non-nil Directives; callers should not rely on the
 // ledger's pre-call contents afterward.
-func runPipeline(t *testing.T, ledger *ast.Ledger) []api.Error {
+func runPipeline(t *testing.T, ledger *ast.Ledger) []ast.Diagnostic {
 	t.Helper()
 	ctx := context.Background()
 	opts := options.BuildRaw(ledger)
@@ -74,20 +76,20 @@ func runPipeline(t *testing.T, ledger *ast.Ledger) []api.Error {
 		t.Fatalf("validations.Apply: %v", err)
 	}
 
-	var all []api.Error
-	all = append(all, padRes.Errors...)
-	all = append(all, balRes.Errors...)
-	all = append(all, valRes.Errors...)
+	var all []ast.Diagnostic
+	all = append(all, padRes.Diagnostics...)
+	all = append(all, balRes.Diagnostics...)
+	all = append(all, valRes.Diagnostics...)
 	return all
 }
 
-// sortPipelineErrors returns a new slice containing errs sorted by
+// sortPipelineDiagnostics returns a new slice containing diags sorted by
 // (filename, byte offset, code) so tests can assert a deterministic
-// ordering independent of which plugin emitted which error.
-func sortPipelineErrors(errs []api.Error) []api.Error {
-	out := make([]api.Error, len(errs))
-	copy(out, errs)
-	slices.SortStableFunc(out, func(a, b api.Error) int {
+// ordering independent of which plugin emitted which diagnostic.
+func sortPipelineDiagnostics(diags []ast.Diagnostic) []ast.Diagnostic {
+	out := make([]ast.Diagnostic, len(diags))
+	copy(out, diags)
+	slices.SortStableFunc(out, func(a, b ast.Diagnostic) int {
 		if c := cmp.Compare(a.Span.Start.Filename, b.Span.Start.Filename); c != 0 {
 			return c
 		}
@@ -103,11 +105,11 @@ func sortPipelineErrors(errs []api.Error) []api.Error {
 // against a clean fixture and asserts no diagnostics.
 func TestPipelineGoodLedger(t *testing.T) {
 	ledger := loadFixture(t, "good_ledger.beancount")
-	errs := runPipeline(t, ledger)
-	if len(errs) != 0 {
-		t.Errorf("good_ledger.beancount: got %d pipeline errors, want 0", len(errs))
-		for _, e := range errs {
-			t.Logf("  %s", e)
+	diags := runPipeline(t, ledger)
+	if len(diags) != 0 {
+		t.Errorf("good_ledger.beancount: got %d pipeline diagnostics, want 0", len(diags))
+		for _, d := range diags {
+			t.Logf("  %s", formatDiagnostic(d))
 		}
 	}
 }
@@ -118,11 +120,11 @@ func TestPipelineGoodLedger(t *testing.T) {
 // balance assertion, so no diagnostics should be emitted.
 func TestPipelinePadAndBalance(t *testing.T) {
 	ledger := loadFixture(t, "pad_and_balance.beancount")
-	errs := runPipeline(t, ledger)
-	if len(errs) != 0 {
-		t.Errorf("pad_and_balance.beancount: got %d pipeline errors, want 0", len(errs))
-		for _, e := range errs {
-			t.Logf("  %s", e)
+	diags := runPipeline(t, ledger)
+	if len(diags) != 0 {
+		t.Errorf("pad_and_balance.beancount: got %d pipeline diagnostics, want 0", len(diags))
+		for _, d := range diags {
+			t.Logf("  %s", formatDiagnostic(d))
 		}
 	}
 }
@@ -135,17 +137,17 @@ func TestPipelinePadAndBalance(t *testing.T) {
 // themselves.
 func TestPipelineBadLedger(t *testing.T) {
 	ledger := loadFixture(t, "bad_ledger.beancount")
-	errs := sortPipelineErrors(runPipeline(t, ledger))
+	diags := sortPipelineDiagnostics(runPipeline(t, ledger))
 
 	type got struct {
 		Code     string
 		Basename string
 	}
 	var actual []got
-	for _, e := range errs {
+	for _, d := range diags {
 		actual = append(actual, got{
-			Code:     e.Code,
-			Basename: filepath.Base(e.Span.Start.Filename),
+			Code:     d.Code,
+			Basename: filepath.Base(d.Span.Start.Filename),
 		})
 	}
 
@@ -159,21 +161,21 @@ func TestPipelineBadLedger(t *testing.T) {
 	}
 
 	if len(actual) != len(want) {
-		t.Fatalf("bad_ledger.beancount: got %d pipeline errors, want %d\nactual: %+v\nfull:\n%s",
-			len(actual), len(want), actual, formatAPIErrors(errs))
+		t.Fatalf("bad_ledger.beancount: got %d pipeline diagnostics, want %d\nactual: %+v\nfull:\n%s",
+			len(actual), len(want), actual, formatDiagnostics(diags))
 	}
 	for i, w := range want {
 		a := actual[i]
 		if a.Code != w.Code || a.Basename != w.Basename {
-			t.Errorf("pipeline error[%d] = %+v, want %+v (message: %q)", i, a, w, errs[i].Message)
+			t.Errorf("pipeline diagnostic[%d] = %+v, want %+v (message: %q)", i, a, w, diags[i].Message)
 		}
 	}
 
 	// Verify determinism of ordering: non-decreasing by offset.
-	for i := 1; i < len(errs); i++ {
-		prev, cur := errs[i-1].Span.Start, errs[i].Span.Start
+	for i := 1; i < len(diags); i++ {
+		prev, cur := diags[i-1].Span.Start, diags[i].Span.Start
 		if prev.Filename == cur.Filename && prev.Offset > cur.Offset {
-			t.Errorf("pipeline errors not sorted by offset at index %d: %d > %d", i, prev.Offset, cur.Offset)
+			t.Errorf("pipeline diagnostics not sorted by offset at index %d: %d > %d", i, prev.Offset, cur.Offset)
 		}
 	}
 }
@@ -183,23 +185,38 @@ func TestPipelineBadLedger(t *testing.T) {
 // replacement is isolated) and verifies the sorted diagnostic sequence
 // is identical across runs.
 func TestPipelineDeterministicOrder(t *testing.T) {
-	first := sortPipelineErrors(runPipeline(t, loadFixture(t, "bad_ledger.beancount")))
-	second := sortPipelineErrors(runPipeline(t, loadFixture(t, "bad_ledger.beancount")))
+	first := sortPipelineDiagnostics(runPipeline(t, loadFixture(t, "bad_ledger.beancount")))
+	second := sortPipelineDiagnostics(runPipeline(t, loadFixture(t, "bad_ledger.beancount")))
 	if len(first) != len(second) {
-		t.Fatalf("pipeline is non-deterministic: %d vs %d errors", len(first), len(second))
+		t.Fatalf("pipeline is non-deterministic: %d vs %d diagnostics", len(first), len(second))
 	}
 	for i := range first {
-		if first[i].Code != second[i].Code || first[i].Span.Start != second[i].Span.Start {
-			t.Errorf("pipeline error[%d] differs between runs: %+v vs %+v", i, first[i], second[i])
+		if diff := gocmp.Diff(first[i], second[i]); diff != "" {
+			t.Errorf("pipeline diagnostic[%d] differs between runs (-first +second):\n%s", i, diff)
 		}
 	}
 }
 
-func formatAPIErrors(errs []api.Error) string {
+// formatDiagnostic produces a human-readable rendering of a single
+// diagnostic, used by the test helpers above. Severity is included so
+// failing tests log enough context to tell errors and warnings apart.
+func formatDiagnostic(d ast.Diagnostic) string {
+	sev := "error"
+	if d.Severity == ast.Warning {
+		sev = "warning"
+	}
+	pos := d.Span.Start
+	if pos.Filename == "" {
+		return fmt.Sprintf("%s: %s", sev, d.Message)
+	}
+	return fmt.Sprintf("%s:%d:%d: %s: %s", pos.Filename, pos.Line, pos.Column, sev, d.Message)
+}
+
+func formatDiagnostics(diags []ast.Diagnostic) string {
 	var b strings.Builder
-	for _, e := range errs {
+	for _, d := range diags {
 		b.WriteString("  ")
-		b.WriteString(e.Error())
+		b.WriteString(formatDiagnostic(d))
 		b.WriteByte('\n')
 	}
 	return b.String()

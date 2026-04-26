@@ -71,6 +71,9 @@
 // And load it from the host:
 //
 //	if err := goplug.Load("hello.so"); err != nil { ... }
-//	errs := postproc.Apply(ctx, ledger) // the plugin runs when its
-//	                                    // directive is encountered.
+//	if err := postproc.Apply(ctx, ledger); err != nil { ... } // plugin runs
+//	                                                          // when its directive
+//	                                                          // is encountered;
+//	                                                          // findings land in
+//	                                                          // ledger.Diagnostics.
 package goplug

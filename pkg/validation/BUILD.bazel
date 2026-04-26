@@ -27,5 +27,6 @@ go_test(
         "//pkg/validation/balance",
         "//pkg/validation/pad",
         "//pkg/validation/validations",
+        "@com_github_google_go_cmp//cmp",
     ],
 )

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"iter"
 
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -14,9 +13,10 @@ import (
 // Apply concurrently on the same instance.
 type Plugin interface {
 	// Apply transforms the ledger. It receives the current state via in
-	// and returns the transformation result. A non-nil error indicates a
-	// fatal plugin failure; the runner wraps it into an [Error] with Code
-	// "plugin-failed" and leaves the ledger unchanged for this plugin.
+	// and returns the transformation result. A non-nil error indicates
+	// a fatal plugin runtime failure; the runner halts the pipeline,
+	// wraps the error with the plugin name, and propagates it to its
+	// caller. The ledger is left unchanged for this plugin.
 	Apply(ctx context.Context, in Input) (Result, error)
 }
 
@@ -53,8 +53,9 @@ type Input struct {
 	Directive *ast.Plugin
 }
 
-// Result is what a [Plugin] returns to the runner. Errors never halt the
-// pipeline; they are collected and returned by the runner.
+// Result is what a [Plugin] returns to the runner. Diagnostics never
+// halt the pipeline; the runner appends them to [ast.Ledger.Diagnostics]
+// alongside any directive replacement signaled by Directives.
 type Result struct {
 	// Directives, when non-nil, replaces the ledger's contents in one
 	// operation — enabling add, modify, delete, and reorder through a
@@ -69,36 +70,11 @@ type Result struct {
 	// mutate directives obtained from [Input.Directives].
 	Directives []ast.Directive
 
-	// Errors collects plugin diagnostics. A non-nil returned error
-	// (the second return value of Apply) is distinct: the runner wraps
-	// it into an Error with Code "plugin-failed".
-	Errors []Error
-}
-
-// Error is a plugin diagnostic. It mirrors [validation.Error] in shape so
-// diagnostics format the same way across layers. Code is an open-ended
-// string so plugins can pick their own codes; the runner uses
-// "plugin-not-registered", "plugin-failed", and "plugin-canceled".
-type Error struct {
-	// Code categorizes the error. Runner-emitted codes are documented
-	// in the parent pkg/ext/postproc package. Plugin-defined codes are
-	// freeform.
-	Code string
-
-	// Span locates the error in source. Zero value is valid for errors
-	// without a source location.
-	Span ast.Span
-
-	// Message is a human-readable description of the problem.
-	Message string
-}
-
-// Error returns a human-readable description of the plugin error,
-// including source location when available.
-func (e Error) Error() string {
-	pos := e.Span.Start
-	if pos.Filename != "" {
-		return fmt.Sprintf("%s:%d:%d: %s", pos.Filename, pos.Line, pos.Column, e.Message)
-	}
-	return e.Message
+	// Diagnostics collects plugin-emitted findings. The runner appends
+	// them to [ast.Ledger.Diagnostics] so the ledger carries every
+	// ledger-content problem on a single channel. A non-nil returned
+	// error (the second return value of Apply) is distinct: the runner
+	// halts the pipeline and propagates it to its caller rather than
+	// converting it to a diagnostic.
+	Diagnostics []ast.Diagnostic
 }

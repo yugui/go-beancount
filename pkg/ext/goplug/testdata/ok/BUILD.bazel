@@ -17,8 +17,9 @@ go_binary(
     testonly = True,
     visibility = ["//pkg/ext/goplug:__pkg__"],
     deps = [
+        "//pkg/ast",
+        "//pkg/ext/goplug",
         "//pkg/ext/postproc",
         "//pkg/ext/postproc/api",
-        "//pkg/ext/goplug",
     ],
 )

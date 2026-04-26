@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
@@ -29,23 +28,23 @@ func (*openClose) Name() string { return "open_close" }
 
 // ProcessEntry is a no-op: the duplicate-open determination was already
 // made by accountstate.Build, so there is no per-directive work here.
-func (*openClose) ProcessEntry(ast.Directive) []api.Error { return nil }
+func (*openClose) ProcessEntry(ast.Directive) []ast.Diagnostic { return nil }
 
 // Finish emits one CodeDuplicateOpen diagnostic per duplicate-open
 // directive recorded in the BuildResult. The message text matches
 // upstream beancount's open-visit path verbatim for byte-for-byte
 // parity.
-func (v *openClose) Finish() []api.Error {
+func (v *openClose) Finish() []ast.Diagnostic {
 	if len(v.result.DuplicateOpens) == 0 {
 		return nil
 	}
-	errs := make([]api.Error, 0, len(v.result.DuplicateOpens))
+	diags := make([]ast.Diagnostic, 0, len(v.result.DuplicateOpens))
 	for _, op := range v.result.DuplicateOpens {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeDuplicateOpen),
 			Span:    op.Span,
 			Message: fmt.Sprintf("account %q already opened", op.Account),
 		})
 	}
-	return errs
+	return diags
 }

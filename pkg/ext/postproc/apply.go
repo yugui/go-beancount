@@ -12,17 +12,27 @@ import (
 // Apply walks ledger for *ast.Plugin directives in canonical source
 // order, looks each up in the registry, and calls [api.Plugin.Apply].
 // Between calls, non-nil [api.Result.Directives] are committed via
-// [ast.Ledger.ReplaceAll] so later plugins see earlier output.
+// [ast.Ledger.ReplaceAll] so later plugins see earlier output, and
+// [api.Result.Diagnostics] are appended to [ast.Ledger.Diagnostics] so
+// the ledger carries every plugin-emitted finding.
 //
-// Errors from plugins — both [api.Result.Errors] and non-nil returned
-// errors — are collected and returned; they never halt subsequent
-// plugins. Unknown plugin names emit an [api.Error] with Code
-// "plugin-not-registered". A non-nil error from [api.Plugin.Apply] is
-// wrapped into an [api.Error] with Code "plugin-failed" and the ledger
-// is left unchanged for that plugin. A canceled ctx causes Apply to
-// stop before the next plugin runs and surface a "plugin-canceled"
-// error.
-func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
+// The returned error is reserved for system-level failures: a non-nil
+// error from [api.Plugin.Apply] (treated as a runtime failure of the
+// plugin itself, not a ledger-content issue) and ctx cancellation. On
+// such an error Apply halts the pipeline immediately — no further
+// plugins run. Diagnostics already appended to the ledger before the
+// halt are kept so callers can inspect partial progress.
+//
+// Non-nil errors returned by [api.Plugin.Apply] are wrapped with the
+// plugin name so callers can see which plugin failed; the underlying
+// error remains observable via [errors.Is] / [errors.As].
+//
+// Unknown plugin names are NOT system-level failures: they are caused
+// by ledger contents (a `plugin "foo"` directive whose name is not
+// registered with the host). Apply records an [ast.Diagnostic] with
+// Code "plugin-not-registered" on the ledger and continues with the
+// remaining plugin directives.
+func Apply(ctx context.Context, ledger *ast.Ledger) error {
 	if ledger == nil {
 		return nil
 	}
@@ -33,20 +43,14 @@ func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
 	}
 	opts := options.BuildRaw(ledger)
 
-	var errs []api.Error
 	for _, pd := range plugins {
 		if err := ctx.Err(); err != nil {
-			errs = append(errs, api.Error{
-				Code:    "plugin-canceled",
-				Span:    pd.Span,
-				Message: fmt.Sprintf("plugin %q: %v", pd.Name, err),
-			})
-			return errs
+			return err
 		}
 
 		p, ok := lookup(pd.Name)
 		if !ok {
-			errs = append(errs, api.Error{
+			ledger.Diagnostics = append(ledger.Diagnostics, ast.Diagnostic{
 				Code:    "plugin-not-registered",
 				Span:    pd.Span,
 				Message: fmt.Sprintf("plugin %q is not registered", pd.Name),
@@ -61,20 +65,15 @@ func Apply(ctx context.Context, ledger *ast.Ledger) []api.Error {
 			Directive:  pd,
 		})
 		if err != nil {
-			errs = append(errs, api.Error{
-				Code:    "plugin-failed",
-				Span:    pd.Span,
-				Message: fmt.Sprintf("plugin %q: %v", pd.Name, err),
-			})
-			continue
+			return fmt.Errorf("plugin %q: %w", pd.Name, err)
 		}
 
-		errs = append(errs, result.Errors...)
+		ledger.Diagnostics = append(ledger.Diagnostics, result.Diagnostics...)
 		if result.Directives != nil {
 			ledger.ReplaceAll(result.Directives)
 		}
 	}
-	return errs
+	return nil
 }
 
 // collectPluginDirectives collects all *ast.Plugin directives from the

@@ -19,7 +19,6 @@ import (
 	"os"
 
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/loader"
 )
 
@@ -67,20 +66,20 @@ func run(ctx context.Context, args []string, strict bool, stderr io.Writer) int 
 
 // check loads filename and reports diagnostics. A non-nil loader error is a
 // checker meta-failure (exit 2); all ledger content problems surface as
-// diagnostics and exit 1.
+// diagnostics in ledger.Diagnostics and exit 1.
 func check(ctx context.Context, filename string, strict bool, stderr io.Writer) int {
-	ledger, pluginErrs, err := loader.LoadFile(ctx, filename)
+	ledger, err := loader.LoadFile(ctx, filename)
 	if err != nil {
 		fmt.Fprintf(stderr, "beancheck: %v\n", err)
 		return 2
 	}
-	return report(stderr, ledger.Diagnostics, pluginErrs, strict)
+	return report(stderr, ledger.Diagnostics, strict)
 }
 
 // report writes each diagnostic to w and returns the exit code per the
 // exit-code table documented in the package doc. It is a pure function of its
 // inputs so tests can drive it directly without invoking the loader.
-func report(w io.Writer, diags []ast.Diagnostic, pluginErrs []api.Error, strict bool) int {
+func report(w io.Writer, diags []ast.Diagnostic, strict bool) int {
 	hasError := false
 	hasWarning := false
 
@@ -92,10 +91,6 @@ func report(w io.Writer, diags []ast.Diagnostic, pluginErrs []api.Error, strict 
 		case ast.Warning:
 			hasWarning = true
 		}
-	}
-	for _, e := range pluginErrs {
-		fmt.Fprintln(w, formatPluginError(e))
-		hasError = true
 	}
 
 	switch {
@@ -110,29 +105,19 @@ func report(w io.Writer, diags []ast.Diagnostic, pluginErrs []api.Error, strict 
 
 // formatDiagnostic renders an ast.Diagnostic in the canonical greppable form:
 // "<path>:<line>:<col>: <severity>: <message>", or "<severity>: <message>"
-// when the span has no filename.
+// when the span has no filename. When Code is non-empty it is appended in
+// brackets so callers can grep on the machine-readable classifier.
 func formatDiagnostic(d ast.Diagnostic) string {
 	sev := severityString(d.Severity)
+	msg := d.Message
+	if d.Code != "" {
+		msg = fmt.Sprintf("%s [%s]", msg, d.Code)
+	}
 	pos := d.Span.Start
 	if pos.Filename == "" {
-		return fmt.Sprintf("%s: %s", sev, d.Message)
+		return fmt.Sprintf("%s: %s", sev, msg)
 	}
-	return fmt.Sprintf("%s:%d:%d: %s: %s", pos.Filename, pos.Line, pos.Column, sev, d.Message)
-}
-
-// formatPluginError renders an api.Error. Plugin errors have no severity
-// field and are always reported as "error:". When Code is non-empty it is
-// appended in brackets so plugin-provided categorization is preserved.
-func formatPluginError(e api.Error) string {
-	pos := e.Span.Start
-	msg := e.Message
-	if e.Code != "" {
-		msg = fmt.Sprintf("%s [%s]", msg, e.Code)
-	}
-	if pos.Filename == "" {
-		return fmt.Sprintf("error: %s", msg)
-	}
-	return fmt.Sprintf("%s:%d:%d: error: %s", pos.Filename, pos.Line, pos.Column, msg)
+	return fmt.Sprintf("%s:%d:%d: %s: %s", pos.Filename, pos.Line, pos.Column, sev, msg)
 }
 
 // severityString maps ast.Severity to its lowercase label.

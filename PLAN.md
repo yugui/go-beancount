@@ -101,7 +101,7 @@ The abstract syntax tree represents the semantic structure of a ledger, divorced
   - `infer_tolerance_from_cost` (bool, default `false`) — when enabled, postings with a cost spec additionally contribute `|units| × (multiplier × 10^costExp)` to the residual tolerance of the cost currency.
   - `inferred_tolerance_default` is **not** supported.
 - **Generic option directive registry:** a package-internal registry (`pkg/validation/options.go`) reads `option` directives in a pre-pass before the directive walk, with typed accessors (String/Bool/Decimal/StringList). Unknown keys are silently ignored (Beancount parity); malformed values emit `CodeInvalidOption`. `operating_currency` is registered but not yet consumed. New options are added by registering a spec, not by threading ad-hoc fields through the checker.
-- **API:** the three `postproc/api.Plugin` values `pad.Plugin`, `balance.Plugin`, and `validations.Plugin` exported from `pkg/validation/{pad,balance,validations}`. Callers invoke them in that order against a ledger snapshot (`ledger.All()` fed into `api.Input.Directives`), committing any non-nil `Result.Directives` back via `ast.Ledger.ReplaceAll` between stages and merging `Result.Errors` for structured diagnostics with source locations.
+- **API:** the three `postproc/api.Plugin` implementations `pad.Apply`, `balance.Apply`, and `validations.Apply` exported from `pkg/validation/{pad,balance,validations}`. Callers invoke them in that order against a ledger snapshot (`ledger.All()` fed into `api.Input.Directives`), committing any non-nil `Result.Directives` back via `ast.Ledger.ReplaceAll` between stages and appending `Result.Diagnostics` to `ast.Ledger.Diagnostics` for structured diagnostics with source locations.
 
 ---
 
@@ -136,10 +136,10 @@ Beancount calls its post-parse/pre-validation transformation hooks "plugins". Ea
 
 The core postprocessor framework. Plugins are Go types registered at init time and invoked in source order on the parsed ledger.
 
-- `pkg/ext/postproc/api`: stable `Plugin` interface plus `Input`, `Result`, `Error` types. Kept minimal so 6b/6c loaders can compile against it without pulling in the runner.
-- `pkg/ext/postproc`: `Register` (init-time, panics on duplicate) and `Apply(ctx, *ast.Ledger)` (walks `*ast.Plugin` directives, invokes each registered plugin, commits `Result.Directives` via `ast.Ledger.ReplaceAll` so later plugins see earlier output).
+- `pkg/ext/postproc/api`: stable `Plugin` interface plus `Input` and `Result` types. Kept minimal so 6b/6c loaders can compile against it without pulling in the runner. Plugin diagnostics flow through `Result.Diagnostics` ([]ast.Diagnostic).
+- `pkg/ext/postproc`: `Register` (init-time, panics on duplicate) and `Apply(ctx, *ast.Ledger) error` (walks `*ast.Plugin` directives, invokes each registered plugin, commits `Result.Directives` via `ast.Ledger.ReplaceAll` and appends `Result.Diagnostics` to `ast.Ledger.Diagnostics` so later plugins see earlier output and the ledger carries all findings).
 - Plugin names follow Go fully-qualified package path convention (e.g. `github.com/yugui/go-beancount/plugins/auto_accounts`) to avoid collisions.
-- Runner-emitted diagnostics: `plugin-not-registered`, `plugin-failed`, `plugin-canceled`.
+- Runner-emitted diagnostics: only `plugin-not-registered` (a `plugin "foo"` directive whose name has no registered implementation — a ledger-content issue). System-level failures — a plugin's non-nil error from `Apply`, or context cancellation — halt the pipeline and propagate to the caller as a Go `error`, NOT as a diagnostic.
 
 ### Phase 6b: Go `.so` loader (`pkg/ext/goplug`)
 

@@ -32,5 +32,6 @@ go_test(
     deps = [
         "//pkg/ast",
         "//pkg/ext/postproc/api",
+        "@com_github_google_go_cmp//cmp",
     ],
 )
