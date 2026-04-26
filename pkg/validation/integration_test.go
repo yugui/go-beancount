@@ -44,34 +44,34 @@ func runPipeline(t *testing.T, ledger *ast.Ledger) []api.Error {
 	ctx := context.Background()
 	opts := options.BuildRaw(ledger)
 
-	padRes, err := pad.Plugin(ctx, api.Input{
+	padRes, err := pad.Apply(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("pad.Plugin: %v", err)
+		t.Fatalf("pad.Apply: %v", err)
 	}
 	if padRes.Directives != nil {
 		ledger.ReplaceAll(padRes.Directives)
 	}
 
-	balRes, err := balance.Plugin(ctx, api.Input{
+	balRes, err := balance.Apply(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("balance.Plugin: %v", err)
+		t.Fatalf("balance.Apply: %v", err)
 	}
 	if balRes.Directives != nil {
 		ledger.ReplaceAll(balRes.Directives)
 	}
 
-	valRes, err := validations.Plugin(ctx, api.Input{
+	valRes, err := validations.Apply(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		t.Fatalf("validations.Plugin: %v", err)
+		t.Fatalf("validations.Apply: %v", err)
 	}
 
 	var all []api.Error

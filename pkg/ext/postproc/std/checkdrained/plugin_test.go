@@ -1,4 +1,4 @@
-package checkdrained_test
+package checkdrained
 
 import (
 	"context"
@@ -10,7 +10,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/std/checkdrained"
 )
 
 // astCmpOpts is the standard option set for comparing AST values
@@ -79,7 +78,7 @@ func TestSynthesizesBalancesOnCloseMultipleCurrencies(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx1, tx2, closeDir})}
 
-	res, err := checkdrained.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -111,7 +110,7 @@ func TestSynthesizesBalancesOnCloseMultipleCurrencies(t *testing.T) {
 		},
 	}
 	if diff := cmp.Diff(wantBalances, filterBalances(res.Directives), astCmpOpts); diff != "" {
-		t.Errorf("checkdrained.Plugin synthesized balances mismatch (-want +got):\n%s", diff)
+		t.Errorf("apply synthesized balances mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -134,7 +133,7 @@ func TestNonBalanceSheetAccountSkipped(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx, closeDir})}
 
-	res, err := checkdrained.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,7 +157,7 @@ func TestOpenCurrenciesCoverNoTransactions(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{op, closeDir})}
 
-	res, err := checkdrained.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +193,7 @@ func TestExistingBalanceSuppressesSynthesized(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx, userBal, closeDir})}
 
-	res, err := checkdrained.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -205,7 +204,7 @@ func TestExistingBalanceSuppressesSynthesized(t *testing.T) {
 		t.Fatalf("len(balances in output) = %d, want 1 (the user's only); balances = %#v", len(bs), bs)
 	}
 	if !bs[0].Date.Equal(userBal.Date) {
-		t.Errorf("checkdrained.Plugin output Balance.Date = %v, want %v (the user-authored balance)", bs[0].Date, userBal.Date)
+		t.Errorf("apply output Balance.Date = %v, want %v (the user-authored balance)", bs[0].Date, userBal.Date)
 	}
 }
 
@@ -228,7 +227,7 @@ func TestAllOriginalDirectivesPreserved(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx, closeDir})}
 
-	res, err := checkdrained.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -246,10 +245,10 @@ func TestAllOriginalDirectivesPreserved(t *testing.T) {
 		}
 	}
 	if !sawTx {
-		t.Errorf("checkdrained.Plugin output is missing the input transaction directive")
+		t.Errorf("apply output is missing the input transaction directive")
 	}
 	if !sawClose {
-		t.Errorf("checkdrained.Plugin output is missing the input close directive")
+		t.Errorf("apply output is missing the input close directive")
 	}
 }
 
@@ -273,15 +272,15 @@ func TestNoMutationOfInput(t *testing.T) {
 	origAccount := closeDir.Account
 	in := api.Input{Directives: seqOf([]ast.Directive{tx, closeDir})}
 
-	if _, err := checkdrained.Plugin(context.Background(), in); err != nil {
+	if _, err := apply(context.Background(), in); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if len(tx.Postings) != origPostings {
-		t.Errorf("checkdrained.Plugin mutated input transaction: len(tx.Postings) %d -> %d", origPostings, len(tx.Postings))
+		t.Errorf("apply mutated input transaction: len(tx.Postings) %d -> %d", origPostings, len(tx.Postings))
 	}
 	if closeDir.Account != origAccount {
-		t.Errorf("checkdrained.Plugin mutated input close directive: closeDir.Account %q -> %q", origAccount, closeDir.Account)
+		t.Errorf("apply mutated input close directive: closeDir.Account %q -> %q", origAccount, closeDir.Account)
 	}
 }
 
@@ -289,9 +288,9 @@ func TestNoMutationOfInput(t *testing.T) {
 func TestCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := checkdrained.Plugin(ctx, api.Input{})
+	_, err := apply(ctx, api.Input{})
 	if err == nil {
-		t.Fatalf("checkdrained.Plugin error = nil, want non-nil on canceled context")
+		t.Fatalf("apply error = nil, want non-nil on canceled context")
 	}
 }
 

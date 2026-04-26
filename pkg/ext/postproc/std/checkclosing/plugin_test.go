@@ -1,4 +1,4 @@
-package checkclosing_test
+package checkclosing
 
 import (
 	"context"
@@ -11,7 +11,6 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/std/checkclosing"
 )
 
 // astCmpOpts is the standard option set for comparing AST values
@@ -75,7 +74,7 @@ func TestClosingBoolExpands(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx})}
 
-	res, err := checkclosing.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -94,7 +93,7 @@ func TestClosingBoolExpands(t *testing.T) {
 		Span:    tx.Span,
 	}
 	if diff := cmp.Diff(wantBal, bal, astCmpOpts); diff != "" {
-		t.Errorf("checkclosing.Plugin synthesized Balance mismatch (-want +got):\n%s", diff)
+		t.Errorf("apply synthesized Balance mismatch (-want +got):\n%s", diff)
 	}
 
 	clonedTx, ok := res.Directives[1].(*ast.Transaction)
@@ -120,7 +119,7 @@ func TestClosingBoolExpands(t *testing.T) {
 		},
 	}
 	if diff := cmp.Diff(wantTx, clonedTx, astCmpOpts); diff != "" {
-		t.Errorf("checkclosing.Plugin cloned transaction mismatch (-want +got):\n%s", diff)
+		t.Errorf("apply cloned transaction mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -145,7 +144,7 @@ func TestClosingStringAccepted(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx})}
 
-	res, err := checkclosing.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,7 +164,7 @@ func TestClosingStringAccepted(t *testing.T) {
 		Span:    tx.Span,
 	}
 	if diff := cmp.Diff(wantBal, bal, astCmpOpts); diff != "" {
-		t.Errorf("checkclosing.Plugin synthesized Balance mismatch (-want +got):\n%s", diff)
+		t.Errorf("apply synthesized Balance mismatch (-want +got):\n%s", diff)
 	}
 
 	// Verify the cloned transaction has the closing key stripped, the
@@ -198,7 +197,7 @@ func TestClosingStringAccepted(t *testing.T) {
 		},
 	}
 	if diff := cmp.Diff(wantTx, clonedTx, astCmpOpts); diff != "" {
-		t.Errorf("checkclosing.Plugin cloned transaction mismatch (-want +got):\n%s", diff)
+		t.Errorf("apply cloned transaction mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -221,7 +220,7 @@ func TestClosingFalseIgnored(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx})}
 
-	res, err := checkclosing.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -254,15 +253,15 @@ func TestPostingWithoutAmountLeftAlone(t *testing.T) {
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx})}
 
-	res, err := checkclosing.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(res.Directives) != 1 {
-		t.Fatalf("checkclosing.Plugin: len(res.Directives) = %d, want 1 (just the tx)", len(res.Directives))
+		t.Fatalf("apply: len(res.Directives) = %d, want 1 (just the tx)", len(res.Directives))
 	}
 	if res.Directives[0] != ast.Directive(tx) {
-		t.Errorf("checkclosing.Plugin res.Directives[0] = %p, want the original tx %p (no clone expected when posting has no Amount)", res.Directives[0], tx)
+		t.Errorf("apply res.Directives[0] = %p, want the original tx %p (no clone expected when posting has no Amount)", res.Directives[0], tx)
 	}
 }
 
@@ -289,16 +288,16 @@ func TestInputTransactionNotMutated(t *testing.T) {
 	origClosingVal, origHasClosing := tx.Postings[0].Meta.Props["closing"]
 
 	in := api.Input{Directives: seqOf([]ast.Directive{tx})}
-	if _, err := checkclosing.Plugin(context.Background(), in); err != nil {
+	if _, err := apply(context.Background(), in); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	if len(tx.Postings) != origPostingsLen {
-		t.Errorf("checkclosing.Plugin mutated input: len(tx.Postings) %d -> %d", origPostingsLen, len(tx.Postings))
+		t.Errorf("apply mutated input: len(tx.Postings) %d -> %d", origPostingsLen, len(tx.Postings))
 	}
 	gotClosingVal, gotHasClosing := tx.Postings[0].Meta.Props["closing"]
 	if gotHasClosing != origHasClosing || gotClosingVal != origClosingVal {
-		t.Errorf("checkclosing.Plugin mutated input metadata: original (present=%v, value=%v) -> got (present=%v, value=%v)", origHasClosing, origClosingVal, gotHasClosing, gotClosingVal)
+		t.Errorf("apply mutated input metadata: original (present=%v, value=%v) -> got (present=%v, value=%v)", origHasClosing, origClosingVal, gotHasClosing, gotClosingVal)
 	}
 }
 
@@ -312,7 +311,7 @@ func TestNonTransactionDirectivesPassThrough(t *testing.T) {
 	com := &ast.Commodity{Currency: "USD"}
 	in := api.Input{Directives: seqOf([]ast.Directive{op, com})}
 
-	res, err := checkclosing.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -320,7 +319,7 @@ func TestNonTransactionDirectivesPassThrough(t *testing.T) {
 		t.Fatalf("len(res.Directives) = %d, want 2 passthrough directives", len(res.Directives))
 	}
 	if res.Directives[0] != ast.Directive(op) || res.Directives[1] != ast.Directive(com) {
-		t.Errorf("checkclosing.Plugin output directives = %#v, want [op, com] in input order", res.Directives)
+		t.Errorf("apply output directives = %#v, want [op, com] in input order", res.Directives)
 	}
 }
 
@@ -328,8 +327,8 @@ func TestNonTransactionDirectivesPassThrough(t *testing.T) {
 func TestCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := checkclosing.Plugin(ctx, api.Input{})
+	_, err := apply(ctx, api.Input{})
 	if err == nil {
-		t.Fatalf("checkclosing.Plugin error = nil, want non-nil on canceled context")
+		t.Fatalf("apply error = nil, want non-nil on canceled context")
 	}
 }

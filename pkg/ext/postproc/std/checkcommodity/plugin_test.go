@@ -1,4 +1,4 @@
-package checkcommodity_test
+package checkcommodity
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/std/checkcommodity"
 )
 
 // errorCmpOpts compares api.Error values structurally while leaving
@@ -66,7 +65,7 @@ func amt(n int64, cur string) ast.Amount {
 func assertErrors(t *testing.T, got, want []api.Error) {
 	t.Helper()
 	if diff := cmp.Diff(want, got, errorCmpOpts); diff != "" {
-		t.Fatalf("checkcommodity.Plugin errors mismatch (-want +got):\n%s", diff)
+		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -86,14 +85,14 @@ func TestMissingCommodityInTransaction(t *testing.T) {
 	}
 	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	assertErrors(t, res.Errors, []api.Error{{Code: "missing-commodity", Span: testPluginDir.Span}})
 
 	if got := res.Errors[0].Message; !strings.Contains(got, "USD") {
-		t.Errorf("checkcommodity.Plugin errors[0].Message = %q, want it to mention USD", got)
+		t.Errorf("apply errors[0].Message = %q, want it to mention USD", got)
 	}
 }
 
@@ -116,7 +115,7 @@ func TestDeclaredCommoditySilencesError(t *testing.T) {
 	}
 	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{decl, tx})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -137,7 +136,7 @@ func TestPriceContextReported(t *testing.T) {
 	}
 	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{decl, price})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -173,7 +172,7 @@ func TestMissingReportedOncePerCurrency(t *testing.T) {
 	}
 	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx, bal})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -208,7 +207,7 @@ func TestIgnoreMapSuppresses(t *testing.T) {
 		Directives: seqOf([]ast.Directive{tx}),
 	}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -237,7 +236,7 @@ func TestIgnoreMapPerPair(t *testing.T) {
 		Directives: seqOf([]ast.Directive{tx}),
 	}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -267,7 +266,7 @@ func TestInvalidJSONConfigFatal(t *testing.T) {
 	}
 	in := api.Input{Directive: testPluginDir, Config: `not json`, Directives: seqOf([]ast.Directive{tx})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -297,7 +296,7 @@ func TestInvalidRegexpSkipsPair(t *testing.T) {
 		Directives: seqOf([]ast.Directive{tx}),
 	}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -315,10 +314,10 @@ func TestInvalidRegexpSkipsPair(t *testing.T) {
 		}
 	}
 	if !sawInvalidRegexp {
-		t.Errorf("checkcommodity.Plugin errors = %v, want at least one invalid-regexp diagnostic", res.Errors)
+		t.Errorf("apply errors = %v, want at least one invalid-regexp diagnostic", res.Errors)
 	}
 	if sawMissing {
-		t.Errorf("checkcommodity.Plugin emitted missing-commodity, want it suppressed by the valid ignore pair; errors = %v", res.Errors)
+		t.Errorf("apply emitted missing-commodity, want it suppressed by the valid ignore pair; errors = %v", res.Errors)
 	}
 }
 
@@ -346,7 +345,7 @@ func TestDeterministicOrder(t *testing.T) {
 	}
 	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -357,7 +356,7 @@ func TestDeterministicOrder(t *testing.T) {
 	wantErr := api.Error{Code: "missing-commodity", Span: testPluginDir.Span}
 	wantErrors := []api.Error{wantErr, wantErr, wantErr}
 	if diff := cmp.Diff(wantErrors, res.Errors, errorCmpOpts); diff != "" {
-		t.Errorf("checkcommodity.Plugin errors mismatch (-want +got):\n%s", diff)
+		t.Errorf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 
 	// Sort key is (account, currency): "Assets:A" < "Assets:M" <
@@ -386,7 +385,7 @@ func TestOpenCurrenciesChecked(t *testing.T) {
 	}
 	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{op})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -416,7 +415,7 @@ func TestAccountReportSuppressesPrice(t *testing.T) {
 	usdDecl := &ast.Commodity{Currency: "USD"}
 	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{usdDecl, tx, price})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -449,7 +448,7 @@ func TestNoDirectiveMutation(t *testing.T) {
 	origPluginSpan := testPluginDir.Span
 	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
 
-	res, err := checkcommodity.Plugin(context.Background(), in)
+	res, err := apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -457,10 +456,10 @@ func TestNoDirectiveMutation(t *testing.T) {
 		t.Errorf("Result.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
 	}
 	if len(tx.Postings) != origPostings {
-		t.Errorf("checkcommodity.Plugin mutated input transaction: len(tx.Postings) %d -> %d", origPostings, len(tx.Postings))
+		t.Errorf("apply mutated input transaction: len(tx.Postings) %d -> %d", origPostings, len(tx.Postings))
 	}
 	if testPluginDir.Span != origPluginSpan {
-		t.Errorf("checkcommodity.Plugin mutated input plugin directive: testPluginDir.Span = %#v, want %#v (the pre-call snapshot)", testPluginDir.Span, origPluginSpan)
+		t.Errorf("apply mutated input plugin directive: testPluginDir.Span = %#v, want %#v (the pre-call snapshot)", testPluginDir.Span, origPluginSpan)
 	}
 }
 
@@ -468,8 +467,8 @@ func TestNoDirectiveMutation(t *testing.T) {
 func TestCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := checkcommodity.Plugin(ctx, api.Input{})
+	_, err := apply(ctx, api.Input{})
 	if err == nil {
-		t.Fatalf("checkcommodity.Plugin error = nil, want non-nil on canceled context")
+		t.Fatalf("apply error = nil, want non-nil on canceled context")
 	}
 }

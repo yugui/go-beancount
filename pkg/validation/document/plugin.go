@@ -30,8 +30,9 @@ import (
 // that does not exist on the filesystem.
 const CodeDocumentMissing = "document-missing-file"
 
-// Plugin is the pre-builtin plugin for document directive verification.
-var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result, error) {
+// Apply verifies Document directives: emits a diagnostic for any path
+// that does not exist on the filesystem.
+func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
 	}
@@ -69,5 +70,5 @@ func resolvePath(docPath, spanFilename string) string {
 }
 
 func init() {
-	postproc.Register("github.com/yugui/go-beancount/pkg/validation/document", Plugin)
+	postproc.Register("github.com/yugui/go-beancount/pkg/validation/document", api.PluginFunc(Apply))
 }

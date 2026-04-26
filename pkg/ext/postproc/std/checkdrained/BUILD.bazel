@@ -19,8 +19,8 @@ go_library(
 go_test(
     name = "checkdrained_test",
     srcs = ["plugin_test.go"],
+    embed = [":checkdrained"],
     deps = [
-        ":checkdrained",
         "//pkg/ast",
         "//pkg/ext/postproc/api",
         "@com_github_cockroachdb_apd_v3//:apd",
