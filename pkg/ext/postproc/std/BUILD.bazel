@@ -13,5 +13,6 @@ go_library(
         "//pkg/ext/postproc/std/leafonly",
         "//pkg/ext/postproc/std/nounused",
         "//pkg/ext/postproc/std/onecommodity",
+        "//pkg/ext/postproc/std/uniqueprices",
     ],
 )
