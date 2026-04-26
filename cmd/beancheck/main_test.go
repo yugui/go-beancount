@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
 func TestReportExitCodes(t *testing.T) {
@@ -19,17 +18,17 @@ func TestReportExitCodes(t *testing.T) {
 		Message:  "broken directive",
 		Severity: ast.Error,
 	}
-	pluginErr := api.Error{
-		Code:    "plugin-failed",
-		Message: "something went sideways",
+	pluginDiag := ast.Diagnostic{
+		Code:     "plugin-not-registered",
+		Message:  `plugin "missing" is not registered`,
+		Severity: ast.Error,
 	}
 
 	tests := []struct {
-		name       string
-		diags      []ast.Diagnostic
-		pluginErrs []api.Error
-		strict     bool
-		want       int
+		name   string
+		diags  []ast.Diagnostic
+		strict bool
+		want   int
 	}{
 		{
 			name: "no diagnostics is clean",
@@ -53,23 +52,22 @@ func TestReportExitCodes(t *testing.T) {
 			want:  1,
 		},
 		{
-			name:       "plugin errors fail",
-			pluginErrs: []api.Error{pluginErr},
-			want:       1,
+			name:  "plugin diagnostics fail",
+			diags: []ast.Diagnostic{pluginDiag},
+			want:  1,
 		},
 		{
-			name:       "mix of warning and plugin error still fails without strict",
-			diags:      []ast.Diagnostic{warning},
-			pluginErrs: []api.Error{pluginErr},
-			strict:     false,
-			want:       1,
+			name:   "mix of warning and plugin diagnostic still fails without strict",
+			diags:  []ast.Diagnostic{warning, pluginDiag},
+			strict: false,
+			want:   1,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			got := report(&buf, tc.diags, tc.pluginErrs, tc.strict)
+			got := report(&buf, tc.diags, tc.strict)
 			if got != tc.want {
 				t.Errorf("report(strict=%v) = %d, want %d (stderr: %q)", tc.strict, got, tc.want, buf.String())
 			}
@@ -109,54 +107,31 @@ func TestFormatDiagnostic(t *testing.T) {
 			},
 			want: "error: synthetic problem",
 		},
+		{
+			name: "code is appended in brackets",
+			in: ast.Diagnostic{
+				Code:     "balance-mismatch",
+				Span:     ast.Span{Start: ast.Position{Filename: "m.beancount", Line: 5, Column: 2}},
+				Message:  "amount differs",
+				Severity: ast.Error,
+			},
+			want: "m.beancount:5:2: error: amount differs [balance-mismatch]",
+		},
+		{
+			name: "no location with code",
+			in: ast.Diagnostic{
+				Code:     "plugin-not-registered",
+				Message:  "boom",
+				Severity: ast.Error,
+			},
+			want: "error: boom [plugin-not-registered]",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			got := formatDiagnostic(tc.in)
 			if got != tc.want {
 				t.Errorf("formatDiagnostic(%+v) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestFormatPluginError(t *testing.T) {
-	tests := []struct {
-		name string
-		in   api.Error
-		want string
-	}{
-		{
-			name: "with code and location",
-			in: api.Error{
-				Code:    "balance-mismatch",
-				Span:    ast.Span{Start: ast.Position{Filename: "m.beancount", Line: 5, Column: 2}},
-				Message: "amount differs",
-			},
-			want: "m.beancount:5:2: error: amount differs [balance-mismatch]",
-		},
-		{
-			name: "without code",
-			in: api.Error{
-				Span:    ast.Span{Start: ast.Position{Filename: "m.beancount", Line: 7, Column: 1}},
-				Message: "something went wrong",
-			},
-			want: "m.beancount:7:1: error: something went wrong",
-		},
-		{
-			name: "no location",
-			in: api.Error{
-				Code:    "plugin-failed",
-				Message: "boom",
-			},
-			want: "error: boom [plugin-failed]",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := formatPluginError(tc.in)
-			if got != tc.want {
-				t.Errorf("formatPluginError(%+v) = %q, want %q", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -174,15 +149,17 @@ func TestReportWritesAllDiagnostics(t *testing.T) {
 			Message:  "second problem",
 			Severity: ast.Warning,
 		},
-	}
-	pluginErrs := []api.Error{
-		{Code: "foo", Message: "third problem"},
+		{
+			Code:     "foo",
+			Message:  "third problem",
+			Severity: ast.Error,
+		},
 	}
 	var buf bytes.Buffer
-	report(&buf, diags, pluginErrs, false)
+	report(&buf, diags, false)
 	want := formatDiagnostic(diags[0]) + "\n" +
 		formatDiagnostic(diags[1]) + "\n" +
-		formatPluginError(pluginErrs[0]) + "\n"
+		formatDiagnostic(diags[2]) + "\n"
 	if got := buf.String(); got != want {
 		t.Errorf("report() wrote %q, want %q", got, want)
 	}

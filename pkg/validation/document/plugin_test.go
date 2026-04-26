@@ -35,8 +35,8 @@ func TestPlugin_EmptyLedger(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("Plugin() Directives = %v, want nil", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Plugin() Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Plugin() Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -60,8 +60,8 @@ func TestPlugin_NoDocumentDirectives(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("Plugin() Directives = %v, want nil", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Plugin() Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Plugin() Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -81,8 +81,8 @@ func TestPlugin_DocumentExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plugin() error = %v, want nil", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Plugin() Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Plugin() Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -103,15 +103,15 @@ func TestPlugin_DocumentMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plugin() error = %v, want nil", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("Plugin() len(Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("Plugin() len(Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != document.CodeDocumentMissing {
-		t.Errorf("Plugin() Errors[0].Code = %q, want %q", e.Code, document.CodeDocumentMissing)
+		t.Errorf("Plugin() Diagnostics[0].Code = %q, want %q", e.Code, document.CodeDocumentMissing)
 	}
 	if e.Span != span {
-		t.Errorf("Plugin() Errors[0].Span = %#v, want %#v", e.Span, span)
+		t.Errorf("Plugin() Diagnostics[0].Span = %#v, want %#v", e.Span, span)
 	}
 }
 
@@ -136,8 +136,8 @@ func TestPlugin_RelativePathAbsoluteSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plugin() error = %v, want nil", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Plugin() Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Plugin() Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -166,13 +166,13 @@ func TestPlugin_MultipleDocuments(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Plugin() error = %v, want nil", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("Plugin() len(Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("Plugin() len(Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if res.Errors[0].Code != document.CodeDocumentMissing {
-		t.Errorf("Plugin() Errors[0].Code = %q, want %q", res.Errors[0].Code, document.CodeDocumentMissing)
+	if res.Diagnostics[0].Code != document.CodeDocumentMissing {
+		t.Errorf("Plugin() Diagnostics[0].Code = %q, want %q", res.Diagnostics[0].Code, document.CodeDocumentMissing)
 	}
-	if res.Errors[0].Span != missingSpan {
-		t.Errorf("Plugin() Errors[0].Span = %#v, want %#v", res.Errors[0].Span, missingSpan)
+	if res.Diagnostics[0].Span != missingSpan {
+		t.Errorf("Plugin() Diagnostics[0].Span = %#v, want %#v", res.Diagnostics[0].Span, missingSpan)
 	}
 }

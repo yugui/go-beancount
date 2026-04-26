@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
@@ -41,12 +40,12 @@ func (*currencyConstraints) Name() string { return "currency_constraints" }
 // CodeCurrencyNotAllowed diagnostic per posting whose currency violates
 // the account's open-directive allowlist. Auto-postings (Amount == nil)
 // carry no currency and are skipped.
-func (v *currencyConstraints) ProcessEntry(d ast.Directive) []api.Error {
+func (v *currencyConstraints) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 	txn, ok := d.(*ast.Transaction)
 	if !ok {
 		return nil
 	}
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount == nil {
@@ -64,14 +63,14 @@ func (v *currencyConstraints) ProcessEntry(d ast.Directive) []api.Error {
 		if span == (ast.Span{}) {
 			span = txn.Span
 		}
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeCurrencyNotAllowed),
 			Span:    span,
 			Message: fmt.Sprintf("currency %q not allowed for account %q", p.Amount.Currency, p.Account),
 		})
 	}
-	return errs
+	return diags
 }
 
 // Finish has no deferred diagnostics: all checks are per-directive.
-func (*currencyConstraints) Finish() []api.Error { return nil }
+func (*currencyConstraints) Finish() []ast.Diagnostic { return nil }

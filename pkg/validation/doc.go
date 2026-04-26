@@ -6,7 +6,7 @@
 // transactions must balance per currency, balance assertions must match the
 // running balance (within the inferred or explicit tolerance), pad directives
 // must be followed by a matching balance assertion, and so on. Each problem
-// it finds is reported as a postproc/api.Error tagged with a Code identifying
+// it finds is reported as an [ast.Diagnostic] tagged with a Code identifying
 // the kind of failure.
 //
 // Validation is delivered as a three-plugin pipeline implemented in
@@ -22,13 +22,15 @@
 //     constraints, transaction balancing).
 //
 // Each subpackage exposes an Apply function that consumes the current
-// ledger snapshot and emits api.Error diagnostics. Importing a subpackage
-// also registers it in the global postproc registry under its canonical
-// name, so a beancount `plugin "..."` directive can activate it.
+// ledger snapshot and emits [ast.Diagnostic] values via Result.Diagnostics.
+// Importing a subpackage also registers it in the global postproc registry
+// under its canonical name, so a beancount `plugin "..."` directive can
+// activate it.
 //
 // The simplest way to load and validate a ledger is via pkg/loader:
 //
-//	ledger, errs, err := loader.LoadFile(ctx, "main.beancount")
+//	ledger, err := loader.LoadFile(ctx, "main.beancount")
+//	// ledger.Diagnostics carries every problem found.
 //
 // For fine-grained control, wire the Apply functions manually in order
 // (pad → balance → validations), committing any non-nil Result.Directives
@@ -37,7 +39,7 @@
 //	ctx := context.Background()
 //	opts := options.BuildRaw(ledger)
 //
-//	var errs []api.Error
+//	var diags []ast.Diagnostic
 //	for _, apply := range []func(context.Context, api.Input) (api.Result, error){
 //		pad.Apply, balance.Apply, validations.Apply,
 //	} {
@@ -51,11 +53,11 @@
 //		if res.Directives != nil {
 //			ledger.ReplaceAll(res.Directives)
 //		}
-//		errs = append(errs, res.Errors...)
+//		diags = append(diags, res.Diagnostics...)
 //	}
 //
-// The pipeline does not sort globally — each plugin's Errors slice is
-// emitted in the order its internal walk visits directives, and callers
-// that need a stable global ordering sort by (filename, offset, code)
-// themselves.
+// The pipeline does not sort globally — each plugin's Diagnostics slice
+// is emitted in the order its internal walk visits directives, and
+// callers that need a stable global ordering sort by (filename, offset,
+// code) themselves.
 package validation

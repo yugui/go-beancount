@@ -13,6 +13,7 @@ import (
 	"fmt"
 
 	"github.com/yugui/go-beancount/internal/options"
+	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
@@ -23,7 +24,7 @@ import (
 // currency constraints, and transaction balancing. It never mutates
 // the ledger; it returns a Result with a nil Directives field so the
 // runner preserves the input verbatim, and reports issues only via
-// the Errors slice.
+// the Diagnostics slice.
 func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
@@ -34,7 +35,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	build := accountstate.Build(in.Directives)
 
 	// Decode raw options to a typed *options.Values. Malformed values
-	// become api.Error entries with code "invalid-option"; unknown keys
+	// become diagnostics with code "invalid-option"; unknown keys
 	// are silently dropped by FromRaw.
 	opts, optErrs := options.FromRaw(in.Options)
 
@@ -45,9 +46,9 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		newTransactionBalances(opts),
 	}
 
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for _, perr := range optErrs {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    "invalid-option",
 			Span:    perr.Span,
 			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
@@ -57,15 +58,15 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if in.Directives != nil {
 		for _, d := range in.Directives {
 			for _, v := range validators {
-				errs = append(errs, v.ProcessEntry(d)...)
+				diags = append(diags, v.ProcessEntry(d)...)
 			}
 		}
 	}
 	for _, v := range validators {
-		errs = append(errs, v.Finish()...)
+		diags = append(diags, v.Finish()...)
 	}
 
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // init registers Apply in the global registry so that, once this

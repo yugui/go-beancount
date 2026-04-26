@@ -40,8 +40,8 @@ func TestPlugin_EmptyLedger(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("Result.Directives = %v, want nil (plugin does not mutate the ledger)", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -57,8 +57,8 @@ func TestPlugin_NoValidatorsNoErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty (no validators registered)", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty (no validators registered)", res.Diagnostics)
 	}
 }
 
@@ -82,10 +82,10 @@ func TestPlugin_DuplicateOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != "duplicate-open" {
 		t.Errorf("Code = %q, want %q", e.Code, "duplicate-open")
 	}
@@ -117,10 +117,10 @@ func TestPlugin_ReferenceBeforeOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != "account-not-yet-open" {
 		t.Errorf("Code = %q, want %q", e.Code, "account-not-yet-open")
 	}
@@ -146,10 +146,10 @@ func TestPlugin_ReferenceOnUnopenedAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if got, want := res.Errors[0].Code, "account-not-open"; got != want {
+	if got, want := res.Diagnostics[0].Code, "account-not-open"; got != want {
 		t.Errorf("Code = %q, want %q", got, want)
 	}
 }
@@ -166,7 +166,7 @@ func TestPlugin_CanceledContext(t *testing.T) {
 func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	// "inferred_tolerance_multiplier" is a registered decimal-valued
 	// option; a non-numeric value triggers a ParseError which the
-	// plugin surfaces as api.Error{Code: "invalid-option"}.
+	// plugin surfaces as ast.Diagnostic{Code: "invalid-option"}.
 	in := api.Input{
 		Options: map[string]string{
 			"inferred_tolerance_multiplier": "not-a-decimal",
@@ -176,10 +176,10 @@ func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != "invalid-option" {
 		t.Errorf("Error.Code = %q, want %q", e.Code, "invalid-option")
 	}
@@ -220,10 +220,10 @@ func TestPlugin_CurrencyNotAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != "currency-not-allowed" {
 		t.Errorf("Code = %q, want %q", e.Code, "currency-not-allowed")
 	}
@@ -261,10 +261,10 @@ func TestPlugin_UnbalancedTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != "unbalanced-transaction" {
 		t.Errorf("Code = %q, want %q", e.Code, "unbalanced-transaction")
 	}
@@ -349,8 +349,8 @@ func TestPlugin_AllFourValidatorsInterleave(t *testing.T) {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
 
-	got := make(map[string]int, len(res.Errors))
-	for _, e := range res.Errors {
+	got := make(map[string]int, len(res.Diagnostics))
+	for _, e := range res.Diagnostics {
 		got[e.Code]++
 	}
 	wantCodes := []string{
@@ -361,7 +361,7 @@ func TestPlugin_AllFourValidatorsInterleave(t *testing.T) {
 	}
 	for _, c := range wantCodes {
 		if got[c] == 0 {
-			t.Errorf("missing diagnostic for code %q; got codes = %v (full: %v)", c, got, res.Errors)
+			t.Errorf("missing diagnostic for code %q; got codes = %v (full: %v)", c, got, res.Diagnostics)
 		}
 	}
 }

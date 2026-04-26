@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 
+	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/goplug"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
@@ -17,10 +18,10 @@ import (
 const pluginName = "github.com/yugui/go-beancount/pkg/ext/goplug/testdata/ok"
 
 // sentinel is the diagnostic the plugin emits when invoked. The test
-// looks for its Code ("ok.sentinel") in the api.Error slice returned
-// by postproc.Apply to confirm the plugin registered from inside the
+// looks for its Code ("ok.sentinel") in the diagnostics returned by
+// postproc.Apply to confirm the plugin registered from inside the
 // .so ran through the host's registry.
-var sentinel = &api.Error{Code: "ok.sentinel", Message: "ok plugin ran"}
+var sentinel = ast.Diagnostic{Code: "ok.sentinel", Message: "ok plugin ran"}
 
 // Manifest declares the plugin metadata required by goplug.Load.
 var Manifest = goplug.Manifest{
@@ -35,7 +36,7 @@ var Manifest = goplug.Manifest{
 // Manifest and InitPlugin; keeping the other .so symbols unexported
 // minimizes the advertised plugin surface.
 var plug api.PluginFunc = func(_ context.Context, _ api.Input) (api.Result, error) {
-	return api.Result{Errors: []api.Error{*sentinel}}, nil
+	return api.Result{Diagnostics: []ast.Diagnostic{sentinel}}, nil
 }
 
 // InitPlugin is called by goplug.Load. It registers plug under

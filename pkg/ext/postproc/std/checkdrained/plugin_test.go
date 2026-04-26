@@ -82,8 +82,8 @@ func TestSynthesizesBalancesOnCloseMultipleCurrencies(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	if res.Directives == nil {
 		t.Fatalf("res.Directives = nil, want non-nil")

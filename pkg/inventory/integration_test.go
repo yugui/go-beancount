@@ -3,6 +3,7 @@ package inventory_test
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,20 +20,19 @@ func loadInspectionFixture(t *testing.T) *ast.Ledger {
 	t.Helper()
 	path := filepath.Join("testdata", "inspection_e2e.beancount")
 	ctx := context.Background()
-	ledger, errs, err := loader.LoadFile(ctx, path)
+	ledger, err := loader.LoadFile(ctx, path)
 	if err != nil {
 		t.Fatalf("loader.LoadFile(%q): %v", path, err)
 	}
+	var errs []string
 	for _, d := range ledger.Diagnostics {
 		if d.Severity == ast.Error {
-			t.Fatalf("loader.LoadFile(%q): diagnostic: %s", path, d.Message)
+			errs = append(errs, d.Message)
 		}
 	}
 	if len(errs) != 0 {
-		for _, e := range errs {
-			t.Logf("pipeline error: %s", e)
-		}
-		t.Fatalf("loader.LoadFile(%q): got %d errors, want 0", path, len(errs))
+		t.Fatalf("loader.LoadFile(%q): got %d error-severity diagnostics, want 0:\n  %s",
+			path, len(errs), strings.Join(errs, "\n  "))
 	}
 	return ledger
 }

@@ -2,7 +2,6 @@ package validations
 
 import (
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
 // entryValidator is the contract implemented by each of the per-check
@@ -22,10 +21,10 @@ type entryValidator interface {
 	// Implementations return any diagnostics produced by this
 	// directive; the returned slice may be nil when there are no
 	// findings.
-	ProcessEntry(d ast.Directive) []api.Error
+	ProcessEntry(d ast.Directive) []ast.Diagnostic
 
 	// Finish is invoked after every directive has been processed,
 	// exactly once per Apply call. It returns any deferred diagnostics
 	// (e.g. unresolved-pad reports) that require a full-ledger view.
-	Finish() []api.Error
+	Finish() []ast.Diagnostic
 }

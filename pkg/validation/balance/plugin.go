@@ -37,23 +37,23 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, err
 	}
 
-	opts, errs := parseOptions(in.Options)
+	opts, diags := parseOptions(in.Options)
 	balances := map[balanceKey]*apd.Decimal{}
 
 	if in.Directives == nil {
-		return api.Result{Errors: errs}, nil
+		return api.Result{Diagnostics: diags}, nil
 	}
 
 	for _, d := range in.Directives {
 		switch x := d.(type) {
 		case *ast.Transaction:
-			errs = append(errs, applyTransaction(x, balances)...)
+			diags = append(diags, applyTransaction(x, balances)...)
 		case *ast.Balance:
-			errs = append(errs, checkBalance(x, balances, opts)...)
+			diags = append(diags, checkBalance(x, balances, opts)...)
 		}
 	}
 
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // init registers Apply in the global registry so that, once this
@@ -72,20 +72,20 @@ type balanceKey struct {
 }
 
 // parseOptions wraps options.FromRaw and converts any parse failures
-// into api.Error values with code "invalid-option". On error the
+// into ast.Diagnostic values with code "invalid-option". On error the
 // returned *options.Values is still safe to use: FromRaw retains
 // defaults for keys that failed to parse.
-func parseOptions(raw map[string]string) (*options.Values, []api.Error) {
+func parseOptions(raw map[string]string) (*options.Values, []ast.Diagnostic) {
 	opts, optErrs := options.FromRaw(raw)
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for _, perr := range optErrs {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    "invalid-option",
 			Span:    perr.Span,
 			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
 		})
 	}
-	return opts, errs
+	return opts, diags
 }
 
 // applyTransaction accumulates tx's postings into balances and
@@ -93,14 +93,14 @@ func parseOptions(raw map[string]string) (*options.Values, []api.Error) {
 // two-pass posting weight application: a subsequent balance
 // assertion against an auto-posting's account sees the inferred
 // amount rather than zero.
-func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) []api.Error {
-	var errs []api.Error
+func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) []ast.Diagnostic {
+	var diags []ast.Diagnostic
 
 	// First pass: accumulate explicit postings into the running
 	// balance (in the posting's NATIVE currency) and compute a
 	// per-transaction residual per currency.
-	txResidual, autoCount, autoPosting, accErrs := accumulatePostings(tx, balances)
-	errs = append(errs, accErrs...)
+	txResidual, autoCount, autoPosting, accDiags := accumulatePostings(tx, balances)
+	diags = append(diags, accDiags...)
 
 	// Second pass: if exactly one auto-posting is present AND
 	// exactly one currency has a non-zero residual, infer the
@@ -110,9 +110,9 @@ func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal)
 	// auto-postings, multi-currency residual) are owned by the
 	// validations plugin, and the balance plugin must stay silent.
 	if autoCount == 1 && autoPosting != nil {
-		errs = append(errs, inferAutoPosting(tx, autoPosting, txResidual, balances)...)
+		diags = append(diags, inferAutoPosting(tx, autoPosting, txResidual, balances)...)
 	}
-	return errs
+	return diags
 }
 
 // accumulatePostings walks tx.Postings, adding explicit posting
@@ -122,8 +122,8 @@ func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal)
 // posting so the caller can attempt inference. When autoCount is
 // greater than 1, the returned pointer refers to the last auto-posting
 // encountered and should not be used for inference.
-func accumulatePostings(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) (map[string]*apd.Decimal, int, *ast.Posting, []api.Error) {
-	var errs []api.Error
+func accumulatePostings(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) (map[string]*apd.Decimal, int, *ast.Posting, []ast.Diagnostic) {
+	var diags []ast.Diagnostic
 	txResidual := map[string]*apd.Decimal{}
 	autoCount := 0
 	var autoPosting *ast.Posting
@@ -142,7 +142,7 @@ func accumulatePostings(tx *ast.Transaction, balances map[balanceKey]*apd.Decima
 			balances[key] = cur
 		}
 		if _, err := apd.BaseContext.Add(cur, cur, &num); err != nil {
-			errs = append(errs, api.Error{
+			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeInternalError),
 				Span:    tx.Span,
 				Message: fmt.Sprintf("failed to update running balance: %v", err),
@@ -160,22 +160,22 @@ func accumulatePostings(tx *ast.Transaction, balances map[balanceKey]*apd.Decima
 			txResidual[p.Amount.Currency] = resid
 		}
 		if _, err := apd.BaseContext.Add(resid, resid, &num); err != nil {
-			errs = append(errs, api.Error{
+			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeInternalError),
 				Span:    tx.Span,
 				Message: fmt.Sprintf("failed to compute transaction residual: %v", err),
 			})
 		}
 	}
-	return txResidual, autoCount, autoPosting, errs
+	return txResidual, autoCount, autoPosting, diags
 }
 
 // inferAutoPosting applies the single-auto-posting inference rule:
 // if exactly one currency has a non-zero residual, add its negation
 // to the running balance under the auto-posting's account. Any
 // other shape is left untouched (diagnosed elsewhere).
-func inferAutoPosting(tx *ast.Transaction, autoPosting *ast.Posting, txResidual map[string]*apd.Decimal, balances map[balanceKey]*apd.Decimal) []api.Error {
-	var errs []api.Error
+func inferAutoPosting(tx *ast.Transaction, autoPosting *ast.Posting, txResidual map[string]*apd.Decimal, balances map[balanceKey]*apd.Decimal) []ast.Diagnostic {
+	var diags []ast.Diagnostic
 	var inferCur string
 	nonZeroCount := 0
 	for cur, resid := range txResidual {
@@ -189,12 +189,12 @@ func inferAutoPosting(tx *ast.Transaction, autoPosting *ast.Posting, txResidual 
 	}
 	inferred := new(apd.Decimal)
 	if _, err := apd.BaseContext.Neg(inferred, txResidual[inferCur]); err != nil {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeInternalError),
 			Span:    tx.Span,
 			Message: fmt.Sprintf("failed to infer auto-posting amount: %v", err),
 		})
-		return errs
+		return diags
 	}
 	key := balanceKey{Account: autoPosting.Account, Currency: inferCur}
 	cur, ok := balances[key]
@@ -203,13 +203,13 @@ func inferAutoPosting(tx *ast.Transaction, autoPosting *ast.Posting, txResidual 
 		balances[key] = cur
 	}
 	if _, err := apd.BaseContext.Add(cur, cur, inferred); err != nil {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeInternalError),
 			Span:    tx.Span,
 			Message: fmt.Sprintf("failed to update running balance: %v", err),
 		})
 	}
-	return errs
+	return diags
 }
 
 // checkBalance verifies a balance assertion against the running
@@ -217,8 +217,8 @@ func inferAutoPosting(tx *ast.Transaction, autoPosting *ast.Posting, txResidual 
 // expected - actual (mirroring upstream beancount). The tolerance
 // check operates on |diff|, so the sign of diff only affects error
 // message formatting.
-func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *options.Values) []api.Error {
-	var errs []api.Error
+func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *options.Values) []ast.Diagnostic {
+	var diags []ast.Diagnostic
 	key := balanceKey{Account: b.Account, Currency: b.Amount.Currency}
 	actual := balances[key]
 	if actual == nil {
@@ -230,24 +230,24 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *op
 
 	diff := new(apd.Decimal)
 	if _, err := apd.BaseContext.Sub(diff, expected, actual); err != nil {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeBalanceMismatch),
 			Span:    b.Span,
 			Message: fmt.Sprintf("failed to compute balance difference: %v", err),
 		})
-		return errs
+		return diags
 	}
 
 	var tol *apd.Decimal
 	if b.Tolerance != nil {
 		tol = new(apd.Decimal)
 		if _, err := apd.BaseContext.Abs(tol, b.Tolerance); err != nil {
-			errs = append(errs, api.Error{
+			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeBalanceMismatch),
 				Span:    b.Span,
 				Message: fmt.Sprintf("failed to normalize tolerance: %v", err),
 			})
-			return errs
+			return diags
 		}
 	} else {
 		tol = tolerance.ForAmount(opts, b.Amount)
@@ -255,15 +255,15 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *op
 
 	ok, err := withinTolerance(diff, tol)
 	if err != nil {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeBalanceMismatch),
 			Span:    b.Span,
 			Message: fmt.Sprintf("failed to evaluate balance tolerance: %v", err),
 		})
-		return errs
+		return diags
 	}
 	if !ok {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code: string(validation.CodeBalanceMismatch),
 			Span: b.Span,
 			Message: fmt.Sprintf(
@@ -276,7 +276,7 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *op
 			),
 		})
 	}
-	return errs
+	return diags
 }
 
 // withinTolerance reports whether |diff| <= tolerance.

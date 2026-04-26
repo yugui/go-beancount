@@ -57,18 +57,18 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, err
 	}
 
-	ignoreMap, cfgErrs, fatal := parseConfig(in.Config, in.Directive)
+	ignoreMap, cfgDiags, fatal := parseConfig(in.Config, in.Directive)
 	if fatal {
-		return api.Result{Errors: cfgErrs}, nil
+		return api.Result{Diagnostics: cfgDiags}, nil
 	}
 
 	if in.Directives == nil {
-		return api.Result{Errors: cfgErrs}, nil
+		return api.Result{Diagnostics: cfgDiags}, nil
 	}
 
 	declared, accountOccs, priceOccs := scan(in.Directives)
 
-	errs := cfgErrs
+	diags := cfgDiags
 	issued := map[string]struct{}{}
 	ignored := map[string]struct{}{}
 
@@ -83,7 +83,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 			ignored[occ.currency] = struct{}{}
 			continue
 		}
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    codeMissingCommodity,
 			Span:    spanOf(in.Directive),
 			Message: fmt.Sprintf("missing Commodity directive for %q in %q", occ.currency, occ.scope),
@@ -101,7 +101,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		if _, ok := ignored[occ.currency]; ok {
 			continue
 		}
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    codeMissingCommodity,
 			Span:    spanOf(in.Directive),
 			Message: fmt.Sprintf("missing Commodity directive for %q in %q", occ.currency, occ.scope),
@@ -109,7 +109,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		issued[occ.currency] = struct{}{}
 	}
 
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // scan walks the directive sequence once, collecting declared
@@ -185,19 +185,19 @@ type ignorePair struct {
 // compiled regex pairs. Upstream accepts a Python dict; we accept JSON
 // (see package godoc). The fatal bool signals that the configuration
 // was malformed enough that the plugin should not proceed.
-func parseConfig(cfg string, trigger *ast.Plugin) (pairs []ignorePair, errs []api.Error, fatal bool) {
+func parseConfig(cfg string, trigger *ast.Plugin) (pairs []ignorePair, diags []ast.Diagnostic, fatal bool) {
 	if cfg == "" {
 		return nil, nil, false
 	}
 
 	var raw map[string]string
 	if err := json.Unmarshal([]byte(cfg), &raw); err != nil {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    codeInvalidConfig,
 			Span:    spanOf(trigger),
 			Message: fmt.Sprintf("invalid check_commodity config: %v", err),
 		})
-		return nil, errs, true
+		return nil, diags, true
 	}
 
 	// Deterministic order so diagnostics are stable.
@@ -212,14 +212,14 @@ func parseConfig(cfg string, trigger *ast.Plugin) (pairs []ignorePair, errs []ap
 		accRe, accErr := compileAnchored(k)
 		curRe, curErr := compileAnchored(v)
 		if accErr != nil {
-			errs = append(errs, api.Error{
+			diags = append(diags, ast.Diagnostic{
 				Code:    codeInvalidRegexp,
 				Span:    spanOf(trigger),
 				Message: fmt.Sprintf("invalid account regexp %q: %v", k, accErr),
 			})
 		}
 		if curErr != nil {
-			errs = append(errs, api.Error{
+			diags = append(diags, ast.Diagnostic{
 				Code:    codeInvalidRegexp,
 				Span:    spanOf(trigger),
 				Message: fmt.Sprintf("invalid currency regexp %q: %v", v, curErr),
@@ -230,7 +230,7 @@ func parseConfig(cfg string, trigger *ast.Plugin) (pairs []ignorePair, errs []ap
 		}
 		pairs = append(pairs, ignorePair{scope: accRe, currency: curRe})
 	}
-	return pairs, errs, false
+	return pairs, diags, false
 }
 
 // compileAnchored compiles pat as a regex anchored at the start of the

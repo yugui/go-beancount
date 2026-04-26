@@ -45,9 +45,9 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	// future option keys may affect pad behavior. The parsed *Values
 	// itself is currently unused.
 	_, optErrs := options.FromRaw(in.Options)
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for _, perr := range optErrs {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    "invalid-option",
 			Span:    perr.Span,
 			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
@@ -55,7 +55,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 
 	if in.Directives == nil {
-		return api.Result{Errors: errs}, nil
+		return api.Result{Diagnostics: diags}, nil
 	}
 
 	// Running per-(account, currency) balance, accumulated from every
@@ -78,11 +78,11 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	for i, d := range in.Directives {
 		switch x := d.(type) {
 		case *ast.Transaction:
-			errs = append(errs, applyTransaction(x, balances)...)
+			diags = append(diags, applyTransaction(x, balances)...)
 		case *ast.Pad:
-			errs = append(errs, recordPad(x, i, pending)...)
+			diags = append(diags, recordPad(x, i, pending)...)
 		case *ast.Balance:
-			errs = append(errs, resolveBalance(x, pending, balances, synth)...)
+			diags = append(diags, resolveBalance(x, pending, balances, synth)...)
 		}
 	}
 
@@ -97,7 +97,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		slices.SortFunc(accounts, cmp.Compare[ast.Account])
 		for _, a := range accounts {
 			pp := pending[a]
-			errs = append(errs, api.Error{
+			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodePadUnresolved),
 				Span:    pp.dir.Span,
 				Message: fmt.Sprintf("pad directive for %s from %s was not followed by a matching balance assertion", pp.dir.Account, pp.dir.PadAccount),
@@ -109,7 +109,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	// Returning Directives=nil signals the runner to preserve the
 	// input verbatim, matching the documented convention.
 	if len(synth) == 0 {
-		return api.Result{Errors: errs}, nil
+		return api.Result{Diagnostics: diags}, nil
 	}
 
 	// Build the output slice: keep every original directive in place
@@ -126,7 +126,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 			out = append(out, tx)
 		}
 	}
-	return api.Result{Directives: out, Errors: errs}, nil
+	return api.Result{Directives: out, Diagnostics: diags}, nil
 }
 
 // init registers Apply in the global registry so that, once this
@@ -157,8 +157,8 @@ type pendingPad struct {
 // a single auto-posting when exactly one currency has a non-zero
 // residual. Duplicates the two-pass logic in the balance plugin; a
 // future refactor can extract a shared helper.
-func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) []api.Error {
-	var errs []api.Error
+func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) []ast.Diagnostic {
+	var diags []ast.Diagnostic
 	txResidual := map[string]*apd.Decimal{}
 	autoCount := 0
 	var autoPosting *ast.Posting
@@ -177,7 +177,7 @@ func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal)
 			txResidual[p.Amount.Currency] = resid
 		}
 		if _, err := apd.BaseContext.Add(resid, resid, &num); err != nil {
-			errs = append(errs, api.Error{
+			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeInternalError),
 				Span:    tx.Span,
 				Message: fmt.Sprintf("failed to compute transaction residual: %v", err),
@@ -196,34 +196,34 @@ func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal)
 		if nonZeroCount == 1 {
 			inferred := new(apd.Decimal)
 			if _, err := apd.BaseContext.Neg(inferred, txResidual[inferCur]); err != nil {
-				errs = append(errs, api.Error{
+				diags = append(diags, ast.Diagnostic{
 					Code:    string(validation.CodeInternalError),
 					Span:    tx.Span,
 					Message: fmt.Sprintf("failed to infer auto-posting amount: %v", err),
 				})
-				return errs
+				return diags
 			}
 			addToBalance(balances, autoPosting.Account, inferCur, inferred)
 		}
 	}
-	return errs
+	return diags
 }
 
 // recordPad registers p as the pending pad for its target account at
 // directive index i. If a previous unresolved pad exists for the same
 // account, it is evicted with a pad-unresolved diagnostic before being
 // replaced, matching upstream beancount's pad-visit semantics.
-func recordPad(p *ast.Pad, i int, pending map[ast.Account]*pendingPad) []api.Error {
-	var errs []api.Error
+func recordPad(p *ast.Pad, i int, pending map[ast.Account]*pendingPad) []ast.Diagnostic {
+	var diags []ast.Diagnostic
 	if prev, ok := pending[p.Account]; ok {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodePadUnresolved),
 			Span:    prev.dir.Span,
 			Message: fmt.Sprintf("pad directive for %s from %s was not resolved before another pad", prev.dir.Account, prev.dir.PadAccount),
 		})
 	}
 	pending[p.Account] = &pendingPad{dir: p, index: i}
-	return errs
+	return diags
 }
 
 // resolveBalance pairs b with the pending pad on b.Account, computes
@@ -232,8 +232,8 @@ func recordPad(p *ast.Pad, i int, pending map[ast.Account]*pendingPad) []api.Err
 // records the transaction in synth keyed by the pad's directive index,
 // and clears the pending entry. If no pad is pending for b.Account,
 // resolveBalance is a no-op.
-func resolveBalance(b *ast.Balance, pending map[ast.Account]*pendingPad, balances map[balanceKey]*apd.Decimal, synth map[int]*ast.Transaction) []api.Error {
-	var errs []api.Error
+func resolveBalance(b *ast.Balance, pending map[ast.Account]*pendingPad, balances map[balanceKey]*apd.Decimal, synth map[int]*ast.Transaction) []ast.Diagnostic {
+	var diags []ast.Diagnostic
 	pp, ok := pending[b.Account]
 	if !ok {
 		return nil
@@ -252,23 +252,23 @@ func resolveBalance(b *ast.Balance, pending map[ast.Account]*pendingPad, balance
 	expected := &expCopy
 	delta := new(apd.Decimal)
 	if _, err := apd.BaseContext.Sub(delta, expected, actual); err != nil {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeInternalError),
 			Span:    pp.dir.Span,
 			Message: fmt.Sprintf("failed to compute pad residual for %q: %v", pp.dir.Account, err),
 		})
 		delete(pending, b.Account)
-		return errs
+		return diags
 	}
 	neg := new(apd.Decimal)
 	if _, err := apd.BaseContext.Neg(neg, delta); err != nil {
-		errs = append(errs, api.Error{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeInternalError),
 			Span:    pp.dir.Span,
 			Message: fmt.Sprintf("failed to negate pad residual for %q: %v", pp.dir.Account, err),
 		})
 		delete(pending, b.Account)
-		return errs
+		return diags
 	}
 
 	// Apply the synthesized effect to the running balance so later
@@ -307,7 +307,7 @@ func resolveBalance(b *ast.Balance, pending map[ast.Account]*pendingPad, balance
 		},
 	}
 	delete(pending, b.Account)
-	return errs
+	return diags
 }
 
 // addToBalance mutates balances[(account, currency)] += delta,

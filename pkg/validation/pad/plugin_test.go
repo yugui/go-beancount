@@ -45,8 +45,8 @@ func TestPlugin_EmptyLedger(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("Result.Directives = %v, want nil (no change on empty ledger)", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -77,8 +77,8 @@ func TestPlugin_NoPads(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("Result.Directives = %v, want nil (no pads means no mutation)", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -105,8 +105,8 @@ func TestPlugin_ResolvedPad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 	if len(res.Directives) != 3 {
 		t.Fatalf("len(Result.Directives) = %d, want 3 (pad + synth txn + balance)", len(res.Directives))
@@ -175,10 +175,10 @@ func TestPlugin_UnresolvedPad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != string(validation.CodePadUnresolved) {
 		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodePadUnresolved))
 	}
@@ -222,10 +222,10 @@ func TestPlugin_ConsecutivePadsSameAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != string(validation.CodePadUnresolved) {
 		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodePadUnresolved))
 	}
@@ -286,8 +286,8 @@ func TestPlugin_MultiPads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 	if len(res.Directives) != 6 {
 		t.Fatalf("len(Result.Directives) = %d, want 6 (pad1, synth1, bal1, pad2, synth2, bal2)", len(res.Directives))
@@ -349,8 +349,8 @@ func TestPlugin_PadWithPriorTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 	if len(res.Directives) != 4 {
 		t.Fatalf("len(Result.Directives) = %d, want 4 (pad, synth, txn, bal)", len(res.Directives))
@@ -399,8 +399,8 @@ func TestPlugin_PadZeroAdjustment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 	if len(res.Directives) != 4 {
 		t.Fatalf("len(Result.Directives) = %d, want 4 (txn, pad, synth, bal)", len(res.Directives))
@@ -437,14 +437,14 @@ func TestPlugin_PadNotConsumedByDifferentAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if res.Errors[0].Code != string(validation.CodePadUnresolved) {
-		t.Errorf("Code = %q, want %q", res.Errors[0].Code, string(validation.CodePadUnresolved))
+	if res.Diagnostics[0].Code != string(validation.CodePadUnresolved) {
+		t.Errorf("Code = %q, want %q", res.Diagnostics[0].Code, string(validation.CodePadUnresolved))
 	}
-	if res.Errors[0].Span != padSpan {
-		t.Errorf("Span = %v, want %v", res.Errors[0].Span, padSpan)
+	if res.Diagnostics[0].Span != padSpan {
+		t.Errorf("Span = %v, want %v", res.Diagnostics[0].Span, padSpan)
 	}
 }
 
@@ -460,7 +460,7 @@ func TestPlugin_CanceledContext(t *testing.T) {
 }
 
 // TestPlugin_OptionsFromRawParseError confirms malformed options
-// surface as api.Error{Code: "invalid-option"}, matching the balance
+// surface as ast.Diagnostic{Code: "invalid-option"}, matching the balance
 // and validations plugins' contract.
 func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	in := api.Input{
@@ -472,10 +472,10 @@ func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != "invalid-option" {
 		t.Errorf("Code = %q, want %q", e.Code, "invalid-option")
 	}

@@ -82,19 +82,23 @@ func TestLoad_HappyPath(t *testing.T) {
 	}
 
 	// Assert the plugin registered under the expected name by dispatching
-	// through postproc.Apply. If the plugin's postproc.Register did not
-	// mutate the host's registry, Apply would emit plugin-not-registered.
+	// through postproc.Apply. The runner appends plugin diagnostics to
+	// the ledger; if the plugin's postproc.Register did not mutate the
+	// host's registry, the ledger would carry plugin-not-registered
+	// instead of the plugin's sentinel.
 	const pluginName = "github.com/yugui/go-beancount/pkg/ext/goplug/testdata/ok"
 	ledger := &ast.Ledger{}
 	ledger.InsertAll([]ast.Directive{&ast.Plugin{Name: pluginName}})
 
-	errs := postproc.Apply(context.Background(), ledger)
-	if len(errs) != 1 {
-		t.Fatalf("postproc.Apply after goplug.Load(%q) returned %d errors, want 1 (the plugin's sentinel); errs = %v", path, len(errs), errs)
+	if err := postproc.Apply(context.Background(), ledger); err != nil {
+		t.Fatalf("postproc.Apply after goplug.Load(%q) = %v, want nil", path, err)
 	}
-	if errs[0].Code != "ok.sentinel" {
-		t.Errorf("postproc.Apply after goplug.Load(%q) error code = %q, want %q (plugin did not run with the host's registry?)",
-			path, errs[0].Code, "ok.sentinel")
+	if len(ledger.Diagnostics) != 1 {
+		t.Fatalf("postproc.Apply after goplug.Load(%q) wrote %d diagnostics, want 1 (the plugin's sentinel); diags = %v", path, len(ledger.Diagnostics), ledger.Diagnostics)
+	}
+	if ledger.Diagnostics[0].Code != "ok.sentinel" {
+		t.Errorf("postproc.Apply after goplug.Load(%q) diagnostic code = %q, want %q (plugin did not run with the host's registry?)",
+			path, ledger.Diagnostics[0].Code, "ok.sentinel")
 	}
 }
 
@@ -153,18 +157,21 @@ func TestLoad_Rejections(t *testing.T) {
 // checking that an unknown directive produces plugin-not-registered.
 // We can't inspect the registry map directly from an external test
 // package without broadening the public surface, so we probe through
-// postproc.Apply instead.
+// postproc.Apply and inspect the resulting ledger.Diagnostics.
 func assertRegistryEmpty(t *testing.T) {
 	t.Helper()
 	const probeName = "goplug.test/probe"
 	ledger := &ast.Ledger{}
 	ledger.InsertAll([]ast.Directive{&ast.Plugin{Name: probeName}})
-	errs := postproc.Apply(context.Background(), ledger)
-	if len(errs) != 1 {
-		t.Errorf("postproc.Apply(plugin %q) after failed goplug.Load: returned %d errors, want 1 (plugin-not-registered); errs=%v", probeName, len(errs), errs)
+	if err := postproc.Apply(context.Background(), ledger); err != nil {
+		t.Errorf("postproc.Apply(plugin %q) after failed goplug.Load: err = %v, want nil", probeName, err)
 		return
 	}
-	if errs[0].Code != "plugin-not-registered" {
-		t.Errorf("postproc.Apply(plugin %q) after failed goplug.Load: error code = %q, want %q", probeName, errs[0].Code, "plugin-not-registered")
+	if len(ledger.Diagnostics) != 1 {
+		t.Errorf("postproc.Apply(plugin %q) after failed goplug.Load: wrote %d diagnostics, want 1 (plugin-not-registered); diags=%v", probeName, len(ledger.Diagnostics), ledger.Diagnostics)
+		return
+	}
+	if ledger.Diagnostics[0].Code != "plugin-not-registered" {
+		t.Errorf("postproc.Apply(plugin %q) after failed goplug.Load: diagnostic code = %q, want %q", probeName, ledger.Diagnostics[0].Code, "plugin-not-registered")
 	}
 }
