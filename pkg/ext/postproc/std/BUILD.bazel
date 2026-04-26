@@ -12,6 +12,7 @@ go_library(
         "//pkg/ext/postproc/std/checkdrained",
         "//pkg/ext/postproc/std/closetree",
         "//pkg/ext/postproc/std/coherentcost",
+        "//pkg/ext/postproc/std/excludetag",
         "//pkg/ext/postproc/std/implicitprices",
         "//pkg/ext/postproc/std/leafonly",
         "//pkg/ext/postproc/std/noduplicates",
