@@ -27,4 +27,5 @@ import (
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/checkcommodity"
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/checkdrained"
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/leafonly"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/onecommodity"
 )
