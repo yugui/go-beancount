@@ -31,5 +31,6 @@ import (
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/noduplicates"
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/nounused"
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/onecommodity"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/sellgains"
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std/uniqueprices"
 )
