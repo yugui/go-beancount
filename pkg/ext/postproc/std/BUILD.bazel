@@ -11,6 +11,7 @@ go_library(
         "//pkg/ext/postproc/std/checkcommodity",
         "//pkg/ext/postproc/std/checkdrained",
         "//pkg/ext/postproc/std/leafonly",
+        "//pkg/ext/postproc/std/noduplicates",
         "//pkg/ext/postproc/std/nounused",
         "//pkg/ext/postproc/std/onecommodity",
         "//pkg/ext/postproc/std/uniqueprices",
