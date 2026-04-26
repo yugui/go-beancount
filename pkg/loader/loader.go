@@ -46,15 +46,15 @@ import (
 // preBuiltins are built-in plugins applied before directive-specified plugins
 // in default mode: document directory scanning and file-existence verification.
 var preBuiltins = []api.Plugin{
-	document.Plugin,
+	api.PluginFunc(document.Apply),
 }
 
 // postBuiltins are built-in plugins applied after directive-specified plugins
 // in default mode, in the order: pad → balance → validations.
 var postBuiltins = []api.Plugin{
-	pad.Plugin,
-	balance.Plugin,
-	validations.Plugin,
+	api.PluginFunc(pad.Apply),
+	api.PluginFunc(balance.Apply),
+	api.PluginFunc(validations.Apply),
 }
 
 // Load parses src via [ast.Load] and applies the plugin pipeline.

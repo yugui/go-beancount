@@ -15,19 +15,15 @@ import (
 // the synthesized Balance's date. Upstream uses datetime.timedelta(days=1).
 const oneDay = 24 * time.Hour
 
-// Plugin synthesizes zero-balance assertions one day after every
+func init() {
+	postproc.Register("beancount.plugins.check_drained", api.PluginFunc(apply))
+	postproc.Register("github.com/yugui/go-beancount/pkg/ext/postproc/std/checkdrained", api.PluginFunc(apply))
+}
+
+// apply synthesizes zero-balance assertions one day after every
 // close of a balance-sheet account, covering each currency the
 // account has held. See the package godoc for the full behavior and
 // upstream attribution.
-var Plugin api.PluginFunc = apply
-
-func init() {
-	postproc.Register("beancount.plugins.check_drained", Plugin)
-	postproc.Register("github.com/yugui/go-beancount/pkg/ext/postproc/std/checkdrained", Plugin)
-}
-
-// apply synthesizes zero-balance assertions after every close of a
-// balance-sheet account. See the package godoc for full behavior.
 func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err

@@ -21,14 +21,16 @@
 //     (open/close accounting, active-account enforcement, allowed-currency
 //     constraints, transaction balancing).
 //
-// Each subpackage exports a postproc/api.Plugin value that consumes
-// the current ledger snapshot and emits api.Error diagnostics.
+// Each subpackage exposes an Apply function that consumes the current
+// ledger snapshot and emits api.Error diagnostics. Importing a subpackage
+// also registers it in the global postproc registry under its canonical
+// name, so a beancount `plugin "..."` directive can activate it.
 //
 // The simplest way to load and validate a ledger is via pkg/loader:
 //
 //	ledger, errs, err := loader.LoadFile(ctx, "main.beancount")
 //
-// For fine-grained control, wire the plugins manually in order
+// For fine-grained control, wire the Apply functions manually in order
 // (pad → balance → validations), committing any non-nil Result.Directives
 // with [ast.Ledger.ReplaceAll] so later plugins observe earlier rewrites:
 //
@@ -36,8 +38,10 @@
 //	opts := options.BuildRaw(ledger)
 //
 //	var errs []api.Error
-//	for _, p := range []api.Plugin{pad.Plugin, balance.Plugin, validations.Plugin} {
-//		res, err := p.Apply(ctx, api.Input{
+//	for _, apply := range []func(context.Context, api.Input) (api.Result, error){
+//		pad.Apply, balance.Apply, validations.Apply,
+//	} {
+//		res, err := apply(ctx, api.Input{
 //			Directives: ledger.All(),
 //			Options:    opts,
 //		})

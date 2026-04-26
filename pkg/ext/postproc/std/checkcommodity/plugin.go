@@ -33,17 +33,11 @@ const (
 	codeInvalidRegexp    = "invalid-regexp"
 )
 
-// Plugin reports a missing-commodity diagnostic for every currency
-// used in a directive without a matching Commodity declaration. See
-// the package godoc for the full behavior, JSON configuration format,
-// and upstream attribution.
-var Plugin api.PluginFunc = apply
-
 func init() {
 	// Dual registration: upstream's Python module path and this
 	// package's Go import path. See doc.go for the rationale.
-	postproc.Register("beancount.plugins.check_commodity", Plugin)
-	postproc.Register("github.com/yugui/go-beancount/pkg/ext/postproc/std/checkcommodity", Plugin)
+	postproc.Register("beancount.plugins.check_commodity", api.PluginFunc(apply))
+	postproc.Register("github.com/yugui/go-beancount/pkg/ext/postproc/std/checkcommodity", api.PluginFunc(apply))
 }
 
 // occurrence pairs an account-or-sentinel with a currency. It is the
@@ -54,7 +48,10 @@ type occurrence struct {
 	currency string
 }
 
-// apply runs the check. See package godoc for behavior and deviations.
+// apply reports a missing-commodity diagnostic for every currency
+// used in a directive without a matching Commodity declaration. See
+// the package godoc for the full behavior, JSON configuration format,
+// and upstream attribution.
 func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err

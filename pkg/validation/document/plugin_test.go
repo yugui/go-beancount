@@ -28,7 +28,7 @@ func date(year, month, day int) time.Time {
 }
 
 func TestPlugin_EmptyLedger(t *testing.T) {
-	res, err := document.Plugin(context.Background(), api.Input{})
+	res, err := document.Apply(context.Background(), api.Input{})
 	if err != nil {
 		t.Fatalf("Plugin() error = %v, want nil", err)
 	}
@@ -43,7 +43,7 @@ func TestPlugin_EmptyLedger(t *testing.T) {
 func TestPlugin_CanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := document.Plugin(ctx, api.Input{})
+	_, err := document.Apply(ctx, api.Input{})
 	if err == nil {
 		t.Fatal("Plugin() with canceled context: got nil error, want non-nil")
 	}
@@ -51,7 +51,7 @@ func TestPlugin_CanceledContext(t *testing.T) {
 
 func TestPlugin_NoDocumentDirectives(t *testing.T) {
 	open := &ast.Open{Date: date(2024, 1, 1), Account: "Assets:Cash"}
-	res, err := document.Plugin(context.Background(), api.Input{
+	res, err := document.Apply(context.Background(), api.Input{
 		Directives: seqOf([]ast.Directive{open}),
 	})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestPlugin_DocumentExists(t *testing.T) {
 	}
 
 	doc := &ast.Document{Date: date(2024, 1, 5), Account: "Assets:Cash", Path: file}
-	res, err := document.Plugin(context.Background(), api.Input{
+	res, err := document.Apply(context.Background(), api.Input{
 		Directives: seqOf([]ast.Directive{doc}),
 	})
 	if err != nil {
@@ -97,7 +97,7 @@ func TestPlugin_DocumentMissing(t *testing.T) {
 		Account: "Assets:Cash",
 		Path:    "/nonexistent/path/2024-01-05 receipt.pdf",
 	}
-	res, err := document.Plugin(context.Background(), api.Input{
+	res, err := document.Apply(context.Background(), api.Input{
 		Directives: seqOf([]ast.Directive{doc}),
 	})
 	if err != nil {
@@ -130,7 +130,7 @@ func TestPlugin_RelativePathAbsoluteSpan(t *testing.T) {
 		Account: "Assets:Cash",
 		Path:    filename,
 	}
-	res, err := document.Plugin(context.Background(), api.Input{
+	res, err := document.Apply(context.Background(), api.Input{
 		Directives: seqOf([]ast.Directive{doc}),
 	})
 	if err != nil {
@@ -160,7 +160,7 @@ func TestPlugin_MultipleDocuments(t *testing.T) {
 		Path:    "/nonexistent/2024-02-01 missing.pdf",
 	}
 
-	res, err := document.Plugin(context.Background(), api.Input{
+	res, err := document.Apply(context.Background(), api.Input{
 		Directives: seqOf([]ast.Directive{docOK, docMissing}),
 	})
 	if err != nil {

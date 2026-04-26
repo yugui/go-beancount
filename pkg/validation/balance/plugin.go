@@ -29,10 +29,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
 )
 
-// Plugin runs the balance-assertion check as a postproc plugin. It
+// Apply runs the balance-assertion check as a postproc plugin. It
 // does not mutate the ledger; the function returns a Result with a nil
 // Directives field so the runner preserves the input verbatim.
-var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result, error) {
+func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
 	}
@@ -56,11 +56,11 @@ var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result,
 	return api.Result{Errors: errs}, nil
 }
 
-// init registers Plugin in the global registry so that, once this
+// init registers Apply in the global registry so that, once this
 // package is imported, a beancount `plugin "..."` directive can
 // activate it by name.
 func init() {
-	postproc.Register("github.com/yugui/go-beancount/pkg/validation/balance", Plugin)
+	postproc.Register("github.com/yugui/go-beancount/pkg/validation/balance", api.PluginFunc(Apply))
 }
 
 // balanceKey identifies a running balance bucket by (account, currency).

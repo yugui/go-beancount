@@ -17,7 +17,7 @@
 //	// current ledger contents via api.Input and committing any returned
 //	// Directives with ast.Ledger.ReplaceAll between calls. See
 //	// pkg/validation/pad, pkg/validation/balance, and
-//	// pkg/validation/validations for the individual api.Plugin types.
+//	// pkg/validation/validations for their Apply functions.
 //
 // Plugin names follow Go fully-qualified package path convention (e.g.
 // "github.com/yugui/go-beancount/plugins/auto_accounts") to avoid

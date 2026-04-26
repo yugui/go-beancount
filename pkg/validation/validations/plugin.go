@@ -18,13 +18,13 @@ import (
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
 
-// Plugin runs the validations-layer checks against the input ledger:
+// Apply runs the validations-layer checks against the input ledger:
 // open/close consistency, postings against active accounts, allowed
 // currency constraints, and transaction balancing. It never mutates
 // the ledger; it returns a Result with a nil Directives field so the
 // runner preserves the input verbatim, and reports issues only via
 // the Errors slice.
-var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result, error) {
+func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
 	}
@@ -68,9 +68,9 @@ var Plugin api.PluginFunc = func(ctx context.Context, in api.Input) (api.Result,
 	return api.Result{Errors: errs}, nil
 }
 
-// init registers Plugin in the global registry so that, once this
+// init registers Apply in the global registry so that, once this
 // package is imported, a beancount `plugin "..."` directive can
 // activate it by name.
 func init() {
-	postproc.Register("github.com/yugui/go-beancount/pkg/validation/validations", Plugin)
+	postproc.Register("github.com/yugui/go-beancount/pkg/validation/validations", api.PluginFunc(Apply))
 }

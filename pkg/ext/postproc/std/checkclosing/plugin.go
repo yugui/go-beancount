@@ -20,19 +20,15 @@ const closingKey = "closing"
 // Balance's date.
 const oneDay = 24 * time.Hour
 
-// Plugin expands a closing=TRUE posting-metadata entry into a
+func init() {
+	postproc.Register("beancount.plugins.check_closing", api.PluginFunc(apply))
+	postproc.Register("github.com/yugui/go-beancount/pkg/ext/postproc/std/checkclosing", api.PluginFunc(apply))
+}
+
+// apply expands a closing=TRUE posting-metadata entry into a
 // zero-balance assertion dated one day after the transaction,
 // stripping the metadata key on a cloned posting. See the package
 // godoc for accepted metadata forms and upstream attribution.
-var Plugin api.PluginFunc = apply
-
-func init() {
-	postproc.Register("beancount.plugins.check_closing", Plugin)
-	postproc.Register("github.com/yugui/go-beancount/pkg/ext/postproc/std/checkclosing", Plugin)
-}
-
-// apply expands closing metadata into balance checks. See the package
-// godoc for the full behavior.
 func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err

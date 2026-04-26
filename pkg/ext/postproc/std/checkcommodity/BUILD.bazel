@@ -18,8 +18,8 @@ go_library(
 go_test(
     name = "checkcommodity_test",
     srcs = ["plugin_test.go"],
+    embed = [":checkcommodity"],
     deps = [
-        ":checkcommodity",
         "//pkg/ast",
         "//pkg/ext/postproc/api",
         "@com_github_cockroachdb_apd_v3//:apd",
