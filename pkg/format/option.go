@@ -6,26 +6,39 @@ import "github.com/yugui/go-beancount/internal/formatopt"
 // Option configures formatting behavior.
 type Option = func(*formatopt.Options)
 
+// WithCommaGrouping enables thousands separators in formatted numbers.
 func WithCommaGrouping(v bool) Option {
 	return func(o *formatopt.Options) { o.CommaGrouping = v }
 }
 
+// WithAlignAmounts enables column alignment of posting amounts.
 func WithAlignAmounts(v bool) Option {
 	return func(o *formatopt.Options) { o.AlignAmounts = v }
 }
 
+// WithAmountColumn sets the right-edge column at which posting amounts align
+// when [WithAlignAmounts] is true.
 func WithAmountColumn(col int) Option {
 	return func(o *formatopt.Options) { o.AmountColumn = col }
 }
 
+// WithEastAsianAmbiguousWidth sets the display width assigned to East Asian
+// Ambiguous characters when computing visual columns. Use 2 for terminals
+// that render them as full-width and 1 for half-width.
 func WithEastAsianAmbiguousWidth(w int) Option {
 	return func(o *formatopt.Options) { o.EastAsianAmbiguousWidth = w }
 }
 
+// WithIndentWidth sets the number of spaces per indent level (e.g. for
+// posting indentation under a transaction).
 func WithIndentWidth(w int) Option {
 	return func(o *formatopt.Options) { o.IndentWidth = w }
 }
 
+// WithBlankLinesBetweenDirectives sets the number of blank lines retained
+// between adjacent directives when normalizing whitespace. See also
+// [WithInsertBlankLinesBetweenDirectives], which controls whether new blank
+// lines are inserted where none exist.
 func WithBlankLinesBetweenDirectives(n int) Option {
 	return func(o *formatopt.Options) { o.BlankLinesBetweenDirectives = n }
 }

@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -114,11 +115,15 @@ func atomicWrite(path string, data []byte) error {
 	}
 	tmpPath := f.Name()
 
-	// Ensure cleanup on failure.
+	// Ensure cleanup on failure. The cleanup is best-effort: if it fails we
+	// surface the leftover temp file via the logger rather than masking the
+	// original failure.
 	success := false
 	defer func() {
 		if !success {
-			os.Remove(tmpPath)
+			if err := os.Remove(tmpPath); err != nil && !os.IsNotExist(err) {
+				log.Printf("beanfmt: removing temp file %q: %v", tmpPath, err)
+			}
 		}
 	}()
 
@@ -130,9 +135,13 @@ func atomicWrite(path string, data []byte) error {
 		return fmt.Errorf("closing temp file: %w", err)
 	}
 
-	// Preserve original file permissions if possible.
+	// Preserve original file permissions if possible. A chmod failure is not
+	// fatal — the output is still valid — but we log it so silent permission
+	// drift is observable.
 	if info, err := os.Stat(path); err == nil {
-		os.Chmod(tmpPath, info.Mode().Perm())
+		if err := os.Chmod(tmpPath, info.Mode().Perm()); err != nil {
+			log.Printf("beanfmt: preserving permissions on %q: %v", path, err)
+		}
 	}
 
 	if err := os.Rename(tmpPath, path); err != nil {
