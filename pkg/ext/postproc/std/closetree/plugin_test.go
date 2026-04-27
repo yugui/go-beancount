@@ -6,22 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/apd/v3"
 	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
-
-// astCmpOpts is the standard option set for comparing AST values
-// produced by the plugin. apd.Decimal carries an internal
-// representation (BigInt with unexported fields) that cmp.Diff cannot
-// inspect by default, and time.Time has unexported monotonic-clock
-// state — both need a custom comparer that defers to the type's own
-// equality semantics.
-var astCmpOpts = cmp.Options{
-	cmp.Comparer(func(x, y apd.Decimal) bool { return x.Cmp(&y) == 0 }),
-	cmp.Comparer(func(x, y time.Time) bool { return x.Equal(y) }),
-}
 
 func seqOf(dirs []ast.Directive) iter.Seq2[int, ast.Directive] {
 	return func(yield func(int, ast.Directive) bool) {
