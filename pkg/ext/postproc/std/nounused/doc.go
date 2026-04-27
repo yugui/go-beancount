@@ -25,6 +25,35 @@
 // the runner makes no change to the ledger, mirroring upstream's
 // behavior of returning the entries unchanged.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// registered name works:
+//
+//	plugin "beancount.plugins.nounused"
+//
+// or, equivalently, using the Go import path:
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/nounused"
+//
+// Given a ledger with an Open that no later directive references:
+//
+//	plugin "beancount.plugins.nounused"
+//
+//	2024-01-01 open Assets:Cash
+//	2024-01-01 open Assets:Stale
+//
+//	2024-01-15 * "Coffee"
+//	  Assets:Cash       -5.00 USD
+//	  Expenses:Coffee    5.00 USD
+//
+// the plugin emits a diagnostic of the form:
+//
+//	[unused-account] Unused account 'Assets:Stale'
+//
+// anchored at the offending Open directive. The fix is to delete the
+// stale Open or to use the account.
+//
 // # What counts as a use
 //
 // To match upstream's `getters.get_entry_accounts`, the directive types

@@ -36,6 +36,34 @@
 // the runner makes no change to the ledger, mirroring upstream's
 // behavior of returning the entries unchanged.
 //
+// # Usage
+//
+// Activate the plugin with no Config to check every account:
+//
+//	plugin "beancount.plugins.onecommodity"
+//
+// Pass a regular expression as the Config to scope the check to a
+// subset of accounts — only accounts whose name matches the regex (at
+// the start of the name, since upstream's `re.match` is anchored) are
+// considered. To check only Asset accounts, for example:
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/onecommodity" "Assets:.*"
+//
+// Either registered name accepts a Config; pick whichever matches your
+// ledger's convention. Per-account opt-out is available via metadata
+// on the Open directive — the metadata key is `onecommodity` and the
+// value is `FALSE`:
+//
+//	2024-01-01 open Assets:MultiCurrency
+//	  onecommodity: FALSE
+//
+// A typical diagnostic looks like:
+//
+//	[multi-commodity-account] More than one currency in account
+//	'Assets:Cash': EUR, USD
+//
+// anchored at the offending account's Open directive.
+//
 // # Opt-out
 //
 // An account is excluded from the check when any of the following

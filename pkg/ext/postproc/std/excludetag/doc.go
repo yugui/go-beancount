@@ -37,6 +37,38 @@
 // no-change signal honoured by the runner. Input directives are never
 // mutated.
 //
+// # Usage
+//
+// Activate the plugin with no Config to use the upstream-default tag
+// "virtual":
+//
+//	plugin "beancount.plugins.exclude_tag"
+//
+// Activate with a Config string to filter on a different tag — pass
+// the bare name without the leading `#`:
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/excludetag" "rehearsal"
+//
+// Either registered name accepts a Config; pick whichever matches your
+// ledger's convention. Given the input
+//
+//	plugin "beancount.plugins.exclude_tag"
+//
+//	2024-01-15 * "Coffee" #virtual
+//	  Assets:Cash       -5.00 USD
+//	  Expenses:Coffee    5.00 USD
+//
+//	2024-01-16 * "Lunch"
+//	  Assets:Cash       -12.00 USD
+//	  Expenses:Food     12.00 USD
+//
+// the plugin drops the first transaction (it carries `#virtual`) and
+// passes the second through, so the effective directive stream is:
+//
+//	2024-01-16 * "Lunch"
+//	  Assets:Cash       -12.00 USD
+//	  Expenses:Food     12.00 USD
+//
 // # Deviation: configurable tag
 //
 // Upstream's plugin hard-codes the tag at module scope

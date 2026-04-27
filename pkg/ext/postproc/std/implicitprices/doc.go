@@ -38,6 +38,39 @@
 // to a fresh slice containing all original directives followed by the
 // synthesized Prices. Input directives are never mutated.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// registered name works — the upstream Python module path for ledger
+// portability, or the Go import path:
+//
+//	plugin "beancount.plugins.implicit_prices"
+//
+// or
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/implicitprices"
+//
+// A buy with a per-unit cost annotation produces a synthesized Price.
+// Given the ledger
+//
+//	plugin "beancount.plugins.implicit_prices"
+//
+//	2024-01-02 * "Buy"
+//	  Assets:Inv          10 AAPL {100.00 USD}
+//	  Assets:Cash    -1000.00 USD
+//
+// the plugin appends one Price directive on the same date describing
+// the observed rate, so the effective directive stream becomes:
+//
+//	2024-01-02 * "Buy"
+//	  Assets:Inv          10 AAPL {100.00 USD}
+//	  Assets:Cash    -1000.00 USD
+//	2024-01-02 price AAPL  100.00 USD
+//
+// Explicit `@ price` and `@@ total-price` annotations on a posting are
+// honoured the same way (they take precedence over a cost annotation
+// when both appear).
+//
 // # Output ordering
 //
 // Synthesized Prices are appended to the output slice immediately after

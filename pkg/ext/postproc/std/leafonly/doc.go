@@ -28,6 +28,35 @@
 // the runner makes no change to the ledger, mirroring upstream's
 // behavior of returning the entries unchanged.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// registered name works:
+//
+//	plugin "beancount.plugins.leafonly"
+//
+// or, equivalently, using the Go import path:
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/leafonly"
+//
+// Given a ledger that opens both a parent and a child account and then
+// posts to the parent
+//
+//	plugin "beancount.plugins.leafonly"
+//
+//	2024-01-01 open Assets:Cash
+//	2024-01-01 open Assets:Cash:USD
+//	2024-01-15 * "Coffee"
+//	  Assets:Cash       -5.00 USD
+//	  Expenses:Coffee    5.00 USD
+//
+// the plugin emits a diagnostic of the form:
+//
+//	[non-leaf-account] Non-leaf account 'Assets:Cash' has postings on it
+//
+// anchored at the offending posting's Span. The fix is to post to the
+// leaf (`Assets:Cash:USD`) instead of the parent.
+//
 // # Sources of account references
 //
 // To match upstream's `realization.realize` (which is what populates
