@@ -47,6 +47,39 @@
 // then by Commodity, so the output is stable across runs regardless of
 // Go's map iteration randomness.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// registered name works:
+//
+//	plugin "beancount.plugins.coherent_cost"
+//
+// or, equivalently, using the Go import path:
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/coherentcost"
+//
+// A ledger that books AAPL into the same account both at-cost and
+// without-cost trips the diagnostic:
+//
+//	plugin "beancount.plugins.coherent_cost"
+//
+//	2024-01-01 open Assets:Inv
+//	2024-01-02 * "Buy at cost"
+//	  Assets:Inv          10 AAPL {150.00 USD}
+//	  Assets:Cash     -1500.00 USD
+//	2024-01-03 * "Receive without cost"
+//	  Assets:Inv           5 AAPL
+//	  Income:Gift        -5 AAPL
+//
+// emits a diagnostic of the form:
+//
+//	[incoherent-cost] Account 'Assets:Inv' holds 'AAPL' both with and
+//	without a cost
+//
+// anchored at the `2024-01-01 open Assets:Inv` directive — the typical
+// fix is on that Open, either via a tighter booking method or by
+// splitting the account into separate at-cost and not-at-cost children.
+//
 // # Deviations from upstream
 //
 //   - Upstream keys observations by Currency alone (a single global

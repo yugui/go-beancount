@@ -49,6 +49,39 @@
 // final, user-visible ordering matches whatever the canonical sort
 // dictates regardless of this in-pass placement.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// registered name works — the upstream Python module path for ledger
+// portability, or the Go import path:
+//
+//	plugin "beancount.plugins.close_tree"
+//
+// or
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/closetree"
+//
+// A single user-authored Close on a parent account closes the entire
+// subtree. Given the ledger fragment
+//
+//	plugin "beancount.plugins.close_tree"
+//
+//	2020-01-01 open Assets:Brokerage:Cash
+//	2020-01-01 open Assets:Brokerage:Stocks:AAPL
+//	2020-01-01 open Assets:Brokerage:Stocks:GOOG
+//	2024-12-31 close Assets:Brokerage
+//
+// the plugin synthesizes Close directives for every descendant still
+// open on the close date, so the effective directive stream becomes:
+//
+//	2020-01-01 open Assets:Brokerage:Cash
+//	2020-01-01 open Assets:Brokerage:Stocks:AAPL
+//	2020-01-01 open Assets:Brokerage:Stocks:GOOG
+//	2024-12-31 close Assets:Brokerage
+//	2024-12-31 close Assets:Brokerage:Cash
+//	2024-12-31 close Assets:Brokerage:Stocks:AAPL
+//	2024-12-31 close Assets:Brokerage:Stocks:GOOG
+//
 // # Deviation: component-aware ancestry
 //
 // Upstream identifies descendants via raw string prefix

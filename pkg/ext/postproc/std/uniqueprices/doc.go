@@ -40,6 +40,37 @@
 // the runner makes no change to the ledger, mirroring upstream's
 // behavior of returning the entries unchanged.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// registered name works — the upstream Python module path keeps the
+// ledger portable, while the Go import path makes the dependency
+// explicit:
+//
+//	plugin "beancount.plugins.unique_prices"
+//
+// or
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/uniqueprices"
+//
+// Two Price directives on the same date for the same commodity pair
+// with disagreeing values trip the diagnostic. Given
+//
+//	plugin "beancount.plugins.unique_prices"
+//
+//	2024-01-01 price HOOL  100.00 USD
+//	2024-01-01 price HOOL   99.00 USD
+//
+// the plugin emits one diagnostic on the second directive of the form:
+//
+//	[duplicate-price] Disagreeing price for HOOL/USD on 2024-01-01:
+//	100.00 vs 99.00
+//
+// anchored at the second Price directive — the actionable fix is to
+// remove or correct it. A second Price with the same value (e.g.
+// `2024-01-01 price HOOL 100.00 USD`) is a permitted duplicate and
+// emits nothing.
+//
 // # Diagnostic anchor
 //
 // Each diagnostic's Span is anchored at the offending Price

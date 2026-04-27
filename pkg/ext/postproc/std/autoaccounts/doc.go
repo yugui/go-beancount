@@ -50,6 +50,37 @@
 // directives that first reference each account on each shared day, and
 // in canonical chronological order across days.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// of the two registered names works — pick whichever matches your
+// ledger's convention. Using the upstream name keeps a ledger portable
+// between Python beancount and go-beancount:
+//
+//	plugin "beancount.plugins.auto_accounts"
+//
+// Using the Go import path makes the dependency on go-beancount
+// explicit:
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/autoaccounts"
+//
+// Given a ledger that posts to accounts without opening them:
+//
+//	plugin "beancount.plugins.auto_accounts"
+//
+//	2024-01-15 * "Coffee"
+//	  Assets:Cash       -5.00 USD
+//	  Expenses:Coffee    5.00 USD
+//
+// the plugin synthesizes the two missing Opens at the earliest date
+// each account is referenced, so the effective directive stream becomes:
+//
+//	2024-01-15 open Assets:Cash
+//	2024-01-15 open Expenses:Coffee
+//	2024-01-15 * "Coffee"
+//	  Assets:Cash       -5.00 USD
+//	  Expenses:Coffee    5.00 USD
+//
 // # Registered names
 //
 // The plugin registers under two names:

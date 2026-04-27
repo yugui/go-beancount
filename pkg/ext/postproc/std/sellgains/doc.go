@@ -42,6 +42,41 @@
 // runner makes no change to the ledger, mirroring upstream's behavior
 // of returning entries unchanged.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// registered name works:
+//
+//	plugin "beancount.plugins.sellgains"
+//
+// or, equivalently, using the Go import path:
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/sellgains"
+//
+// A sale whose cash proceeds disagree with units × price beyond the
+// inferred tolerance trips the diagnostic. Given
+//
+//	plugin "beancount.plugins.sellgains"
+//
+//	2024-03-01 * "Sell"
+//	  Assets:Inv          -10 AAPL {100.00 USD} @ 110.00 USD
+//	  Assets:Cash     1050.00 USD
+//	  Income:PnL
+//
+// the price side is `-10 × 110.00 = -1100.00 USD`, the proceeds side
+// (Income excluded) is `1050.00 USD`, the residual is `50.00 USD`,
+// well outside the inferred tolerance for two-decimal USD (0.01), so
+// the plugin emits:
+//
+//	[invalid-sell-gains] Invalid price vs. proceeds for 2024-03-01:
+//	USD: -1100.00 vs 1050.00 (residual 50.00, tolerance 0.01)
+//
+// anchored at the offending transaction. The tolerance is inferred
+// per-currency from the precision of the postings in that currency
+// (see "Tolerance" below); a `1050.005 USD` cash leg in the example
+// above would tighten the tolerance and still flag, while a
+// `1100.00 USD` cash leg balances exactly and emits nothing.
+//
 // # Accounts considered "proceeds"
 //
 // "Proceeds" — the non-Income side of the equation — covers postings

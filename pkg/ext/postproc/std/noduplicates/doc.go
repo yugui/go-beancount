@@ -26,6 +26,39 @@
 // no change to the ledger, mirroring upstream's behavior of returning
 // the entries unchanged.
 //
+// # Usage
+//
+// The plugin takes no Config string; activation alone is enough. Either
+// registered name works:
+//
+//	plugin "beancount.plugins.noduplicates"
+//
+// or, equivalently, using the Go import path:
+//
+//	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/std/noduplicates"
+//
+// Given two transactions on the same date posting the same amounts to
+// the same accounts (the canonical "imported the same bank export
+// twice" shape):
+//
+//	plugin "beancount.plugins.noduplicates"
+//
+//	2024-01-15 * "ATM withdrawal"
+//	  Assets:Cash        100.00 USD
+//	  Assets:Checking   -100.00 USD
+//
+//	2024-01-15 * "ATM WITHDRAWAL"
+//	  Assets:Cash        100.00 USD
+//	  Assets:Checking   -100.00 USD
+//
+// the plugin emits a diagnostic on the second occurrence of the form:
+//
+//	[duplicate-transaction] Duplicate transaction on 2024-01-15
+//
+// anchored at the second transaction. Note that narration drift
+// ("ATM withdrawal" vs "ATM WITHDRAWAL") does NOT prevent the match
+// under this port's similarity rule — see below.
+//
 // # Similarity rule (simplification of upstream)
 //
 // Upstream's noduplicates.py delegates to
