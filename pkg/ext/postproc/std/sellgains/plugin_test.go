@@ -65,13 +65,6 @@ func amt(t *testing.T, number, currency string) ast.Amount {
 	return ast.Amount{Number: dec(t, number), Currency: currency}
 }
 
-// amtPtr builds a pointer to an Amount value.
-func amtPtr(t *testing.T, number, currency string) *ast.Amount {
-	t.Helper()
-	a := amt(t, number, currency)
-	return &a
-}
-
 // salePosting builds an at-cost, at-price posting representing the
 // asset leg of a sale: negative units, with a {cost} and an @ price.
 func salePosting(t *testing.T, account, units, unitsCur, costPerUnit, costCur, price, priceCur string) ast.Posting {
