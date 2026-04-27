@@ -251,8 +251,9 @@ func TestCloseContributesReference(t *testing.T) {
 }
 
 // TestNoOpWhenAllAccountsOpened: a ledger where every referenced
-// account is explicitly opened produces no synthesized Opens; the
-// returned Directives slice contains exactly the input directives.
+// account is explicitly opened produces no synthesized Opens. Per the
+// Result contract, "no change" is signaled by nil Directives — the
+// runner then keeps the input ledger untouched.
 func TestNoOpWhenAllAccountsOpened(t *testing.T) {
 	pos := amt(100, "USD")
 	neg := amt(-100, "USD")
@@ -278,11 +279,11 @@ func TestNoOpWhenAllAccountsOpened(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Directives) != 3 {
-		t.Errorf("len(res.Directives) = %d, want 3 (no synthesis); directives = %#v", len(res.Directives), res.Directives)
+	if res.Directives != nil {
+		t.Errorf("res.Directives = %#v, want nil (no-change signal when no synthesis is needed)", res.Directives)
 	}
-	if got := len(filterOpens(res.Directives)); got != 2 {
-		t.Errorf("len(filterOpens) = %d, want 2 (the two pre-existing Opens only)", got)
+	if len(res.Errors) != 0 {
+		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
 	}
 }
 

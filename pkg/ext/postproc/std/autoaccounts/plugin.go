@@ -52,19 +52,10 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		missing = append(missing, acct)
 	}
 	if len(missing) == 0 {
-		if len(all) == 0 {
-			// Truly empty input: nothing to synthesize and no input
-			// directives to preserve. Return nil Directives to signal
-			// "no change" per the Result contract.
-			return api.Result{}, nil
-		}
-		// No new directives: return the original input unchanged but
-		// in a freshly allocated slice so the runner's Result.Directives
-		// contract (non-nil = replace) is honored without aliasing the
-		// caller's storage.
-		out := make([]ast.Directive, len(all))
-		copy(out, all)
-		return api.Result{Directives: out}, nil
+		// Nothing to synthesize. Per the Result contract, nil Directives
+		// signals "no change" — the runner keeps the ledger as-is, so we
+		// don't need to copy the input.
+		return api.Result{}, nil
 	}
 	// Sort alphabetically so output is deterministic.
 	sort.Slice(missing, func(i, j int) bool { return missing[i] < missing[j] })
