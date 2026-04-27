@@ -73,8 +73,8 @@ func TestSynthesizesOpenForTransactionAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	if res.Directives == nil {
 		t.Fatalf("res.Directives = nil, want non-nil")
@@ -282,8 +282,8 @@ func TestNoOpWhenAllAccountsOpened(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %#v, want nil (no-change signal when no synthesis is needed)", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0", len(res.Diagnostics))
 	}
 }
 
@@ -301,8 +301,8 @@ func TestEmptyInput(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %#v, want nil for empty input (no-change signal, not clear-the-ledger)", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 for empty input", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 for empty input", len(res.Diagnostics))
 	}
 }
 
@@ -317,8 +317,8 @@ func TestNilDirectivesIterator(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %#v, want nil for nil-iterator input", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0", len(res.Diagnostics))
 	}
 }
 

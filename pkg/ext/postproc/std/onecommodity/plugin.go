@@ -53,7 +53,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		if len(regexErrs) == 0 {
 			return api.Result{}, nil
 		}
-		return api.Result{Errors: regexErrs}, nil
+		return api.Result{Diagnostics: regexErrs}, nil
 	}
 
 	// First pass: locate Open directives so we can read opt-out
@@ -152,7 +152,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if len(errs) == 0 {
 		return api.Result{}, nil
 	}
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: errs}, nil
 }
 
 // appendDiags emits one diagnostic per account in set whose currency
@@ -160,12 +160,12 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 // The leading clause of the message is provided by the caller so the
 // same helper serves both the unit and cost passes.
 func appendDiags(
-	errs []api.Error,
+	errs []ast.Diagnostic,
 	set map[ast.Account]map[string]struct{},
 	opens map[ast.Account]*ast.Open,
 	trigger *ast.Plugin,
 	prefix string,
-) []api.Error {
+) []ast.Diagnostic {
 	accts := make([]ast.Account, 0, len(set))
 	for a := range set {
 		if len(set[a]) <= 1 {
@@ -181,10 +181,11 @@ func appendDiags(
 			curs = append(curs, c)
 		}
 		sort.Strings(curs)
-		errs = append(errs, api.Error{
-			Code:    codeMultiCommodityAccount,
-			Span:    diagSpan(opens[acct], trigger),
-			Message: fmt.Sprintf("%s '%s': %s", prefix, acct, strings.Join(curs, ",")),
+		errs = append(errs, ast.Diagnostic{
+			Code:     codeMultiCommodityAccount,
+			Span:     diagSpan(opens[acct], trigger),
+			Message:  fmt.Sprintf("%s '%s': %s", prefix, acct, strings.Join(curs, ",")),
+			Severity: ast.Error,
 		})
 	}
 	return errs
@@ -216,16 +217,17 @@ func optedIn(meta ast.Metadata) bool {
 // the run, matching upstream's behavior of treating a config error as
 // non-fatal — the user gets the bad-config error plus full coverage of
 // the ledger.
-func compileFilter(cfg string, trigger *ast.Plugin) (*regexp.Regexp, []api.Error) {
+func compileFilter(cfg string, trigger *ast.Plugin) (*regexp.Regexp, []ast.Diagnostic) {
 	if cfg == "" {
 		return nil, nil
 	}
 	re, err := regexp.Compile(`\A(?:` + cfg + `)`)
 	if err != nil {
-		return nil, []api.Error{{
-			Code:    codeInvalidRegexp,
-			Span:    spanOf(trigger),
-			Message: fmt.Sprintf("invalid onecommodity account regexp %q: %v", cfg, err),
+		return nil, []ast.Diagnostic{{
+			Code:     codeInvalidRegexp,
+			Span:     spanOf(trigger),
+			Message:  fmt.Sprintf("invalid onecommodity account regexp %q: %v", cfg, err),
+			Severity: ast.Error,
 		}}
 	}
 	return re, nil

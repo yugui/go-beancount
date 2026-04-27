@@ -98,15 +98,16 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return offenders[i].Commodity < offenders[j].Commodity
 	})
 
-	errs := make([]api.Error, 0, len(offenders))
+	diags := make([]ast.Diagnostic, 0, len(offenders))
 	for _, k := range offenders {
-		errs = append(errs, api.Error{
-			Code:    codeIncoherentCost,
-			Span:    diagSpan(opens[k.Account], in.Directive),
-			Message: fmt.Sprintf("Account '%s' holds '%s' both with and without a cost", k.Account, k.Commodity),
+		diags = append(diags, ast.Diagnostic{
+			Code:     codeIncoherentCost,
+			Span:     diagSpan(opens[k.Account], in.Directive),
+			Message:  fmt.Sprintf("Account '%s' holds '%s' both with and without a cost", k.Account, k.Commodity),
+			Severity: ast.Error,
 		})
 	}
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // diagSpan picks the most actionable span for a diagnostic. The Open

@@ -107,8 +107,8 @@ func TestNoChildrenNoSynthesis(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %#v, want nil for no-op pass", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0", len(res.Diagnostics))
 	}
 }
 
@@ -265,8 +265,8 @@ func TestEmptyInput(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %#v, want nil for empty input", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0", len(res.Diagnostics))
 	}
 }
 
@@ -280,8 +280,8 @@ func TestNilDirectivesIterator(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %#v, want nil", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0", len(res.Diagnostics))
 	}
 }
 

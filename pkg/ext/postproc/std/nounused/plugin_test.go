@@ -14,10 +14,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
-// errorCmpOpts compares api.Error values structurally while leaving the
-// human-readable Message field to per-test substring assertions.
-var errorCmpOpts = cmp.Options{
-	cmpopts.IgnoreFields(api.Error{}, "Message"),
+// diagCmpOpts compares ast.Diagnostic values structurally while leaving
+// the human-readable Message field to per-test substring assertions.
+var diagCmpOpts = cmp.Options{
+	cmpopts.IgnoreFields(ast.Diagnostic{}, "Message"),
 }
 
 // testPluginDir is a non-zero *ast.Plugin used as the api.Input.Directive
@@ -73,8 +73,8 @@ func TestSingleOpenedAndUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -97,14 +97,14 @@ func TestSingleOpenedNotUsed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := []api.Error{{Code: "unused-account", Span: openSpan}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: "unused-account", Span: openSpan}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 	// Exact wording matches upstream's "Unused account '{}'" template.
 	wantMsg := "Unused account 'Assets:Cash'"
-	if got := res.Errors[0].Message; got != wantMsg {
-		t.Errorf("res.Errors[0].Message = %q, want %q", got, wantMsg)
+	if got := res.Diagnostics[0].Message; got != wantMsg {
+		t.Errorf("res.Diagnostics[0].Message = %q, want %q", got, wantMsg)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -126,20 +126,20 @@ func TestMultipleUnused(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(res.Errors) != 3 {
-		t.Fatalf("len(res.Errors) = %d, want 3; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 3 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 3; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	wantOrder := []string{
 		"Unused account 'Assets:Cash'",
 		"Unused account 'Equity:Opening'",
 		"Unused account 'Income:Salary'",
 	}
-	for i, e := range res.Errors {
+	for i, e := range res.Diagnostics {
 		if e.Code != "unused-account" {
-			t.Errorf("res.Errors[%d].Code = %q, want %q", i, e.Code, "unused-account")
+			t.Errorf("res.Diagnostics[%d].Code = %q, want %q", i, e.Code, "unused-account")
 		}
 		if e.Message != wantOrder[i] {
-			t.Errorf("res.Errors[%d].Message = %q, want %q (alphabetical order)", i, e.Message, wantOrder[i])
+			t.Errorf("res.Diagnostics[%d].Message = %q, want %q (alphabetical order)", i, e.Message, wantOrder[i])
 		}
 	}
 }
@@ -179,13 +179,13 @@ func TestPartiallyUsed(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(res.Errors) != 2 {
-		t.Fatalf("len(res.Errors) = %d, want 2; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 2 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 2; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	want := []string{"Unused account 'Assets:Stale'", "Unused account 'Equity:Forgotten'"}
-	for i, e := range res.Errors {
+	for i, e := range res.Diagnostics {
 		if e.Message != want[i] {
-			t.Errorf("res.Errors[%d].Message = %q, want %q", i, e.Message, want[i])
+			t.Errorf("res.Diagnostics[%d].Message = %q, want %q", i, e.Message, want[i])
 		}
 	}
 }
@@ -205,8 +205,8 @@ func TestUsedByBalanceCountsAsUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (Balance counts as use); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (Balance counts as use); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -227,8 +227,8 @@ func TestUsedByPadCountsAsUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (Pad covers both Account and PadAccount); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (Pad covers both Account and PadAccount); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -247,8 +247,8 @@ func TestUsedByNoteCountsAsUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (Note counts as use); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (Note counts as use); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -267,8 +267,8 @@ func TestUsedByDocumentCountsAsUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (Document counts as use); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (Document counts as use); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -286,8 +286,8 @@ func TestClosedButNeverUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (Close counts as use, matching upstream); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (Close counts as use, matching upstream); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -310,11 +310,11 @@ func TestCustomDoesNotCountAsUse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1 (Custom does not count as use); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1 (Custom does not count as use); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if got, want := res.Errors[0].Message, "Unused account 'Assets:Hidden'"; got != want {
-		t.Errorf("res.Errors[0].Message = %q, want %q", got, want)
+	if got, want := res.Diagnostics[0].Message, "Unused account 'Assets:Hidden'"; got != want {
+		t.Errorf("res.Diagnostics[0].Message = %q, want %q", got, want)
 	}
 }
 
@@ -327,8 +327,8 @@ func TestEmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.Errors != nil {
-		t.Errorf("res.Errors = %v, want nil for empty input", res.Errors)
+	if res.Diagnostics != nil {
+		t.Errorf("res.Diagnostics = %v, want nil for empty input", res.Diagnostics)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil for empty input", res.Directives)
@@ -380,11 +380,11 @@ func TestUnusedOpenWithZeroSpanFallsBackToTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if got, want := res.Errors[0].Span, testPluginDir.Span; got != want {
-		t.Errorf("res.Errors[0].Span = %#v, want %#v (fallback to trigger span)", got, want)
+	if got, want := res.Diagnostics[0].Span, testPluginDir.Span; got != want {
+		t.Errorf("res.Diagnostics[0].Span = %#v, want %#v (fallback to trigger span)", got, want)
 	}
 }
 

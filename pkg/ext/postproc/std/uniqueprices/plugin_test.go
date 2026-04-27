@@ -13,10 +13,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
-// errorCmpOpts compares api.Error values structurally while leaving the
-// human-readable Message field to per-test substring assertions.
-var errorCmpOpts = cmp.Options{
-	cmpopts.IgnoreFields(api.Error{}, "Message"),
+// diagCmpOpts compares ast.Diagnostic values structurally while leaving
+// the human-readable Message field to per-test substring assertions.
+var diagCmpOpts = cmp.Options{
+	cmpopts.IgnoreFields(ast.Diagnostic{}, "Message"),
 }
 
 // astCmpOpts is the standard option set for deep-comparing AST values.
@@ -88,8 +88,8 @@ func TestNoConflicts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -109,8 +109,8 @@ func TestDuplicateSameValue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (numerically-equal duplicates); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (numerically-equal duplicates); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -128,13 +128,13 @@ func TestConflictingValues(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := []api.Error{{Code: codeDuplicatePrice, Span: priceSpan2}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: codeDuplicatePrice, Span: priceSpan2}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 	wantMsg := "Disagreeing price for HOOL/USD on 2024-01-01: 99 vs 100"
-	if got := res.Errors[0].Message; got != wantMsg {
-		t.Errorf("res.Errors[0].Message = %q, want %q", got, wantMsg)
+	if got := res.Diagnostics[0].Message; got != wantMsg {
+		t.Errorf("res.Diagnostics[0].Message = %q, want %q", got, wantMsg)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -157,11 +157,11 @@ func TestMultipleConflictsAcrossPairs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Source-encounter order: a2 (line 300) then b2 (line 400).
-	want := []api.Error{
+	want := []ast.Diagnostic{
 		{Code: codeDuplicatePrice, Span: priceSpan3},
 		{Code: codeDuplicatePrice, Span: span4},
 	}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -180,11 +180,11 @@ func TestThreeWayConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []api.Error{
+	want := []ast.Diagnostic{
 		{Code: codeDuplicatePrice, Span: priceSpan2},
 		{Code: codeDuplicatePrice, Span: priceSpan3},
 	}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -200,8 +200,8 @@ func TestSameTripleDifferentDayNoConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (different days); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (different days); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -218,8 +218,8 @@ func TestDifferentBaseSameDayNoConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (distinct triples); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (distinct triples); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -236,11 +236,11 @@ func TestSpanAnchoring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if got := res.Errors[0].Span; got != priceSpan2 {
-		t.Errorf("res.Errors[0].Span = %#v, want priceSpan2 %#v", got, priceSpan2)
+	if got := res.Diagnostics[0].Span; got != priceSpan2 {
+		t.Errorf("res.Diagnostics[0].Span = %#v, want priceSpan2 %#v", got, priceSpan2)
 	}
 
 	// Zero-span path: the offending Price has a zero Span, so the
@@ -253,11 +253,11 @@ func TestSpanAnchoring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res2.Errors) != 1 {
-		t.Fatalf("len(res2.Errors) = %d, want 1; errors = %v", len(res2.Errors), res2.Errors)
+	if len(res2.Diagnostics) != 1 {
+		t.Fatalf("len(res2.Diagnostics) = %d, want 1; errors = %v", len(res2.Diagnostics), res2.Diagnostics)
 	}
-	if got := res2.Errors[0].Span; got != testPluginDir.Span {
-		t.Errorf("res2.Errors[0].Span = %#v, want testPluginDir.Span %#v (fallback)", got, testPluginDir.Span)
+	if got := res2.Diagnostics[0].Span; got != testPluginDir.Span {
+		t.Errorf("res2.Diagnostics[0].Span = %#v, want testPluginDir.Span %#v (fallback)", got, testPluginDir.Span)
 	}
 }
 
@@ -273,8 +273,8 @@ func TestEmptyInput(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil for empty input", res.Directives)
 	}
-	if res.Errors != nil {
-		t.Errorf("res.Errors = %v, want nil for empty input", res.Errors)
+	if res.Diagnostics != nil {
+		t.Errorf("res.Diagnostics = %v, want nil for empty input", res.Diagnostics)
 	}
 }
 

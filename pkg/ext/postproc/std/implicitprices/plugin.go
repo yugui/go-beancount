@@ -76,7 +76,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 	dedup := make(map[dedupKey]struct{})
 
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	// Pre-grow: most transactions yield at most one price per posting.
 	out := make([]ast.Directive, 0, len(all))
 	for _, d := range all {
@@ -94,7 +94,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 			p := &tx.Postings[i]
 			pe, perr := buildPrice(tx, p)
 			if perr != nil {
-				errs = append(errs, *perr)
+				diags = append(diags, *perr)
 				continue
 			}
 			if pe == nil {
@@ -115,16 +115,16 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 
 	res := api.Result{Directives: out}
-	if len(errs) != 0 {
-		res.Errors = errs
+	if len(diags) != 0 {
+		res.Diagnostics = diags
 	}
 	return res, nil
 }
 
 // buildPrice computes the synthesized Price directive for a single
 // posting, or returns (nil, nil) if the posting carries no eligible
-// price/cost annotation. Errors are returned as *api.Error so the
-// caller can append them to Result.Errors without aborting the walk.
+// price/cost annotation. Errors are returned as *ast.Diagnostic so the
+// caller can append them to Result.Diagnostics without aborting the walk.
 //
 // The annotation preference matches upstream: an explicit price
 // annotation ([ast.Posting.Price]) wins; a cost annotation
@@ -132,7 +132,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 // [ast.Amount] or with a zero units number cannot produce a price
 // (the latter would divide by zero in the total-form branches) and
 // are skipped silently.
-func buildPrice(tx *ast.Transaction, p *ast.Posting) (*ast.Price, *api.Error) {
+func buildPrice(tx *ast.Transaction, p *ast.Posting) (*ast.Price, *ast.Diagnostic) {
 	if p.Amount == nil || p.Amount.Currency == "" {
 		return nil, nil
 	}
@@ -186,8 +186,8 @@ func buildPrice(tx *ast.Transaction, p *ast.Posting) (*ast.Price, *api.Error) {
 // perUnitNumber returns the per-unit decimal for a price annotation.
 // When isTotal is false the input number is returned unchanged; when
 // true it is divided by |units|. A zero units value returns (nil, nil)
-// to signal "skip silently"; arithmetic failures return an *api.Error.
-func perUnitNumber(number, units apd.Decimal, isTotal bool, tx *ast.Transaction, source string) (*apd.Decimal, *api.Error) {
+// to signal "skip silently"; arithmetic failures return an *ast.Diagnostic.
+func perUnitNumber(number, units apd.Decimal, isTotal bool, tx *ast.Transaction, source string) (*apd.Decimal, *ast.Diagnostic) {
 	if !isTotal {
 		out := new(apd.Decimal)
 		out.Set(&number)
@@ -198,18 +198,20 @@ func perUnitNumber(number, units apd.Decimal, isTotal bool, tx *ast.Transaction,
 	}
 	absUnits := new(apd.Decimal)
 	if _, err := apd.BaseContext.Abs(absUnits, &units); err != nil {
-		return nil, &api.Error{
-			Code:    codeImplicitPriceError,
-			Span:    spanForTx(tx),
-			Message: fmt.Sprintf("abs of units in %s annotation: %v", source, err),
+		return nil, &ast.Diagnostic{
+			Code:     codeImplicitPriceError,
+			Span:     spanForTx(tx),
+			Message:  fmt.Sprintf("abs of units in %s annotation: %v", source, err),
+			Severity: ast.Error,
 		}
 	}
 	out := new(apd.Decimal)
 	if _, err := quoContext.Quo(out, &number, absUnits); err != nil {
-		return nil, &api.Error{
-			Code:    codeImplicitPriceError,
-			Span:    spanForTx(tx),
-			Message: fmt.Sprintf("divide total %s by units: %v", source, err),
+		return nil, &ast.Diagnostic{
+			Code:     codeImplicitPriceError,
+			Span:     spanForTx(tx),
+			Message:  fmt.Sprintf("divide total %s by units: %v", source, err),
+			Severity: ast.Error,
 		}
 	}
 	return out, nil
@@ -219,7 +221,7 @@ func perUnitNumber(number, units apd.Decimal, isTotal bool, tx *ast.Transaction,
 // annotation. It accepts all four CostSpec shapes (per-unit only,
 // total only, combined, empty); returns (nil, "", nil) for the empty
 // case and for postings whose units would force a division by zero.
-func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.Decimal, string, *api.Error) {
+func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.Decimal, string, *ast.Diagnostic) {
 	switch {
 	case c.PerUnit != nil && c.Total != nil:
 		// Combined form: per + T/|units|. The AST contract
@@ -233,28 +235,31 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.
 		}
 		absUnits := new(apd.Decimal)
 		if _, err := apd.BaseContext.Abs(absUnits, &units); err != nil {
-			return nil, "", &api.Error{
-				Code:    codeImplicitPriceError,
-				Span:    spanForTx(tx),
-				Message: "abs of units in combined cost: " + err.Error(),
+			return nil, "", &ast.Diagnostic{
+				Code:     codeImplicitPriceError,
+				Span:     spanForTx(tx),
+				Message:  "abs of units in combined cost: " + err.Error(),
+				Severity: ast.Error,
 			}
 		}
 		quo := new(apd.Decimal)
 		totalNum := c.Total.Number
 		if _, err := quoContext.Quo(quo, &totalNum, absUnits); err != nil {
-			return nil, "", &api.Error{
-				Code:    codeImplicitPriceError,
-				Span:    spanForTx(tx),
-				Message: "divide total cost by units: " + err.Error(),
+			return nil, "", &ast.Diagnostic{
+				Code:     codeImplicitPriceError,
+				Span:     spanForTx(tx),
+				Message:  "divide total cost by units: " + err.Error(),
+				Severity: ast.Error,
 			}
 		}
 		out := new(apd.Decimal)
 		perNum := c.PerUnit.Number
 		if _, err := apd.BaseContext.Add(out, &perNum, quo); err != nil {
-			return nil, "", &api.Error{
-				Code:    codeImplicitPriceError,
-				Span:    spanForTx(tx),
-				Message: "add per-unit and residual cost: " + err.Error(),
+			return nil, "", &ast.Diagnostic{
+				Code:     codeImplicitPriceError,
+				Span:     spanForTx(tx),
+				Message:  "add per-unit and residual cost: " + err.Error(),
+				Severity: ast.Error,
 			}
 		}
 		return out, c.PerUnit.Currency, nil
@@ -264,19 +269,21 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.
 		}
 		absUnits := new(apd.Decimal)
 		if _, err := apd.BaseContext.Abs(absUnits, &units); err != nil {
-			return nil, "", &api.Error{
-				Code:    codeImplicitPriceError,
-				Span:    spanForTx(tx),
-				Message: "abs of units in total cost: " + err.Error(),
+			return nil, "", &ast.Diagnostic{
+				Code:     codeImplicitPriceError,
+				Span:     spanForTx(tx),
+				Message:  "abs of units in total cost: " + err.Error(),
+				Severity: ast.Error,
 			}
 		}
 		out := new(apd.Decimal)
 		totalNum := c.Total.Number
 		if _, err := quoContext.Quo(out, &totalNum, absUnits); err != nil {
-			return nil, "", &api.Error{
-				Code:    codeImplicitPriceError,
-				Span:    spanForTx(tx),
-				Message: "divide total cost by units: " + err.Error(),
+			return nil, "", &ast.Diagnostic{
+				Code:     codeImplicitPriceError,
+				Span:     spanForTx(tx),
+				Message:  "divide total cost by units: " + err.Error(),
+				Severity: ast.Error,
 			}
 		}
 		return out, c.Total.Currency, nil

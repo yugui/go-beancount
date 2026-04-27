@@ -93,15 +93,16 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 	sort.Slice(unused, func(i, j int) bool { return unused[i] < unused[j] })
 
-	errs := make([]api.Error, 0, len(unused))
+	diags := make([]ast.Diagnostic, 0, len(unused))
 	for _, acct := range unused {
-		errs = append(errs, api.Error{
-			Code:    codeUnusedAccount,
-			Span:    diagSpan(opens[acct], in.Directive),
-			Message: fmt.Sprintf("Unused account '%s'", acct),
+		diags = append(diags, ast.Diagnostic{
+			Code:     codeUnusedAccount,
+			Span:     diagSpan(opens[acct], in.Directive),
+			Message:  fmt.Sprintf("Unused account '%s'", acct),
+			Severity: ast.Error,
 		})
 	}
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // addRef inserts acct into the set, ignoring the empty Account (a

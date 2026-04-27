@@ -44,7 +44,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	// duplicates of the earlier entry that contributed the key.
 	firsts := map[string]struct{}{}
 
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for _, d := range in.Directives {
 		t, ok := d.(*ast.Transaction)
 		if !ok {
@@ -55,17 +55,18 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 			firsts[k] = struct{}{}
 			continue
 		}
-		errs = append(errs, api.Error{
-			Code:    codeDuplicateTransaction,
-			Span:    diagSpan(t, in.Directive),
-			Message: fmt.Sprintf("Duplicate transaction on %s: same postings as earlier entry", t.Date.Format("2006-01-02")),
+		diags = append(diags, ast.Diagnostic{
+			Code:     codeDuplicateTransaction,
+			Span:     diagSpan(t, in.Directive),
+			Message:  fmt.Sprintf("Duplicate transaction on %s: same postings as earlier entry", t.Date.Format("2006-01-02")),
+			Severity: ast.Error,
 		})
 	}
 
-	if len(errs) == 0 {
+	if len(diags) == 0 {
 		return api.Result{}, nil
 	}
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // similarityKey computes the order-insensitive similarity key for a

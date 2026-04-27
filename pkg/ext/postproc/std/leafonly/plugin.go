@@ -76,25 +76,26 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, nil
 	}
 
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for _, tx := range transactions {
 		for i := range tx.Postings {
 			p := &tx.Postings[i]
 			if _, bad := nonLeaf[p.Account]; !bad {
 				continue
 			}
-			errs = append(errs, api.Error{
-				Code:    codeNonLeafAccount,
-				Span:    diagSpan(p, tx, in.Directive),
-				Message: fmt.Sprintf("Non-leaf account '%s' has postings on it", p.Account),
+			diags = append(diags, ast.Diagnostic{
+				Code:     codeNonLeafAccount,
+				Span:     diagSpan(p, tx, in.Directive),
+				Message:  fmt.Sprintf("Non-leaf account '%s' has postings on it", p.Account),
+				Severity: ast.Error,
 			})
 		}
 	}
 
-	if len(errs) == 0 {
+	if len(diags) == 0 {
 		return api.Result{}, nil
 	}
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // collectReferences records every account name d mentions in

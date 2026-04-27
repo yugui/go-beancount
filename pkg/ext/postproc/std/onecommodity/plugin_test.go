@@ -13,10 +13,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
-// errorCmpOpts compares api.Error values structurally while leaving the
-// human-readable Message field to per-test substring assertions.
-var errorCmpOpts = cmp.Options{
-	cmpopts.IgnoreFields(api.Error{}, "Message"),
+// diagCmpOpts compares ast.Diagnostic values structurally while leaving
+// the human-readable Message field to per-test substring assertions.
+var diagCmpOpts = cmp.Options{
+	cmpopts.IgnoreFields(ast.Diagnostic{}, "Message"),
 }
 
 // testPluginDir is a non-zero *ast.Plugin used as the api.Input.Directive
@@ -64,8 +64,8 @@ func TestSingleCurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -107,13 +107,13 @@ func TestMultiCurrencyUnits(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := []api.Error{{Code: "multi-commodity-account", Span: openSpan}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: "multi-commodity-account", Span: openSpan}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 	wantMsg := "More than one currency in account 'Assets:Cash': JPY,USD"
-	if got := res.Errors[0].Message; got != wantMsg {
-		t.Errorf("res.Errors[0].Message = %q, want %q", got, wantMsg)
+	if got := res.Diagnostics[0].Message; got != wantMsg {
+		t.Errorf("res.Diagnostics[0].Message = %q, want %q", got, wantMsg)
 	}
 }
 
@@ -153,13 +153,13 @@ func TestMultiCurrencyCosts(t *testing.T) {
 	}
 
 	// Units side sees only AAPL, no diag there. Cost side sees USD+JPY.
-	want := []api.Error{{Code: "multi-commodity-account", Span: openSpan}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: "multi-commodity-account", Span: openSpan}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 	wantMsg := "More than one cost currency in account 'Assets:Inv': JPY,USD"
-	if got := res.Errors[0].Message; got != wantMsg {
-		t.Errorf("res.Errors[0].Message = %q, want %q", got, wantMsg)
+	if got := res.Diagnostics[0].Message; got != wantMsg {
+		t.Errorf("res.Diagnostics[0].Message = %q, want %q", got, wantMsg)
 	}
 }
 
@@ -198,12 +198,12 @@ func TestUnitAndCostBothFlagged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 2 {
-		t.Fatalf("len(res.Errors) = %d, want 2 (unit + cost); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 2 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 2 (unit + cost); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	for i, e := range res.Errors {
+	for i, e := range res.Diagnostics {
 		if e.Span != openSpan {
-			t.Errorf("res.Errors[%d].Span = %#v, want openSpan %#v", i, e.Span, openSpan)
+			t.Errorf("res.Diagnostics[%d].Span = %#v, want openSpan %#v", i, e.Span, openSpan)
 		}
 	}
 }
@@ -228,8 +228,8 @@ func TestNilAmountSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -270,8 +270,8 @@ func TestOptOutBoolFalse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (opted out); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (opted out); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -312,8 +312,8 @@ func TestOptOutStringFalseCaseInsensitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (opted out via string FALSE); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (opted out via string FALSE); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -355,8 +355,8 @@ func TestMultiCurrencyOpenIsImplicitOptOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (multi-currency Open is implicit opt-out); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (multi-currency Open is implicit opt-out); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -399,8 +399,8 @@ func TestRegexFilterMiss(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (regex excludes offender); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (regex excludes offender); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -441,18 +441,18 @@ func TestInvalidRegexEmitsDiagnostic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 2 {
-		t.Fatalf("len(res.Errors) = %d, want 2 (invalid-regexp + flagged account); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 2 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 2 (invalid-regexp + flagged account); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	codes := map[string]int{}
-	for _, e := range res.Errors {
+	for _, e := range res.Diagnostics {
 		codes[e.Code]++
 	}
 	if codes["invalid-regexp"] != 1 {
-		t.Errorf("invalid-regexp count = %d, want 1; errors = %v", codes["invalid-regexp"], res.Errors)
+		t.Errorf("invalid-regexp count = %d, want 1; errors = %v", codes["invalid-regexp"], res.Diagnostics)
 	}
 	if codes["multi-commodity-account"] != 1 {
-		t.Errorf("multi-commodity-account count = %d, want 1 (filter disabled); errors = %v", codes["multi-commodity-account"], res.Errors)
+		t.Errorf("multi-commodity-account count = %d, want 1 (filter disabled); errors = %v", codes["multi-commodity-account"], res.Diagnostics)
 	}
 }
 
@@ -488,12 +488,12 @@ func TestNoOpenStillCheckedFallbackSpan(t *testing.T) {
 	}
 	// Both Assets:Cash and Income:Salary see two currencies; expect two
 	// diagnostics, both anchored at the plugin directive's span.
-	if len(res.Errors) != 2 {
-		t.Fatalf("len(res.Errors) = %d, want 2; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 2 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 2; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	for i, e := range res.Errors {
+	for i, e := range res.Diagnostics {
 		if e.Span != testPluginDir.Span {
-			t.Errorf("res.Errors[%d].Span = %#v, want testPluginDir.Span %#v (fallback)", i, e.Span, testPluginDir.Span)
+			t.Errorf("res.Diagnostics[%d].Span = %#v, want testPluginDir.Span %#v (fallback)", i, e.Span, testPluginDir.Span)
 		}
 	}
 }
@@ -510,8 +510,8 @@ func TestEmptyInput(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil for empty input", res.Directives)
 	}
-	if res.Errors != nil {
-		t.Errorf("res.Errors = %v, want nil for empty input", res.Errors)
+	if res.Diagnostics != nil {
+		t.Errorf("res.Diagnostics = %v, want nil for empty input", res.Diagnostics)
 	}
 }
 
