@@ -84,8 +84,8 @@ func TestSimpleCostBased(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 
 	want := []*ast.Price{{
@@ -337,8 +337,8 @@ func TestEmptyInput(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %#v, want nil for empty input", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0", len(res.Diagnostics))
 	}
 }
 
@@ -352,8 +352,8 @@ func TestNilDirectivesIterator(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %#v, want nil", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0", len(res.Diagnostics))
 	}
 }
 
@@ -498,8 +498,8 @@ func TestZeroUnitsHandledGracefully(t *testing.T) {
 	if got := len(filterPrices(res.Directives)); got != 0 {
 		t.Errorf("len(filterPrices) = %d, want 0 (zero/empty-currency units skip silently); prices = %#v", got, filterPrices(res.Directives))
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -566,8 +566,8 @@ func TestCombinedCostForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Fatalf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 
 	prices := filterPrices(res.Directives)

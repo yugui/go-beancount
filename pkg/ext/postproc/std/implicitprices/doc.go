@@ -85,7 +85,7 @@
 // The plugin returns no errors in the normal case. If an arithmetic
 // operation underlying a cost or price conversion fails (which would
 // indicate an internal inconsistency in apd or in posting data), an
-// [api.Error] with code "implicit-price-error" is emitted, anchored at
+// [ast.Diagnostic] with code "implicit-price-error" is emitted, anchored at
 // the offending transaction's span.
 //
 // # Registered names

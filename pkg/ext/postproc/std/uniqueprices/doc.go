@@ -69,7 +69,7 @@
 //     work unchanged.
 //   - Upstream emits one UniquePricesError per conflict group, citing
 //     the entire group's directive list as the error's `entry`. This
-//     port emits one [api.Error] per offending Price directive after
+//     port emits one [ast.Diagnostic] per offending Price directive after
 //     the first, so each conflicting Price has its own anchored
 //     diagnostic. The information conveyed is the same — the user
 //     learns about every conflict — but the structured-diagnostic
@@ -83,7 +83,7 @@
 //     commodity pair, date, and the two disagreeing values, e.g.
 //     "Disagreeing price for HOOL/USD on 2024-01-01: 99 vs 100", so
 //     the diagnostic is actionable on its own. The structured
-//     [api.Error.Code] preserves the upstream-equivalent category.
+//     [ast.Diagnostic.Code] preserves the upstream-equivalent category.
 //
 // # Registered names
 //

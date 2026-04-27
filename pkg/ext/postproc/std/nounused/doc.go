@@ -75,7 +75,7 @@
 //     directive, with a fallback to the triggering plugin directive's
 //     Span when the Open lacks a span. The information conveyed is the
 //     same — point the user at the Open — through the structured
-//     [api.Error] contract used across go-beancount diagnostics.
+//     [ast.Diagnostic] contract used across go-beancount diagnostics.
 //   - The diagnostic code "unused-account" is added by this port for
 //     downstream tooling to match on; upstream's `UnusedAccountError`
 //     namedtuple carries no machine-readable category. The kebab-case

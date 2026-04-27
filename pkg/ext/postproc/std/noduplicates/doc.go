@@ -111,10 +111,10 @@
 //     simpler rule is documented above; tests are pinned against it.
 //   - Diagnostic shape: upstream emits one CompareError per duplicate
 //     entry whose human-readable message is "Duplicate entry: {entry}
-//     == {other}". This port emits one [api.Error] per duplicate with
+//     == {other}". This port emits one [ast.Diagnostic] per duplicate with
 //     code "duplicate-transaction" and a message identifying the
 //     duplicated date — the message is shorter but the structured
-//     [api.Error.Code] preserves the upstream-equivalent category for
+//     [ast.Diagnostic.Code] preserves the upstream-equivalent category for
 //     downstream tooling.
 //   - The diagnostic code "duplicate-transaction" is added by this
 //     port; upstream's CompareError namedtuple carries no

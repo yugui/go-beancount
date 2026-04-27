@@ -53,7 +53,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 	firsts := map[key]*ast.Price{}
 
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for _, d := range in.Directives {
 		p, ok := d.(*ast.Price)
 		if !ok {
@@ -75,17 +75,18 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		if first.Amount.Number.Cmp(&p.Amount.Number) == 0 {
 			continue
 		}
-		errs = append(errs, api.Error{
-			Code:    codeDuplicatePrice,
-			Span:    diagSpan(p, in.Directive),
-			Message: fmt.Sprintf("Disagreeing price for %s/%s on %s: %s vs %s", p.Commodity, p.Amount.Currency, k.date, &first.Amount.Number, &p.Amount.Number),
+		diags = append(diags, ast.Diagnostic{
+			Code:     codeDuplicatePrice,
+			Span:     diagSpan(p, in.Directive),
+			Message:  fmt.Sprintf("Disagreeing price for %s/%s on %s: %s vs %s", p.Commodity, p.Amount.Currency, k.date, &first.Amount.Number, &p.Amount.Number),
+			Severity: ast.Error,
 		})
 	}
 
-	if len(errs) == 0 {
+	if len(diags) == 0 {
 		return api.Result{}, nil
 	}
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // diagSpan picks the most actionable span for a diagnostic. The

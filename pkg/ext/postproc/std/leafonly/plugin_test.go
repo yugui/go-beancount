@@ -13,10 +13,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
-// errorCmpOpts compares api.Error values structurally while leaving
+// diagCmpOpts compares ast.Diagnostic values structurally while leaving
 // the human-readable Message field to per-test substring assertions.
-var errorCmpOpts = cmp.Options{
-	cmpopts.IgnoreFields(api.Error{}, "Message"),
+var diagCmpOpts = cmp.Options{
+	cmpopts.IgnoreFields(ast.Diagnostic{}, "Message"),
 }
 
 // testPluginDir is a non-zero *ast.Plugin used as the api.Input.Directive
@@ -58,8 +58,8 @@ func TestLeafOnlyLedgerNoErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -103,15 +103,15 @@ func TestNonLeafPostingFlagged(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := []api.Error{{Code: "non-leaf-account", Span: tx.Span}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: "non-leaf-account", Span: tx.Span}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 	// The exact wording is part of the documented behavior — it mirrors
 	// upstream's "Non-leaf account '{}' has postings on it" template.
 	wantMsg := "Non-leaf account 'Assets:Cash' has postings on it"
-	if got := res.Errors[0].Message; got != wantMsg {
-		t.Errorf("res.Errors[0].Message = %q, want %q", got, wantMsg)
+	if got := res.Diagnostics[0].Message; got != wantMsg {
+		t.Errorf("res.Diagnostics[0].Message = %q, want %q", got, wantMsg)
 	}
 }
 
@@ -158,8 +158,8 @@ func TestNestedHierarchyParentOfParent(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if len(res.Errors) != 2 {
-		t.Fatalf("len(res.Errors) = %d, want 2 (Assets and Assets:Cash); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 2 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 2 (Assets and Assets:Cash); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	// Build a (message -> span) map and assert each diagnostic is
 	// anchored at the originating transaction's span. Keying on the full
@@ -169,7 +169,7 @@ func TestNestedHierarchyParentOfParent(t *testing.T) {
 		return "Non-leaf account '" + string(acct) + "' has postings on it"
 	}
 	hits := map[string]ast.Span{}
-	for _, e := range res.Errors {
+	for _, e := range res.Diagnostics {
 		hits[e.Message] = e.Span
 	}
 	if got, ok := hits[msgFor("Assets")]; !ok || got != txRoot.Span {
@@ -216,8 +216,8 @@ func TestParentOpenedNoPostingNoError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (parent opened but never posted to); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (parent opened but never posted to); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -251,8 +251,8 @@ func TestParentWithoutChildIsLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (no child opened); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (no child opened); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -292,11 +292,11 @@ func TestPostingAlonePromotesToNonLeaf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1 (one offending posting); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1 (one offending posting); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if res.Errors[0].Span != tx1.Span {
-		t.Errorf("res.Errors[0].Span = %#v, want tx1.Span = %#v", res.Errors[0].Span, tx1.Span)
+	if res.Diagnostics[0].Span != tx1.Span {
+		t.Errorf("res.Diagnostics[0].Span = %#v, want tx1.Span = %#v", res.Diagnostics[0].Span, tx1.Span)
 	}
 }
 
@@ -335,8 +335,8 @@ func TestMultipleBadPostingsEmitMultipleErrors(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 2 {
-		t.Errorf("len(res.Errors) = %d, want 2 (one per offending posting); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 2 {
+		t.Errorf("len(res.Diagnostics) = %d, want 2 (one per offending posting); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -368,11 +368,11 @@ func TestPostingSpanPreferred(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if res.Errors[0].Span != postingSpan {
-		t.Errorf("res.Errors[0].Span = %#v, want postingSpan %#v", res.Errors[0].Span, postingSpan)
+	if res.Diagnostics[0].Span != postingSpan {
+		t.Errorf("res.Diagnostics[0].Span = %#v, want postingSpan %#v", res.Diagnostics[0].Span, postingSpan)
 	}
 }
 
@@ -403,11 +403,11 @@ func TestPluginSpanFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if res.Errors[0].Span != testPluginDir.Span {
-		t.Errorf("res.Errors[0].Span = %#v, want testPluginDir.Span %#v (fallback)", res.Errors[0].Span, testPluginDir.Span)
+	if res.Diagnostics[0].Span != testPluginDir.Span {
+		t.Errorf("res.Diagnostics[0].Span = %#v, want testPluginDir.Span %#v (fallback)", res.Diagnostics[0].Span, testPluginDir.Span)
 	}
 }
 
@@ -463,8 +463,8 @@ func TestNonTransactionDirectiveDoesNotTrigger(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			if len(res.Errors) != 0 {
-				t.Errorf("len(res.Errors) = %d, want 0 (%s reference does not trigger); errors = %v", len(res.Errors), tc.name, res.Errors)
+			if len(res.Diagnostics) != 0 {
+				t.Errorf("len(res.Diagnostics) = %d, want 0 (%s reference does not trigger); errors = %v", len(res.Diagnostics), tc.name, res.Diagnostics)
 			}
 		})
 	}
@@ -482,8 +482,8 @@ func TestEmptyInput(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil for empty input", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 for empty input", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 for empty input", len(res.Diagnostics))
 	}
 }
 
@@ -497,8 +497,8 @@ func TestNilDirectivesIterator(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0", len(res.Errors))
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0", len(res.Diagnostics))
 	}
 }
 
@@ -574,8 +574,8 @@ func TestDistinctRootsAreLeaves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -609,7 +609,7 @@ func TestSimilarPrefixIsNotAncestor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (Assets:CashFlow is not a child of Assets:Cash); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (Assets:CashFlow is not a child of Assets:Cash); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }

@@ -64,7 +64,7 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, nil
 	}
 
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for _, d := range in.Directives {
 		t, ok := d.(*ast.Transaction)
 		if !ok {
@@ -72,21 +72,21 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		}
 		diag, ok := checkTransaction(t, in.Directive)
 		if ok {
-			errs = append(errs, diag)
+			diags = append(diags, diag)
 		}
 	}
 
-	if len(errs) == 0 {
+	if len(diags) == 0 {
 		return api.Result{}, nil
 	}
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // checkTransaction returns a single diagnostic for t when the
 // price-implied proceeds side and the non-Income proceeds side
 // disagree by more than the inferred tolerance, currency by currency.
 // The second return value indicates whether a diagnostic was produced.
-func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (api.Error, bool) {
+func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (ast.Diagnostic, bool) {
 	// Find the postings held at cost. If there are none, this is not a
 	// sale-with-cost-basis transaction — skip silently.
 	var atCost []*ast.Posting
@@ -97,14 +97,14 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (api.Error, bool)
 		}
 	}
 	if len(atCost) == 0 {
-		return api.Error{}, false
+		return ast.Diagnostic{}, false
 	}
 	// The check requires a price annotation on every cost-bearing
 	// posting. Without one, we have no independent quantity to verify
 	// against, so the transaction is skipped — matching upstream.
 	for _, p := range atCost {
 		if p.Price == nil {
-			return api.Error{}, false
+			return ast.Diagnostic{}, false
 		}
 	}
 
@@ -127,7 +127,7 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (api.Error, bool)
 		// price × -units, in price currency.
 		neg := new(apd.Decimal)
 		if _, err := apd.BaseContext.Neg(neg, &p.Amount.Number); err != nil {
-			return api.Error{}, false
+			return ast.Diagnostic{}, false
 		}
 		var contrib apd.Decimal
 		var cur string
@@ -146,13 +146,13 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (api.Error, bool)
 			// a magnitude that no longer equals the user-entered total,
 			// but matches whatever upstream produced. Tests pin this.
 			if _, err := apd.BaseContext.Mul(&contrib, &p.Price.Amount.Number, neg); err != nil {
-				return api.Error{}, false
+				return ast.Diagnostic{}, false
 			}
 			cur = p.Price.Amount.Currency
 		} else {
 			// "@ X CUR" — per-unit price.
 			if _, err := apd.BaseContext.Mul(&contrib, &p.Price.Amount.Number, neg); err != nil {
-				return api.Error{}, false
+				return ast.Diagnostic{}, false
 			}
 			cur = p.Price.Amount.Currency
 		}
@@ -215,11 +215,11 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (api.Error, bool)
 		// near zero.
 		diff := new(apd.Decimal)
 		if _, err := apd.BaseContext.Sub(diff, price, proc); err != nil {
-			return api.Error{}, false
+			return ast.Diagnostic{}, false
 		}
 		abs := new(apd.Decimal)
 		if _, err := apd.BaseContext.Abs(abs, diff); err != nil {
-			return api.Error{}, false
+			return ast.Diagnostic{}, false
 		}
 		curTol := tol[cur]
 		if curTol == nil {
@@ -230,13 +230,14 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (api.Error, bool)
 		}
 	}
 	if len(disagree) == 0 {
-		return api.Error{}, false
+		return ast.Diagnostic{}, false
 	}
 
-	return api.Error{
-		Code:    codeInvalidSellGains,
-		Span:    diagSpan(t, trigger),
-		Message: fmt.Sprintf("Invalid price vs. proceeds for %s: %s", t.Date.Format("2006-01-02"), strings.Join(disagree, "; ")),
+	return ast.Diagnostic{
+		Code:     codeInvalidSellGains,
+		Span:     diagSpan(t, trigger),
+		Message:  fmt.Sprintf("Invalid price vs. proceeds for %s: %s", t.Date.Format("2006-01-02"), strings.Join(disagree, "; ")),
+		Severity: ast.Error,
 	}, true
 }
 

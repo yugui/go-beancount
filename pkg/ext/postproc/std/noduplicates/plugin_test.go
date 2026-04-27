@@ -13,10 +13,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
-// errorCmpOpts compares api.Error values structurally while leaving
+// diagCmpOpts compares ast.Diagnostic values structurally while leaving
 // the human-readable Message field to per-test substring assertions.
-var errorCmpOpts = cmp.Options{
-	cmpopts.IgnoreFields(api.Error{}, "Message"),
+var diagCmpOpts = cmp.Options{
+	cmpopts.IgnoreFields(ast.Diagnostic{}, "Message"),
 }
 
 // astCmpOpts is the standard option set for deep-comparing AST values.
@@ -96,8 +96,8 @@ func TestNoDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -123,13 +123,13 @@ func TestExactDuplicate(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := []api.Error{{Code: codeDuplicateTransaction, Span: txnSpan2}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: codeDuplicateTransaction, Span: txnSpan2}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 	wantMsg := "Duplicate transaction on 2024-01-01: same postings as earlier entry"
-	if got := res.Errors[0].Message; got != wantMsg {
-		t.Errorf("res.Errors[0].Message = %q, want %q", got, wantMsg)
+	if got := res.Diagnostics[0].Message; got != wantMsg {
+		t.Errorf("res.Diagnostics[0].Message = %q, want %q", got, wantMsg)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -154,8 +154,8 @@ func TestDifferentDates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (different dates); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (different dates); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -176,8 +176,8 @@ func TestDifferentAmounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (different amounts); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (different amounts); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -198,8 +198,8 @@ func TestDifferentAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (different accounts); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (different accounts); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -225,11 +225,11 @@ func TestThreeIdentical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []api.Error{
+	want := []ast.Diagnostic{
 		{Code: codeDuplicateTransaction, Span: txnSpan2},
 		{Code: codeDuplicateTransaction, Span: txnSpan3},
 	}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -252,8 +252,8 @@ func TestPostingOrderDoesNotMatter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []api.Error{{Code: codeDuplicateTransaction, Span: txnSpan2}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: codeDuplicateTransaction, Span: txnSpan2}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -278,8 +278,8 @@ func TestNarrationDifferenceIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []api.Error{{Code: codeDuplicateTransaction, Span: txnSpan2}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: codeDuplicateTransaction, Span: txnSpan2}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -303,11 +303,11 @@ func TestSpanAnchoring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if got := res.Errors[0].Span; got != txnSpan2 {
-		t.Errorf("res.Errors[0].Span = %#v, want txnSpan2 %#v", got, txnSpan2)
+	if got := res.Diagnostics[0].Span; got != txnSpan2 {
+		t.Errorf("res.Diagnostics[0].Span = %#v, want txnSpan2 %#v", got, txnSpan2)
 	}
 
 	// Zero-span path: the duplicate has a zero Span, so the diagnostic
@@ -326,11 +326,11 @@ func TestSpanAnchoring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res2.Errors) != 1 {
-		t.Fatalf("len(res2.Errors) = %d, want 1; errors = %v", len(res2.Errors), res2.Errors)
+	if len(res2.Diagnostics) != 1 {
+		t.Fatalf("len(res2.Diagnostics) = %d, want 1; errors = %v", len(res2.Diagnostics), res2.Diagnostics)
 	}
-	if got := res2.Errors[0].Span; got != testPluginDir.Span {
-		t.Errorf("res2.Errors[0].Span = %#v, want testPluginDir.Span %#v (fallback)", got, testPluginDir.Span)
+	if got := res2.Diagnostics[0].Span; got != testPluginDir.Span {
+		t.Errorf("res2.Diagnostics[0].Span = %#v, want testPluginDir.Span %#v (fallback)", got, testPluginDir.Span)
 	}
 }
 
@@ -346,8 +346,8 @@ func TestEmptyInput(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil for empty input", res.Directives)
 	}
-	if res.Errors != nil {
-		t.Errorf("res.Errors = %v, want nil for empty input", res.Errors)
+	if res.Diagnostics != nil {
+		t.Errorf("res.Diagnostics = %v, want nil for empty input", res.Diagnostics)
 	}
 }
 

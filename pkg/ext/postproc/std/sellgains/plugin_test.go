@@ -14,11 +14,11 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
-// errorCmpOpts compares api.Error values structurally while leaving
+// diagCmpOpts compares ast.Diagnostic values structurally while leaving
 // the human-readable Message field to per-test substring or byte-exact
 // assertions.
-var errorCmpOpts = cmp.Options{
-	cmpopts.IgnoreFields(api.Error{}, "Message"),
+var diagCmpOpts = cmp.Options{
+	cmpopts.IgnoreFields(ast.Diagnostic{}, "Message"),
 }
 
 // astCmpOpts is the standard option set for deep-comparing AST values.
@@ -123,8 +123,8 @@ func TestCleanSale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -149,15 +149,15 @@ func TestWrongProceedsAmount(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	want := []api.Error{{Code: codeInvalidSellGains, Span: txnSpan}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: codeInvalidSellGains, Span: txnSpan}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
-	if !strings.Contains(res.Errors[0].Message, "1999-07-31") {
-		t.Errorf("res.Errors[0].Message = %q, expected to mention transaction date 1999-07-31", res.Errors[0].Message)
+	if !strings.Contains(res.Diagnostics[0].Message, "1999-07-31") {
+		t.Errorf("res.Diagnostics[0].Message = %q, expected to mention transaction date 1999-07-31", res.Diagnostics[0].Message)
 	}
-	if !strings.Contains(res.Errors[0].Message, "USD") {
-		t.Errorf("res.Errors[0].Message = %q, expected to mention currency USD", res.Errors[0].Message)
+	if !strings.Contains(res.Diagnostics[0].Message, "USD") {
+		t.Errorf("res.Diagnostics[0].Message = %q, expected to mention currency USD", res.Diagnostics[0].Message)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil (diagnostic-only plugin)", res.Directives)
@@ -180,8 +180,8 @@ func TestMissingProceedsCurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := []api.Error{{Code: codeInvalidSellGains, Span: txnSpan}}
-	if diff := cmp.Diff(want, res.Errors, errorCmpOpts); diff != "" {
+	want := []ast.Diagnostic{{Code: codeInvalidSellGains, Span: txnSpan}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
 		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
 	}
 }
@@ -201,8 +201,8 @@ func TestNonSaleTxnIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -229,8 +229,8 @@ func TestCostWithoutPrice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -255,8 +255,8 @@ func TestMultipleSalesInOneTxn(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -269,8 +269,8 @@ func TestEmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.Errors != nil {
-		t.Errorf("res.Errors = %v, want nil for empty input", res.Errors)
+	if res.Diagnostics != nil {
+		t.Errorf("res.Diagnostics = %v, want nil for empty input", res.Diagnostics)
 	}
 	if res.Directives != nil {
 		t.Errorf("res.Directives = %v, want nil for empty input", res.Directives)
@@ -351,12 +351,12 @@ func TestExactMessageAssertion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 	wantMsg := "Invalid price vs. proceeds for 2024-08-15: USD: price=200.00 proceeds=250.00 diff=-50.00 tol=0.010"
-	if got := res.Errors[0].Message; got != wantMsg {
-		t.Errorf("res.Errors[0].Message = %q, want %q", got, wantMsg)
+	if got := res.Diagnostics[0].Message; got != wantMsg {
+		t.Errorf("res.Diagnostics[0].Message = %q, want %q", got, wantMsg)
 	}
 }
 
@@ -381,11 +381,11 @@ func TestSpanFallbackToPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(res.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 1; errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if got := res.Errors[0].Span; got != testPluginDir.Span {
-		t.Errorf("res.Errors[0].Span = %#v, want testPluginDir.Span %#v (fallback)", got, testPluginDir.Span)
+	if got := res.Diagnostics[0].Span; got != testPluginDir.Span {
+		t.Errorf("res.Diagnostics[0].Span = %#v, want testPluginDir.Span %#v (fallback)", got, testPluginDir.Span)
 	}
 }
 
@@ -410,7 +410,7 @@ func TestIncomePostingExcluded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 (Income postings must be excluded); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (Income postings must be excluded); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
