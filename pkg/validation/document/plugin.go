@@ -40,7 +40,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, nil
 	}
 
-	var errs []api.Error
+	var diags []ast.Diagnostic
 	for _, d := range in.Directives {
 		doc, ok := d.(*ast.Document)
 		if !ok {
@@ -48,14 +48,14 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		}
 		path := resolvePath(doc.Path, doc.Span.Start.Filename)
 		if _, err := os.Stat(path); err != nil {
-			errs = append(errs, api.Error{
+			diags = append(diags, ast.Diagnostic{
 				Code:    CodeDocumentMissing,
 				Span:    doc.Span,
 				Message: fmt.Sprintf("document %q does not exist", path),
 			})
 		}
 	}
-	return api.Result{Errors: errs}, nil
+	return api.Result{Diagnostics: diags}, nil
 }
 
 // resolvePath resolves docPath to an absolute path. If docPath is already

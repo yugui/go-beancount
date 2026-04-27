@@ -7,7 +7,6 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
-	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
@@ -52,7 +51,7 @@ func (*transactionBalances) Name() string { return "transaction_balances" }
 // check_balance control flow: count auto-postings, compute per-currency
 // weight sums, infer tolerance, and emit at most one diagnostic per
 // failure mode.
-func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
+func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 	txn, ok := d.(*ast.Transaction)
 	if !ok {
 		return nil
@@ -69,14 +68,14 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 		}
 		w, cur, err := inventory.PostingWeight(p)
 		if err != nil {
-			return []api.Error{{
+			return []ast.Diagnostic{{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
 				Message: fmt.Sprintf("failed to compute posting weight: %v", err),
 			}}
 		}
 		if err := sums.add(cur, w); err != nil {
-			return []api.Error{{
+			return []ast.Diagnostic{{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
 				Message: fmt.Sprintf("failed to accumulate posting weight: %v", err),
@@ -85,7 +84,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 	}
 
 	if autoCount > 1 {
-		return []api.Error{{
+		return []ast.Diagnostic{{
 			Code:    string(validation.CodeMultipleAutoPostings),
 			Span:    txn.Span,
 			Message: fmt.Sprintf("transaction has %d auto-balanced postings; at most one is allowed", autoCount),
@@ -95,7 +94,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 	nonZero := sums.nonZeroCurrencies()
 	tolerances, err := tolerance.Infer(txn.Postings, v.opts, nonZero)
 	if err != nil {
-		return []api.Error{{
+		return []ast.Diagnostic{{
 			Code:    string(validation.CodeInternalError),
 			Span:    txn.Span,
 			Message: fmt.Sprintf("failed to derive transaction tolerance: %v", err),
@@ -106,7 +105,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 	for _, cur := range nonZero {
 		within, err := withinTolerance(sums[cur], tolerances[cur])
 		if err != nil {
-			return []api.Error{{
+			return []ast.Diagnostic{{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
 				Message: fmt.Sprintf("failed to evaluate balance tolerance: %v", err),
@@ -125,7 +124,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 		case 0, 1:
 			return nil
 		default:
-			return []api.Error{{
+			return []ast.Diagnostic{{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
 				Message: fmt.Sprintf("cannot infer auto-posting amount: residual has %d non-zero currencies (%v)", len(residual), residual),
@@ -136,7 +135,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 	// No auto-postings: any residual currency means the transaction is
 	// unbalanced.
 	if len(residual) > 0 {
-		return []api.Error{{
+		return []ast.Diagnostic{{
 			Code:    string(validation.CodeUnbalancedTransaction),
 			Span:    txn.Span,
 			Message: fmt.Sprintf("transaction does not balance: non-zero residual in %v", residual),
@@ -147,7 +146,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []api.Error {
 
 // Finish has no deferred diagnostics: all balance checks are
 // per-directive and emit eagerly.
-func (*transactionBalances) Finish() []api.Error { return nil }
+func (*transactionBalances) Finish() []ast.Diagnostic { return nil }
 
 // currencySum accumulates signed per-currency totals. A nil currencySum
 // panics on write; always initialise with make(currencySum). It is a

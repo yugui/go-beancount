@@ -14,12 +14,12 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
 
-// errorCmpOpts compares api.Error values structurally while leaving
+// diagCmpOpts compares ast.Diagnostic values structurally while leaving
 // the human-readable Message field to the test's own substring
 // assertions. This keeps strict assertions on Code and Span (the
 // programmable contract) without coupling tests to exact wording.
-var errorCmpOpts = cmp.Options{
-	cmpopts.IgnoreFields(api.Error{}, "Message"),
+var diagCmpOpts = cmp.Options{
+	cmpopts.IgnoreFields(ast.Diagnostic{}, "Message"),
 }
 
 // testPluginDir is a non-zero *ast.Plugin shared by every error-path
@@ -53,7 +53,7 @@ func amt(n int64, cur string) ast.Amount {
 	return ast.Amount{Number: d, Currency: cur}
 }
 
-// assertErrors compares got against want using errorCmpOpts (which
+// assertDiagnostics compares got against want using diagCmpOpts (which
 // ignores Message). The parameter order follows the standard Go test
 // idiom of "actual first, expected second"; internally the helper
 // passes them to cmp.Diff in (want, got) order so the (-want +got)
@@ -62,10 +62,10 @@ func amt(n int64, cur string) ast.Amount {
 // per-position substring checks on Message — tests that need to keep
 // going past a structural mismatch should call cmp.Diff inline with
 // t.Errorf and an explicit length guard instead.
-func assertErrors(t *testing.T, got, want []api.Error) {
+func assertDiagnostics(t *testing.T, got, want []ast.Diagnostic) {
 	t.Helper()
-	if diff := cmp.Diff(want, got, errorCmpOpts); diff != "" {
-		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(want, got, diagCmpOpts); diff != "" {
+		t.Fatalf("apply diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -89,10 +89,10 @@ func TestMissingCommodityInTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertErrors(t, res.Errors, []api.Error{{Code: "missing-commodity", Span: testPluginDir.Span}})
+	assertDiagnostics(t, res.Diagnostics, []ast.Diagnostic{{Code: "missing-commodity", Span: testPluginDir.Span}})
 
-	if got := res.Errors[0].Message; !strings.Contains(got, "USD") {
-		t.Errorf("apply errors[0].Message = %q, want it to mention USD", got)
+	if got := res.Diagnostics[0].Message; !strings.Contains(got, "USD") {
+		t.Errorf("apply diagnostics[0].Message = %q, want it to mention USD", got)
 	}
 }
 
@@ -119,8 +119,8 @@ func TestDeclaredCommoditySilencesError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -140,9 +140,9 @@ func TestPriceContextReported(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertErrors(t, res.Errors, []api.Error{{Code: "missing-commodity", Span: testPluginDir.Span}})
+	assertDiagnostics(t, res.Diagnostics, []ast.Diagnostic{{Code: "missing-commodity", Span: testPluginDir.Span}})
 
-	got := res.Errors[0].Message
+	got := res.Diagnostics[0].Message
 	if !strings.Contains(got, "HOOL") {
 		t.Errorf("got.Message = %q, want it to mention HOOL", got)
 	}
@@ -178,7 +178,7 @@ func TestMissingReportedOncePerCurrency(t *testing.T) {
 	}
 	// Exactly one error per currency: HOOL appears in three places
 	// but only the first sorted (account, currency) occurrence emits.
-	assertErrors(t, res.Errors, []api.Error{{Code: "missing-commodity", Span: testPluginDir.Span}})
+	assertDiagnostics(t, res.Diagnostics, []ast.Diagnostic{{Code: "missing-commodity", Span: testPluginDir.Span}})
 }
 
 // TestIgnoreMapSuppresses: when every occurrence of a currency is
@@ -211,8 +211,8 @@ func TestIgnoreMapSuppresses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("len(res.Errors) = %d, want 0 with ignore map applied; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 with ignore map applied; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
 
@@ -245,9 +245,9 @@ func TestIgnoreMapPerPair(t *testing.T) {
 	// (Income:PnL, SPX_...) pair still triggers an error. Upstream's
 	// first pass short-circuits on the `issued` set only — not on
 	// `ignored`.
-	assertErrors(t, res.Errors, []api.Error{{Code: "missing-commodity", Span: testPluginDir.Span}})
-	if !strings.Contains(res.Errors[0].Message, "Income:PnL") {
-		t.Errorf("res.Errors[0].Message = %q, want it to cite Income:PnL", res.Errors[0].Message)
+	assertDiagnostics(t, res.Diagnostics, []ast.Diagnostic{{Code: "missing-commodity", Span: testPluginDir.Span}})
+	if !strings.Contains(res.Diagnostics[0].Message, "Income:PnL") {
+		t.Errorf("res.Diagnostics[0].Message = %q, want it to cite Income:PnL", res.Diagnostics[0].Message)
 	}
 }
 
@@ -270,7 +270,7 @@ func TestInvalidJSONConfigFatal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertErrors(t, res.Errors, []api.Error{{Code: "invalid-config", Span: testPluginDir.Span}})
+	assertDiagnostics(t, res.Diagnostics, []ast.Diagnostic{{Code: "invalid-config", Span: testPluginDir.Span}})
 }
 
 // TestInvalidRegexpSkipsPair: a malformed regex emits an
@@ -302,7 +302,7 @@ func TestInvalidRegexpSkipsPair(t *testing.T) {
 	}
 	sawInvalidRegexp := false
 	sawMissing := false
-	for _, e := range res.Errors {
+	for _, e := range res.Diagnostics {
 		switch e.Code {
 		case "invalid-regexp":
 			sawInvalidRegexp = true
@@ -314,15 +314,15 @@ func TestInvalidRegexpSkipsPair(t *testing.T) {
 		}
 	}
 	if !sawInvalidRegexp {
-		t.Errorf("apply errors = %v, want at least one invalid-regexp diagnostic", res.Errors)
+		t.Errorf("apply diagnostics = %v, want at least one invalid-regexp diagnostic", res.Diagnostics)
 	}
 	if sawMissing {
-		t.Errorf("apply emitted missing-commodity, want it suppressed by the valid ignore pair; errors = %v", res.Errors)
+		t.Errorf("apply emitted missing-commodity, want it suppressed by the valid ignore pair; diagnostics = %v", res.Diagnostics)
 	}
 }
 
 // TestDeterministicOrder: three undeclared currencies used in accounts
-// whose names sort non-alphabetically yield errors in (account,
+// whose names sort non-alphabetically yield diagnostics in (account,
 // currency) lexicographic order.
 func TestDeterministicOrder(t *testing.T) {
 	a := amt(1, "JPY")
@@ -350,27 +350,27 @@ func TestDeterministicOrder(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Inline cmp.Diff with t.Errorf (instead of assertErrors) so a
+	// Inline cmp.Diff with t.Errorf (instead of assertDiagnostics) so a
 	// count mismatch on the structural check does not suppress the
 	// independent per-position ordering check below.
-	wantErr := api.Error{Code: "missing-commodity", Span: testPluginDir.Span}
-	wantErrors := []api.Error{wantErr, wantErr, wantErr}
-	if diff := cmp.Diff(wantErrors, res.Errors, errorCmpOpts); diff != "" {
-		t.Errorf("apply errors mismatch (-want +got):\n%s", diff)
+	wantDiag := ast.Diagnostic{Code: "missing-commodity", Span: testPluginDir.Span}
+	wantDiags := []ast.Diagnostic{wantDiag, wantDiag, wantDiag}
+	if diff := cmp.Diff(wantDiags, res.Diagnostics, diagCmpOpts); diff != "" {
+		t.Errorf("apply diagnostics mismatch (-want +got):\n%s", diff)
 	}
 
 	// Sort key is (account, currency): "Assets:A" < "Assets:M" <
-	// "Assets:Z", so errors must appear in EUR, CAD, JPY currency
+	// "Assets:Z", so diagnostics must appear in EUR, CAD, JPY currency
 	// order (EUR lives on Assets:A, CAD on Assets:M, JPY on Assets:Z).
-	// api.Error has no structured currency field, so the
+	// ast.Diagnostic has no structured currency field, so the
 	// per-position assertion substring-matches Message.
 	wantCurrencies := []string{"EUR", "CAD", "JPY"}
-	if len(res.Errors) < len(wantCurrencies) {
-		t.Fatalf("len(res.Errors) = %d, want >= %d for ordering check", len(res.Errors), len(wantCurrencies))
+	if len(res.Diagnostics) < len(wantCurrencies) {
+		t.Fatalf("len(res.Diagnostics) = %d, want >= %d for ordering check", len(res.Diagnostics), len(wantCurrencies))
 	}
 	for i, want := range wantCurrencies {
-		if !strings.Contains(res.Errors[i].Message, want) {
-			t.Errorf("res.Errors[%d].Message = %q, want it to mention %q", i, res.Errors[i].Message, want)
+		if !strings.Contains(res.Diagnostics[i].Message, want) {
+			t.Errorf("res.Diagnostics[%d].Message = %q, want it to mention %q", i, res.Diagnostics[i].Message, want)
 		}
 	}
 }
@@ -389,7 +389,7 @@ func TestOpenCurrenciesChecked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	assertErrors(t, res.Errors, []api.Error{{Code: "missing-commodity", Span: testPluginDir.Span}})
+	assertDiagnostics(t, res.Diagnostics, []ast.Diagnostic{{Code: "missing-commodity", Span: testPluginDir.Span}})
 }
 
 // TestAccountReportSuppressesPrice: a currency that appears in both an
@@ -422,9 +422,9 @@ func TestAccountReportSuppressesPrice(t *testing.T) {
 
 	// The plugin must report HOOL exactly once (in the
 	// account-context pass).
-	assertErrors(t, res.Errors, []api.Error{{Code: "missing-commodity", Span: testPluginDir.Span}})
-	if !strings.Contains(res.Errors[0].Message, "Assets:Broker") {
-		t.Errorf("res.Errors[0].Message = %q, want it to cite the account context, not Price Directive Context", res.Errors[0].Message)
+	assertDiagnostics(t, res.Diagnostics, []ast.Diagnostic{{Code: "missing-commodity", Span: testPluginDir.Span}})
+	if !strings.Contains(res.Diagnostics[0].Message, "Assets:Broker") {
+		t.Errorf("res.Diagnostics[0].Message = %q, want it to cite the account context, not Price Directive Context", res.Diagnostics[0].Message)
 	}
 }
 

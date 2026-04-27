@@ -21,9 +21,14 @@ type Span struct {
 	End   Position
 }
 
-// Severity indicates the severity of a diagnostic.
+// Severity indicates the severity of a diagnostic. The zero value is
+// [Error], so [Diagnostic] literals that omit Severity default to error
+// severity.
 type Severity int
 
+// Error must keep iota value 0 so [Diagnostic]'s zero value defaults to
+// error severity. Reordering or inserting a constant before Error would
+// silently flip the meaning of every Diagnostic literal in the codebase.
 const (
 	// Error indicates a fatal problem.
 	Error Severity = iota
@@ -31,8 +36,20 @@ const (
 	Warning
 )
 
-// Diagnostic represents a problem found during CST→AST lowering.
+// Diagnostic is the unified ledger-level problem report. It carries
+// every issue attributable to ledger contents — parse errors, lowering
+// failures, include resolution problems, validation failures, and
+// plugin-emitted findings — so callers see one channel of diagnostics
+// rather than several.
+//
+// Code is an optional machine-readable classifier (e.g. "balance-mismatch",
+// "plugin-not-registered"). The empty string is permitted for
+// diagnostics that have no useful classification. Severity indicates
+// whether the diagnostic is fatal (Error) or advisory (Warning); the
+// zero value is Error so freshly constructed diagnostics default to
+// error severity.
 type Diagnostic struct {
+	Code     string
 	Span     Span
 	Message  string
 	Severity Severity

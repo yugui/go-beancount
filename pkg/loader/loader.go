@@ -17,14 +17,39 @@
 //     pre-directive built-ins, then directive-specified plugins, then
 //     pad → balance → validations.
 //
+// # Return-value contract
+//
+// All three entry points return a (*ast.Ledger, error) pair with a
+// disciplined split of responsibilities:
+//
+//   - The returned [ast.Ledger] is the unified channel for every problem
+//     attributable to the ledger contents itself: parse and lowering
+//     failures, include resolution, plugin diagnostics, and the
+//     pad/balance/validations pipeline. Each finding is recorded as an
+//     [ast.Diagnostic] in [ast.Ledger.Diagnostics] with a Code, Span,
+//     Message, and Severity.
+//   - The returned error is reserved for failures that are NOT explained
+//     by the ledger's contents: I/O failures from a caller-supplied
+//     io.Reader, OS-level path resolution failures, and context
+//     cancellation. Callers can use [errors.Is] against
+//     [context.Canceled] or [context.DeadlineExceeded] to classify
+//     cancellation.
+//
+// Errors from the pre-pipeline parse stage (e.g. [ast.LoadReader] /
+// [ast.LoadFile] I/O failures) return a nil ledger because no ledger
+// could be constructed. Errors that arise from the plugin pipeline —
+// either ctx cancellation or a plugin runtime failure — return the
+// partially-processed ledger alongside the error so callers can inspect
+// any diagnostics accumulated before the halt.
+//
 // Example:
 //
-//	ledger, errs, err := loader.LoadFile(ctx, "main.beancount")
+//	ledger, err := loader.LoadFile(ctx, "main.beancount")
 //	if err != nil {
 //	    log.Fatal(err)
 //	}
-//	for _, e := range errs {
-//	    log.Println(e)
+//	for _, d := range ledger.Diagnostics {
+//	    log.Println(d.Message)
 //	}
 package loader
 
@@ -59,93 +84,91 @@ var postBuiltins = []api.Plugin{
 
 // Load parses src via [ast.Load] and applies the plugin pipeline.
 // See the package documentation for the pipeline and return-value contract.
-func Load(ctx context.Context, src string, opts ...Option) (*ast.Ledger, []api.Error, error) {
+func Load(ctx context.Context, src string, opts ...Option) (*ast.Ledger, error) {
 	ledger, err := ast.Load(src, opts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	return runPipeline(ctx, ledger)
 }
 
 // LoadReader parses r via [ast.LoadReader] and applies the plugin pipeline.
-func LoadReader(ctx context.Context, r io.Reader, opts ...Option) (*ast.Ledger, []api.Error, error) {
+// See the package documentation for the pipeline and return-value contract.
+func LoadReader(ctx context.Context, r io.Reader, opts ...Option) (*ast.Ledger, error) {
 	ledger, err := ast.LoadReader(r, opts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	return runPipeline(ctx, ledger)
 }
 
 // LoadFile parses path via [ast.LoadFile] and applies the plugin pipeline.
-func LoadFile(ctx context.Context, path string, opts ...Option) (*ast.Ledger, []api.Error, error) {
+// See the package documentation for the pipeline and return-value contract.
+func LoadFile(ctx context.Context, path string, opts ...Option) (*ast.Ledger, error) {
 	ledger, err := ast.LoadFile(path, opts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	return runPipeline(ctx, ledger)
 }
 
-// runPipeline applies the plugin pipeline to a freshly loaded ledger and
-// returns the processed ledger together with plugin diagnostics. Plugin
-// errors surface in the []api.Error slice; the returned error is always
-// nil (load failures are handled by the caller).
-func runPipeline(ctx context.Context, ledger *ast.Ledger) (*ast.Ledger, []api.Error, error) {
-
+// runPipeline applies the plugin pipeline to a freshly loaded ledger.
+// Diagnostics are written into [ast.Ledger.Diagnostics] by the runner
+// and built-in helpers themselves; this function only forwards the
+// system-level error from the pipeline (plugin runtime failure or ctx
+// cancellation) and returns the ledger alongside it so callers can
+// inspect partial results.
+func runPipeline(ctx context.Context, ledger *ast.Ledger) (*ast.Ledger, error) {
 	rawOpts := options.BuildRaw(ledger)
-
-	var errs []api.Error
 	if rawOpts["plugin_processing_mode"] == "raw" {
-		errs = postproc.Apply(ctx, ledger)
-	} else {
-		errs = applyDefault(ctx, ledger, rawOpts)
+		return ledger, postproc.Apply(ctx, ledger)
 	}
-
-	return ledger, errs, nil
+	return ledger, applyDefault(ctx, ledger, rawOpts)
 }
 
 // applyDefault runs the default pipeline:
 //  1. preBuiltins: document directory scanning and file-existence verification
 //  2. directive-specified plugins via the global registry
 //  3. postBuiltins: pad → balance → validations
-func applyDefault(ctx context.Context, ledger *ast.Ledger, opts map[string]string) []api.Error {
-	var errs []api.Error
-
+//
+// Each step halts on the first system-level error and propagates it to
+// the caller; subsequent steps are skipped.
+func applyDefault(ctx context.Context, ledger *ast.Ledger, opts map[string]string) error {
 	for _, p := range preBuiltins {
-		if ctx.Err() != nil {
-			return errs
+		if err := runBuiltin(ctx, ledger, opts, p); err != nil {
+			return err
 		}
-		errs = append(errs, runBuiltin(ctx, ledger, opts, p)...)
 	}
-
-	if ctx.Err() != nil {
-		return errs
+	if err := postproc.Apply(ctx, ledger); err != nil {
+		return err
 	}
-	errs = append(errs, postproc.Apply(ctx, ledger)...)
-
 	for _, p := range postBuiltins {
-		if ctx.Err() != nil {
-			return errs
+		if err := runBuiltin(ctx, ledger, opts, p); err != nil {
+			return err
 		}
-		errs = append(errs, runBuiltin(ctx, ledger, opts, p)...)
 	}
-
-	return errs
+	return nil
 }
 
-// runBuiltin applies a single built-in plugin and commits any ledger changes.
-func runBuiltin(ctx context.Context, ledger *ast.Ledger, opts map[string]string, p api.Plugin) []api.Error {
+// runBuiltin applies a single built-in plugin: it commits any returned
+// Directives to the ledger and appends any returned Diagnostics to
+// [ast.Ledger.Diagnostics]. A non-nil error from the plugin is treated
+// as a system-level failure and returned wrapped with a "built-in
+// plugin" prefix; ctx cancellation is also propagated.
+func runBuiltin(ctx context.Context, ledger *ast.Ledger, opts map[string]string, p api.Plugin) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	res, err := p.Apply(ctx, api.Input{
 		Directives: ledger.All(),
 		Options:    opts,
 	})
 	if err != nil {
-		return []api.Error{{
-			Code:    "plugin-failed",
-			Message: fmt.Sprintf("built-in plugin: %v", err),
-		}}
+		return fmt.Errorf("built-in plugin: %w", err)
 	}
+	ledger.Diagnostics = append(ledger.Diagnostics, res.Diagnostics...)
 	if res.Directives != nil {
 		ledger.ReplaceAll(res.Directives)
 	}
-	return res.Errors
+	return nil
 }

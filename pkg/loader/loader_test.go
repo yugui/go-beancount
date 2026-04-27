@@ -20,16 +20,13 @@ const minimalSrc = `2024-01-01 open Assets:Bank USD
 
 func TestLoad_String(t *testing.T) {
 	ctx := context.Background()
-	ledger, errs, err := loader.Load(ctx, minimalSrc)
+	ledger, err := loader.Load(ctx, minimalSrc)
 	if err != nil {
 		t.Fatalf("loader.Load: %v", err)
 	}
-	if len(errs) != 0 {
-		t.Errorf("plugin errors: %v", errs)
-	}
 	for _, d := range ledger.Diagnostics {
 		if d.Severity == ast.Error {
-			t.Errorf("unexpected diagnostic: %s", d.Message)
+			t.Errorf("Load returned unexpected diagnostic: %s", d.Message)
 		}
 	}
 	if got := ledger.Len(); got != 3 {
@@ -46,12 +43,18 @@ func TestLoadReader_RunsPlugins(t *testing.T) {
   Equity:Opening     -50 USD
 `
 	ctx := context.Background()
-	_, errs, err := loader.LoadReader(ctx, strings.NewReader(src))
+	ledger, err := loader.LoadReader(ctx, strings.NewReader(src))
 	if err != nil {
 		t.Fatalf("loader.LoadReader: %v", err)
 	}
-	if len(errs) == 0 {
-		t.Fatal("expected at least one plugin error for unbalanced transaction")
+	var errCount int
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			errCount++
+		}
+	}
+	if errCount == 0 {
+		t.Fatal("expected at least one diagnostic for unbalanced transaction")
 	}
 }
 
@@ -63,12 +66,14 @@ func TestLoadFile_Equivalent(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	ledger, errs, err := loader.LoadFile(ctx, path)
+	ledger, err := loader.LoadFile(ctx, path)
 	if err != nil {
 		t.Fatalf("loader.LoadFile: %v", err)
 	}
-	if len(errs) != 0 {
-		t.Errorf("plugin errors: %v", errs)
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Errorf("LoadFile returned unexpected diagnostic: %s", d.Message)
+		}
 	}
 	if got := ledger.Len(); got != 3 {
 		t.Errorf("Directives count = %d, want 3", got)

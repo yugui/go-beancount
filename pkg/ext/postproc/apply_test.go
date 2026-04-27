@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
@@ -69,9 +70,11 @@ func TestApply_NoPluginDirectives(t *testing.T) {
 	)
 	lenBefore := l.Len()
 
-	errs := Apply(context.Background(), l)
-	if len(errs) != 0 {
-		t.Errorf("Apply returned %d errors, want 0", len(errs))
+	if err := Apply(context.Background(), l); err != nil {
+		t.Errorf("Apply returned error %v, want nil", err)
+	}
+	if got := len(l.Diagnostics); got != 0 {
+		t.Errorf("ledger.Diagnostics len = %d, want 0", got)
 	}
 	if l.Len() != lenBefore {
 		t.Errorf("Len = %d, want %d", l.Len(), lenBefore)
@@ -94,9 +97,11 @@ func TestApply_DiagnosticPluginNoChange(t *testing.T) {
 	)
 	lenBefore := l.Len()
 
-	errs := Apply(context.Background(), l)
-	if len(errs) != 0 {
-		t.Errorf("Apply returned %d errors, want 0", len(errs))
+	if err := Apply(context.Background(), l); err != nil {
+		t.Errorf("Apply returned error %v, want nil", err)
+	}
+	if got := len(l.Diagnostics); got != 0 {
+		t.Errorf("ledger.Diagnostics len = %d, want 0", got)
 	}
 	if l.Len() != lenBefore {
 		t.Errorf("Len = %d, want %d", l.Len(), lenBefore)
@@ -125,9 +130,8 @@ func TestApply_AdditivePlugin(t *testing.T) {
 	)
 	lenBefore := l.Len()
 
-	errs := Apply(context.Background(), l)
-	if len(errs) != 0 {
-		t.Errorf("Apply returned %d errors, want 0", len(errs))
+	if err := Apply(context.Background(), l); err != nil {
+		t.Errorf("Apply returned error %v, want nil", err)
 	}
 	if l.Len() != lenBefore+1 {
 		t.Errorf("Len = %d, want %d", l.Len(), lenBefore+1)
@@ -182,9 +186,8 @@ func TestApply_ModifyPlugin(t *testing.T) {
 		origTx,
 	)
 
-	errs := Apply(context.Background(), l)
-	if len(errs) != 0 {
-		t.Errorf("Apply returned %d errors, want 0", len(errs))
+	if err := Apply(context.Background(), l); err != nil {
+		t.Errorf("Apply returned error %v, want nil", err)
 	}
 	// Find the transaction in the ledger.
 	for _, d := range l.All() {
@@ -221,9 +224,8 @@ func TestApply_DeletePlugin(t *testing.T) {
 		price,
 	)
 
-	errs := Apply(context.Background(), l)
-	if len(errs) != 0 {
-		t.Errorf("Apply returned %d errors, want 0", len(errs))
+	if err := Apply(context.Background(), l); err != nil {
+		t.Errorf("Apply returned error %v, want nil", err)
 	}
 	for _, d := range l.All() {
 		if _, ok := d.(*ast.Price); ok {
@@ -240,8 +242,8 @@ func TestApply_ConfigPassThrough(t *testing.T) {
 		&ast.Plugin{Name: "example.com/fake/cfg", Config: "my-config-value"},
 	)
 
-	if errs := Apply(context.Background(), l); len(errs) != 0 {
-		t.Fatalf("Apply returned unexpected errors: %v", errs)
+	if err := Apply(context.Background(), l); err != nil {
+		t.Fatalf("Apply returned unexpected error: %v", err)
 	}
 
 	if len(fake.calls) != 1 {
@@ -284,8 +286,8 @@ func TestApply_SeesPriorPluginOutput(t *testing.T) {
 		&ast.Plugin{Name: "example.com/fake/second"},
 	)
 
-	if errs := Apply(context.Background(), l); len(errs) != 0 {
-		t.Fatalf("Apply returned unexpected errors: %v", errs)
+	if err := Apply(context.Background(), l); err != nil {
+		t.Fatalf("Apply returned unexpected error: %v", err)
 	}
 
 	if !secondSawSentinel {
@@ -293,6 +295,9 @@ func TestApply_SeesPriorPluginOutput(t *testing.T) {
 	}
 }
 
+// TestApply_UnknownPlugin verifies that a `plugin "..."` directive whose
+// name has no registered implementation is reported as a Diagnostic on
+// the ledger (not a system-level error) and the pipeline continues.
 func TestApply_UnknownPlugin(t *testing.T) {
 	withCleanRegistry(t)
 
@@ -302,47 +307,61 @@ func TestApply_UnknownPlugin(t *testing.T) {
 	}
 	l := newLedger(pd)
 
-	errs := Apply(context.Background(), l)
-	if len(errs) != 1 {
-		t.Fatalf("Apply returned %d errors, want 1", len(errs))
+	if err := Apply(context.Background(), l); err != nil {
+		t.Errorf("Apply returned error %v, want nil (unknown plugin is a ledger-content issue)", err)
 	}
-	if errs[0].Code != "plugin-not-registered" {
-		t.Errorf("Code = %q, want %q", errs[0].Code, "plugin-not-registered")
+	if len(l.Diagnostics) != 1 {
+		t.Fatalf("ledger.Diagnostics len = %d, want 1", len(l.Diagnostics))
 	}
-	if errs[0].Span != pd.Span {
-		t.Errorf("Span = %v, want %v", errs[0].Span, pd.Span)
+	want := ast.Diagnostic{
+		Code:    "plugin-not-registered",
+		Span:    pd.Span,
+		Message: `plugin "missing" is not registered`,
+	}
+	if diff := cmp.Diff(want, l.Diagnostics[0]); diff != "" {
+		t.Errorf("Diagnostics[0] mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func TestApply_PluginReportedErrors(t *testing.T) {
-	pluginErr := api.Error{
+// TestApply_PluginReportedDiagnostics verifies that diagnostics returned
+// in api.Result.Diagnostics land on ledger.Diagnostics (not on the
+// runner's return value).
+func TestApply_PluginReportedDiagnostics(t *testing.T) {
+	pluginDiag := ast.Diagnostic{
 		Code:    "custom-check",
 		Message: "something is wrong",
 	}
 	fake := &fakePlugin{
 		name: "example.com/fake/reporter",
 		onApply: func(_ api.Input) (api.Result, error) {
-			return api.Result{Errors: []api.Error{pluginErr}}, nil
+			return api.Result{Diagnostics: []ast.Diagnostic{pluginDiag}}, nil
 		},
 	}
 	registerFake(t, fake)
 
 	l := newLedger(&ast.Plugin{Name: "example.com/fake/reporter"})
 
-	errs := Apply(context.Background(), l)
-	if len(errs) != 1 {
-		t.Fatalf("Apply returned %d errors, want 1", len(errs))
+	if err := Apply(context.Background(), l); err != nil {
+		t.Fatalf("Apply returned unexpected error: %v", err)
 	}
-	if errs[0] != pluginErr {
-		t.Errorf("error = %v, want %v", errs[0], pluginErr)
+	if len(l.Diagnostics) != 1 {
+		t.Fatalf("ledger.Diagnostics len = %d, want 1", len(l.Diagnostics))
+	}
+	if diff := cmp.Diff(pluginDiag, l.Diagnostics[0]); diff != "" {
+		t.Errorf("Apply() Diagnostics[0] mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func TestApply_PluginReturnedErrorContinues(t *testing.T) {
+// TestApply_PluginErrorHalts verifies that a non-nil error from a
+// plugin's Apply halts the pipeline immediately: subsequent plugins do
+// NOT run, and the error is wrapped with the failing plugin's name and
+// returned to the caller. errors.Is must observe the original cause.
+func TestApply_PluginErrorHalts(t *testing.T) {
+	cause := errors.New("boom")
 	failing := &fakePlugin{
 		name: "example.com/fake/failing",
 		onApply: func(_ api.Input) (api.Result, error) {
-			return api.Result{}, errors.New("boom")
+			return api.Result{}, cause
 		},
 	}
 	second := &fakePlugin{name: "example.com/fake/successor"}
@@ -353,20 +372,18 @@ func TestApply_PluginReturnedErrorContinues(t *testing.T) {
 		&ast.Plugin{Name: "example.com/fake/successor"},
 	)
 
-	errs := Apply(context.Background(), l)
-	// Should have one plugin-failed error from the first.
-	var foundFailed bool
-	for _, e := range errs {
-		if e.Code == "plugin-failed" {
-			foundFailed = true
-		}
+	err := Apply(context.Background(), l)
+	if err == nil {
+		t.Fatal("Apply returned nil, want non-nil error from failing plugin")
 	}
-	if !foundFailed {
-		t.Error("Apply: no plugin-failed error found")
+	if !errors.Is(err, cause) {
+		t.Errorf("errors.Is(err, cause) = false, want true; err = %v", err)
 	}
-	// Second plugin should still have been called.
-	if len(second.calls) != 1 {
-		t.Errorf("Apply: second plugin called %d times, want 1", len(second.calls))
+	if len(second.calls) != 0 {
+		t.Errorf("successor plugin was called %d times, want 0 (pipeline must halt on first error)", len(second.calls))
+	}
+	if got := len(l.Diagnostics); got != 0 {
+		t.Errorf("ledger.Diagnostics len = %d, want 0 (system-level errors must not become diagnostics): %v", got, l.Diagnostics)
 	}
 }
 
@@ -380,8 +397,8 @@ func TestApply_OptionsSnapshotLastWins(t *testing.T) {
 		&ast.Plugin{Name: "example.com/fake/opts"},
 	)
 
-	if errs := Apply(context.Background(), l); len(errs) != 0 {
-		t.Fatalf("Apply returned unexpected errors: %v", errs)
+	if err := Apply(context.Background(), l); err != nil {
+		t.Fatalf("Apply returned unexpected error: %v", err)
 	}
 
 	if len(fake.calls) != 1 {
@@ -392,6 +409,9 @@ func TestApply_OptionsSnapshotLastWins(t *testing.T) {
 	}
 }
 
+// TestApply_CtxCanceledBeforeRun verifies that a canceled context halts
+// the pipeline before the first plugin runs and surfaces as a returned
+// error — cancellation does not become a diagnostic on the ledger.
 func TestApply_CtxCanceledBeforeRun(t *testing.T) {
 	fake := &fakePlugin{name: "example.com/fake/never"}
 	registerFake(t, fake)
@@ -401,12 +421,12 @@ func TestApply_CtxCanceledBeforeRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	errs := Apply(ctx, l)
-	if len(errs) != 1 {
-		t.Fatalf("Apply returned %d errors, want 1", len(errs))
+	err := Apply(ctx, l)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Apply err = %v, want context.Canceled", err)
 	}
-	if errs[0].Code != "plugin-canceled" {
-		t.Errorf("Code = %q, want %q", errs[0].Code, "plugin-canceled")
+	if len(l.Diagnostics) != 0 {
+		t.Errorf("ledger.Diagnostics = %v, want empty (cancellation must not become a diagnostic)", l.Diagnostics)
 	}
 	if len(fake.calls) != 0 {
 		t.Error("plugin was called despite canceled context")
@@ -443,8 +463,8 @@ func TestApply_IteratorIsLive(t *testing.T) {
 	)
 	lenBefore := l.Len()
 
-	if errs := Apply(context.Background(), l); len(errs) != 0 {
-		t.Fatalf("Apply returned unexpected errors: %v", errs)
+	if err := Apply(context.Background(), l); err != nil {
+		t.Fatalf("Apply returned unexpected error: %v", err)
 	}
 
 	// Second plugin should see the sentinel added by first.
@@ -488,10 +508,13 @@ plugin "example.com/fake/auto_open"
 		t.Fatalf("ast.LoadFile: %v", err)
 	}
 	lenBefore := ledger.Len()
+	diagsBefore := len(ledger.Diagnostics)
 
-	pluginErrs := Apply(context.Background(), ledger)
-	if len(pluginErrs) != 0 {
-		t.Errorf("Apply returned errors: %v", pluginErrs)
+	if err := Apply(context.Background(), ledger); err != nil {
+		t.Errorf("Apply returned error: %v", err)
+	}
+	if got := len(ledger.Diagnostics) - diagsBefore; got != 0 {
+		t.Errorf("Apply added %d diagnostics, want 0", got)
 	}
 	if ledger.Len() != lenBefore+1 {
 		t.Errorf("Apply: Len = %d, want %d", ledger.Len(), lenBefore+1)

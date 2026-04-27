@@ -15,8 +15,8 @@
 // Transaction posting's units/cost/price, a Balance assertion, or either
 // side of a Price directive, the plugin checks whether the ledger has a
 // Commodity directive declaring that currency. Missing declarations are
-// reported once per currency via api.Error with code
-// "missing-commodity". Errors are emitted first for
+// reported once per currency via [ast.Diagnostic] with code
+// "missing-commodity". Diagnostics are emitted first for
 // account-contextualized occurrences (sorted by (account, currency)) and
 // then for occurrences that only appear in Price directives, so errors
 // are deterministic and a currency already reported in an account
@@ -34,8 +34,8 @@
 // currency-regex. A pair matches an occurrence when both regexes match
 // at the start of the account and currency strings respectively
 // (matching Python `re.match` semantics). Invalid JSON or invalid
-// regexes surface as api.Error values with codes "invalid-config" and
-// "invalid-regexp"; invalid JSON aborts the plugin, an invalid regex
+// regexes surface as [ast.Diagnostic] values with codes "invalid-config"
+// and "invalid-regexp"; invalid JSON aborts the plugin, an invalid regex
 // only drops the offending pair.
 //
 // # Registered names

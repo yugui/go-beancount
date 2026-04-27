@@ -54,8 +54,8 @@ func TestPlugin_EmptyLedger(t *testing.T) {
 	if res.Directives != nil {
 		t.Errorf("Result.Directives = %v, want nil (plugin does not mutate the ledger)", res.Directives)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -83,8 +83,8 @@ func TestPlugin_BalanceMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -115,10 +115,10 @@ func TestPlugin_BalanceMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != string(validation.CodeBalanceMismatch) {
 		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
 	}
@@ -156,8 +156,8 @@ func TestPlugin_BalanceWithinTolerance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -200,8 +200,8 @@ func TestPlugin_MultipleAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 	}
 }
 
@@ -222,8 +222,8 @@ func TestPlugin_BalanceOnUnopenedAccount_NoError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Errors) != 0 {
-			t.Errorf("Result.Errors = %v, want empty", res.Errors)
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
 		}
 	})
 
@@ -238,10 +238,10 @@ func TestPlugin_BalanceOnUnopenedAccount_NoError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Errors) != 1 {
-			t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+		if len(res.Diagnostics) != 1 {
+			t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 		}
-		if got, want := res.Errors[0].Code, string(validation.CodeBalanceMismatch); got != want {
+		if got, want := res.Diagnostics[0].Code, string(validation.CodeBalanceMismatch); got != want {
 			t.Errorf("Code = %q, want %q (account-open diagnostics must NOT be emitted)", got, want)
 		}
 	})
@@ -276,8 +276,8 @@ func TestPlugin_ExplicitTolerance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty (diff 0.0009 within explicit tol 0.001)", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty (diff 0.0009 within explicit tol 0.001)", res.Diagnostics)
 	}
 }
 
@@ -319,8 +319,8 @@ func TestPlugin_AutoPostingInferredOnDifferentAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 0 {
-		t.Errorf("Result.Errors = %v, want empty (auto-posting should be inferred as -100 USD on Assets:Cash)", res.Errors)
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty (auto-posting should be inferred as -100 USD on Assets:Cash)", res.Diagnostics)
 	}
 }
 
@@ -361,17 +361,17 @@ func TestPlugin_AutoPostingNoInferenceWhenMultiCurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1 (only balUSD should mismatch); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1 (only balUSD should mismatch); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if got, want := res.Errors[0].Code, string(validation.CodeBalanceMismatch); got != want {
+	if got, want := res.Diagnostics[0].Code, string(validation.CodeBalanceMismatch); got != want {
 		t.Errorf("Code = %q, want %q", got, want)
 	}
 	// The running balance for (Assets:Cash, USD) must be 0 — the
 	// auto-posting was NOT inferred despite the USD residual.
 	wantMsg := "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD"
-	if res.Errors[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", res.Errors[0].Message, wantMsg)
+	if res.Diagnostics[0].Message != wantMsg {
+		t.Errorf("Message = %q, want %q", res.Diagnostics[0].Message, wantMsg)
 	}
 }
 
@@ -416,15 +416,15 @@ func TestPlugin_AutoPostingNoInferenceWhenMultipleAutos(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1 (only balCashNonZero should mismatch); errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1 (only balCashNonZero should mismatch); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	if got, want := res.Errors[0].Code, string(validation.CodeBalanceMismatch); got != want {
+	if got, want := res.Diagnostics[0].Code, string(validation.CodeBalanceMismatch); got != want {
 		t.Errorf("Code = %q, want %q", got, want)
 	}
 	wantMsg := "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD"
-	if res.Errors[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", res.Errors[0].Message, wantMsg)
+	if res.Diagnostics[0].Message != wantMsg {
+		t.Errorf("Message = %q, want %q", res.Diagnostics[0].Message, wantMsg)
 	}
 }
 
@@ -468,10 +468,10 @@ func TestPlugin_ToleranceMultiplierZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != string(validation.CodeBalanceMismatch) {
 		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
 	}
@@ -524,10 +524,10 @@ func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Errors) != 1 {
-			t.Fatalf("len(Result.Errors) = %d, want 1 (diff 0.009 exceeds default tol 0.005); errors = %v", len(res.Errors), res.Errors)
+		if len(res.Diagnostics) != 1 {
+			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (diff 0.009 exceeds default tol 0.005); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 		}
-		if got, want := res.Errors[0].Code, string(validation.CodeBalanceMismatch); got != want {
+		if got, want := res.Diagnostics[0].Code, string(validation.CodeBalanceMismatch); got != want {
 			t.Errorf("Code = %q, want %q", got, want)
 		}
 	})
@@ -556,8 +556,8 @@ func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Errors) != 0 {
-			t.Errorf("Result.Errors = %v, want empty (diff 0.009 within relaxed tol 0.02)", res.Errors)
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (diff 0.009 within relaxed tol 0.02)", res.Diagnostics)
 		}
 	})
 }
@@ -590,8 +590,8 @@ func TestPlugin_ExplicitToleranceZero(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Errors) != 0 {
-			t.Errorf("Result.Errors = %v, want empty (exact match must pass with tol=0)", res.Errors)
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (exact match must pass with tol=0)", res.Diagnostics)
 		}
 	})
 
@@ -620,10 +620,10 @@ func TestPlugin_ExplicitToleranceZero(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Errors) != 1 {
-			t.Fatalf("len(Result.Errors) = %d, want 1 (tol=0 must reject any non-zero diff); errors = %v", len(res.Errors), res.Errors)
+		if len(res.Diagnostics) != 1 {
+			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (tol=0 must reject any non-zero diff); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 		}
-		e := res.Errors[0]
+		e := res.Diagnostics[0]
 		if e.Code != string(validation.CodeBalanceMismatch) {
 			t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
 		}
@@ -679,8 +679,8 @@ func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Errors) != 0 {
-			t.Errorf("Result.Errors = %v, want empty (USD bucket must be isolated from EUR)", res.Errors)
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (USD bucket must be isolated from EUR)", res.Diagnostics)
 		}
 	})
 
@@ -722,10 +722,10 @@ func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Errors) != 1 {
-			t.Fatalf("len(Result.Errors) = %d, want 1 (only EUR assertion should fail); errors = %v", len(res.Errors), res.Errors)
+		if len(res.Diagnostics) != 1 {
+			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (only EUR assertion should fail); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 		}
-		e := res.Errors[0]
+		e := res.Diagnostics[0]
 		if e.Code != string(validation.CodeBalanceMismatch) {
 			t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
 		}
@@ -740,7 +740,7 @@ func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
 }
 
 // TestPlugin_OptionsFromRawParseError confirms malformed options
-// surface as api.Error{Code: "invalid-option"}, matching the
+// surface as ast.Diagnostic{Code: "invalid-option"}, matching the
 // validations plugin's contract.
 func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	in := api.Input{
@@ -752,10 +752,10 @@ func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Errors) != 1 {
-		t.Fatalf("len(Result.Errors) = %d, want 1; errors = %v", len(res.Errors), res.Errors)
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 	}
-	e := res.Errors[0]
+	e := res.Diagnostics[0]
 	if e.Code != "invalid-option" {
 		t.Errorf("Code = %q, want %q", e.Code, "invalid-option")
 	}
