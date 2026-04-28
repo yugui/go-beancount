@@ -22,7 +22,7 @@ func (k TriviaKind) String() string {
 	if int(k) < len(triviaKindNames) {
 		return triviaKindNames[k]
 	}
-	return "UnknownTrivia"
+	return "UNKNOWN"
 }
 
 // Trivia represents whitespace or comment attached to a token.

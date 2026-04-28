@@ -1,3 +1,8 @@
+// Package syntax provides a concrete syntax tree (CST) representation of
+// beancount source along with the lexer and parser that build it. The CST
+// preserves every byte of input — comments, whitespace, and even malformed
+// regions — so the same tree can drive both formatting and downstream
+// semantic analysis.
 package syntax
 
 // File is the root of the concrete syntax tree.
