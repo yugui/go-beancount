@@ -49,12 +49,16 @@
 //     HTTP errors. The 429-recovery path doubles as a back-stop
 //     behind RateLimit when the limiter's calibration is loose.
 //
-//   - Cache memoises returned Price values by (Date.UTC, Commodity,
-//     Amount.Currency). When a source whose first call returns a
-//     many-pair batch (ECB is the canonical example) is hit again
-//     for a different pair on the same day, the cache splits the
-//     batch into already-known and missing portions and only the
-//     missing portion is forwarded.
+//   - QuoteCache is a storage primitive — not a decorator — that a
+//     source uses internally to memoise per-quote values keyed on
+//     the source-physical addressing units (QuoteCurrency, Symbol,
+//     plus a time qualifier). Use it when your underlying API
+//     returns more data than the caller asked for (a "windfall"):
+//     a single ECB feed download, for example, contains every
+//     currency on every covered date, so caching each entry as it
+//     is parsed lets a follow-up call for a different pair on the
+//     same day skip the network entirely. See [QuoteCache] for the
+//     rationale on why caching cannot live as an outer decorator.
 //
 // # Stacking
 //
@@ -64,14 +68,17 @@
 // This makes the decorators freely stackable. The typical outside-in
 // order is:
 //
-//	Cache(RateLimit(RetryOnError(source)))
+//	RateLimit(RetryOnError(source))
 //
 // with a Concurrency wrap either inside RateLimit or replacing it,
 // depending on whether the source has a hard parallel-connection
-// limit. Cache sits outermost so identical follow-up queries short-
-// circuit the entire stack; RateLimit sits between Cache and Retry so
-// retries are themselves rate-limited; Retry sits closest to the
-// source so it can observe the underlying transport errors.
+// limit. RateLimit sits outside Retry so retries are themselves
+// rate-limited; Retry sits closest to the source so it can observe
+// the underlying transport errors. Caching is not a decorator in
+// this stack — it lives inside the source via [QuoteCache] so
+// windfall data returned by the underlying API can be stored and
+// reused without losing the source-physical (QuoteCurrency, Symbol)
+// addressing units that a decorator would not see.
 //
 // When both partitioning and per-call batch capping apply, the
 // typical stack is:

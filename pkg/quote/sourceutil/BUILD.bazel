@@ -3,11 +3,11 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "sourceutil",
     srcs = [
-        "cache.go",
         "concurrency.go",
         "daterange.go",
         "doc.go",
         "groupbyquote.go",
+        "quotecache.go",
         "ratelimit.go",
         "retry.go",
         "splitbatch.go",
@@ -26,11 +26,11 @@ go_library(
 go_test(
     name = "sourceutil_test",
     srcs = [
-        "cache_test.go",
         "concurrency_test.go",
         "daterange_test.go",
         "groupbyquote_test.go",
         "helpers_test.go",
+        "quotecache_test.go",
         "ratelimit_test.go",
         "retry_test.go",
         "splitbatch_test.go",

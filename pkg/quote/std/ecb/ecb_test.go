@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -276,6 +277,81 @@ func TestECB_HTTPNon2xx(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Errorf("err = %v, want it to mention HTTP 500", err)
+	}
+}
+
+// TestECB_QuoteAt_CachedHit_NoHTTP confirms that a second QuoteAt for
+// the same (qc, symbol, day) is served entirely from the in-source
+// QuoteCache and issues no HTTP request.
+func TestECB_QuoteAt_CachedHit_NoHTTP(t *testing.T) {
+	var requests int64
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) bool {
+		atomic.AddInt64(&requests, 1)
+		return false
+	})
+	s := newTestSource(srv)
+
+	at := time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC)
+	queries := []api.SourceQuery{pairEUR("USD"), pairEUR("JPY")}
+
+	if _, _, err := s.QuoteAt(context.Background(), queries, at); err != nil {
+		t.Fatalf("first QuoteAt: %v", err)
+	}
+	first := atomic.LoadInt64(&requests)
+	if first != 1 {
+		t.Fatalf("first call: requests=%d, want 1", first)
+	}
+
+	prices, _, err := s.QuoteAt(context.Background(), queries, at)
+	if err != nil {
+		t.Fatalf("second QuoteAt: %v", err)
+	}
+	if got := atomic.LoadInt64(&requests); got != 1 {
+		t.Errorf("second call issued HTTP: requests=%d, want 1", got)
+	}
+	if len(prices) != 2 {
+		t.Errorf("prices length = %d, want 2", len(prices))
+	}
+}
+
+// TestECB_QuoteAt_WindfallHit confirms the property the previous
+// outside-the-source decorator could not provide: a first QuoteAt for
+// (EUR, USD) parses the day's full matrix and caches every currency;
+// a follow-up QuoteAt for (EUR, JPY) on the same day hits the cache
+// without re-downloading.
+func TestECB_QuoteAt_WindfallHit(t *testing.T) {
+	var requests int64
+	srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) bool {
+		atomic.AddInt64(&requests, 1)
+		return false
+	})
+	s := newTestSource(srv)
+
+	at := time.Date(2026, 4, 24, 0, 0, 0, 0, time.UTC)
+
+	// First call: USD only. The 90-day feed is downloaded once and
+	// every currency on every covered day is cached.
+	if _, _, err := s.QuoteAt(context.Background(), []api.SourceQuery{pairEUR("USD")}, at); err != nil {
+		t.Fatalf("USD QuoteAt: %v", err)
+	}
+	if got := atomic.LoadInt64(&requests); got != 1 {
+		t.Fatalf("after USD call: requests=%d, want 1", got)
+	}
+
+	// Second call: JPY on the same day. JPY was never queried before
+	// but its rate was returned in the same feed, so the cache hits.
+	prices, _, err := s.QuoteAt(context.Background(), []api.SourceQuery{pairEUR("JPY")}, at)
+	if err != nil {
+		t.Fatalf("JPY QuoteAt: %v", err)
+	}
+	if got := atomic.LoadInt64(&requests); got != 1 {
+		t.Errorf("JPY windfall call issued HTTP: requests=%d, want 1", got)
+	}
+	if len(prices) != 1 {
+		t.Fatalf("prices length = %d, want 1", len(prices))
+	}
+	if prices[0].Amount.Currency != "JPY" {
+		t.Errorf("price currency = %q, want JPY", prices[0].Amount.Currency)
 	}
 }
 

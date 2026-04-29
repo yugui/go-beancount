@@ -42,4 +42,12 @@
 //     any number of days. The source must serve any length, or
 //     chunk internally. Use [sourceutil.SplitRange] to cap
 //     per-call day count.
+//
+// Sources whose underlying API returns more data than the caller
+// asked for (a "windfall" — e.g. a daily reference-rate feed that
+// covers every currency in one download) should memoise the parsed
+// values internally with [sourceutil.QuoteCache] keyed on the
+// source-physical (QuoteCurrency, Symbol) addressing units, so a
+// follow-up Quote* call for a different pair on the same day can
+// short-circuit the network.
 package api

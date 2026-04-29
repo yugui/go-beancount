@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
@@ -13,6 +14,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/quote"
 	"github.com/yugui/go-beancount/pkg/quote/api"
+	"github.com/yugui/go-beancount/pkg/quote/sourceutil"
 )
 
 // defaultBaseURL is the production ECB endpoint root. The three concrete
@@ -31,6 +33,12 @@ const (
 // cover. Anything strictly older than this is served from the full
 // historical feed.
 const hist90dWindow = 90 * 24 * time.Hour
+
+// ecbBaseCurrency is the fixed quote-cache QC dimension for every cache
+// entry this source writes or reads. ECB publishes reference rates only
+// against EUR, and classify rejects any non-EUR base, so the cache's
+// (qc, sym) key collapses to ("EUR", target-currency) by construction.
+const ecbBaseCurrency = "EUR"
 
 // Source is the ECB reference-rates quote source.
 //
@@ -51,6 +59,19 @@ const hist90dWindow = 90 * 24 * time.Hour
 // one call and any range up to the full historical feed without
 // needing a SplitBatch or SplitRange wrapper.
 //
+// # Caching
+//
+// Each parsed feed download contributes a full day×currency matrix.
+// Source memoises every parsed (currency, day) rate in an internal
+// [sourceutil.QuoteCache] so a follow-up QuoteAt / QuoteLatest call
+// for any pair whose rate appeared in an earlier feed does not
+// re-download. The latest-shape entries are populated alongside
+// per-day entries when the daily feed is parsed, so a later
+// QuoteLatest call for a different pair on the same day also skips
+// the network. The cache is keyed on (QuoteCurrency, Symbol, time
+// qualifier) — ECB's source-physical addressing units — and lasts
+// for the lifetime of the Source value.
+//
 // Source is safe for concurrent use by multiple goroutines.
 type Source struct {
 	// Client is the HTTP client used for feed fetches. If nil,
@@ -63,6 +84,12 @@ type Source struct {
 	// empty, the public ECB endpoint is used. Tests substitute a
 	// local httptest.NewServer URL.
 	BaseURL string
+
+	cacheOnce sync.Once
+	cache     *sourceutil.QuoteCache[*apd.Decimal]
+
+	mu         sync.Mutex
+	latestDate time.Time // most recent day observed in any parsed feed
 }
 
 // init registers the package-level Source value under the name "ecb"
@@ -74,18 +101,85 @@ func init() {
 // Name returns the registry name of this source ("ecb").
 func (s *Source) Name() string { return "ecb" }
 
-// QuoteLatest returns prices from the daily feed.
+// quoteCache lazily constructs the per-Source rate cache. The cache
+// has no TTL or cap by default: ECB rates are immutable historical
+// reference data, and the natural lifetime of a Source value is one
+// CLI run, so unbounded growth within that scope is acceptable.
+func (s *Source) quoteCache() *sourceutil.QuoteCache[*apd.Decimal] {
+	s.cacheOnce.Do(func() {
+		s.cache = sourceutil.NewQuoteCache[*apd.Decimal](sourceutil.QuoteCacheOptions{})
+	})
+	return s.cache
+}
+
+// resolveCcy returns the ISO currency code that a SourceQuery looks
+// up in the feed. Empty Symbol falls back to Pair.QuoteCurrency.
+func resolveCcy(sq api.SourceQuery) string {
+	if sq.Symbol != "" {
+		return sq.Symbol
+	}
+	return sq.Pair.QuoteCurrency
+}
+
+// QuoteLatest returns prices from the daily feed. A successful parse
+// records the publication date alongside the rates; subsequent calls
+// skip the network if every requested pair is already cached.
 func (s *Source) QuoteLatest(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 	wanted, diags := classify(q)
 	if len(wanted) == 0 {
 		return nil, diags, nil
 	}
+
+	cache := s.quoteCache()
+	latestDate := s.observedLatestDate()
+
+	hits := make([]ast.Price, 0, len(wanted))
+	var missing []api.SourceQuery
+	if !latestDate.IsZero() {
+		for _, sq := range wanted {
+			ccy := resolveCcy(sq)
+			// QC dimension is always "EUR": ECB publishes
+			// EUR-base rates only.
+			v, ok := cache.GetLatest(ecbBaseCurrency, ccy)
+			if !ok {
+				missing = append(missing, sq)
+				continue
+			}
+			hits = append(hits, ast.Price{
+				Date:      latestDate,
+				Commodity: sq.Pair.Commodity,
+				Amount: ast.Amount{
+					Number:   *v,
+					Currency: sq.Pair.QuoteCurrency,
+				},
+			})
+		}
+	} else {
+		missing = wanted
+	}
+
+	if len(missing) == 0 {
+		return hits, diags, nil
+	}
+
 	env, err := s.fetchFeed(ctx, dailyFile)
 	if err != nil {
 		return nil, diags, err
 	}
-	prices, more := pickAllDates(env, wanted)
-	return prices, append(diags, more...), nil
+	diags = append(diags, s.populateCache(env)...)
+
+	fresh, more := pickAllDates(env, missing)
+	out := append(hits, fresh...)
+	return out, append(diags, more...), nil
+}
+
+// observedLatestDate returns the most recent day any populateCache
+// call has parsed. Zero time means no feed has been observed yet,
+// which forces QuoteLatest into a fetch.
+func (s *Source) observedLatestDate() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.latestDate
 }
 
 // QuoteAt returns prices for a specific calendar date. The 90-day feed
@@ -96,30 +190,190 @@ func (s *Source) QuoteAt(ctx context.Context, q []api.SourceQuery, at time.Time)
 	if len(wanted) == 0 {
 		return nil, diags, nil
 	}
+
+	cache := s.quoteCache()
+
+	// Build the timestamp that the resulting Price will carry. For
+	// cache hits we use a normalised UTC midnight matching the parsed
+	// feed; for misses the eventual fetch returns the same.
+	atUTC := normaliseDay(at)
+
+	hits := make([]ast.Price, 0, len(wanted))
+	var missing []api.SourceQuery
+	for _, sq := range wanted {
+		ccy := resolveCcy(sq)
+		// QC dimension is always "EUR": ECB publishes
+		// EUR-base rates only.
+		if v, ok := cache.GetAt(ecbBaseCurrency, ccy, at); ok {
+			hits = append(hits, ast.Price{
+				Date:      atUTC,
+				Commodity: sq.Pair.Commodity,
+				Amount: ast.Amount{
+					Number:   *v,
+					Currency: sq.Pair.QuoteCurrency,
+				},
+			})
+			continue
+		}
+		missing = append(missing, sq)
+	}
+
+	if len(missing) == 0 {
+		return hits, diags, nil
+	}
+
 	feed := s.feedForRange(at)
 	env, err := s.fetchFeed(ctx, feed)
 	if err != nil {
 		return nil, diags, err
 	}
-	prices, more := pickOnDate(env, wanted, at)
-	return prices, append(diags, more...), nil
+	diags = append(diags, s.populateCache(env)...)
+
+	fresh, more := pickOnDate(env, missing, at)
+	out := append(hits, fresh...)
+	return out, append(diags, more...), nil
 }
 
 // QuoteRange returns prices for the half-open interval [start, end).
 // The 90-day feed is used when the entire range fits inside the 90-day
 // window; otherwise the full historical feed is used.
+//
+// Before issuing a network fetch QuoteRange probes the per-Source
+// QuoteCache for every (query, calendar-day) combination in
+// [start, end). If every combination is already present (the typical
+// case after an earlier QuoteAt or QuoteRange call against the same
+// window) the result is assembled from the cache and no HTTP request
+// is made. Any miss falls through to the existing fetch path; partial-
+// day caching (fetch only the missing days) is intentionally out of
+// scope — the ECB feed file already covers many days in one download
+// so a full-window refetch costs little.
 func (s *Source) QuoteRange(ctx context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	wanted, diags := classify(q)
 	if len(wanted) == 0 {
 		return nil, diags, nil
 	}
+
+	cache := s.quoteCache()
+
+	// Try to satisfy the entire window from the cache. We iterate
+	// day-by-day across the half-open interval [start, end) so the
+	// enumeration matches the convention used in pickInRange.
+	startUTC := normaliseDay(start)
+	endUTC := normaliseDay(end)
+	allHit := true
+	var cachedPrices []ast.Price
+	for _, sq := range wanted {
+		ccy := resolveCcy(sq)
+		for d := startUTC; d.Before(endUTC); d = d.AddDate(0, 0, 1) {
+			v, ok := cache.GetAt(ecbBaseCurrency, ccy, d)
+			if !ok {
+				allHit = false
+				break
+			}
+			cachedPrices = append(cachedPrices, ast.Price{
+				Date:      d,
+				Commodity: sq.Pair.Commodity,
+				Amount: ast.Amount{
+					Number:   *v,
+					Currency: sq.Pair.QuoteCurrency,
+				},
+			})
+		}
+		if !allHit {
+			break
+		}
+	}
+	if allHit {
+		return cachedPrices, diags, nil
+	}
+
 	feed := s.feedForRange(start)
 	env, err := s.fetchFeed(ctx, feed)
 	if err != nil {
 		return nil, diags, err
 	}
+	diags = append(diags, s.populateCache(env)...)
 	prices, more := pickInRange(env, wanted, start, end)
 	return prices, append(diags, more...), nil
+}
+
+// populateCache stores every (currency, day) rate in env into the
+// per-Source cache. The most recent day's rates are also stored as
+// "latest" entries so a follow-up QuoteLatest call hits without
+// re-downloading the daily feed; that day is also recorded as the
+// observed latestDate so later QuoteLatest hits can stamp the Price
+// with the original publication date.
+//
+// Per-entry parse failures (a malformed time attribute or rate
+// attribute) are reported as ecb-parse-error warning diagnostics and
+// the offending entry is skipped; the rest of the feed still
+// populates. Callers merge the returned diagnostics into their own
+// slice so the orchestrator surfaces them to the user.
+func (s *Source) populateCache(env *envelope) []ast.Diagnostic {
+	cache := s.quoteCache()
+	var diags []ast.Diagnostic
+	var latestTS time.Time
+	var latestRates []rateCube
+	var latestDayStr string
+	for _, day := range env.Cube.Days {
+		ts, err := parseDay(day.Time)
+		if err != nil {
+			diags = append(diags, ast.Diagnostic{
+				Code:     "ecb-parse-error",
+				Severity: ast.Warning,
+				Message: fmt.Sprintf(
+					"ecb: skipping feed day with invalid time attribute %q: %v",
+					day.Time, err,
+				),
+			})
+			continue
+		}
+		for _, r := range day.Rates {
+			num, _, err := apd.NewFromString(r.Rate)
+			if err != nil {
+				diags = append(diags, ast.Diagnostic{
+					Code:     "ecb-parse-error",
+					Severity: ast.Warning,
+					Message: fmt.Sprintf(
+						"ecb: skipping rate %q for %s on %s: %v",
+						r.Rate, r.Currency, day.Time, err,
+					),
+				})
+				continue
+			}
+			// QC dimension is hardcoded to "EUR": ECB feeds
+			// publish EUR-base rates only.
+			cache.PutAt(ecbBaseCurrency, r.Currency, ts, num)
+		}
+		if ts.After(latestTS) {
+			latestTS = ts
+			latestRates = day.Rates
+			latestDayStr = day.Time
+		}
+	}
+	for _, r := range latestRates {
+		num, _, err := apd.NewFromString(r.Rate)
+		if err != nil {
+			diags = append(diags, ast.Diagnostic{
+				Code:     "ecb-parse-error",
+				Severity: ast.Warning,
+				Message: fmt.Sprintf(
+					"ecb: skipping latest-shape rate %q for %s on %s: %v",
+					r.Rate, r.Currency, latestDayStr, err,
+				),
+			})
+			continue
+		}
+		cache.PutLatest(ecbBaseCurrency, r.Currency, num)
+	}
+	if !latestTS.IsZero() {
+		s.mu.Lock()
+		if latestTS.After(s.latestDate) {
+			s.latestDate = latestTS
+		}
+		s.mu.Unlock()
+	}
+	return diags
 }
 
 // classify partitions queries into the EUR-base ones the source can
@@ -237,6 +491,12 @@ type rateCube struct {
 // parseDay parses a YYYY-MM-DD attribute into a UTC midnight time.
 func parseDay(s string) (time.Time, error) {
 	return time.Parse("2006-01-02", s)
+}
+
+// normaliseDay returns 00:00 UTC of t's calendar date.
+func normaliseDay(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // pickAllDates applies the latest-shape projection: for each date
