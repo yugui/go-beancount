@@ -112,6 +112,7 @@ func (v *Values) lookupSpec(key string) spec {
 }
 
 // String returns the stored string value or the spec default.
+// It panics if key is not a registered option name.
 func (v *Values) String(key string) string {
 	s := v.lookupSpec(key)
 	if val, ok := v.values[key]; ok {
@@ -124,6 +125,7 @@ func (v *Values) String(key string) string {
 }
 
 // Bool returns the stored bool value or the spec default.
+// It panics if key is not a registered option name.
 func (v *Values) Bool(key string) bool {
 	s := v.lookupSpec(key)
 	if val, ok := v.values[key]; ok {
@@ -137,6 +139,7 @@ func (v *Values) Bool(key string) bool {
 
 // Decimal returns a fresh clone of the stored decimal or the spec default.
 // Callers may mutate the returned value without affecting stored state.
+// It panics if key is not a registered option name.
 func (v *Values) Decimal(key string) *apd.Decimal {
 	s := v.lookupSpec(key)
 	var src *apd.Decimal
@@ -155,7 +158,7 @@ func (v *Values) Decimal(key string) *apd.Decimal {
 
 // StringList returns a fresh clone of the accumulated list or the spec
 // default. Callers may mutate the returned slice without affecting stored
-// state.
+// state. It panics if key is not a registered option name.
 func (v *Values) StringList(key string) []string {
 	s := v.lookupSpec(key)
 	var src []string
