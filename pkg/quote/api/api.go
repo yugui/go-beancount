@@ -60,43 +60,22 @@ type PriceRequest struct {
 	Sources []SourceRef
 }
 
-// Mode selects which time-shape a Spec is asking for.
+// Mode classifies the time-shape of a fetch call. The orchestrator
+// chooses one of the three modes per source based on the entry point
+// invoked (FetchLatest / FetchAt / FetchRange) and the source's
+// declared Capabilities; it then reports the chosen Mode on the
+// Event.Mode field passed to observers.
 type Mode uint8
 
 const (
-	// ModeLatest asks each source for the newest price it can
-	// produce. The Spec's At/Start/End fields are ignored.
+	// ModeLatest asks a source for the newest price it can produce.
 	ModeLatest Mode = iota
-	// ModeAt asks for the price as of Spec.At.
+	// ModeAt asks for the price as of a particular calendar date.
 	ModeAt
-	// ModeRange asks for prices over the half-open interval
-	// [Spec.Start, Spec.End).
+	// ModeRange asks for prices over a half-open calendar-date
+	// interval [start, end).
 	ModeRange
 )
-
-// Spec describes a complete fetch request handed to the orchestrator:
-// one or more PriceRequests evaluated under a single Mode and time
-// window.
-//
-// Time-field semantics: the price-fetch domain works in TZ-naïve
-// calendar dates. At, Start, and End are conventionally constructed
-// at 0:00 UTC on the desired calendar day (i.e. time.Date(y, m, d, 0,
-// 0, 0, 0, time.UTC)). Projecting that calendar date onto a
-// source-native exchange time zone (e.g. NYSE close, TSE close) is
-// the responsibility of each individual quoter; the orchestrator and
-// callers above it deal in calendar dates only.
-type Spec struct {
-	// Requests is the set of (pair, source list) units to evaluate.
-	// Must contain at least one element.
-	Requests []PriceRequest
-	// Mode selects ModeLatest / ModeAt / ModeRange.
-	Mode Mode
-	// At is consulted only when Mode == ModeAt.
-	At time.Time
-	// Start and End are consulted only when Mode == ModeRange and
-	// describe the half-open interval [Start, End).
-	Start, End time.Time
-}
 
 // Capabilities is what a Source declares it can natively serve. The
 // SupportsLatest, SupportsAt, and SupportsRange flags describe which

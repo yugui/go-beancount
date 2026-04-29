@@ -150,6 +150,20 @@ func TestRun_LatestPlusRangeMutex(t *testing.T) {
 	}
 }
 
+func TestRun_BadRange_ExitsTwo(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{
+		"--source", "EUR=USD:fake/USD",
+		"--range", "2026-04-29..2026-04-28",
+	}, &stdout, &stderr)
+	if got != 2 {
+		t.Errorf("run(reversed-range) = %d, want 2; stderr: %q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "range") {
+		t.Errorf("stderr = %q, want it to mention 'range'", stderr.String())
+	}
+}
+
 func TestRun_BadFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	got := run(context.Background(), []string{"--no-such-flag"}, &stdout, &stderr)

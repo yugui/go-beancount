@@ -101,13 +101,10 @@ func TestFetch_LatestOnly_OneSource(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": src}
-	spec := api.Spec{
-		Mode:     api.ModeLatest,
-		Requests: []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))},
-	}
-	prices, diags, err := Fetch(context.Background(), reg, spec)
+	requests := []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))}
+	prices, diags, err := FetchLatest(context.Background(), reg, requests)
 	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+		t.Fatalf("FetchLatest returned error: %v", err)
 	}
 	if len(prices) != 1 {
 		t.Errorf("len(prices) = %d, want 1", len(prices))
@@ -131,14 +128,10 @@ func TestFetch_AtMode_DemotedFromLatest_InWindow(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": src}
-	spec := api.Spec{
-		Mode:     api.ModeAt,
-		At:       at,
-		Requests: []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))},
-	}
-	prices, diags, err := Fetch(context.Background(), reg, spec, WithClock(func() time.Time { return now }))
+	requests := []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))}
+	prices, diags, err := FetchAt(context.Background(), reg, requests, at, WithClock(func() time.Time { return now }))
 	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+		t.Fatalf("FetchAt returned error: %v", err)
 	}
 	if atomic.LoadInt32(&called) != 1 {
 		t.Errorf("QuoteLatest called %d times, want 1", called)
@@ -164,14 +157,10 @@ func TestFetch_AtMode_DemotedFromLatest_OutOfWindow(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": src}
-	spec := api.Spec{
-		Mode:     api.ModeAt,
-		At:       at,
-		Requests: []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))},
-	}
-	prices, diags, err := Fetch(context.Background(), reg, spec, WithClock(func() time.Time { return now }))
-	if !errors.Is(err, errZeroPrices) {
-		t.Errorf("err = %v, want errZeroPrices", err)
+	requests := []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))}
+	prices, diags, err := FetchAt(context.Background(), reg, requests, at, WithClock(func() time.Time { return now }))
+	if !errors.Is(err, ErrZeroPrices) {
+		t.Errorf("err = %v, want ErrZeroPrices", err)
 	}
 	if len(prices) != 0 {
 		t.Errorf("len(prices) = %d, want 0", len(prices))
@@ -216,17 +205,13 @@ func TestFetch_AlwaysBatchesPerSource(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": src}
-	spec := api.Spec{
-		Mode: api.ModeAt,
-		At:   at,
-		Requests: []api.PriceRequest{
-			mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
-			mkRequest("GOOG", "USD", ref("yahoo", "GOOG")),
-		},
+	requests := []api.PriceRequest{
+		mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
+		mkRequest("GOOG", "USD", ref("yahoo", "GOOG")),
 	}
-	prices, _, err := Fetch(context.Background(), reg, spec)
+	prices, _, err := FetchAt(context.Background(), reg, requests, at)
 	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+		t.Fatalf("FetchAt returned error: %v", err)
 	}
 	if len(prices) != 2 {
 		t.Errorf("len(prices) = %d, want 2", len(prices))
@@ -264,17 +249,12 @@ func TestFetch_RangeMode_PassesFullRange(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": src}
-	spec := api.Spec{
-		Mode:  api.ModeRange,
-		Start: start,
-		End:   end,
-		Requests: []api.PriceRequest{
-			mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
-		},
+	requests := []api.PriceRequest{
+		mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
 	}
-	prices, _, err := Fetch(context.Background(), reg, spec)
+	prices, _, err := FetchRange(context.Background(), reg, requests, start, end)
 	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+		t.Fatalf("FetchRange returned error: %v", err)
 	}
 	if len(prices) != 1 {
 		t.Errorf("len(prices) = %d, want 1", len(prices))
@@ -284,6 +264,23 @@ func TestFetch_RangeMode_PassesFullRange(t *testing.T) {
 	}
 	if !gotStart.Equal(start) || !gotEnd.Equal(end) {
 		t.Errorf("got [%v, %v), want [%v, %v)", gotStart, gotEnd, start, end)
+	}
+}
+
+func TestFetchRange_StartNotBeforeEnd_ReturnsError(t *testing.T) {
+	day := utcDay(2024, time.March, 1)
+	reg := mapRegistry{}
+	requests := []api.PriceRequest{
+		mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
+	}
+
+	// start == end: empty interval.
+	if _, _, err := FetchRange(context.Background(), reg, requests, day, day); !errors.Is(err, ErrInvalidRange) {
+		t.Errorf("FetchRange(start==end) err = %v, want ErrInvalidRange", err)
+	}
+	// start > end: inverted interval.
+	if _, _, err := FetchRange(context.Background(), reg, requests, day.AddDate(0, 0, 1), day); !errors.Is(err, ErrInvalidRange) {
+		t.Errorf("FetchRange(start>end) err = %v, want ErrInvalidRange", err)
 	}
 }
 
@@ -304,15 +301,12 @@ func TestFetch_PrimaryFails_FallbackSucceeds(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": primary, "google": fallback}
-	spec := api.Spec{
-		Mode: api.ModeLatest,
-		Requests: []api.PriceRequest{
-			mkRequest("AAPL", "USD", ref("yahoo", "AAPL"), ref("google", "AAPL")),
-		},
+	requests := []api.PriceRequest{
+		mkRequest("AAPL", "USD", ref("yahoo", "AAPL"), ref("google", "AAPL")),
 	}
-	prices, _, err := Fetch(context.Background(), reg, spec)
+	prices, _, err := FetchLatest(context.Background(), reg, requests)
 	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+		t.Fatalf("FetchLatest returned error: %v", err)
 	}
 	if len(prices) != 1 {
 		t.Errorf("len(prices) = %d, want 1", len(prices))
@@ -336,15 +330,12 @@ func TestFetch_PrimarySucceeds_FallbackNotCalled(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": primary, "google": fallback}
-	spec := api.Spec{
-		Mode: api.ModeLatest,
-		Requests: []api.PriceRequest{
-			mkRequest("AAPL", "USD", ref("yahoo", "AAPL"), ref("google", "AAPL")),
-		},
+	requests := []api.PriceRequest{
+		mkRequest("AAPL", "USD", ref("yahoo", "AAPL"), ref("google", "AAPL")),
 	}
-	prices, _, err := Fetch(context.Background(), reg, spec)
+	prices, _, err := FetchLatest(context.Background(), reg, requests)
 	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+		t.Fatalf("FetchLatest returned error: %v", err)
 	}
 	if len(prices) != 1 {
 		t.Errorf("len(prices) = %d, want 1", len(prices))
@@ -393,12 +384,9 @@ func TestFetch_DeadlockRegression_SharedBatchSources(t *testing.T) {
 	}
 
 	reg := mapRegistry{"yahoo": yahoo, "google": google}
-	spec := api.Spec{
-		Mode: api.ModeLatest,
-		Requests: []api.PriceRequest{
-			mkRequest("A", "USD", ref("yahoo", "A"), ref("google", "A")),
-			mkRequest("B", "USD", ref("google", "B"), ref("yahoo", "B")),
-		},
+	requests := []api.PriceRequest{
+		mkRequest("A", "USD", ref("yahoo", "A"), ref("google", "A")),
+		mkRequest("B", "USD", ref("google", "B"), ref("yahoo", "B")),
 	}
 
 	done := make(chan struct{})
@@ -407,17 +395,17 @@ func TestFetch_DeadlockRegression_SharedBatchSources(t *testing.T) {
 		err    error
 	)
 	go func() {
-		prices, _, err = Fetch(context.Background(), reg, spec)
+		prices, _, err = FetchLatest(context.Background(), reg, requests)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("Fetch deadlocked under shared-batch-source fallback")
+		t.Fatal("FetchLatest deadlocked under shared-batch-source fallback")
 	}
 
 	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+		t.Fatalf("FetchLatest returned error: %v", err)
 	}
 	if len(prices) != 2 {
 		t.Errorf("len(prices) = %d, want 2", len(prices))
@@ -448,17 +436,14 @@ func TestFetch_CtxCancellation(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": src}
-	spec := api.Spec{
-		Mode:     api.ModeLatest,
-		Requests: []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))},
-	}
+	requests := []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))}
 	ctx, cancel := context.WithCancel(context.Background())
 	type result struct {
 		err error
 	}
 	resCh := make(chan result, 1)
 	go func() {
-		_, _, err := Fetch(ctx, reg, spec)
+		_, _, err := FetchLatest(ctx, reg, requests)
 		resCh <- result{err: err}
 	}()
 	// Wait for the source goroutine to signal it has entered its
@@ -470,27 +455,24 @@ func TestFetch_CtxCancellation(t *testing.T) {
 	select {
 	case r := <-resCh:
 		if r.err == nil {
-			t.Fatal("Fetch returned nil error after ctx cancellation")
+			t.Fatal("FetchLatest returned nil error after ctx cancellation")
 		}
 		if !errors.Is(r.err, context.Canceled) {
-			t.Errorf("Fetch err = %v, want context.Canceled", r.err)
+			t.Errorf("FetchLatest err = %v, want context.Canceled", r.err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Fetch did not return after ctx cancellation")
+		t.Fatal("FetchLatest did not return after ctx cancellation")
 	}
 }
 
 func TestFetch_UnknownSource(t *testing.T) {
 	reg := mapRegistry{}
-	spec := api.Spec{
-		Mode: api.ModeLatest,
-		Requests: []api.PriceRequest{
-			mkRequest("AAPL", "USD", ref("nope", "AAPL")),
-		},
+	requests := []api.PriceRequest{
+		mkRequest("AAPL", "USD", ref("nope", "AAPL")),
 	}
-	prices, diags, err := Fetch(context.Background(), reg, spec)
+	prices, diags, err := FetchLatest(context.Background(), reg, requests)
 	if err == nil {
-		t.Fatal("Fetch returned nil error, want non-nil")
+		t.Fatal("FetchLatest returned nil error, want non-nil")
 	}
 	if len(prices) != 0 {
 		t.Errorf("len(prices) = %d, want 0", len(prices))
@@ -518,15 +500,12 @@ func TestFetch_ZeroPrices_ReturnsError(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": src}
-	spec := api.Spec{
-		Mode: api.ModeLatest,
-		Requests: []api.PriceRequest{
-			mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
-		},
+	requests := []api.PriceRequest{
+		mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
 	}
-	prices, _, err := Fetch(context.Background(), reg, spec)
+	prices, _, err := FetchLatest(context.Background(), reg, requests)
 	if err == nil {
-		t.Fatal("Fetch returned nil error, want non-nil")
+		t.Fatal("FetchLatest returned nil error, want non-nil")
 	}
 	if len(prices) != 0 {
 		t.Errorf("len(prices) = %d, want 0", len(prices))
@@ -550,16 +529,13 @@ func TestFetch_OneOfManySucceeds_ReturnsNil(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": good, "google": bad}
-	spec := api.Spec{
-		Mode: api.ModeLatest,
-		Requests: []api.PriceRequest{
-			mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
-			mkRequest("GOOG", "USD", ref("google", "GOOG")),
-		},
+	requests := []api.PriceRequest{
+		mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
+		mkRequest("GOOG", "USD", ref("google", "GOOG")),
 	}
-	prices, diags, err := Fetch(context.Background(), reg, spec)
+	prices, diags, err := FetchLatest(context.Background(), reg, requests)
 	if err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+		t.Fatalf("FetchLatest returned error: %v", err)
 	}
 	if len(prices) != 1 {
 		t.Errorf("len(prices) = %d, want 1", len(prices))
@@ -613,11 +589,10 @@ func TestFetch_ConcurrencyCap(t *testing.T) {
 			Sources: []api.SourceRef{ref(name, commodity)},
 		})
 	}
-	spec := api.Spec{Mode: api.ModeLatest, Requests: requests}
 
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := Fetch(context.Background(), reg, spec, WithConcurrency(capN))
+		_, _, err := FetchLatest(context.Background(), reg, requests, WithConcurrency(capN))
 		done <- err
 	}()
 
@@ -640,10 +615,10 @@ func TestFetch_ConcurrencyCap(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("Fetch returned error: %v", err)
+			t.Fatalf("FetchLatest returned error: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Fetch did not return")
+		t.Fatal("FetchLatest did not return")
 	}
 
 	mu.Lock()
@@ -667,10 +642,7 @@ func TestFetch_Observer_LevelEvents(t *testing.T) {
 		},
 	}
 	reg := mapRegistry{"yahoo": src}
-	spec := api.Spec{
-		Mode:     api.ModeLatest,
-		Requests: []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))},
-	}
+	requests := []api.PriceRequest{mkRequest("AAPL", "USD", ref("yahoo", "AAPL"))}
 
 	var (
 		mu     sync.Mutex
@@ -682,8 +654,8 @@ func TestFetch_Observer_LevelEvents(t *testing.T) {
 		mu.Unlock()
 	}
 
-	if _, _, err := Fetch(context.Background(), reg, spec, WithObserver(obs)); err != nil {
-		t.Fatalf("Fetch returned error: %v", err)
+	if _, _, err := FetchLatest(context.Background(), reg, requests, WithObserver(obs)); err != nil {
+		t.Fatalf("FetchLatest returned error: %v", err)
 	}
 
 	mu.Lock()

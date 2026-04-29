@@ -1,9 +1,10 @@
 // Command beanprice fetches commodity prices using the Phase 7 quote
 // pipeline. It walks one or more beancount ledgers for Commodity
 // directives carrying bean-price-compatible "price" meta values, adds
-// any inline --source requests, dispatches them through pkg/quote.Fetch,
-// deduplicates the result, and prints canonical price directives to
-// stdout. Diagnostics from any layer are printed to stderr in the same
+// any inline --source requests, dispatches them through one of
+// pkg/quote.FetchLatest / FetchAt / FetchRange, deduplicates the
+// result, and prints canonical price directives to stdout.
+// Diagnostics from any layer are printed to stderr in the same
 // "<path>:<line>:<col>: <severity>: <message>" form that cmd/beancheck
 // uses.
 //
@@ -107,21 +108,52 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Fetch.
-	spec := api.Spec{
-		Requests: requests,
-		Mode:     mode,
-		At:       at,
-		Start:    start,
-		End:      end,
-	}
-	prices, fetchDiags, fetchErr := quote.Fetch(
-		ctx,
-		quote.GlobalRegistry(),
-		spec,
-		quote.WithConcurrency(flags.concurrency),
+	// Fetch. The mode is encoded in the function chosen, so the time
+	// arguments only flow into the entry point that actually consults
+	// them.
+	var (
+		prices     []ast.Price
+		fetchDiags []ast.Diagnostic
+		fetchErr   error
 	)
+	switch mode {
+	case api.ModeLatest:
+		prices, fetchDiags, fetchErr = quote.FetchLatest(
+			ctx,
+			quote.GlobalRegistry(),
+			requests,
+			quote.WithConcurrency(flags.concurrency),
+		)
+	case api.ModeAt:
+		prices, fetchDiags, fetchErr = quote.FetchAt(
+			ctx,
+			quote.GlobalRegistry(),
+			requests,
+			at,
+			quote.WithConcurrency(flags.concurrency),
+		)
+	case api.ModeRange:
+		prices, fetchDiags, fetchErr = quote.FetchRange(
+			ctx,
+			quote.GlobalRegistry(),
+			requests,
+			start,
+			end,
+			quote.WithConcurrency(flags.concurrency),
+		)
+	default:
+		fmt.Fprintf(stderr, "beanprice: internal error: unhandled fetch mode %v\n", mode)
+		return 2
+	}
 	diags = append(diags, fetchDiags...)
+
+	// A bad --range (reversed/empty interval) surfaces here as
+	// ErrInvalidRange. That is a CLI usage error (exit 2), not a
+	// fetch failure (exit 1).
+	if errors.Is(fetchErr, quote.ErrInvalidRange) {
+		fmt.Fprintf(stderr, "beanprice: %v\n", fetchErr)
+		return 2
+	}
 
 	// Dedup before printing; duplicates are fed in as diagnostics.
 	kept, dupDiags := pricedb.Dedup(prices, true)
@@ -404,7 +436,7 @@ func printUsage(w io.Writer, cmd *flag.FlagSet) {
 	fmt.Fprintln(w, "Fetch commodity prices via the Phase 7 quote pipeline.")
 	fmt.Fprintln(w, "Walks --ledger files for Commodity directives carrying bean-price-")
 	fmt.Fprintln(w, `compatible "price" meta values, plus any inline --source flags,`)
-	fmt.Fprintln(w, "dispatches them through pkg/quote.Fetch, and prints canonical")
+	fmt.Fprintln(w, "dispatches them through pkg/quote, and prints canonical")
 	fmt.Fprintln(w, "price directives to stdout. Diagnostics go to stderr.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
@@ -449,7 +481,7 @@ func printUsage(w io.Writer, cmd *flag.FlagSet) {
 	fmt.Fprintln(w, "EXIT CODES")
 	fmt.Fprintln(w, "  0  success; no Error diagnostics, no fetch error")
 	fmt.Fprintln(w, "     (Warnings allowed unless --strict.)")
-	fmt.Fprintln(w, "  1  at least one Error diagnostic, OR pkg/quote.Fetch returned an")
+	fmt.Fprintln(w, "  1  at least one Error diagnostic, OR pkg/quote fetch returned an")
 	fmt.Fprintln(w, "     error, OR --strict and at least one Warning")
 	fmt.Fprintln(w, "  2  CLI failure: bad flags, mutually exclusive --date/--range,")
 	fmt.Fprintln(w, "     missing ledger file, plugin load failure, or no requests")

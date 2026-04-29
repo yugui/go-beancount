@@ -14,12 +14,12 @@ import (
 // unit is the orchestrator's internal scheduling atom: one
 // PriceRequest's progress through its fallback chain.
 //
-// For ModeRange, a unit covers the whole [Spec.Start, Spec.End)
-// interval at the unit level; the orchestrator passes that whole
-// interval through to the source in a single call. Source-side
-// chunking (when the source's underlying API can't natively span
-// arbitrary ranges) is the source author's responsibility, typically
-// expressed by wrapping with pkg/quote/sourceutil.SplitRange.
+// For range mode, a unit covers the whole [start, end) interval at the
+// unit level; the orchestrator passes that whole interval through to
+// the source in a single call. Source-side chunking (when the source's
+// underlying API can't natively span arbitrary ranges) is the source
+// author's responsibility, typically expressed by wrapping with
+// pkg/quote/sourceutil.SplitRange.
 type unit struct {
 	// req is the original PriceRequest the unit tracks.
 	req api.PriceRequest
@@ -45,63 +45,70 @@ type plan struct {
 	invoke func(ctx context.Context, queries []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)
 }
 
-// planCall picks the source method to call given spec.Mode and the
-// source's declared Capabilities (the demotion table on Fetch's
-// godoc) and returns a plan whose invoke closure carries the
-// concrete time arguments. The second return is false when no method
-// can serve the requested mode (mode-unsupported diagnostic
-// territory).
+// planCallFunc is the per-mode strategy that picks which source
+// method to call for a given (source, runConfig). Each public Fetch*
+// entry point constructs a planCallFunc that owns one row of the
+// capability ↔ mode demotion table — latestPlanner for FetchLatest,
+// atPlanner(at) for FetchAt, rangePlanner(start, end) for FetchRange
+// — and hands it to runFetch. The orchestrator no longer needs to
+// switch on the requested mode.
 //
-// When spec.Mode is ModeRange and the source declares only
-// SupportsAt, the AtSource is lifted to a RangeSource via
-// sourceutil.DateRangeIter with Calendar=AllDays. Source authors who
-// need calendar-aware iteration (e.g. WeekdaysOnly for FX) should
-// register a RangeSource themselves rather than relying on this
-// fallback.
+// The second return is false when no method on the source can serve
+// the planner's mode (mode-unsupported diagnostic territory).
 //
-// The type assertions inside the returned closures are intentionally
-// unchecked: planCall picks the mode based on the source's declared
-// Capabilities. If a source lies about its Capabilities (e.g.
-// SupportsLatest=true without implementing api.LatestSource), the
-// assertion will panic when invoke is called. That panic is
-// recovered by runUnderSemaphore and converted into a
+// The type assertions inside the returned plan's invoke closure are
+// intentionally unchecked: the planner picks the mode based on the
+// source's declared Capabilities. If a source lies about its
+// Capabilities (e.g. SupportsLatest=true without implementing
+// api.LatestSource), the assertion will panic when invoke is called.
+// That panic is recovered by runUnderSemaphore and converted into a
 // quote-fetch-error Diagnostic, so the affected unit advances to its
 // next fallback rather than tearing down the whole orchestrator.
-func planCall(spec api.Spec, src api.Source, cfg *runConfig) (plan, bool) {
+type planCallFunc func(src api.Source, cfg *runConfig) (plan, bool)
+
+// latestPlanner is the planCallFunc used by FetchLatest. Demotion
+// order: LatestSource > AtSource(now) > RangeSource(now-1d, now+1d).
+func latestPlanner(src api.Source, cfg *runConfig) (plan, bool) {
 	caps := src.Capabilities()
-	switch spec.Mode {
-	case api.ModeLatest:
-		if caps.SupportsLatest {
-			return plan{
-				mode: api.ModeLatest,
-				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.LatestSource).QuoteLatest(ctx, qs)
-				},
-			}, true
-		}
+	if caps.SupportsLatest {
+		return plan{
+			mode: api.ModeLatest,
+			invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+				return src.(api.LatestSource).QuoteLatest(ctx, qs)
+			},
+		}, true
+	}
+	if caps.SupportsAt {
+		return plan{
+			mode: api.ModeAt,
+			invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+				return src.(api.AtSource).QuoteAt(ctx, qs, cfg.now())
+			},
+		}, true
+	}
+	if caps.SupportsRange {
+		now := cfg.now()
+		return plan{
+			mode: api.ModeRange,
+			invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+				return src.(api.RangeSource).QuoteRange(ctx, qs, now.AddDate(0, 0, -1), now.AddDate(0, 0, 1))
+			},
+		}, true
+	}
+	return plan{}, false
+}
+
+// atPlanner returns the planCallFunc used by FetchAt for the given
+// calendar date. Demotion order: AtSource(at) > RangeSource(at,
+// at+1d) > LatestSource (only when cfg.now() ∈ [at, at+1d)).
+func atPlanner(at time.Time) planCallFunc {
+	return func(src api.Source, cfg *runConfig) (plan, bool) {
+		caps := src.Capabilities()
 		if caps.SupportsAt {
 			return plan{
 				mode: api.ModeAt,
 				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.AtSource).QuoteAt(ctx, qs, cfg.now())
-				},
-			}, true
-		}
-		if caps.SupportsRange {
-			now := cfg.now()
-			return plan{
-				mode: api.ModeRange,
-				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.RangeSource).QuoteRange(ctx, qs, now.AddDate(0, 0, -1), now.AddDate(0, 0, 1))
-				},
-			}, true
-		}
-	case api.ModeAt:
-		if caps.SupportsAt {
-			return plan{
-				mode: api.ModeAt,
-				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.AtSource).QuoteAt(ctx, qs, spec.At)
+					return src.(api.AtSource).QuoteAt(ctx, qs, at)
 				},
 			}, true
 		}
@@ -109,13 +116,13 @@ func planCall(spec api.Spec, src api.Source, cfg *runConfig) (plan, bool) {
 			return plan{
 				mode: api.ModeRange,
 				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.RangeSource).QuoteRange(ctx, qs, spec.At, spec.At.AddDate(0, 0, 1))
+					return src.(api.RangeSource).QuoteRange(ctx, qs, at, at.AddDate(0, 0, 1))
 				},
 			}, true
 		}
 		if caps.SupportsLatest {
 			now := cfg.now()
-			if !now.Before(spec.At) && now.Before(spec.At.Add(24*time.Hour)) {
+			if !now.Before(at) && now.Before(at.AddDate(0, 0, 1)) {
 				return plan{
 					mode: api.ModeLatest,
 					invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
@@ -124,12 +131,23 @@ func planCall(spec api.Spec, src api.Source, cfg *runConfig) (plan, bool) {
 				}, true
 			}
 		}
-	case api.ModeRange:
+		return plan{}, false
+	}
+}
+
+// rangePlanner returns the planCallFunc used by FetchRange for the
+// given half-open interval [start, end). Demotion order:
+// RangeSource(start, end) > AtSource lifted via
+// sourceutil.DateRangeIter (Calendar=AllDays) > LatestSource (only
+// when cfg.now() ∈ [start, end)).
+func rangePlanner(start, end time.Time) planCallFunc {
+	return func(src api.Source, cfg *runConfig) (plan, bool) {
+		caps := src.Capabilities()
 		if caps.SupportsRange {
 			return plan{
 				mode: api.ModeRange,
 				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.RangeSource).QuoteRange(ctx, qs, spec.Start, spec.End)
+					return src.(api.RangeSource).QuoteRange(ctx, qs, start, end)
 				},
 			}, true
 		}
@@ -138,13 +156,13 @@ func planCall(spec api.Spec, src api.Source, cfg *runConfig) (plan, bool) {
 				mode: api.ModeRange,
 				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 					wrapped := sourceutil.DateRangeIter(src.(api.AtSource), sourceutil.AllDays)
-					return wrapped.QuoteRange(ctx, qs, spec.Start, spec.End)
+					return wrapped.QuoteRange(ctx, qs, start, end)
 				},
 			}, true
 		}
 		if caps.SupportsLatest {
 			now := cfg.now()
-			if !now.Before(spec.Start) && now.Before(spec.End) {
+			if !now.Before(start) && now.Before(end) {
 				return plan{
 					mode: api.ModeLatest,
 					invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
@@ -153,8 +171,8 @@ func planCall(spec api.Spec, src api.Source, cfg *runConfig) (plan, bool) {
 				}, true
 			}
 		}
+		return plan{}, false
 	}
-	return plan{}, false
 }
 
 // attribute walks the Prices a call returned and marks the
@@ -215,17 +233,18 @@ func runUnderSemaphore(
 	return f()
 }
 
-// runFetch is the entry point Fetch dispatches to once Options have
-// been resolved. It owns the level loop, the {sourceName -> []unit}
-// grouping, the per-source dispatch goroutines, and the cross-source
-// concurrency semaphore.
-func runFetch(ctx context.Context, reg Registry, spec api.Spec, cfg *runConfig) ([]ast.Price, []ast.Diagnostic, error) {
-	if len(spec.Requests) == 0 {
-		return nil, nil, errZeroPrices
+// runFetch is the entry point each FetchX dispatches to once Options
+// have been resolved. It owns the level loop, the {sourceName ->
+// []unit} grouping, the per-source dispatch goroutines, and the
+// cross-source concurrency semaphore. The mode-specific demotion logic
+// lives in planner; runFetch is mode-agnostic.
+func runFetch(ctx context.Context, reg Registry, requests []api.PriceRequest, planner planCallFunc, cfg *runConfig) ([]ast.Price, []ast.Diagnostic, error) {
+	if len(requests) == 0 {
+		return nil, nil, ErrZeroPrices
 	}
 
-	units := make([]*unit, 0, len(spec.Requests))
-	for _, r := range spec.Requests {
+	units := make([]*unit, 0, len(requests))
+	for _, r := range requests {
 		units = append(units, &unit{req: r})
 	}
 
@@ -266,7 +285,7 @@ func runFetch(ctx context.Context, reg Registry, spec api.Spec, cfg *runConfig) 
 			wg.Add(1)
 			go func(sourceName string, us []*unit) {
 				defer wg.Done()
-				localPrices, localDiags := dispatchSource(ctx, reg, spec, cfg, level, sourceName, us, sem, emit)
+				localPrices, localDiags := dispatchSource(ctx, reg, planner, cfg, level, sourceName, us, sem, emit)
 				mu.Lock()
 				prices = append(prices, localPrices...)
 				diags = append(diags, localDiags...)
@@ -300,25 +319,25 @@ func runFetch(ctx context.Context, reg Registry, spec api.Spec, cfg *runConfig) 
 	}
 
 	if len(prices) == 0 {
-		return prices, diags, errZeroPrices
+		return prices, diags, ErrZeroPrices
 	}
 	return prices, diags, nil
 }
 
 // dispatchSource is the per-source workhorse invoked once per
 // (level, source) pair. It resolves the source from the registry,
-// picks the source method to call from spec.Mode and the source's
-// Capabilities (the demotion table on Fetch's godoc), assembles the
-// SourceQuery slice (one query per unit), issues the call,
-// converts errors / panics / unsupported-mode into Diagnostics, and
-// attributes returned Prices back to the contributing units. Every
-// unit going to the same source on the same level is dispatched in
-// a single batched call; any per-source splitting (by query count
-// or by date range) is the source author's responsibility.
+// asks the supplied planner to pick the source method to call (the
+// demotion table on each FetchX's godoc), assembles the SourceQuery
+// slice (one query per unit), issues the call, converts errors /
+// panics / unsupported-mode into Diagnostics, and attributes returned
+// Prices back to the contributing units. Every unit going to the
+// same source on the same level is dispatched in a single batched
+// call; any per-source splitting (by query count or by date range)
+// is the source author's responsibility.
 func dispatchSource(
 	ctx context.Context,
 	reg Registry,
-	spec api.Spec,
+	planner planCallFunc,
 	cfg *runConfig,
 	level int,
 	sourceName string,
@@ -339,7 +358,7 @@ func dispatchSource(
 		return nil, diags
 	}
 
-	p, ok := planCall(spec, src, cfg)
+	p, ok := planner(src, cfg)
 	if !ok {
 		diags := make([]ast.Diagnostic, 0, len(units))
 		for _, u := range units {
