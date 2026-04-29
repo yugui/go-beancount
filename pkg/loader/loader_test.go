@@ -2,6 +2,7 @@ package loader_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +62,7 @@ func TestLoadReader_RunsPlugins(t *testing.T) {
 func TestLoadFile_Equivalent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "main.beancount")
-	if err := os.WriteFile(path, []byte(minimalSrc), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(minimalSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -83,7 +84,44 @@ func TestLoadFile_Equivalent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(ledger.Files) == 0 {
+		t.Fatalf("LoadFile: ledger.Files is empty")
+	}
 	if got := ledger.Files[0].Filename; got != abs {
 		t.Errorf("Files[0].Filename = %q, want %q", got, abs)
+	}
+}
+
+func TestLoadCancellation(t *testing.T) {
+	// minimalSrc parses without error, so the ctx check inside runBuiltin
+	// (the first pipeline step that consults ctx) returns context.Canceled
+	// directly rather than a wrapped pipeline error.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := loader.Load(ctx, minimalSrc)
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("loader.Load(canceledCtx): err = %v, want context.Canceled", err)
+	}
+}
+
+func TestLoadRawMode(t *testing.T) {
+	// In raw mode the built-in pipeline is skipped, so an unbalanced
+	// transaction must NOT produce a validations diagnostic.
+	const src = `option "plugin_processing_mode" "raw"
+2024-01-01 open Assets:Bank USD
+2024-01-01 open Equity:Opening
+2024-01-15 * "broken"
+  Assets:Bank        100 USD
+  Equity:Opening     -50 USD
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load (raw): %v", err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Errorf("loader.Load(raw): unexpected error diagnostic: %s", d.Message)
+		}
 	}
 }
