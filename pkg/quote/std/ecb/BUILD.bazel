@@ -1,0 +1,32 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "ecb",
+    srcs = [
+        "doc.go",
+        "ecb.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/quote/std/ecb",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote",
+        "//pkg/quote/api",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "ecb_test",
+    srcs = [
+        "ecb_live_test.go",  # keep
+        "ecb_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":ecb"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote/api",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)
