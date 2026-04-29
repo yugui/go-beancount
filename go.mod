@@ -1,6 +1,6 @@
 module github.com/yugui/go-beancount
 
-go 1.24.7
+go 1.25.9
 
 require (
 	github.com/cockroachdb/apd/v3 v3.2.3
