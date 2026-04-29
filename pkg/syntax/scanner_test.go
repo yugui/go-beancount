@@ -37,13 +37,13 @@ func roundTrip(tokens []Token) string {
 func TestEmptyInput(t *testing.T) {
 	tokens := collectTokens("")
 	if len(tokens) != 1 {
-		t.Fatalf("expected 1 token (EOF), got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 1", len(tokens))
 	}
 	if tokens[0].Kind != EOF {
-		t.Errorf("expected EOF, got %s", tokens[0].Kind)
+		t.Errorf("scan: Kind = %s, want EOF", tokens[0].Kind)
 	}
 	if tokens[0].Pos != 0 {
-		t.Errorf("expected Pos=0, got %d", tokens[0].Pos)
+		t.Errorf("scan: Pos = %d, want 0", tokens[0].Pos)
 	}
 }
 
@@ -72,17 +72,17 @@ func TestSingleOperators(t *testing.T) {
 		t.Run(tt.kind.String(), func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != 2 {
-				t.Fatalf("expected 2 tokens (op + EOF), got %d", len(tokens))
+				t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 			}
 			tok := tokens[0]
 			if tok.Kind != tt.kind {
-				t.Errorf("expected kind %s, got %s", tt.kind, tok.Kind)
+				t.Errorf("scan: Kind = %s, want %s", tok.Kind, tt.kind)
 			}
 			if tok.Raw != tt.input {
-				t.Errorf("expected Raw=%q, got %q", tt.input, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.input)
 			}
 			if tok.Pos != 0 {
-				t.Errorf("expected Pos=0, got %d", tok.Pos)
+				t.Errorf("scan: Pos = %d, want 0", tok.Pos)
 			}
 		})
 	}
@@ -108,14 +108,14 @@ func TestMultiCharOperators(t *testing.T) {
 		t.Run(tt.input, func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != len(tt.expected) {
-				t.Fatalf("expected %d tokens, got %d", len(tt.expected), len(tokens))
+				t.Fatalf("scan: got %d tokens, want %d", len(tokens), len(tt.expected))
 			}
 			for i, tok := range tokens {
 				if tok.Kind != tt.expected[i] {
-					t.Errorf("token[%d]: expected kind %s, got %s", i, tt.expected[i], tok.Kind)
+					t.Errorf("scan: token[%d] Kind = %s, want %s", i, tok.Kind, tt.expected[i])
 				}
 				if tok.Raw != tt.raws[i] {
-					t.Errorf("token[%d]: expected Raw=%q, got %q", i, tt.raws[i], tok.Raw)
+					t.Errorf("scan: token[%d] Raw = %q, want %q", i, tok.Raw, tt.raws[i])
 				}
 			}
 		})
@@ -125,135 +125,135 @@ func TestMultiCharOperators(t *testing.T) {
 func TestLeadingWhitespaceTrivia(t *testing.T) {
 	tokens := collectTokens("  +")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	tok := tokens[0]
 	if tok.Kind != PLUS {
-		t.Errorf("expected PLUS, got %s", tok.Kind)
+		t.Errorf("scan: Kind = %s, want PLUS", tok.Kind)
 	}
 	if len(tok.LeadingTrivia) != 1 {
-		t.Fatalf("expected 1 leading trivia, got %d", len(tok.LeadingTrivia))
+		t.Fatalf("scan: got %d leading trivia, want 1", len(tok.LeadingTrivia))
 	}
 	if tok.LeadingTrivia[0].Kind != WhitespaceTrivia {
-		t.Errorf("expected WhitespaceTrivia, got %s", tok.LeadingTrivia[0].Kind)
+		t.Errorf("scan: trivia Kind = %s, want WhitespaceTrivia", tok.LeadingTrivia[0].Kind)
 	}
 	if tok.LeadingTrivia[0].Raw != "  " {
-		t.Errorf("expected Raw=%q, got %q", "  ", tok.LeadingTrivia[0].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tok.LeadingTrivia[0].Raw, "  ")
 	}
 	if tok.Pos != 2 {
-		t.Errorf("expected Pos=2, got %d", tok.Pos)
+		t.Errorf("scan: Pos = %d, want 2", tok.Pos)
 	}
 }
 
 func TestLeadingCommentAndNewline(t *testing.T) {
 	tokens := collectTokens("; comment\n+")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	tok := tokens[0]
 	if tok.Kind != PLUS {
-		t.Errorf("expected PLUS, got %s", tok.Kind)
+		t.Errorf("scan: Kind = %s, want PLUS", tok.Kind)
 	}
 	if len(tok.LeadingTrivia) != 2 {
-		t.Fatalf("expected 2 leading trivia, got %d", len(tok.LeadingTrivia))
+		t.Fatalf("scan: got %d leading trivia, want 2", len(tok.LeadingTrivia))
 	}
 	if tok.LeadingTrivia[0].Kind != CommentTrivia {
-		t.Errorf("trivia[0]: expected CommentTrivia, got %s", tok.LeadingTrivia[0].Kind)
+		t.Errorf("scan: trivia[0] Kind = %s, want CommentTrivia", tok.LeadingTrivia[0].Kind)
 	}
 	if tok.LeadingTrivia[0].Raw != "; comment" {
-		t.Errorf("trivia[0]: expected Raw=%q, got %q", "; comment", tok.LeadingTrivia[0].Raw)
+		t.Errorf("scan: trivia[0] Raw = %q, want %q", tok.LeadingTrivia[0].Raw, "; comment")
 	}
 	if tok.LeadingTrivia[1].Kind != NewlineTrivia {
-		t.Errorf("trivia[1]: expected NewlineTrivia, got %s", tok.LeadingTrivia[1].Kind)
+		t.Errorf("scan: trivia[1] Kind = %s, want NewlineTrivia", tok.LeadingTrivia[1].Kind)
 	}
 	if tok.LeadingTrivia[1].Raw != "\n" {
-		t.Errorf("trivia[1]: expected Raw=%q, got %q", "\n", tok.LeadingTrivia[1].Raw)
+		t.Errorf("scan: trivia[1] Raw = %q, want %q", tok.LeadingTrivia[1].Raw, "\n")
 	}
 }
 
 func TestTrailingTrivia(t *testing.T) {
 	tokens := collectTokens("+  ; comment")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	tok := tokens[0]
 	if tok.Kind != PLUS {
-		t.Errorf("expected PLUS, got %s", tok.Kind)
+		t.Errorf("scan: Kind = %s, want PLUS", tok.Kind)
 	}
 	if len(tok.TrailingTrivia) != 2 {
-		t.Fatalf("expected 2 trailing trivia, got %d", len(tok.TrailingTrivia))
+		t.Fatalf("scan: got %d trailing trivia, want 2", len(tok.TrailingTrivia))
 	}
 	if tok.TrailingTrivia[0].Kind != WhitespaceTrivia {
-		t.Errorf("trailing[0]: expected WhitespaceTrivia, got %s", tok.TrailingTrivia[0].Kind)
+		t.Errorf("scan: trailing[0] Kind = %s, want WhitespaceTrivia", tok.TrailingTrivia[0].Kind)
 	}
 	if tok.TrailingTrivia[0].Raw != "  " {
-		t.Errorf("trailing[0]: expected Raw=%q, got %q", "  ", tok.TrailingTrivia[0].Raw)
+		t.Errorf("scan: trailing[0] Raw = %q, want %q", tok.TrailingTrivia[0].Raw, "  ")
 	}
 	if tok.TrailingTrivia[1].Kind != CommentTrivia {
-		t.Errorf("trailing[1]: expected CommentTrivia, got %s", tok.TrailingTrivia[1].Kind)
+		t.Errorf("scan: trailing[1] Kind = %s, want CommentTrivia", tok.TrailingTrivia[1].Kind)
 	}
 	if tok.TrailingTrivia[1].Raw != "; comment" {
-		t.Errorf("trailing[1]: expected Raw=%q, got %q", "; comment", tok.TrailingTrivia[1].Raw)
+		t.Errorf("scan: trailing[1] Raw = %q, want %q", tok.TrailingTrivia[1].Raw, "; comment")
 	}
 }
 
 func TestNewlineIsLeadingTriviaOfNextToken(t *testing.T) {
 	tokens := collectTokens("+\n")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	// PLUS should have NO trailing trivia (newline goes to next token)
 	plus := tokens[0]
 	if plus.Kind != PLUS {
-		t.Errorf("expected PLUS, got %s", plus.Kind)
+		t.Errorf("scan: Kind = %s, want PLUS", plus.Kind)
 	}
 	if len(plus.TrailingTrivia) != 0 {
-		t.Errorf("PLUS should have no trailing trivia, got %d", len(plus.TrailingTrivia))
+		t.Errorf("scan: PLUS trailing trivia count = %d, want 0", len(plus.TrailingTrivia))
 	}
 	// EOF should have the newline as leading trivia
 	eof := tokens[1]
 	if eof.Kind != EOF {
-		t.Errorf("expected EOF, got %s", eof.Kind)
+		t.Errorf("scan: Kind = %s, want EOF", eof.Kind)
 	}
 	if len(eof.LeadingTrivia) != 1 {
-		t.Fatalf("EOF should have 1 leading trivia, got %d", len(eof.LeadingTrivia))
+		t.Fatalf("scan: got %d leading trivia, want 1", len(eof.LeadingTrivia))
 	}
 	if eof.LeadingTrivia[0].Kind != NewlineTrivia {
-		t.Errorf("expected NewlineTrivia, got %s", eof.LeadingTrivia[0].Kind)
+		t.Errorf("scan: trivia Kind = %s, want NewlineTrivia", eof.LeadingTrivia[0].Kind)
 	}
 }
 
 func TestMultipleTokens(t *testing.T) {
 	tokens := collectTokens("+ - *")
 	if len(tokens) != 4 { // PLUS, MINUS, STAR, EOF
-		t.Fatalf("expected 4 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 4", len(tokens))
 	}
 
 	// PLUS with trailing whitespace
 	if tokens[0].Kind != PLUS {
-		t.Errorf("token[0]: expected PLUS, got %s", tokens[0].Kind)
+		t.Errorf("scan: token[0] Kind = %s, want PLUS", tokens[0].Kind)
 	}
 	if len(tokens[0].TrailingTrivia) != 1 || tokens[0].TrailingTrivia[0].Kind != WhitespaceTrivia {
-		t.Errorf("token[0]: expected trailing whitespace trivia")
+		t.Errorf("scan: token[0] TrailingTrivia = %v, want [WhitespaceTrivia]", tokens[0].TrailingTrivia)
 	}
 
 	// MINUS with trailing whitespace
 	if tokens[1].Kind != MINUS {
-		t.Errorf("token[1]: expected MINUS, got %s", tokens[1].Kind)
+		t.Errorf("scan: token[1] Kind = %s, want MINUS", tokens[1].Kind)
 	}
 	if len(tokens[1].TrailingTrivia) != 1 || tokens[1].TrailingTrivia[0].Kind != WhitespaceTrivia {
-		t.Errorf("token[1]: expected trailing whitespace trivia")
+		t.Errorf("scan: token[1] TrailingTrivia = %v, want [WhitespaceTrivia]", tokens[1].TrailingTrivia)
 	}
 
 	// STAR with no trivia
 	if tokens[2].Kind != STAR {
-		t.Errorf("token[2]: expected STAR, got %s", tokens[2].Kind)
+		t.Errorf("scan: token[2] Kind = %s, want STAR", tokens[2].Kind)
 	}
 	if len(tokens[2].LeadingTrivia) != 0 {
-		t.Errorf("token[2]: expected no leading trivia, got %d", len(tokens[2].LeadingTrivia))
+		t.Errorf("scan: leading trivia count = %d, want 0", len(tokens[2].LeadingTrivia))
 	}
 	if len(tokens[2].TrailingTrivia) != 0 {
-		t.Errorf("token[2]: expected no trailing trivia, got %d", len(tokens[2].TrailingTrivia))
+		t.Errorf("scan: trailing trivia count = %d, want 0", len(tokens[2].TrailingTrivia))
 	}
 }
 
@@ -286,44 +286,44 @@ func TestRoundTrip(t *testing.T) {
 func TestBareHashAndCaret(t *testing.T) {
 	tokens := collectTokens("#")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	if tokens[0].Kind != HASH {
-		t.Errorf("expected HASH, got %s", tokens[0].Kind)
+		t.Errorf("scan: Kind = %s, want HASH", tokens[0].Kind)
 	}
 	if tokens[0].Raw != "#" {
-		t.Errorf("expected Raw=%q, got %q", "#", tokens[0].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tokens[0].Raw, "#")
 	}
 
 	tokens = collectTokens("^")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	if tokens[0].Kind != CARET {
-		t.Errorf("expected CARET, got %s", tokens[0].Kind)
+		t.Errorf("scan: Kind = %s, want CARET", tokens[0].Kind)
 	}
 	if tokens[0].Raw != "^" {
-		t.Errorf("expected Raw=%q, got %q", "^", tokens[0].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tokens[0].Raw, "^")
 	}
 }
 
 func TestIllegalCharacter(t *testing.T) {
 	tokens := collectTokens("$")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	if tokens[0].Kind != ILLEGAL {
-		t.Errorf("expected ILLEGAL, got %s", tokens[0].Kind)
+		t.Errorf("scan: Kind = %s, want ILLEGAL", tokens[0].Kind)
 	}
 	if tokens[0].Raw != "$" {
-		t.Errorf("expected Raw=%q, got %q", "$", tokens[0].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tokens[0].Raw, "$")
 	}
 }
 
 func TestCRLFNewline(t *testing.T) {
 	tokens := collectTokens("+\r\n-")
 	if len(tokens) != 3 { // PLUS, MINUS, EOF
-		t.Fatalf("expected 3 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 3", len(tokens))
 	}
 	// PLUS has no trailing trivia
 	if len(tokens[0].TrailingTrivia) != 0 {
@@ -331,13 +331,13 @@ func TestCRLFNewline(t *testing.T) {
 	}
 	// MINUS has \r\n as leading trivia (single newline trivia)
 	if len(tokens[1].LeadingTrivia) != 1 {
-		t.Fatalf("MINUS should have 1 leading trivia, got %d", len(tokens[1].LeadingTrivia))
+		t.Fatalf("scan: got %d leading trivia, want 1", len(tokens[1].LeadingTrivia))
 	}
 	if tokens[1].LeadingTrivia[0].Kind != NewlineTrivia {
-		t.Errorf("expected NewlineTrivia, got %s", tokens[1].LeadingTrivia[0].Kind)
+		t.Errorf("scan: trivia Kind = %s, want NewlineTrivia", tokens[1].LeadingTrivia[0].Kind)
 	}
 	if tokens[1].LeadingTrivia[0].Raw != "\r\n" {
-		t.Errorf("expected Raw=%q, got %q", "\r\n", tokens[1].LeadingTrivia[0].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tokens[1].LeadingTrivia[0].Raw, "\r\n")
 	}
 }
 
@@ -345,19 +345,19 @@ func TestTrailingWhitespaceBeforeNewline(t *testing.T) {
 	// "+ \n-" — PLUS gets trailing whitespace, newline goes to MINUS as leading
 	tokens := collectTokens("+ \n-")
 	if len(tokens) != 3 {
-		t.Fatalf("expected 3 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 3", len(tokens))
 	}
 	if len(tokens[0].TrailingTrivia) != 1 {
-		t.Fatalf("PLUS should have 1 trailing trivia, got %d", len(tokens[0].TrailingTrivia))
+		t.Fatalf("scan: got %d trailing trivia, want 1", len(tokens[0].TrailingTrivia))
 	}
 	if tokens[0].TrailingTrivia[0].Kind != WhitespaceTrivia {
-		t.Errorf("expected WhitespaceTrivia, got %s", tokens[0].TrailingTrivia[0].Kind)
+		t.Errorf("scan: trivia Kind = %s, want WhitespaceTrivia", tokens[0].TrailingTrivia[0].Kind)
 	}
 	if len(tokens[1].LeadingTrivia) != 1 {
-		t.Fatalf("MINUS should have 1 leading trivia, got %d", len(tokens[1].LeadingTrivia))
+		t.Fatalf("scan: got %d leading trivia, want 1", len(tokens[1].LeadingTrivia))
 	}
 	if tokens[1].LeadingTrivia[0].Kind != NewlineTrivia {
-		t.Errorf("expected NewlineTrivia, got %s", tokens[1].LeadingTrivia[0].Kind)
+		t.Errorf("scan: trivia Kind = %s, want NewlineTrivia", tokens[1].LeadingTrivia[0].Kind)
 	}
 }
 
@@ -373,14 +373,14 @@ func TestDateTokens(t *testing.T) {
 		t.Run(tt.input, func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != 2 {
-				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+				t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 			}
 			tok := tokens[0]
 			if tok.Kind != DATE {
-				t.Errorf("expected DATE, got %s", tok.Kind)
+				t.Errorf("scan: Kind = %s, want DATE", tok.Kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -403,14 +403,14 @@ func TestNumberTokens(t *testing.T) {
 		t.Run(tt.input, func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != 2 {
-				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+				t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 			}
 			tok := tokens[0]
 			if tok.Kind != NUMBER {
-				t.Errorf("expected NUMBER, got %s", tok.Kind)
+				t.Errorf("scan: Kind = %s, want NUMBER", tok.Kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -448,14 +448,14 @@ func TestStringTokens(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != 2 {
-				t.Fatalf("got %d tokens; want 2", len(tokens))
+				t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 			}
 			tok := tokens[0]
 			if tok.Kind != STRING {
-				t.Errorf("got Kind=%s; want STRING", tok.Kind)
+				t.Errorf("scan: Kind = %s, want STRING", tok.Kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("got Raw=%q; want %q", tok.Raw, tt.raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -465,59 +465,59 @@ func TestDateVsNumberDisambiguation(t *testing.T) {
 	// "2024" alone is a NUMBER (no separator follows)
 	tokens := collectTokens("2024")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	if tokens[0].Kind != NUMBER {
-		t.Errorf("expected NUMBER for '2024', got %s", tokens[0].Kind)
+		t.Errorf("scan: Kind = %s, want NUMBER", tokens[0].Kind)
 	}
 	if tokens[0].Raw != "2024" {
-		t.Errorf("expected Raw=%q, got %q", "2024", tokens[0].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tokens[0].Raw, "2024")
 	}
 
 	// "2024-01-15 1234" → DATE then NUMBER
 	tokens = collectTokens("2024-01-15 1234")
 	if len(tokens) != 3 {
-		t.Fatalf("expected 3 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 3", len(tokens))
 	}
 	if tokens[0].Kind != DATE {
-		t.Errorf("expected DATE, got %s", tokens[0].Kind)
+		t.Errorf("scan: Kind = %s, want DATE", tokens[0].Kind)
 	}
 	if tokens[0].Raw != "2024-01-15" {
-		t.Errorf("expected Raw=%q, got %q", "2024-01-15", tokens[0].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tokens[0].Raw, "2024-01-15")
 	}
 	if tokens[1].Kind != NUMBER {
-		t.Errorf("expected NUMBER, got %s", tokens[1].Kind)
+		t.Errorf("scan: Kind = %s, want NUMBER", tokens[1].Kind)
 	}
 	if tokens[1].Raw != "1234" {
-		t.Errorf("expected Raw=%q, got %q", "1234", tokens[1].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tokens[1].Raw, "1234")
 	}
 }
 
 func TestStringAtEOF(t *testing.T) {
 	tokens := collectTokens(`"unclosed`)
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	tok := tokens[0]
 	if tok.Kind != STRING {
-		t.Errorf("expected STRING, got %s", tok.Kind)
+		t.Errorf("scan: Kind = %s, want STRING", tok.Kind)
 	}
 	if tok.Raw != `"unclosed` {
-		t.Errorf("expected Raw=%q, got %q", `"unclosed`, tok.Raw)
+		t.Errorf("scan: Raw = %q, want %q", tok.Raw, `"unclosed`)
 	}
 }
 
 func TestStringBackslashAtEOF(t *testing.T) {
 	tokens := collectTokens(`"test\`)
 	if len(tokens) != 2 {
-		t.Fatalf("got %d tokens; want 2", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	tok := tokens[0]
 	if tok.Kind != STRING {
-		t.Errorf("got Kind=%s; want STRING", tok.Kind)
+		t.Errorf("scan: Kind = %s, want STRING", tok.Kind)
 	}
 	if tok.Raw != `"test\` {
-		t.Errorf("got Raw=%q; want %q", tok.Raw, `"test\`)
+		t.Errorf("scan: Raw = %q, want %q", tok.Raw, `"test\`)
 	}
 }
 
@@ -560,28 +560,28 @@ func TestRoundTripDatesNumbersStrings(t *testing.T) {
 func TestMixedDateNumberString(t *testing.T) {
 	tokens := collectTokens("2024-01-15 1,234.56 \"hello\"")
 	if len(tokens) != 4 { // DATE, NUMBER, STRING, EOF
-		t.Fatalf("expected 4 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 4", len(tokens))
 	}
 
 	if tokens[0].Kind != DATE {
-		t.Errorf("token[0]: expected DATE, got %s", tokens[0].Kind)
+		t.Errorf("scan: token[0] Kind = %s, want DATE", tokens[0].Kind)
 	}
 	if tokens[0].Raw != "2024-01-15" {
-		t.Errorf("token[0]: expected Raw=%q, got %q", "2024-01-15", tokens[0].Raw)
+		t.Errorf("scan: token[0] Raw = %q, want %q", tokens[0].Raw, "2024-01-15")
 	}
 
 	if tokens[1].Kind != NUMBER {
-		t.Errorf("token[1]: expected NUMBER, got %s", tokens[1].Kind)
+		t.Errorf("scan: token[1] Kind = %s, want NUMBER", tokens[1].Kind)
 	}
 	if tokens[1].Raw != "1,234.56" {
-		t.Errorf("token[1]: expected Raw=%q, got %q", "1,234.56", tokens[1].Raw)
+		t.Errorf("scan: token[1] Raw = %q, want %q", tokens[1].Raw, "1,234.56")
 	}
 
 	if tokens[2].Kind != STRING {
-		t.Errorf("token[2]: expected STRING, got %s", tokens[2].Kind)
+		t.Errorf("scan: token[2] Kind = %s, want STRING", tokens[2].Kind)
 	}
 	if tokens[2].Raw != "\"hello\"" {
-		t.Errorf("token[2]: expected Raw=%q, got %q", "\"hello\"", tokens[2].Raw)
+		t.Errorf("scan: token[2] Raw = %q, want %q", tokens[2].Raw, "\"hello\"")
 	}
 }
 
@@ -603,14 +603,14 @@ func TestAccountTokens(t *testing.T) {
 		t.Run(tt.input, func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != 2 {
-				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+				t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 			}
 			tok := tokens[0]
 			if tok.Kind != ACCOUNT {
-				t.Errorf("expected ACCOUNT, got %s", tok.Kind)
+				t.Errorf("scan: Kind = %s, want ACCOUNT", tok.Kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -633,14 +633,14 @@ func TestCurrencyTokens(t *testing.T) {
 		t.Run(tt.input, func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != 2 {
-				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+				t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 			}
 			tok := tokens[0]
 			if tok.Kind != CURRENCY {
-				t.Errorf("expected CURRENCY, got %s", tok.Kind)
+				t.Errorf("scan: Kind = %s, want CURRENCY", tok.Kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -663,14 +663,14 @@ func TestIdentTokens(t *testing.T) {
 		t.Run(tt.input, func(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			if len(tokens) != 2 {
-				t.Fatalf("expected 2 tokens, got %d", len(tokens))
+				t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 			}
 			tok := tokens[0]
 			if tok.Kind != IDENT {
-				t.Errorf("expected IDENT, got %s", tok.Kind)
+				t.Errorf("scan: Kind = %s, want IDENT", tok.Kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -680,13 +680,13 @@ func TestUppercaseNonCurrencyAsIdent(t *testing.T) {
 	// "Assets" alone (titlecase, not all uppercase) without ':' -> IDENT
 	tokens := collectTokens("Assets")
 	if len(tokens) != 2 {
-		t.Fatalf("expected 2 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 2", len(tokens))
 	}
 	if tokens[0].Kind != IDENT {
-		t.Errorf("expected IDENT for 'Assets' alone, got %s", tokens[0].Kind)
+		t.Errorf("scan: Kind = %s, want IDENT", tokens[0].Kind)
 	}
 	if tokens[0].Raw != "Assets" {
-		t.Errorf("expected Raw=%q, got %q", "Assets", tokens[0].Raw)
+		t.Errorf("scan: Raw = %q, want %q", tokens[0].Raw, "Assets")
 	}
 }
 
@@ -707,10 +707,10 @@ func TestTagTokens(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			tok := tokens[0]
 			if tok.Kind != tt.kind {
-				t.Errorf("expected %s, got %s", tt.kind, tok.Kind)
+				t.Errorf("scan: Kind = %s, want %s", tok.Kind, tt.kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -733,10 +733,10 @@ func TestLinkTokens(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			tok := tokens[0]
 			if tok.Kind != tt.kind {
-				t.Errorf("expected %s, got %s", tt.kind, tok.Kind)
+				t.Errorf("scan: Kind = %s, want %s", tok.Kind, tt.kind)
 			}
 			if tok.Raw != tt.raw {
-				t.Errorf("expected Raw=%q, got %q", tt.raw, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.raw)
 			}
 		})
 	}
@@ -746,19 +746,19 @@ func TestDisambiguation(t *testing.T) {
 	// "Assets:Bank 100 USD" → ACCOUNT, NUMBER, CURRENCY
 	tokens := collectTokens("Assets:Bank 100 USD")
 	if len(tokens) != 4 {
-		t.Fatalf("expected 4 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 4", len(tokens))
 	}
 	if tokens[0].Kind != ACCOUNT {
-		t.Errorf("token[0]: expected ACCOUNT, got %s", tokens[0].Kind)
+		t.Errorf("scan: token[0] Kind = %s, want ACCOUNT", tokens[0].Kind)
 	}
 	if tokens[0].Raw != "Assets:Bank" {
-		t.Errorf("token[0]: expected Raw=%q, got %q", "Assets:Bank", tokens[0].Raw)
+		t.Errorf("scan: token[0] Raw = %q, want %q", tokens[0].Raw, "Assets:Bank")
 	}
 	if tokens[1].Kind != NUMBER {
-		t.Errorf("token[1]: expected NUMBER, got %s", tokens[1].Kind)
+		t.Errorf("scan: token[1] Kind = %s, want NUMBER", tokens[1].Kind)
 	}
 	if tokens[2].Kind != CURRENCY {
-		t.Errorf("token[2]: expected CURRENCY, got %s", tokens[2].Kind)
+		t.Errorf("scan: token[2] Kind = %s, want CURRENCY", tokens[2].Kind)
 	}
 }
 
@@ -766,28 +766,28 @@ func TestFullLineDisambiguation(t *testing.T) {
 	// "2024-01-15 open Assets:Bank USD" → DATE, IDENT, ACCOUNT, CURRENCY
 	tokens := collectTokens("2024-01-15 open Assets:Bank USD")
 	if len(tokens) != 5 {
-		t.Fatalf("expected 5 tokens, got %d", len(tokens))
+		t.Fatalf("scan: got %d tokens, want 5", len(tokens))
 	}
 	if tokens[0].Kind != DATE {
-		t.Errorf("token[0]: expected DATE, got %s", tokens[0].Kind)
+		t.Errorf("scan: token[0] Kind = %s, want DATE", tokens[0].Kind)
 	}
 	if tokens[1].Kind != IDENT {
-		t.Errorf("token[1]: expected IDENT, got %s", tokens[1].Kind)
+		t.Errorf("scan: token[1] Kind = %s, want IDENT", tokens[1].Kind)
 	}
 	if tokens[1].Raw != "open" {
-		t.Errorf("token[1]: expected Raw=%q, got %q", "open", tokens[1].Raw)
+		t.Errorf("scan: token[1] Raw = %q, want %q", tokens[1].Raw, "open")
 	}
 	if tokens[2].Kind != ACCOUNT {
-		t.Errorf("token[2]: expected ACCOUNT, got %s", tokens[2].Kind)
+		t.Errorf("scan: token[2] Kind = %s, want ACCOUNT", tokens[2].Kind)
 	}
 	if tokens[2].Raw != "Assets:Bank" {
-		t.Errorf("token[2]: expected Raw=%q, got %q", "Assets:Bank", tokens[2].Raw)
+		t.Errorf("scan: token[2] Raw = %q, want %q", tokens[2].Raw, "Assets:Bank")
 	}
 	if tokens[3].Kind != CURRENCY {
-		t.Errorf("token[3]: expected CURRENCY, got %s", tokens[3].Kind)
+		t.Errorf("scan: token[3] Kind = %s, want CURRENCY", tokens[3].Kind)
 	}
 	if tokens[3].Raw != "USD" {
-		t.Errorf("token[3]: expected Raw=%q, got %q", "USD", tokens[3].Raw)
+		t.Errorf("scan: token[3] Raw = %q, want %q", tokens[3].Raw, "USD")
 	}
 }
 
@@ -837,10 +837,10 @@ func TestUnicodeAccountTokens(t *testing.T) {
 			tokens := collectTokens(tt.input)
 			tok := tokens[0]
 			if tok.Kind != tt.wantKind {
-				t.Errorf("expected kind %s, got %s (raw=%q)", tt.wantKind, tok.Kind, tok.Raw)
+				t.Errorf("scan: Kind = %s, want %s (raw=%q)", tok.Kind, tt.wantKind, tok.Raw)
 			}
 			if tok.Raw != tt.wantRaw {
-				t.Errorf("expected Raw=%q, got %q", tt.wantRaw, tok.Raw)
+				t.Errorf("scan: Raw = %q, want %q", tok.Raw, tt.wantRaw)
 			}
 		})
 	}
@@ -922,7 +922,7 @@ func TestHeadingTriviaBeforeDirective(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected HeadingTrivia on DATE token, got: %v", tokens[0].LeadingTrivia)
+		t.Errorf("scan: DATE leading trivia = %v, want HeadingTrivia", tokens[0].LeadingTrivia)
 	}
 	got := roundTrip(tokens)
 	if got != input {
@@ -941,7 +941,7 @@ func TestStarNotHeadingWhenIndented(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("expected STAR token for indented *, got none")
+		t.Errorf("scan: got no STAR token for indented *, want STAR")
 	}
 }
 
