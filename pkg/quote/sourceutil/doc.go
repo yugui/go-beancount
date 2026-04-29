@@ -4,12 +4,21 @@
 // caching) without the orchestrator having to know about any of them.
 //
 // Phase 7 separates "the source author's natural axis" from "the
-// orchestrator's request shape". A real-world quote source typically
-// has exactly one shape it serves cheaply — a single (pair, date)
-// cell, a row keyed by date, a column keyed by commodity, a full
-// matrix, or latest-only. sourceutil bridges that author axis to the
-// uniform Source / LatestSource / AtSource / RangeSource interfaces
-// the orchestrator consumes:
+// orchestrator's request shape". The orchestrator dispatches one
+// call per (level, source) carrying every query for that source and
+// the full requested range. A Source implementer is obliged to
+// accept arbitrary-size batches, mixed quote currencies in one
+// batch, and (for RangeSource) arbitrary ranges; the helpers in
+// this package are how an implementer that cannot natively serve
+// those shapes adapts to the contract. See the "Quoter author
+// obligations" section of pkg/quote/api for the contract itself.
+//
+// A real-world quote source typically has exactly one shape it
+// serves cheaply — a single (pair, date) cell, a row keyed by date,
+// a column keyed by commodity, a full matrix, or latest-only.
+// sourceutil bridges that author axis to the uniform Source /
+// LatestSource / AtSource / RangeSource interfaces the orchestrator
+// consumes:
 //
 //   - WrapSingleCell turns a (Pair, date) -> Decimal closure into an
 //     AtSource. This is the fastest path for a one-off author.
@@ -18,9 +27,12 @@
 //     Calendar (typically WeekdaysOnly for FX reference data, AllDays
 //     for crypto-style 24/7 sources).
 //
-//   - BatchPairs parallelises a non-batch AtSource by query slicing,
-//     so a per-pair API can still satisfy a batched orchestrator call
-//     without authors hand-rolling goroutines.
+//   - SplitBatch caps per-call query count; use it when your source
+//     cannot natively handle arbitrary-size batches. Generic over
+//     LatestSource / AtSource / RangeSource.
+//
+//   - SplitRange caps per-call day count for a RangeSource; use it
+//     when the underlying API cannot natively span arbitrary ranges.
 //
 //   - Concurrency caps the number of in-flight calls to one source
 //     independent of the orchestrator's global concurrency window.
@@ -60,7 +72,7 @@
 //
 // All decorators in this package are safe for concurrent use by
 // multiple goroutines, provided the wrapped source is also safe for
-// concurrent use. BatchPairs and Concurrency intentionally call the
+// concurrent use. SplitBatch and Concurrency intentionally call the
 // wrapped source from multiple goroutines.
 //
 // # Orchestrator independence

@@ -16,7 +16,7 @@ import (
 // serially, calling fn once per query, and reports
 // Capabilities{SupportsAt: true}. Authors who can produce a price for
 // exactly one (pair, date) cell at a time use this as the shortest
-// path onto the orchestrator interface; combine with BatchPairs for
+// path onto the orchestrator interface; combine with SplitBatch for
 // parallelism and with DateRangeIter to additionally serve ranges.
 //
 // fn returns the per-cell price as an apd.Decimal in the pair's quote

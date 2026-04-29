@@ -3,13 +3,14 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "sourceutil",
     srcs = [
-        "batchpairs.go",
         "cache.go",
         "concurrency.go",
         "daterange.go",
         "doc.go",
         "ratelimit.go",
         "retry.go",
+        "splitbatch.go",
+        "splitrange.go",
         "wrap.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/quote/sourceutil",
@@ -24,13 +25,14 @@ go_library(
 go_test(
     name = "sourceutil_test",
     srcs = [
-        "batchpairs_test.go",
         "cache_test.go",
         "concurrency_test.go",
         "daterange_test.go",
         "helpers_test.go",
         "ratelimit_test.go",
         "retry_test.go",
+        "splitbatch_test.go",
+        "splitrange_test.go",
         "wrap_test.go",
     ],
     embed = [":sourceutil"],

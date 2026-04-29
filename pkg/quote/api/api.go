@@ -99,9 +99,12 @@ type Spec struct {
 }
 
 // Capabilities is what a Source declares it can natively serve. The
-// orchestrator inspects Capabilities to decide which sub-interface
-// (LatestSource, AtSource, RangeSource) to call and how to chunk
-// requests.
+// SupportsLatest, SupportsAt, and SupportsRange flags describe which
+// sub-interfaces (LatestSource, AtSource, RangeSource) the source
+// implements; the orchestrator inspects them to decide which method
+// to call. Obligations a source implementer accepts when implementing
+// any of the QuoteX methods are documented in the package doc; they
+// are part of the contract rather than runtime-negotiable flags.
 type Capabilities struct {
 	// SupportsLatest reports whether the source implements
 	// LatestSource (i.e. can answer ModeLatest natively).
@@ -112,16 +115,6 @@ type Capabilities struct {
 	// SupportsRange reports whether the source implements
 	// RangeSource (i.e. can answer ModeRange natively).
 	SupportsRange bool
-	// BatchPairs reports whether a single QuoteLatest / QuoteAt /
-	// QuoteRange call may carry several mixed (Pair, Symbol)
-	// queries. When false, the orchestrator issues one call per
-	// query.
-	BatchPairs bool
-	// RangePerCall caps the number of days a single QuoteRange call
-	// may span; the orchestrator splits longer ranges into chunks
-	// of at most this size. A value of 0 means unbounded — any
-	// range may be passed in one call.
-	RangePerCall int
 }
 
 // SourceQuery is the source-physical addressing unit: a (Pair,
@@ -185,13 +178,15 @@ type Source interface {
 // newest price available". The orchestrator calls QuoteLatest only
 // when the source's Capabilities.SupportsLatest is true.
 //
-// QuoteLatest receives one or more queries; when BatchPairs in the
-// source's Capabilities is false, the orchestrator passes a
-// single-element slice per call. Returned ast.Prices use each query's
-// Pair (not Symbol) for Commodity and Amount.Currency. Diagnostics
-// describe per-query problems that did not produce a price; the error
-// return is for transport- or source-level failures that affected the
-// whole call.
+// Returned ast.Prices use each query's Pair (not Symbol) for
+// Commodity and Amount.Currency. Diagnostics describe per-query
+// problems that did not produce a price; the error return is for
+// transport- or source-level failures that affected the whole call.
+//
+// QuoteLatest MUST accept any-size batch and any mix of quote
+// currencies in q; see the "Quoter author obligations" section of
+// the package doc and [sourceutil.SplitBatch] for the helper that
+// caps per-call query count.
 type LatestSource interface {
 	Source
 	QuoteLatest(ctx context.Context, q []SourceQuery) ([]ast.Price, []ast.Diagnostic, error)
@@ -205,6 +200,11 @@ type LatestSource interface {
 // UTC; the quoter is responsible for projecting it onto the source's
 // native exchange time zone if needed. Output and error semantics
 // match LatestSource.
+//
+// QuoteAt MUST accept any-size batch and any mix of quote currencies
+// in q; see the "Quoter author obligations" section of the package
+// doc and [sourceutil.SplitBatch] for the helper that caps per-call
+// query count.
 type AtSource interface {
 	Source
 	QuoteAt(ctx context.Context, q []SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error)
@@ -215,10 +215,15 @@ type AtSource interface {
 // only when the source's Capabilities.SupportsRange is true.
 //
 // The interval is half-open: [start, end). Both endpoints are TZ-
-// naïve calendar dates conventionally at 0:00 UTC. If the source
-// declares Capabilities.RangePerCall > 0, the orchestrator splits
-// longer ranges into chunks of at most that many days before calling.
-// Output and error semantics match LatestSource.
+// naïve calendar dates conventionally at 0:00 UTC. Output and error
+// semantics match LatestSource.
+//
+// QuoteRange MUST accept any-size batch and any mix of quote
+// currencies in q, and MUST accept arbitrarily long ranges; see the
+// "Quoter author obligations" section of the package doc, plus
+// [sourceutil.SplitBatch] (per-call query count) and
+// [sourceutil.SplitRange] (per-call day count) for the helpers that
+// cap each axis.
 type RangeSource interface {
 	Source
 	QuoteRange(ctx context.Context, q []SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error)

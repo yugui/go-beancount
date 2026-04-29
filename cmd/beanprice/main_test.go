@@ -26,7 +26,7 @@ type fakeSource struct{}
 
 func (fakeSource) Name() string { return "fake" }
 func (fakeSource) Capabilities() api.Capabilities {
-	return api.Capabilities{SupportsLatest: true, BatchPairs: true}
+	return api.Capabilities{SupportsLatest: true}
 }
 
 func (fakeSource) QuoteLatest(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {

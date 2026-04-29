@@ -69,18 +69,16 @@ func (s *Source) Name() string { return "ecb" }
 
 // Capabilities reports the static set of shapes this source serves.
 //
-// The three feed files cover all three time-shape axes; BatchPairs is
-// true because a single XML download already contains every currency
-// for every covered date, so multiple pair queries against the same
-// date or date span are served by a single HTTP request. RangePerCall
-// is 0 (unbounded) because the historical feed itself is unbounded.
+// The three feed files cover all three time-shape axes; a single
+// XML download already contains every currency for every covered
+// date, so the source naturally serves any mix of pair queries in
+// one call and any range up to the full historical feed without
+// needing a SplitBatch or SplitRange wrapper.
 func (s *Source) Capabilities() api.Capabilities {
 	return api.Capabilities{
 		SupportsLatest: true,
 		SupportsAt:     true,
 		SupportsRange:  true,
-		BatchPairs:     true,
-		RangePerCall:   0,
 	}
 }
 

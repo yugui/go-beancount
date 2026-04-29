@@ -23,13 +23,14 @@ type CacheOptions struct {
 	MaxEntries int
 }
 
-// Cache wraps s with an in-memory cache keyed on
-// (Pair, Symbol, date-or-range), with separate maps per call shape
-// (Latest / At / Range) so a hit on one shape does not bleed into
-// another. Each call splits its input queries into "already cached"
-// and "missing" portions; only the missing portion is forwarded to
-// the wrapped source. If every query is cached the wrapped source is
-// not called at all.
+// Cache memoises returned Price values keyed by (Pair, Symbol,
+// date-or-range) so identical follow-up queries short-circuit the
+// wrapped source. With separate maps per call shape (Latest / At /
+// Range), a hit on one shape does not bleed into another. Each call
+// splits its input queries into "already cached" and "missing"
+// portions; only the missing portion is forwarded to the wrapped
+// source. If every query is cached the wrapped source is not called
+// at all.
 //
 // # Why caching
 //
@@ -43,13 +44,14 @@ type CacheOptions struct {
 //
 // # Partial fan-out
 //
-// When a batched query arrives, the cache splits it into already-known
-// and missing entries and forwards only the missing ones. If the
-// wrapped source's Capabilities.BatchPairs is false (it can only handle
-// one query per call), each missing entry is forwarded as its own
-// single-element call rather than refusing to split. Per-call returned
-// prices are written back into the cache before being merged with the
-// hits and returned to the caller.
+// When a batched query arrives, the cache splits it into already-
+// known and missing entries and forwards only the missing ones in a
+// single call to the wrapped source. The Phase 7 contract is that a
+// Source must natively handle any-size batch; callers whose wrapped
+// source needs per-entry splitting should stack SplitBatch(s, 1)
+// underneath the cache. Per-call returned prices are written back
+// into the cache before being merged with the hits and returned to
+// the caller.
 //
 // # Range mode
 //
@@ -268,26 +270,12 @@ func (c *cacheSource) doAt(ctx context.Context, q []api.SourceQuery, at time.Tim
 	return out, diags, nil
 }
 
-// fetchAt forwards missed queries to the wrapped AtSource, splitting
-// when BatchPairs is unsupported.
+// fetchAt forwards missed queries to the wrapped AtSource in a
+// single batched call. The Phase 7 contract is that a Source serves
+// any-size batch natively; callers who need per-entry splitting wrap
+// the underlying source in SplitBatch(s, 1).
 func (c *cacheSource) fetchAt(ctx context.Context, missed []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
-	if c.atSrc.Capabilities().BatchPairs || len(missed) <= 1 {
-		return c.atSrc.QuoteAt(ctx, missed, at)
-	}
-	var prices []ast.Price
-	var diags []ast.Diagnostic
-	for _, m := range missed {
-		if err := ctx.Err(); err != nil {
-			return prices, diags, err
-		}
-		ps, ds, err := c.atSrc.QuoteAt(ctx, []api.SourceQuery{m}, at)
-		prices = append(prices, ps...)
-		diags = append(diags, ds...)
-		if err != nil {
-			return prices, diags, err
-		}
-	}
-	return prices, diags, nil
+	return c.atSrc.QuoteAt(ctx, missed, at)
 }
 
 // storeAtPrices writes returned prices back into the cache. The
@@ -368,23 +356,7 @@ func (c *cacheSource) doLatest(ctx context.Context, q []api.SourceQuery) ([]ast.
 }
 
 func (c *cacheSource) fetchLatest(ctx context.Context, missed []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-	if c.latestSrc.Capabilities().BatchPairs || len(missed) <= 1 {
-		return c.latestSrc.QuoteLatest(ctx, missed)
-	}
-	var prices []ast.Price
-	var diags []ast.Diagnostic
-	for _, m := range missed {
-		if err := ctx.Err(); err != nil {
-			return prices, diags, err
-		}
-		ps, ds, err := c.latestSrc.QuoteLatest(ctx, []api.SourceQuery{m})
-		prices = append(prices, ps...)
-		diags = append(diags, ds...)
-		if err != nil {
-			return prices, diags, err
-		}
-	}
-	return prices, diags, nil
+	return c.latestSrc.QuoteLatest(ctx, missed)
 }
 
 func (c *cacheSource) storeLatestPrices(prices []ast.Price, missed []api.SourceQuery) {

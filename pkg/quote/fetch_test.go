@@ -194,7 +194,7 @@ func TestFetch_AtMode_DemotedFromLatest_OutOfWindow(t *testing.T) {
 	}
 }
 
-func TestFetch_BatchPairs_True(t *testing.T) {
+func TestFetch_AlwaysBatchesPerSource(t *testing.T) {
 	at := utcDay(2024, time.March, 1)
 	var (
 		mu      sync.Mutex
@@ -202,7 +202,7 @@ func TestFetch_BatchPairs_True(t *testing.T) {
 	)
 	src := &mockSource{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsAt: true, BatchPairs: true},
+		caps: api.Capabilities{SupportsAt: true},
 		at: func(ctx context.Context, q []api.SourceQuery, _ time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
 			cp := append([]api.SourceQuery(nil), q...)
@@ -239,19 +239,22 @@ func TestFetch_BatchPairs_True(t *testing.T) {
 	}
 }
 
-func TestFetch_BatchPairs_False(t *testing.T) {
-	at := utcDay(2024, time.March, 1)
+func TestFetch_RangeMode_PassesFullRange(t *testing.T) {
+	start := utcDay(2024, time.March, 1)
+	end := utcDay(2024, time.March, 15)
 	var (
-		mu      sync.Mutex
-		atCalls [][]api.SourceQuery
+		mu       sync.Mutex
+		gotStart time.Time
+		gotEnd   time.Time
+		gotCalls int
 	)
 	src := &mockSource{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsAt: true, BatchPairs: false},
-		at: func(ctx context.Context, q []api.SourceQuery, _ time.Time) ([]ast.Price, []ast.Diagnostic, error) {
+		caps: api.Capabilities{SupportsRange: true},
+		rangeFn: func(ctx context.Context, q []api.SourceQuery, s, e time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
-			cp := append([]api.SourceQuery(nil), q...)
-			atCalls = append(atCalls, cp)
+			gotStart, gotEnd = s, e
+			gotCalls++
 			mu.Unlock()
 			out := make([]ast.Price, 0, len(q))
 			for _, qq := range q {
@@ -262,27 +265,25 @@ func TestFetch_BatchPairs_False(t *testing.T) {
 	}
 	reg := mapRegistry{"yahoo": src}
 	spec := api.Spec{
-		Mode: api.ModeAt,
-		At:   at,
+		Mode:  api.ModeRange,
+		Start: start,
+		End:   end,
 		Requests: []api.PriceRequest{
 			mkRequest("AAPL", "USD", ref("yahoo", "AAPL")),
-			mkRequest("GOOG", "USD", ref("yahoo", "GOOG")),
 		},
 	}
 	prices, _, err := Fetch(context.Background(), reg, spec)
 	if err != nil {
 		t.Fatalf("Fetch returned error: %v", err)
 	}
-	if len(prices) != 2 {
-		t.Errorf("len(prices) = %d, want 2", len(prices))
+	if len(prices) != 1 {
+		t.Errorf("len(prices) = %d, want 1", len(prices))
 	}
-	if len(atCalls) != 2 {
-		t.Fatalf("source.QuoteAt invoked %d times, want 2", len(atCalls))
+	if gotCalls != 1 {
+		t.Errorf("source.QuoteRange invoked %d times, want 1", gotCalls)
 	}
-	for i, c := range atCalls {
-		if len(c) != 1 {
-			t.Errorf("call %d had %d queries, want 1", i, len(c))
-		}
+	if !gotStart.Equal(start) || !gotEnd.Equal(end) {
+		t.Errorf("got [%v, %v), want [%v, %v)", gotStart, gotEnd, start, end)
 	}
 }
 
@@ -358,7 +359,7 @@ func TestFetch_DeadlockRegression_SharedBatchSources(t *testing.T) {
 		var calls int32
 		s := &mockSource{
 			name: name,
-			caps: api.Capabilities{SupportsLatest: true, BatchPairs: true},
+			caps: api.Capabilities{SupportsLatest: true},
 		}
 		s.latest = func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt32(&calls, 1)

@@ -80,7 +80,7 @@ func TestECB_Name(t *testing.T) {
 
 func TestECB_Capabilities(t *testing.T) {
 	caps := (&Source{}).Capabilities()
-	want := api.Capabilities{SupportsLatest: true, SupportsAt: true, SupportsRange: true, BatchPairs: true}
+	want := api.Capabilities{SupportsLatest: true, SupportsAt: true, SupportsRange: true}
 	if diff := cmp.Diff(want, caps); diff != "" {
 		t.Errorf("Capabilities() mismatch (-want +got):\n%s", diff)
 	}

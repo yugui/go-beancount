@@ -14,13 +14,11 @@ import (
 // PriceRequest's progress through its fallback chain.
 //
 // For ModeRange, a unit covers the whole [Spec.Start, Spec.End)
-// interval at the unit level; the source-dispatch step is responsible
-// for chopping that interval into RangePerCall-sized buckets when
-// actually issuing the call. Modelling Range as one unit per request
-// (rather than one per bucket) keeps the unit-bookkeeping uniform
-// across modes and lets the scheduler drive the per-source bucket
-// loop locally to the call site, where the relevant Capabilities are
-// already in scope.
+// interval at the unit level; the orchestrator passes that whole
+// interval through to the source in a single call. Source-side
+// chunking (when the source's underlying API can't natively span
+// arbitrary ranges) is the source author's responsibility, typically
+// expressed by wrapping with pkg/quote/sourceutil.SplitRange.
 type unit struct {
 	// req is the original PriceRequest the unit tracks.
 	req api.PriceRequest
@@ -130,10 +128,12 @@ func runFetch(ctx context.Context, reg Registry, spec api.Spec, cfg *runConfig) 
 // (level, source) pair. It resolves the source from the registry,
 // picks the source method to call from spec.Mode and the source's
 // Capabilities (the demotion table on Fetch's godoc), assembles the
-// SourceQuery slice (one query per unit, or one per bucket when
-// ModeRange + AtSource demotion applies), issues the call(s),
+// SourceQuery slice (one query per unit), issues the call,
 // converts errors / panics / unsupported-mode into Diagnostics, and
-// attributes returned Prices back to the contributing units.
+// attributes returned Prices back to the contributing units. Every
+// unit going to the same source on the same level is dispatched in
+// a single batched call; any per-source splitting (by query count
+// or by date range) is the source author's responsibility.
 func dispatchSource(
 	ctx context.Context,
 	reg Registry,
@@ -352,21 +352,10 @@ func dispatchSource(
 		return prices, diags
 	}
 
-	// Now actually issue calls. We split into batches based on
-	// caps.BatchPairs: when false, each query is its own call. When
-	// true, all queries for this source go in a single call (or, for
-	// ModeRange + RangeSource with RangePerCall>0, one call per
-	// bucket carrying all queries).
-	var batches [][]queryUnit
-	if caps.BatchPairs {
-		batches = [][]queryUnit{qus}
-	} else {
-		batches = make([][]queryUnit, 0, len(qus))
-		for i := range qus {
-			batches = append(batches, qus[i:i+1])
-		}
-	}
-
+	// Issue exactly one call per (level, source) carrying every query
+	// for that source. Source-side splitting (by query count or by
+	// date range) is the source author's responsibility; see the
+	// "Quoter author obligations" section of pkg/quote/api.
 	var (
 		allPrices []ast.Price
 		allDiags  []ast.Diagnostic
@@ -374,11 +363,9 @@ func dispatchSource(
 
 	switch m {
 	case methodLatest:
-		for _, b := range batches {
-			ps, ds := callOnce(api.ModeLatest, b, time.Time{}, time.Time{}, time.Time{})
-			allPrices = append(allPrices, ps...)
-			allDiags = append(allDiags, ds...)
-		}
+		ps, ds := callOnce(api.ModeLatest, qus, time.Time{}, time.Time{}, time.Time{})
+		allPrices = append(allPrices, ps...)
+		allDiags = append(allDiags, ds...)
 
 	case methodAt:
 		// For ModeLatest/ModeAt the call covers a single instant; for
@@ -386,32 +373,24 @@ func dispatchSource(
 		// a time across [Start, End).
 		switch spec.Mode {
 		case api.ModeLatest:
-			at := cfg.now()
-			for _, b := range batches {
-				ps, ds := callOnce(api.ModeAt, b, at, time.Time{}, time.Time{})
-				allPrices = append(allPrices, ps...)
-				allDiags = append(allDiags, ds...)
-			}
+			ps, ds := callOnce(api.ModeAt, qus, cfg.now(), time.Time{}, time.Time{})
+			allPrices = append(allPrices, ps...)
+			allDiags = append(allDiags, ds...)
 		case api.ModeAt:
-			for _, b := range batches {
-				ps, ds := callOnce(api.ModeAt, b, spec.At, time.Time{}, time.Time{})
-				allPrices = append(allPrices, ps...)
-				allDiags = append(allDiags, ds...)
-			}
+			ps, ds := callOnce(api.ModeAt, qus, spec.At, time.Time{}, time.Time{})
+			allPrices = append(allPrices, ps...)
+			allDiags = append(allDiags, ds...)
 		case api.ModeRange:
 			for d := spec.Start; d.Before(spec.End); d = d.AddDate(0, 0, 1) {
-				for _, b := range batches {
-					ps, ds := callOnce(api.ModeAt, b, d, time.Time{}, time.Time{})
-					allPrices = append(allPrices, ps...)
-					allDiags = append(allDiags, ds...)
-				}
+				ps, ds := callOnce(api.ModeAt, qus, d, time.Time{}, time.Time{})
+				allPrices = append(allPrices, ps...)
+				allDiags = append(allDiags, ds...)
 			}
 		}
 
 	case methodRange:
 		// Pick the [start, end) the call covers based on the source
-		// mode. Then split it by RangePerCall and issue one call per
-		// bucket (per batch).
+		// mode and pass the full interval through in a single call.
 		var rStart, rEnd time.Time
 		switch spec.Mode {
 		case api.ModeLatest:
@@ -425,46 +404,10 @@ func dispatchSource(
 			rStart = spec.Start
 			rEnd = spec.End
 		}
-
-		buckets := splitRange(rStart, rEnd, caps.RangePerCall)
-		for _, bk := range buckets {
-			for _, b := range batches {
-				ps, ds := callOnce(api.ModeRange, b, time.Time{}, bk.start, bk.end)
-				allPrices = append(allPrices, ps...)
-				allDiags = append(allDiags, ds...)
-			}
-		}
+		ps, ds := callOnce(api.ModeRange, qus, time.Time{}, rStart, rEnd)
+		allPrices = append(allPrices, ps...)
+		allDiags = append(allDiags, ds...)
 	}
 
 	return allPrices, allDiags
-}
-
-// rangeBucket is the internal half-open interval value used by
-// splitRange. It exists only so dispatchSource's RangeSource branch
-// can iterate over a homogeneous slice instead of a parallel pair of
-// time slices.
-type rangeBucket struct {
-	start, end time.Time
-}
-
-// splitRange divides [start, end) into chunks of at most perCall
-// days. perCall <= 0 means "no chunking — one bucket covering the
-// whole interval".
-func splitRange(start, end time.Time, perCall int) []rangeBucket {
-	if !end.After(start) {
-		return nil
-	}
-	if perCall <= 0 {
-		return []rangeBucket{{start: start, end: end}}
-	}
-	var buckets []rangeBucket
-	for d := start; d.Before(end); {
-		next := d.AddDate(0, 0, perCall)
-		if next.After(end) {
-			next = end
-		}
-		buckets = append(buckets, rangeBucket{start: d, end: next})
-		d = next
-	}
-	return buckets
 }

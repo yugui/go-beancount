@@ -20,14 +20,16 @@ import (
 // Scheduling proceeds in levels. At level k every still-unresolved
 // unit contributes its k-th-priority source name to a
 // {sourceName -> []unit} grouping; the orchestrator then issues, in
-// parallel, exactly one logical "round of calls" per source on that
-// level. Each round may expand into several physical calls per source
-// according to the source's BatchPairs and RangePerCall capabilities,
-// but each source is only consulted once per level. After the entire
-// level finishes, results are merged in: units that came back with a
-// Price are marked done; units that did not advance to the next
-// fallback in their Sources slice. Level k+1 then begins with
-// whatever units remain unresolved.
+// parallel, exactly one call per source on that level — carrying
+// every query for that source in a single batch and (for
+// ModeRange) the full requested interval. Source-side splitting by
+// query count or by date range is the source author's
+// responsibility, expressed at registration time via the helpers
+// in pkg/quote/sourceutil. After the entire level finishes, results
+// are merged in: units that came back with a Price are marked done;
+// units that did not advance to the next fallback in their Sources
+// slice. Level k+1 then begins with whatever units remain
+// unresolved.
 //
 // The synchronised barrier between levels is what makes the fallback
 // semantics safe under shared batch sources. Consider two requests A
@@ -66,9 +68,9 @@ import (
 //	                           | unless now ∈      |                    |                         |
 //	                           | [t, t+1d); else   |                    |                         |
 //	                           | QuoteLatest       |                    |                         |
-//	ModeRange(s, e)            | QuoteLatest only  | one QuoteAt per    | QuoteRange directly     | Prefer
-//	                           | when now ∈ [s,e), | calendar day in    | (split by              | Range > At-loop > Latest
-//	                           | else quote-mode-  | [s, e)             | RangePerCall)           |
+//	ModeRange(s, e)            | QuoteLatest only  | one QuoteAt per    | QuoteRange(s, e)        | Prefer
+//	                           | when now ∈ [s,e), | calendar day in    |                         | Range > At-loop > Latest
+//	                           | else quote-mode-  | [s, e)             |                         |
 //	                           | unsupported       |                    |                         |
 //
 // "now" is supplied by WithClock (default time.Now). The "calendar

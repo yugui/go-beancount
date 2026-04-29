@@ -35,10 +35,12 @@ func InitPlugin() error {
 	return nil
 }
 
-// source is a minimal api.Source that supports Latest and At, batches
-// pairs, and returns Number=1 for every query. Range is intentionally
-// not implemented: the fixture exercises the loader, not the full
-// capability matrix.
+// source is a minimal api.Source that supports Latest and At and
+// returns Number=1 for every query. Range is intentionally not
+// implemented: the fixture exercises the loader, not the full
+// capability matrix. The source materialises a Price per query in a
+// loop, which inherently handles any-size batch, so no SplitBatch
+// wrap is needed.
 type source struct{}
 
 func (s *source) Name() string { return pluginName }
@@ -47,7 +49,6 @@ func (s *source) Capabilities() api.Capabilities {
 	return api.Capabilities{
 		SupportsLatest: true,
 		SupportsAt:     true,
-		BatchPairs:     true,
 	}
 }
 

@@ -17,4 +17,30 @@
 // corresponding goplug APIVersion bump so that older plugins fail
 // to load against newer hosts (and vice versa) instead of binding
 // against an incompatible interface at runtime.
+//
+// # Quoter author obligations
+//
+// Capabilities only describes which sub-interfaces a source
+// implements. The shape of the inputs each Quote* method must
+// accept is fixed by the contract below; it is not negotiable
+// through Capabilities. A source that cannot natively handle one
+// of these shapes is responsible for adapting itself to the
+// contract — typically by stacking a decorator from
+// pkg/quote/sourceutil at registration time.
+//
+//  1. Batch size. A Quote* call may receive a []SourceQuery of
+//     any length ≥ 1. The source must serve the whole slice or
+//     fan it out internally. Use [sourceutil.SplitBatch] to cap
+//     per-call query count.
+//
+//  2. Mixed quote currencies in one batch. A single batch may
+//     contain queries with different Pair.QuoteCurrency values.
+//     The source must serve them all, or pre-partition by quote
+//     currency. Use [sourceutil.GroupByQuoteCurrency] to
+//     guarantee a single quote currency per downstream call.
+//
+//  3. Long ranges (RangeSource only). A QuoteRange call may span
+//     any number of days. The source must serve any length, or
+//     chunk internally. Use [sourceutil.SplitRange] to cap
+//     per-call day count.
 package api

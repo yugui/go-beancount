@@ -48,10 +48,10 @@ var WeekdaysOnly Calendar = weekdaysOnly{}
 //
 // The returned source reports Capabilities with SupportsRange=true
 // and inherits the wrapped source's other Capabilities flags
-// (SupportsLatest, SupportsAt, BatchPairs, RangePerCall). Stack with
-// Concurrency to bound the number of parallel per-date calls; by
-// itself this decorator iterates dates serially, which is the safe
-// default for sources with strict rate limits.
+// (SupportsLatest, SupportsAt). Stack with Concurrency to bound the
+// number of parallel per-date calls; by itself this decorator
+// iterates dates serially, which is the safe default for sources
+// with strict rate limits.
 func DateRangeIter(s api.AtSource, cal Calendar) api.RangeSource {
 	if cal == nil {
 		cal = AllDays
