@@ -36,7 +36,6 @@ func TestDateRangeIterCallsAtPerWeekday(t *testing.T) {
 	var seenDates []time.Time
 	at := &fakeAt{
 		name: "fx",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			seenDates = append(seenDates, at)
 			out := make([]ast.Price, 0, len(q))
@@ -54,12 +53,11 @@ func TestDateRangeIterCallsAtPerWeekday(t *testing.T) {
 	}
 	rs := DateRangeIter(at, WeekdaysOnly)
 
-	caps := rs.Capabilities()
-	if !caps.SupportsRange {
-		t.Errorf("Capabilities().SupportsRange = false, want true")
+	if _, ok := any(rs).(api.RangeSource); !ok {
+		t.Errorf("DateRangeIter return value does not satisfy api.RangeSource")
 	}
-	if !caps.SupportsAt {
-		t.Errorf("Capabilities().SupportsAt = false, want true (inherited)")
+	if _, ok := any(rs).(api.AtSource); !ok {
+		t.Errorf("DateRangeIter return value does not satisfy api.AtSource (inherited)")
 	}
 
 	// 2024-01-05 (Fri) through 2024-01-10 (Wed): Fri, Mon, Tue (5/6/7 -> Fri Sat Sun, then 8/9/10 = Mon Tue Wed; end exclusive at Wed 10).
@@ -99,7 +97,6 @@ func TestDateRangeIterHalfOpen(t *testing.T) {
 	var seen []time.Time
 	at := &fakeAt{
 		name: "all",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, _ []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			seen = append(seen, at)
 			return nil, nil, nil
@@ -126,7 +123,6 @@ func TestDateRangeIterDelegatesAt(t *testing.T) {
 	calledAt := false
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			calledAt = true
 			return nil, nil, nil

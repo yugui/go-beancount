@@ -13,11 +13,11 @@ import (
 
 // WrapSingleCell adapts a one-cell function (one Pair, one date) into
 // an api.AtSource. The returned source iterates the input query slice
-// serially, calling fn once per query, and reports
-// Capabilities{SupportsAt: true}. Authors who can produce a price for
-// exactly one (pair, date) cell at a time use this as the shortest
-// path onto the orchestrator interface; combine with SplitBatch for
-// parallelism and with DateRangeIter to additionally serve ranges.
+// serially, calling fn once per query, and satisfies api.AtSource.
+// Authors who can produce a price for exactly one (pair, date) cell
+// at a time use this as the shortest path onto the orchestrator
+// interface; combine with SplitBatch for parallelism and with
+// DateRangeIter to additionally serve ranges.
 //
 // fn returns the per-cell price as an apd.Decimal in the pair's quote
 // currency. A nil fn return error produces an ast.Price with that
@@ -40,10 +40,6 @@ type singleCell struct {
 }
 
 func (s *singleCell) Name() string { return s.name }
-
-func (s *singleCell) Capabilities() api.Capabilities {
-	return api.Capabilities{SupportsAt: true}
-}
 
 func (s *singleCell) QuoteAt(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	prices := make([]ast.Price, 0, len(q))

@@ -11,19 +11,21 @@ import (
 	"github.com/yugui/go-beancount/pkg/quote/api"
 )
 
-func TestWrapSingleCellCapabilitiesAndName(t *testing.T) {
+func TestWrapSingleCellShapeAndName(t *testing.T) {
 	src := WrapSingleCell("test", func(context.Context, api.Pair, time.Time) (apd.Decimal, error) {
 		return apd.Decimal{}, nil
 	})
 	if got := src.Name(); got != "test" {
 		t.Errorf("Name() = %q, want %q", got, "test")
 	}
-	caps := src.Capabilities()
-	if !caps.SupportsAt {
-		t.Errorf("Capabilities().SupportsAt = false, want true")
+	if _, ok := any(src).(api.AtSource); !ok {
+		t.Errorf("WrapSingleCell return value does not satisfy api.AtSource")
 	}
-	if caps.SupportsLatest || caps.SupportsRange {
-		t.Errorf("unexpected sub-interface flags: %+v", caps)
+	if _, ok := any(src).(api.LatestSource); ok {
+		t.Errorf("WrapSingleCell return value unexpectedly satisfies api.LatestSource")
+	}
+	if _, ok := any(src).(api.RangeSource); ok {
+		t.Errorf("WrapSingleCell return value unexpectedly satisfies api.RangeSource")
 	}
 }
 

@@ -14,9 +14,9 @@ import (
 // releases it on return. A non-positive n is treated as 1 (effectively
 // serial).
 //
-// The wrapper preserves whichever Capability sub-interfaces s
-// implements: if s is both a LatestSource and an AtSource, the returned
-// value satisfies both. Use a type assertion to recover the desired
+// The wrapper preserves whichever sub-interfaces s implements: if s
+// is both a LatestSource and an AtSource, the returned value
+// satisfies both. Use a type assertion to recover the desired
 // sub-interface from the returned api.Source.
 //
 // # Goroutine safety
@@ -94,8 +94,7 @@ type wrappedSource struct {
 	rng    api.RangeSource
 }
 
-func (w *wrappedSource) Name() string                   { return w.base.Name() }
-func (w *wrappedSource) Capabilities() api.Capabilities { return w.base.Capabilities() }
+func (w *wrappedSource) Name() string { return w.base.Name() }
 
 func (w *wrappedSource) call(ctx context.Context, fn func(context.Context) ([]ast.Price, []ast.Diagnostic, error)) ([]ast.Price, []ast.Diagnostic, error) {
 	if w.hook == nil {

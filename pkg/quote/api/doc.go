@@ -5,8 +5,7 @@
 // additional sources.
 //
 // It contains only declarative types — addressing units (Pair,
-// SourceRef, SourceQuery), the request/spec shapes (PriceRequest,
-// Spec, Mode), the per-source capability declaration (Capabilities),
+// SourceRef, SourceQuery), the request shape (PriceRequest, Mode),
 // and the Source base interface together with the optional
 // LatestSource, AtSource, and RangeSource sub-interfaces. Concrete
 // fetching logic, registry management, and orchestration live in
@@ -20,11 +19,11 @@
 //
 // # Quoter author obligations
 //
-// Capabilities only describes which sub-interfaces a source
-// implements. The shape of the inputs each Quote* method must
-// accept is fixed by the contract below; it is not negotiable
-// through Capabilities. A source that cannot natively handle one
-// of these shapes is responsible for adapting itself to the
+// Which sub-interfaces a source implements is the only declarative
+// signal it sends about its shape support. The shape of the inputs
+// each Quote* method must accept is fixed by the contract below; it
+// is not negotiable per source. A source that cannot natively handle
+// one of these shapes is responsible for adapting itself to the
 // contract — typically by stacking a decorator from
 // pkg/quote/sourceutil at registration time.
 //

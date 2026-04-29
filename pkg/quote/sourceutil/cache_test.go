@@ -26,7 +26,6 @@ func TestCacheAllHitsShortCircuits(t *testing.T) {
 	var calls int64
 	at := &fakeAt{
 		name: "ecb",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt64(&calls, 1)
 			out := make([]ast.Price, 0, len(q))
@@ -68,7 +67,6 @@ func TestCachePartialMissForwardsOnlyMissing(t *testing.T) {
 	var calls int64
 	at := &fakeAt{
 		name: "ecb",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt64(&calls, 1)
 			cp := make([]api.SourceQuery, len(q))
@@ -119,7 +117,6 @@ func TestCacheTTLEviction(t *testing.T) {
 	var calls int64
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt64(&calls, 1)
 			out := make([]ast.Price, 0, len(q))
@@ -159,7 +156,6 @@ func TestCacheMaxEntries(t *testing.T) {
 	var calls int64
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt64(&calls, 1)
 			out := make([]ast.Price, 0, len(q))
@@ -198,7 +194,6 @@ func TestCacheMaxEntries(t *testing.T) {
 func TestCachePreservesSubInterfaces(t *testing.T) {
 	src := &fakeLatestAt{
 		name: "x",
-		caps: api.Capabilities{SupportsLatest: true, SupportsAt: true},
 		handleAt: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},
@@ -220,7 +215,6 @@ func TestCacheLatestModeShortCircuits(t *testing.T) {
 	var calls int64
 	src := &fakeLatest{
 		name: "x",
-		caps: api.Capabilities{SupportsLatest: true},
 		handle: func(_ context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt64(&calls, 1)
 			out := make([]ast.Price, 0, len(q))
@@ -247,7 +241,6 @@ func TestCacheRangeMode(t *testing.T) {
 	var calls int64
 	src := &fakeRange{
 		name: "x",
-		caps: api.Capabilities{SupportsRange: true},
 		handle: func(_ context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt64(&calls, 1)
 			var out []ast.Price

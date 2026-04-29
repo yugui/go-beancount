@@ -49,18 +49,18 @@ import (
 // chains share the same downstream sources. The orchestrator
 // deliberately picks the barrier.
 //
-// # Capability ↔ Mode demotion
+// # Sub-interface ↔ Mode demotion
 //
 // FetchLatest picks the source method to call by combining ModeLatest
-// with the source's declared Capabilities:
+// with which sub-interfaces the source implements:
 //
-//	source declares  | call issued
-//	-----------------+---------------------------------------------
-//	LatestSource     | QuoteLatest
-//	AtSource only    | QuoteAt(now)
-//	RangeSource only | QuoteRange(now-1d, now+1d) and pick the
-//	                 | latest entry
-//	multi-impl       | prefer Latest > At > Range
+//	source implements | call issued
+//	------------------+--------------------------------------------
+//	LatestSource      | QuoteLatest
+//	AtSource only     | QuoteAt(now)
+//	RangeSource only  | QuoteRange(now-1d, now+1d) and pick the
+//	                  | latest entry
+//	multi-impl        | prefer Latest > At > Range
 //
 // "now" is supplied by WithClock (default time.Now).
 //
@@ -107,18 +107,18 @@ func FetchLatest(ctx context.Context, reg Registry, requests []api.PriceRequest,
 // time.UTC)). Projecting that calendar date onto a source-native
 // exchange time zone is the responsibility of each individual quoter.
 //
-// # Capability ↔ Mode demotion
+// # Sub-interface ↔ Mode demotion
 //
 // FetchAt picks the source method to call by combining ModeAt with
-// the source's declared Capabilities:
+// which sub-interfaces the source implements:
 //
-//	source declares  | call issued
-//	-----------------+---------------------------------------------
-//	AtSource         | QuoteAt(at)
-//	RangeSource only | QuoteRange(at, at+1d) and filter
-//	LatestSource     | QuoteLatest only when now ∈ [at, at+1d);
-//	  only           | else quote-mode-unsupported diagnostic
-//	multi-impl       | prefer At > Range > Latest
+//	source implements | call issued
+//	------------------+--------------------------------------------
+//	AtSource          | QuoteAt(at)
+//	RangeSource only  | QuoteRange(at, at+1d) and filter
+//	LatestSource      | QuoteLatest only when now ∈ [at, at+1d);
+//	  only            | else quote-mode-unsupported diagnostic
+//	multi-impl        | prefer At > Range > Latest
 //
 // "now" is supplied by WithClock (default time.Now).
 func FetchAt(ctx context.Context, reg Registry, requests []api.PriceRequest, at time.Time, opts ...Option) ([]ast.Price, []ast.Diagnostic, error) {
@@ -147,19 +147,19 @@ func FetchAt(ctx context.Context, reg Registry, requests []api.PriceRequest, at 
 // successful fetch that legitimately found nothing; the explicit
 // validation error is more honest.
 //
-// # Capability ↔ Mode demotion
+// # Sub-interface ↔ Mode demotion
 //
 // FetchRange picks the source method to call by combining ModeRange
-// with the source's declared Capabilities:
+// with which sub-interfaces the source implements:
 //
-//	source declares  | call issued
-//	-----------------+---------------------------------------------
-//	RangeSource      | QuoteRange(start, end)
-//	AtSource only    | QuoteRange(start, end) via
-//	                 | sourceutil.DateRangeIter (Calendar=AllDays)
-//	LatestSource     | QuoteLatest only when now ∈ [start, end);
-//	  only           | else quote-mode-unsupported diagnostic
-//	multi-impl       | prefer Range > At-lifted > Latest
+//	source implements | call issued
+//	------------------+--------------------------------------------
+//	RangeSource       | QuoteRange(start, end)
+//	AtSource only     | QuoteRange(start, end) via
+//	                  | sourceutil.DateRangeIter (Calendar=AllDays)
+//	LatestSource      | QuoteLatest only when now ∈ [start, end);
+//	  only            | else quote-mode-unsupported diagnostic
+//	multi-impl        | prefer Range > At-lifted > Latest
 //
 // "now" is supplied by WithClock (default time.Now). For the
 // AtSource-only case, the orchestrator lifts the AtSource to a

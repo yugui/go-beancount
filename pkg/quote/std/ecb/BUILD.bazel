@@ -27,6 +27,5 @@ go_test(
     deps = [
         "//pkg/ast",
         "//pkg/quote/api",
-        "@com_github_google_go_cmp//cmp",
     ],
 )

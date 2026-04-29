@@ -159,8 +159,7 @@ type cacheSource struct {
 	rng       map[rangeKey]*rangeEntry
 }
 
-func (c *cacheSource) Name() string                   { return c.base.Name() }
-func (c *cacheSource) Capabilities() api.Capabilities { return c.base.Capabilities() }
+func (c *cacheSource) Name() string { return c.base.Name() }
 
 func normaliseDay(t time.Time) time.Time {
 	u := t.UTC()

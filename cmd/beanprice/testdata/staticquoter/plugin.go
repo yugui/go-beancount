@@ -45,13 +45,6 @@ type source struct{}
 
 func (s *source) Name() string { return pluginName }
 
-func (s *source) Capabilities() api.Capabilities {
-	return api.Capabilities{
-		SupportsLatest: true,
-		SupportsAt:     true,
-	}
-}
-
 func (s *source) QuoteLatest(_ context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 	return s.priceFor(qs, time.Now().UTC().Truncate(24*time.Hour)), nil, nil
 }

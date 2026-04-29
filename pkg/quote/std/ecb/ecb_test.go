@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/quote/api"
 )
@@ -78,11 +76,16 @@ func TestECB_Name(t *testing.T) {
 	}
 }
 
-func TestECB_Capabilities(t *testing.T) {
-	caps := (&Source{}).Capabilities()
-	want := api.Capabilities{SupportsLatest: true, SupportsAt: true, SupportsRange: true}
-	if diff := cmp.Diff(want, caps); diff != "" {
-		t.Errorf("Capabilities() mismatch (-want +got):\n%s", diff)
+func TestECB_ImplementsAllShapes(t *testing.T) {
+	var s api.Source = &Source{}
+	if _, ok := s.(api.LatestSource); !ok {
+		t.Errorf("ecb.Source does not satisfy api.LatestSource")
+	}
+	if _, ok := s.(api.AtSource); !ok {
+		t.Errorf("ecb.Source does not satisfy api.AtSource")
+	}
+	if _, ok := s.(api.RangeSource); !ok {
+		t.Errorf("ecb.Source does not satisfy api.RangeSource")
 	}
 }
 

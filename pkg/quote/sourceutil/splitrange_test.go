@@ -17,7 +17,6 @@ func TestSplitRange_BucketSize(t *testing.T) {
 	var calls []call
 	src := &fakeRange{
 		name: "x",
-		caps: api.Capabilities{SupportsRange: true},
 		handle: func(_ context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			calls = append(calls, call{start, end})
 			return nil, nil, nil
@@ -49,7 +48,6 @@ func TestSplitRange_PerCallZeroPassesThrough(t *testing.T) {
 	var calls []call
 	src := &fakeRange{
 		name: "x",
-		caps: api.Capabilities{SupportsRange: true},
 		handle: func(_ context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			calls = append(calls, call{start, end})
 			return nil, nil, nil
@@ -74,7 +72,6 @@ func TestSplitRange_OneBucketError_DoesNotFailAll(t *testing.T) {
 	var calls []call
 	src := &fakeRange{
 		name: "x",
-		caps: api.Capabilities{SupportsRange: true},
 		handle: func(_ context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			idx := len(calls)
 			calls = append(calls, call{start, end})

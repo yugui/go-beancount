@@ -105,7 +105,7 @@ func defaultIsRetriable(err error) bool {
 
 // RetryOnError wraps s so that calls returning a retriable error are
 // retried with exponential backoff per policy. The wrapper preserves
-// whichever Capability sub-interfaces s implements.
+// whichever sub-interfaces s implements.
 //
 // # Retry semantics
 //
@@ -177,8 +177,7 @@ type retrySource struct {
 	rng    api.RangeSource
 }
 
-func (w *retrySource) Name() string                   { return w.base.Name() }
-func (w *retrySource) Capabilities() api.Capabilities { return w.base.Capabilities() }
+func (w *retrySource) Name() string { return w.base.Name() }
 
 func (w *retrySource) call(ctx context.Context, fn func(context.Context) ([]ast.Price, []ast.Diagnostic, error)) ([]ast.Price, []ast.Diagnostic, error) {
 	var lastPrices []ast.Price

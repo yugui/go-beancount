@@ -19,7 +19,6 @@ func TestSplitBatch_AtSourceHonoursBatchSize(t *testing.T) {
 	var mu sync.Mutex
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
 			batchSizes = append(batchSizes, len(q))
@@ -38,11 +37,6 @@ func TestSplitBatch_AtSourceHonoursBatchSize(t *testing.T) {
 		},
 	}
 	bp := SplitBatch(at, 3).(api.AtSource)
-
-	caps := bp.Capabilities()
-	if !caps.SupportsAt {
-		t.Errorf("Capabilities()=%+v, want SupportsAt=true", caps)
-	}
 
 	queries := make([]api.SourceQuery, 7)
 	for i := range queries {
@@ -76,7 +70,6 @@ func TestSplitBatch_LatestSourceHonoursBatchSize(t *testing.T) {
 	var mu sync.Mutex
 	src := &fakeLatest{
 		name: "x",
-		caps: api.Capabilities{SupportsLatest: true},
 		handle: func(_ context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
 			batchSizes = append(batchSizes, len(q))
@@ -123,7 +116,6 @@ func TestSplitBatch_RangeSourceHonoursBatchSize(t *testing.T) {
 	var mu sync.Mutex
 	src := &fakeRange{
 		name: "x",
-		caps: api.Capabilities{SupportsRange: true},
 		handle: func(_ context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
 			batchSizes = append(batchSizes, len(q))
@@ -174,7 +166,6 @@ func TestSplitBatch_RunsInParallel(t *testing.T) {
 	release := make(chan struct{})
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, _ []api.SourceQuery, _ time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			entered <- struct{}{}
 			<-release
@@ -212,7 +203,6 @@ func TestSplitBatch_AggregatesErrors(t *testing.T) {
 	var calls int64
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			n := atomic.AddInt64(&calls, 1)
 			if n == 1 {
@@ -254,7 +244,6 @@ func TestSplitBatch_NonPositiveN(t *testing.T) {
 	var mu sync.Mutex
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, _ time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
 			if len(q) > maxBatch {
@@ -278,7 +267,6 @@ func TestSplitBatch_NonPositiveN(t *testing.T) {
 func TestSplitBatch_PreservesSubInterfaces(t *testing.T) {
 	src := &fakeLatestAt{
 		name: "x",
-		caps: api.Capabilities{SupportsLatest: true, SupportsAt: true},
 		handleAt: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},

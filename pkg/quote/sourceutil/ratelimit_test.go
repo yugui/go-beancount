@@ -13,7 +13,6 @@ import (
 func TestRateLimitEnforcesRate(t *testing.T) {
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},
@@ -41,7 +40,6 @@ func TestRateLimitEnforcesRate(t *testing.T) {
 func TestRateLimitHonoursCancellation(t *testing.T) {
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},
@@ -67,7 +65,6 @@ func TestRateLimitHonoursCancellation(t *testing.T) {
 func TestRateLimitPreservesSubInterfaces(t *testing.T) {
 	src := &fakeLatestAt{
 		name: "x",
-		caps: api.Capabilities{SupportsLatest: true, SupportsAt: true},
 		handleAt: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},
@@ -86,7 +83,6 @@ func TestRateLimitFractionalRPS(t *testing.T) {
 	// 2 rps -> 500ms between calls after burst.
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},

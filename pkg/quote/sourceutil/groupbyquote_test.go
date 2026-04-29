@@ -35,7 +35,6 @@ func TestGroupByQuoteCurrency_PartitionsByQuoteCurrency(t *testing.T) {
 
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			seen := make(map[string]struct{})
 			var qcs []string
@@ -108,7 +107,6 @@ func TestGroupByQuoteCurrency_SingleCurrencyForwardsDirectly(t *testing.T) {
 	calls := 0
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
 			calls++
@@ -141,7 +139,6 @@ func TestGroupByQuoteCurrency_SingleCurrencyForwardsDirectly(t *testing.T) {
 func TestGroupByQuoteCurrency_OneFails_OthersSurvive(t *testing.T) {
 	at := &fakeAt{
 		name: "src",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			// Fail any partition addressed in JPY.
 			for _, qq := range q {
@@ -195,7 +192,6 @@ func TestGroupByQuoteCurrency_PreservesSubInterfaces(t *testing.T) {
 	t.Run("AtOnly", func(t *testing.T) {
 		src := &fakeAt{
 			name: "x",
-			caps: api.Capabilities{SupportsAt: true},
 			handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 				return nil, nil, nil
 			},
@@ -214,7 +210,6 @@ func TestGroupByQuoteCurrency_PreservesSubInterfaces(t *testing.T) {
 	t.Run("LatestOnly", func(t *testing.T) {
 		src := &fakeLatest{
 			name: "x",
-			caps: api.Capabilities{SupportsLatest: true},
 			handle: func(context.Context, []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 				return nil, nil, nil
 			},
@@ -233,7 +228,6 @@ func TestGroupByQuoteCurrency_PreservesSubInterfaces(t *testing.T) {
 	t.Run("RangeOnly", func(t *testing.T) {
 		src := &fakeRange{
 			name: "x",
-			caps: api.Capabilities{SupportsRange: true},
 			handle: func(context.Context, []api.SourceQuery, time.Time, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 				return nil, nil, nil
 			},
@@ -254,14 +248,12 @@ func TestGroupByQuoteCurrency_PreservesSubInterfaces(t *testing.T) {
 // fakeAll implements all three sub-interfaces for the all-shapes test.
 type fakeAll struct {
 	name         string
-	caps         api.Capabilities
 	handleLatest func(context.Context, []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)
 	handleAt     func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error)
 	handleRange  func(context.Context, []api.SourceQuery, time.Time, time.Time) ([]ast.Price, []ast.Diagnostic, error)
 }
 
-func (f *fakeAll) Name() string                   { return f.name }
-func (f *fakeAll) Capabilities() api.Capabilities { return f.caps }
+func (f *fakeAll) Name() string { return f.name }
 func (f *fakeAll) QuoteLatest(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 	return f.handleLatest(ctx, q)
 }
@@ -302,7 +294,6 @@ func TestGroupByQuoteCurrency_AllSubInterfaces(t *testing.T) {
 
 	src := &fakeAll{
 		name: "all",
-		caps: api.Capabilities{SupportsLatest: true, SupportsAt: true, SupportsRange: true},
 		handleLatest: func(_ context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			obs.mu.Lock()
 			obs.latestCalls = append(obs.latestCalls, recordQCs(q))
@@ -382,7 +373,6 @@ func TestGroupByQuoteCurrency_CtxCancel_ReturnsPartials(t *testing.T) {
 
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			isJPY := false
 			for _, qq := range q {
@@ -469,7 +459,6 @@ func TestGroupByQuoteCurrency_EmptyInput(t *testing.T) {
 	var calls int
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			calls++
 			return nil, nil, nil

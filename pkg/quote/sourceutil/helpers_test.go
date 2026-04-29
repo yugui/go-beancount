@@ -11,12 +11,10 @@ import (
 // fakeAt is a configurable api.AtSource for tests.
 type fakeAt struct {
 	name   string
-	caps   api.Capabilities
 	handle func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error)
 }
 
-func (f *fakeAt) Name() string                   { return f.name }
-func (f *fakeAt) Capabilities() api.Capabilities { return f.caps }
+func (f *fakeAt) Name() string { return f.name }
 func (f *fakeAt) QuoteAt(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	return f.handle(ctx, q, at)
 }
@@ -24,12 +22,10 @@ func (f *fakeAt) QuoteAt(ctx context.Context, q []api.SourceQuery, at time.Time)
 // fakeLatest is a configurable api.LatestSource for tests.
 type fakeLatest struct {
 	name   string
-	caps   api.Capabilities
 	handle func(context.Context, []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)
 }
 
-func (f *fakeLatest) Name() string                   { return f.name }
-func (f *fakeLatest) Capabilities() api.Capabilities { return f.caps }
+func (f *fakeLatest) Name() string { return f.name }
 func (f *fakeLatest) QuoteLatest(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 	return f.handle(ctx, q)
 }
@@ -37,12 +33,10 @@ func (f *fakeLatest) QuoteLatest(ctx context.Context, q []api.SourceQuery) ([]as
 // fakeRange is a configurable api.RangeSource for tests.
 type fakeRange struct {
 	name   string
-	caps   api.Capabilities
 	handle func(context.Context, []api.SourceQuery, time.Time, time.Time) ([]ast.Price, []ast.Diagnostic, error)
 }
 
-func (f *fakeRange) Name() string                   { return f.name }
-func (f *fakeRange) Capabilities() api.Capabilities { return f.caps }
+func (f *fakeRange) Name() string { return f.name }
 func (f *fakeRange) QuoteRange(ctx context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	return f.handle(ctx, q, start, end)
 }
@@ -50,13 +44,11 @@ func (f *fakeRange) QuoteRange(ctx context.Context, q []api.SourceQuery, start, 
 // fakeLatestAt is a fake implementing both Latest and At sub-interfaces.
 type fakeLatestAt struct {
 	name         string
-	caps         api.Capabilities
 	handleAt     func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error)
 	handleLatest func(context.Context, []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)
 }
 
-func (f *fakeLatestAt) Name() string                   { return f.name }
-func (f *fakeLatestAt) Capabilities() api.Capabilities { return f.caps }
+func (f *fakeLatestAt) Name() string { return f.name }
 func (f *fakeLatestAt) QuoteAt(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	return f.handleAt(ctx, q, at)
 }

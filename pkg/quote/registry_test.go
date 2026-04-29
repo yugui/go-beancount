@@ -13,8 +13,7 @@ import (
 // fakeSource is a minimal api.Source for registry tests.
 type fakeSource struct{ name string }
 
-func (f *fakeSource) Name() string                   { return f.name }
-func (f *fakeSource) Capabilities() api.Capabilities { return api.Capabilities{} }
+func (f *fakeSource) Name() string { return f.name }
 
 // withCleanRegistry swaps the global registry for an empty one for
 // the duration of a single test and restores the previous contents

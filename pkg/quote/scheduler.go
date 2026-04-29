@@ -48,50 +48,41 @@ type plan struct {
 // planCallFunc is the per-mode strategy that picks which source
 // method to call for a given (source, runConfig). Each public Fetch*
 // entry point constructs a planCallFunc that owns one row of the
-// capability ↔ mode demotion table — latestPlanner for FetchLatest,
+// sub-interface ↔ mode demotion table — latestPlanner for FetchLatest,
 // atPlanner(at) for FetchAt, rangePlanner(start, end) for FetchRange
 // — and hands it to runFetch. The orchestrator no longer needs to
 // switch on the requested mode.
 //
 // The second return is false when no method on the source can serve
 // the planner's mode (mode-unsupported diagnostic territory).
-//
-// The type assertions inside the returned plan's invoke closure are
-// intentionally unchecked: the planner picks the mode based on the
-// source's declared Capabilities. If a source lies about its
-// Capabilities (e.g. SupportsLatest=true without implementing
-// api.LatestSource), the assertion will panic when invoke is called.
-// That panic is recovered by runUnderSemaphore and converted into a
-// quote-fetch-error Diagnostic, so the affected unit advances to its
-// next fallback rather than tearing down the whole orchestrator.
 type planCallFunc func(src api.Source, cfg *runConfig) (plan, bool)
 
-// latestPlanner is the planCallFunc used by FetchLatest. Demotion
-// order: LatestSource > AtSource(now) > RangeSource(now-1d, now+1d).
+// latestPlanner is the planCallFunc used by FetchLatest. It tries
+// each sub-interface in priority order: LatestSource > AtSource(now)
+// > RangeSource(now-1d, now+1d).
 func latestPlanner(src api.Source, cfg *runConfig) (plan, bool) {
-	caps := src.Capabilities()
-	if caps.SupportsLatest {
+	if l, ok := src.(api.LatestSource); ok {
 		return plan{
 			mode: api.ModeLatest,
 			invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-				return src.(api.LatestSource).QuoteLatest(ctx, qs)
+				return l.QuoteLatest(ctx, qs)
 			},
 		}, true
 	}
-	if caps.SupportsAt {
+	if a, ok := src.(api.AtSource); ok {
 		return plan{
 			mode: api.ModeAt,
 			invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-				return src.(api.AtSource).QuoteAt(ctx, qs, cfg.now())
+				return a.QuoteAt(ctx, qs, cfg.now())
 			},
 		}, true
 	}
-	if caps.SupportsRange {
-		now := cfg.now()
+	if r, ok := src.(api.RangeSource); ok {
 		return plan{
 			mode: api.ModeRange,
 			invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-				return src.(api.RangeSource).QuoteRange(ctx, qs, now.AddDate(0, 0, -1), now.AddDate(0, 0, 1))
+				now := cfg.now()
+				return r.QuoteRange(ctx, qs, now.AddDate(0, 0, -1), now.AddDate(0, 0, 1))
 			},
 		}, true
 	}
@@ -99,34 +90,34 @@ func latestPlanner(src api.Source, cfg *runConfig) (plan, bool) {
 }
 
 // atPlanner returns the planCallFunc used by FetchAt for the given
-// calendar date. Demotion order: AtSource(at) > RangeSource(at,
-// at+1d) > LatestSource (only when cfg.now() ∈ [at, at+1d)).
+// calendar date. It tries each sub-interface in priority order:
+// AtSource(at) > RangeSource(at, at+1d) > LatestSource (only when
+// cfg.now() ∈ [at, at+1d)).
 func atPlanner(at time.Time) planCallFunc {
 	return func(src api.Source, cfg *runConfig) (plan, bool) {
-		caps := src.Capabilities()
-		if caps.SupportsAt {
+		if a, ok := src.(api.AtSource); ok {
 			return plan{
 				mode: api.ModeAt,
 				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.AtSource).QuoteAt(ctx, qs, at)
+					return a.QuoteAt(ctx, qs, at)
 				},
 			}, true
 		}
-		if caps.SupportsRange {
+		if r, ok := src.(api.RangeSource); ok {
 			return plan{
 				mode: api.ModeRange,
 				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.RangeSource).QuoteRange(ctx, qs, at, at.AddDate(0, 0, 1))
+					return r.QuoteRange(ctx, qs, at, at.AddDate(0, 0, 1))
 				},
 			}, true
 		}
-		if caps.SupportsLatest {
+		if l, ok := src.(api.LatestSource); ok {
 			now := cfg.now()
 			if !now.Before(at) && now.Before(at.AddDate(0, 0, 1)) {
 				return plan{
 					mode: api.ModeLatest,
 					invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-						return src.(api.LatestSource).QuoteLatest(ctx, qs)
+						return l.QuoteLatest(ctx, qs)
 					},
 				}, true
 			}
@@ -136,37 +127,36 @@ func atPlanner(at time.Time) planCallFunc {
 }
 
 // rangePlanner returns the planCallFunc used by FetchRange for the
-// given half-open interval [start, end). Demotion order:
-// RangeSource(start, end) > AtSource lifted via
+// given half-open interval [start, end). It tries each sub-interface
+// in priority order: RangeSource(start, end) > AtSource lifted via
 // sourceutil.DateRangeIter (Calendar=AllDays) > LatestSource (only
 // when cfg.now() ∈ [start, end)).
 func rangePlanner(start, end time.Time) planCallFunc {
 	return func(src api.Source, cfg *runConfig) (plan, bool) {
-		caps := src.Capabilities()
-		if caps.SupportsRange {
+		if r, ok := src.(api.RangeSource); ok {
 			return plan{
 				mode: api.ModeRange,
 				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					return src.(api.RangeSource).QuoteRange(ctx, qs, start, end)
+					return r.QuoteRange(ctx, qs, start, end)
 				},
 			}, true
 		}
-		if caps.SupportsAt {
+		if a, ok := src.(api.AtSource); ok {
+			wrapped := sourceutil.DateRangeIter(a, sourceutil.AllDays)
 			return plan{
 				mode: api.ModeRange,
 				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-					wrapped := sourceutil.DateRangeIter(src.(api.AtSource), sourceutil.AllDays)
 					return wrapped.QuoteRange(ctx, qs, start, end)
 				},
 			}, true
 		}
-		if caps.SupportsLatest {
+		if l, ok := src.(api.LatestSource); ok {
 			now := cfg.now()
 			if !now.Before(start) && now.Before(end) {
 				return plan{
 					mode: api.ModeLatest,
 					invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-						return src.(api.LatestSource).QuoteLatest(ctx, qs)
+						return l.QuoteLatest(ctx, qs)
 					},
 				}, true
 			}
@@ -206,9 +196,16 @@ func fetchErrDiags(err error, sourceName string, affected []*unit) []ast.Diagnos
 
 // runUnderSemaphore acquires a slot on sem before running f, releases
 // it on return, and converts any panic from f into a synthetic error
-// so a single broken caller does not tear down siblings sharing the
-// semaphore. ctx cancellation while waiting for the slot returns
+// so a single misbehaving source does not tear down siblings sharing
+// the semaphore. ctx cancellation while waiting for the slot returns
 // ctx.Err() without invoking f.
+//
+// The recover here exists for genuine source-side panics (e.g. a
+// nil-pointer dereference inside a third-party quoter); the earlier
+// "lying source" failure mode (a source whose advertised support
+// disagreed with the sub-interfaces it actually implemented) is no
+// longer possible now that planners detect support via type
+// assertions directly.
 //
 // The synthetic panic error is unannotated ("panicked: %v"); callers
 // are expected to add their own context (the source name, the pair,

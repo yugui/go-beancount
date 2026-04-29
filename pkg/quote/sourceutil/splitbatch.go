@@ -20,8 +20,7 @@ import (
 //
 // The returned source preserves whichever sub-interfaces the input
 // s declares (LatestSource / AtSource / RangeSource): SplitBatch
-// wraps each sub-interface that s implements. The combined
-// Capabilities() returns the same Supports* flags as s.
+// wraps each sub-interface that s implements.
 //
 // # Goroutine model
 //
@@ -89,8 +88,7 @@ type splitBatchSource struct {
 	rng    api.RangeSource
 }
 
-func (s *splitBatchSource) Name() string                   { return s.base.Name() }
-func (s *splitBatchSource) Capabilities() api.Capabilities { return s.base.Capabilities() }
+func (s *splitBatchSource) Name() string { return s.base.Name() }
 
 // chunkRanges returns the list of [lo, hi) index pairs that partition
 // [0, len) into chunks of at most s.n.

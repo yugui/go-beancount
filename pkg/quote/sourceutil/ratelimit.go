@@ -20,8 +20,8 @@ import (
 // non-positive burst is normalised to 1 so the bucket can hold at
 // least one token.
 //
-// The wrapper preserves whichever Capability sub-interfaces s
-// implements; recover the desired sub-interface with a type assertion.
+// The wrapper preserves whichever sub-interfaces s implements;
+// recover the desired sub-interface with a type assertion.
 //
 // # Goroutine safety
 //

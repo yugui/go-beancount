@@ -15,39 +15,38 @@ import (
 	"github.com/yugui/go-beancount/pkg/quote/api"
 )
 
-// mockSource implements api.Source plus all three sub-interfaces. The
-// per-method callbacks default to panicking so that tests fail loudly
-// when the orchestrator dispatches to a method the test did not set
-// up.
-type mockSource struct {
-	name    string
-	caps    api.Capabilities
-	latest  func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)
-	at      func(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error)
-	rangeFn func(ctx context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error)
+// latestOnlyFake satisfies only api.LatestSource. Tests that need
+// "this source advertises only Latest" use this so the orchestrator's
+// type-assertion-based detection picks the demotion path under test.
+type latestOnlyFake struct {
+	name   string
+	latest func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)
 }
 
-func (m *mockSource) Name() string                   { return m.name }
-func (m *mockSource) Capabilities() api.Capabilities { return m.caps }
-
-func (m *mockSource) QuoteLatest(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-	if m.latest == nil {
-		panic("mockSource.QuoteLatest called but not set on " + m.name)
-	}
+func (m *latestOnlyFake) Name() string { return m.name }
+func (m *latestOnlyFake) QuoteLatest(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 	return m.latest(ctx, q)
 }
 
-func (m *mockSource) QuoteAt(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
-	if m.at == nil {
-		panic("mockSource.QuoteAt called but not set on " + m.name)
-	}
+// atOnlyFake satisfies only api.AtSource.
+type atOnlyFake struct {
+	name string
+	at   func(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error)
+}
+
+func (m *atOnlyFake) Name() string { return m.name }
+func (m *atOnlyFake) QuoteAt(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	return m.at(ctx, q, at)
 }
 
-func (m *mockSource) QuoteRange(ctx context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
-	if m.rangeFn == nil {
-		panic("mockSource.QuoteRange called but not set on " + m.name)
-	}
+// rangeOnlyFake satisfies only api.RangeSource.
+type rangeOnlyFake struct {
+	name    string
+	rangeFn func(ctx context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error)
+}
+
+func (m *rangeOnlyFake) Name() string { return m.name }
+func (m *rangeOnlyFake) QuoteRange(ctx context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	return m.rangeFn(ctx, q, start, end)
 }
 
@@ -93,9 +92,8 @@ func utcDay(y int, m time.Month, d int) time.Time {
 
 func TestFetch_LatestOnly_OneSource(t *testing.T) {
 	pair := api.Pair{Commodity: "AAPL", QuoteCurrency: "USD"}
-	src := &mockSource{
+	src := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			return []ast.Price{mkPrice(t, pair)}, nil, nil
 		},
@@ -119,9 +117,8 @@ func TestFetch_AtMode_DemotedFromLatest_InWindow(t *testing.T) {
 	at := utcDay(2024, time.March, 1)
 	now := at.Add(2 * time.Hour) // within [at, at+24h)
 	var called int32
-	src := &mockSource{
+	src := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt32(&called, 1)
 			return []ast.Price{mkPrice(t, pair)}, nil, nil
@@ -148,9 +145,8 @@ func TestFetch_AtMode_DemotedFromLatest_OutOfWindow(t *testing.T) {
 	at := utcDay(2024, time.March, 1)
 	now := at.Add(48 * time.Hour) // outside [at, at+24h)
 	var called int32
-	src := &mockSource{
+	src := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt32(&called, 1)
 			return nil, nil, nil
@@ -189,9 +185,8 @@ func TestFetch_AlwaysBatchesPerSource(t *testing.T) {
 		mu      sync.Mutex
 		atCalls [][]api.SourceQuery
 	)
-	src := &mockSource{
+	src := &atOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsAt: true},
 		at: func(ctx context.Context, q []api.SourceQuery, _ time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
 			cp := append([]api.SourceQuery(nil), q...)
@@ -233,9 +228,8 @@ func TestFetch_RangeMode_PassesFullRange(t *testing.T) {
 		gotEnd   time.Time
 		gotCalls int
 	)
-	src := &mockSource{
+	src := &rangeOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsRange: true},
 		rangeFn: func(ctx context.Context, q []api.SourceQuery, s, e time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			mu.Lock()
 			gotStart, gotEnd = s, e
@@ -286,16 +280,14 @@ func TestFetchRange_StartNotBeforeEnd_ReturnsError(t *testing.T) {
 
 func TestFetch_PrimaryFails_FallbackSucceeds(t *testing.T) {
 	pair := api.Pair{Commodity: "AAPL", QuoteCurrency: "USD"}
-	primary := &mockSource{
+	primary := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},
 	}
-	fallback := &mockSource{
+	fallback := &latestOnlyFake{
 		name: "google",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			return []ast.Price{mkPrice(t, pair)}, nil, nil
 		},
@@ -315,16 +307,14 @@ func TestFetch_PrimaryFails_FallbackSucceeds(t *testing.T) {
 
 func TestFetch_PrimarySucceeds_FallbackNotCalled(t *testing.T) {
 	pair := api.Pair{Commodity: "AAPL", QuoteCurrency: "USD"}
-	primary := &mockSource{
+	primary := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			return []ast.Price{mkPrice(t, pair)}, nil, nil
 		},
 	}
-	fallback := &mockSource{
+	fallback := &latestOnlyFake{
 		name: "google",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			panic("fallback must not be called when primary succeeds")
 		},
@@ -346,12 +336,9 @@ func TestFetch_DeadlockRegression_SharedBatchSources(t *testing.T) {
 	pairA := api.Pair{Commodity: "A", QuoteCurrency: "USD"}
 	pairB := api.Pair{Commodity: "B", QuoteCurrency: "USD"}
 
-	makeSource := func(name string, fail map[api.Pair]bool) *mockSource {
+	makeSource := func(name string, fail map[api.Pair]bool) *latestOnlyFake {
 		var calls int32
-		s := &mockSource{
-			name: name,
-			caps: api.Capabilities{SupportsLatest: true},
-		}
+		s := &latestOnlyFake{name: name}
 		s.latest = func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt32(&calls, 1)
 			out := []ast.Price{}
@@ -422,9 +409,8 @@ func TestFetch_CtxCancellation(t *testing.T) {
 	block := make(chan struct{})
 	ready := make(chan struct{})
 	var readyOnce sync.Once
-	src := &mockSource{
+	src := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			readyOnce.Do(func() { close(ready) })
 			select {
@@ -492,9 +478,8 @@ func TestFetch_UnknownSource(t *testing.T) {
 }
 
 func TestFetch_ZeroPrices_ReturnsError(t *testing.T) {
-	src := &mockSource{
+	src := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, errors.New("boom")
 		},
@@ -514,16 +499,14 @@ func TestFetch_ZeroPrices_ReturnsError(t *testing.T) {
 
 func TestFetch_OneOfManySucceeds_ReturnsNil(t *testing.T) {
 	pair := api.Pair{Commodity: "AAPL", QuoteCurrency: "USD"}
-	good := &mockSource{
+	good := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			return []ast.Price{mkPrice(t, pair)}, nil, nil
 		},
 	}
-	bad := &mockSource{
+	bad := &latestOnlyFake{
 		name: "google",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, errors.New("boom")
 		},
@@ -562,9 +545,8 @@ func TestFetch_ConcurrencyCap(t *testing.T) {
 		name := string(rune('a' + i))
 		commodity := string(rune('A' + i))
 		pair := api.Pair{Commodity: commodity, QuoteCurrency: "USD"}
-		src := &mockSource{
+		src := &latestOnlyFake{
 			name: name,
-			caps: api.Capabilities{SupportsLatest: true},
 			latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 				mu.Lock()
 				inFlight++
@@ -634,9 +616,8 @@ func TestFetch_ConcurrencyCap(t *testing.T) {
 
 func TestFetch_Observer_LevelEvents(t *testing.T) {
 	pair := api.Pair{Commodity: "AAPL", QuoteCurrency: "USD"}
-	src := &mockSource{
+	src := &latestOnlyFake{
 		name: "yahoo",
-		caps: api.Capabilities{SupportsLatest: true},
 		latest: func(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 			return []ast.Price{mkPrice(t, pair)}, nil, nil
 		},

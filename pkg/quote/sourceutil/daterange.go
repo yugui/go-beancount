@@ -46,12 +46,11 @@ var WeekdaysOnly Calendar = weekdaysOnly{}
 // includes. Output prices are returned in date-ascending order;
 // per-date diagnostics are concatenated in the same order.
 //
-// The returned source reports Capabilities with SupportsRange=true
-// and inherits the wrapped source's other Capabilities flags
-// (SupportsLatest, SupportsAt). Stack with Concurrency to bound the
-// number of parallel per-date calls; by itself this decorator
-// iterates dates serially, which is the safe default for sources
-// with strict rate limits.
+// The returned source satisfies api.RangeSource (and api.AtSource,
+// since QuoteAt simply delegates to the wrapped source). Stack with
+// Concurrency to bound the number of parallel per-date calls; by
+// itself this decorator iterates dates serially, which is the safe
+// default for sources with strict rate limits.
 func DateRangeIter(s api.AtSource, cal Calendar) api.RangeSource {
 	if cal == nil {
 		cal = AllDays
@@ -65,12 +64,6 @@ type dateRangeIter struct {
 }
 
 func (d *dateRangeIter) Name() string { return d.at.Name() }
-
-func (d *dateRangeIter) Capabilities() api.Capabilities {
-	c := d.at.Capabilities()
-	c.SupportsRange = true
-	return c
-}
 
 func (d *dateRangeIter) QuoteAt(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	return d.at.QuoteAt(ctx, q, at)

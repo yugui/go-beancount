@@ -50,7 +50,6 @@ func TestRetryOnErrorRetriesUntilSuccess(t *testing.T) {
 	var attempts int64
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			n := atomic.AddInt64(&attempts, 1)
 			if n < 3 {
@@ -79,7 +78,6 @@ func TestRetryOnErrorExhausts(t *testing.T) {
 	var attempts int64
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt64(&attempts, 1)
 			return nil, nil, &httpErr{code: 500, msg: "always"}
@@ -104,7 +102,6 @@ func TestRetryOnErrorNonRetriableFailsFast(t *testing.T) {
 	var attempts int64
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			atomic.AddInt64(&attempts, 1)
 			return nil, nil, errors.New("not retriable")
@@ -129,7 +126,6 @@ func TestRetryOnErrorCustomIsRetriable(t *testing.T) {
 	custom := errors.New("custom-transient")
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			n := atomic.AddInt64(&attempts, 1)
 			if n < 2 {
@@ -156,7 +152,6 @@ func TestRetryOnErrorCustomIsRetriable(t *testing.T) {
 func TestRetryOnErrorPreservesSubInterfaces(t *testing.T) {
 	src := &fakeLatestAt{
 		name: "x",
-		caps: api.Capabilities{SupportsLatest: true, SupportsAt: true},
 		handleAt: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},

@@ -79,8 +79,7 @@ type groupByQuoteSource struct {
 	rng    api.RangeSource
 }
 
-func (s *groupByQuoteSource) Name() string                   { return s.base.Name() }
-func (s *groupByQuoteSource) Capabilities() api.Capabilities { return s.base.Capabilities() }
+func (s *groupByQuoteSource) Name() string { return s.base.Name() }
 
 // partitionByQuoteCurrency groups q by Pair.QuoteCurrency, preserving
 // the original slice order within each partition. The returned slice

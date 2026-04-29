@@ -62,8 +62,8 @@ type PriceRequest struct {
 
 // Mode classifies the time-shape of a fetch call. The orchestrator
 // chooses one of the three modes per source based on the entry point
-// invoked (FetchLatest / FetchAt / FetchRange) and the source's
-// declared Capabilities; it then reports the chosen Mode on the
+// invoked (FetchLatest / FetchAt / FetchRange) and which sub-interfaces
+// the source implements; it then reports the chosen Mode on the
 // Event.Mode field passed to observers.
 type Mode uint8
 
@@ -76,25 +76,6 @@ const (
 	// interval [start, end).
 	ModeRange
 )
-
-// Capabilities is what a Source declares it can natively serve. The
-// SupportsLatest, SupportsAt, and SupportsRange flags describe which
-// sub-interfaces (LatestSource, AtSource, RangeSource) the source
-// implements; the orchestrator inspects them to decide which method
-// to call. Obligations a source implementer accepts when implementing
-// any of the QuoteX methods are documented in the package doc; they
-// are part of the contract rather than runtime-negotiable flags.
-type Capabilities struct {
-	// SupportsLatest reports whether the source implements
-	// LatestSource (i.e. can answer ModeLatest natively).
-	SupportsLatest bool
-	// SupportsAt reports whether the source implements AtSource
-	// (i.e. can answer ModeAt natively).
-	SupportsAt bool
-	// SupportsRange reports whether the source implements
-	// RangeSource (i.e. can answer ModeRange natively).
-	SupportsRange bool
-}
 
 // SourceQuery is the source-physical addressing unit: a (Pair,
 // Symbol) pair handed to a single source on a single call.
@@ -122,14 +103,15 @@ type SourceQuery struct {
 }
 
 // Source is the base interface every quote source must implement. It
-// exposes only identification (Name) and a static capability
-// declaration (Capabilities); the actual fetch methods live on the
-// optional sub-interfaces LatestSource, AtSource, and RangeSource.
+// exposes only identification (Name); the actual fetch methods live
+// on the optional sub-interfaces LatestSource, AtSource, and
+// RangeSource.
 //
-// The orchestrator calls Capabilities once and uses the result to
-// pick which sub-interface(s) to invoke. The hybrid design — base
-// Source plus a Capabilities struct plus optional sub-interfaces — is
-// deliberately preferred over both alternatives:
+// The orchestrator detects which sub-interfaces a source supports via
+// type assertions on LatestSource / AtSource / RangeSource and uses
+// the result to pick which method to invoke. The hybrid design — base
+// Source plus optional sub-interfaces — is deliberately preferred
+// over both alternatives:
 //
 //   - A single all-purpose method that returns an "unsupported" error
 //     for shapes the source cannot serve forces every caller to
@@ -148,14 +130,11 @@ type SourceQuery struct {
 type Source interface {
 	// Name returns the registry name of the source (e.g. "yahoo").
 	Name() string
-	// Capabilities returns the static set of shapes this source
-	// natively supports. The result must not change across calls.
-	Capabilities() Capabilities
 }
 
 // LatestSource is implemented by sources that natively serve "the
 // newest price available". The orchestrator calls QuoteLatest only
-// when the source's Capabilities.SupportsLatest is true.
+// when the source satisfies LatestSource via a type assertion.
 //
 // Returned ast.Prices use each query's Pair (not Symbol) for
 // Commodity and Amount.Currency. Diagnostics describe per-query
@@ -173,7 +152,7 @@ type LatestSource interface {
 
 // AtSource is implemented by sources that natively serve "the price
 // as of a particular calendar date". The orchestrator calls QuoteAt
-// only when the source's Capabilities.SupportsAt is true.
+// only when the source satisfies AtSource via a type assertion.
 //
 // The at argument is a TZ-naïve calendar date conventionally at 0:00
 // UTC; the quoter is responsible for projecting it onto the source's
@@ -191,7 +170,7 @@ type AtSource interface {
 
 // RangeSource is implemented by sources that natively serve a series
 // of prices over a date range. The orchestrator calls QuoteRange
-// only when the source's Capabilities.SupportsRange is true.
+// only when the source satisfies RangeSource via a type assertion.
 //
 // The interval is half-open: [start, end). Both endpoints are TZ-
 // naïve calendar dates conventionally at 0:00 UTC. Output and error

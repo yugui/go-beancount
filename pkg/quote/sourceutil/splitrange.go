@@ -19,11 +19,11 @@ import (
 // ranges (the Phase 7 obligation on RangeSource implementers; see
 // pkg/quote/api).
 //
-// The returned source's Capabilities reports SupportsRange:true
-// (matching s). Buckets are issued sequentially within a single
-// QuoteRange call; callers wanting parallel buckets can stack
-// SplitBatch underneath, or stack SplitBatch around the RangeSource
-// if they want simple concurrency.
+// The returned source satisfies api.RangeSource (matching s).
+// Buckets are issued sequentially within a single QuoteRange call;
+// callers wanting parallel buckets can stack SplitBatch underneath,
+// or stack SplitBatch around the RangeSource if they want simple
+// concurrency.
 //
 // A perCall <= 0 disables chunking and forwards the call unchanged.
 //
@@ -46,12 +46,6 @@ type splitRangeSource struct {
 }
 
 func (s *splitRangeSource) Name() string { return s.rng.Name() }
-
-func (s *splitRangeSource) Capabilities() api.Capabilities {
-	c := s.rng.Capabilities()
-	c.SupportsRange = true
-	return c
-}
 
 func (s *splitRangeSource) QuoteRange(ctx context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 	if s.perCall <= 0 {

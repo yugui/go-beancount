@@ -21,7 +21,6 @@ func TestConcurrencyCapsInFlight(t *testing.T) {
 
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(_ context.Context, _ []api.SourceQuery, _ time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			cur := atomic.AddInt64(&inFlight, 1)
 			for {
@@ -88,7 +87,6 @@ func TestConcurrencyCapsInFlight(t *testing.T) {
 func TestConcurrencyPreservesSubInterfaces(t *testing.T) {
 	src := &fakeLatestAt{
 		name: "x",
-		caps: api.Capabilities{SupportsLatest: true, SupportsAt: true},
 		handleAt: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},
@@ -111,7 +109,6 @@ func TestConcurrencyPreservesSubInterfaces(t *testing.T) {
 func TestConcurrencyHonoursContextCancellation(t *testing.T) {
 	at := &fakeAt{
 		name: "x",
-		caps: api.Capabilities{SupportsAt: true},
 		handle: func(context.Context, []api.SourceQuery, time.Time) ([]ast.Price, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		},
