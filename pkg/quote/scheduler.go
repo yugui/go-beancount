@@ -64,7 +64,7 @@ type plan struct {
 // Capabilities. If a source lies about its Capabilities (e.g.
 // SupportsLatest=true without implementing api.LatestSource), the
 // assertion will panic when invoke is called. That panic is
-// recovered by dispatchSource's runCall and converted into a
+// recovered by runUnderSemaphore and converted into a
 // quote-fetch-error Diagnostic, so the affected unit advances to its
 // next fallback rather than tearing down the whole orchestrator.
 func planCall(spec api.Spec, src api.Source, cfg *runConfig) (plan, bool) {
@@ -184,6 +184,35 @@ func fetchErrDiags(err error, sourceName string, affected []*unit) []ast.Diagnos
 		})
 	}
 	return out
+}
+
+// runUnderSemaphore acquires a slot on sem before running f, releases
+// it on return, and converts any panic from f into a synthetic error
+// so a single broken caller does not tear down siblings sharing the
+// semaphore. ctx cancellation while waiting for the slot returns
+// ctx.Err() without invoking f.
+//
+// The synthetic panic error is unannotated ("panicked: %v"); callers
+// are expected to add their own context (the source name, the pair,
+// etc.) when surfacing the error. dispatchSource does this via
+// fetchErrDiags.
+func runUnderSemaphore(
+	ctx context.Context,
+	sem chan struct{},
+	f func() ([]ast.Price, []ast.Diagnostic, error),
+) (prices []ast.Price, diags []ast.Diagnostic, err error) {
+	select {
+	case sem <- struct{}{}:
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	}
+	defer func() { <-sem }()
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panicked: %v", r)
+		}
+	}()
+	return f()
 }
 
 // runFetch is the entry point Fetch dispatches to once Options have
@@ -310,47 +339,6 @@ func dispatchSource(
 		return nil, diags
 	}
 
-	// runCall acquires the semaphore, emits the start event, runs fn,
-	// emits the done event, and returns the call's outputs. Panics
-	// in fn are recovered and converted to a synthetic error so that
-	// a single broken source never tears down the whole run.
-	runCall := func(pair api.Pair, sym string, mode api.Mode, fn func() ([]ast.Price, []ast.Diagnostic, error)) ([]ast.Price, []ast.Diagnostic, error) {
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			return nil, nil, ctx.Err()
-		}
-		defer func() { <-sem }()
-
-		emit(Event{Kind: EventCallStart, Level: level, Source: sourceName, Pair: pair, Symbol: sym, Mode: mode})
-		start := time.Now()
-		var (
-			prices []ast.Price
-			diags  []ast.Diagnostic
-			err    error
-		)
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					err = fmt.Errorf("quote: source %q panicked: %v", sourceName, r)
-				}
-			}()
-			prices, diags, err = fn()
-		}()
-		emit(Event{
-			Kind:     EventCallDone,
-			Level:    level,
-			Source:   sourceName,
-			Pair:     pair,
-			Symbol:   sym,
-			Mode:     mode,
-			Duration: time.Since(start),
-			Err:      err,
-			NumPrice: len(prices),
-		})
-		return prices, diags, err
-	}
-
 	p, ok := planCall(spec, src, cfg)
 	if !ok {
 		diags := make([]ast.Diagnostic, 0, len(units))
@@ -378,9 +366,34 @@ func dispatchSource(
 		pair = units[0].req.Pair
 		sym = units[0].req.Sources[units[0].depth].Symbol
 	}
-	prices, diags, err := runCall(pair, sym, p.mode, func() ([]ast.Price, []ast.Diagnostic, error) {
+
+	// EventCallStart fires from inside the closure passed to
+	// runUnderSemaphore so observers see it after the semaphore is
+	// acquired (i.e. when the call actually begins running). When
+	// ctx is cancelled before the semaphore is acquired,
+	// runUnderSemaphore returns early without calling the closure;
+	// start is then never assigned and the IsZero guard below
+	// suppresses CallDone too, matching the silent-cancel behaviour
+	// of the pre-refactor code.
+	var start time.Time
+	prices, diags, err := runUnderSemaphore(ctx, sem, func() ([]ast.Price, []ast.Diagnostic, error) {
+		emit(Event{Kind: EventCallStart, Level: level, Source: sourceName, Pair: pair, Symbol: sym, Mode: p.mode})
+		start = time.Now()
 		return p.invoke(ctx, queries)
 	})
+	if !start.IsZero() {
+		emit(Event{
+			Kind:     EventCallDone,
+			Level:    level,
+			Source:   sourceName,
+			Pair:     pair,
+			Symbol:   sym,
+			Mode:     p.mode,
+			Duration: time.Since(start),
+			Err:      err,
+			NumPrice: len(prices),
+		})
+	}
 	if err != nil {
 		return nil, append(diags, fetchErrDiags(err, sourceName, units)...)
 	}
