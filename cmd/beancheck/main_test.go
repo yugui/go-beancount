@@ -156,7 +156,7 @@ func TestReportWritesAllDiagnostics(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	report(&buf, diags, false)
+	report(&buf, diags, false) // exit code not under test here
 	want := formatDiagnostic(diags[0]) + "\n" +
 		formatDiagnostic(diags[1]) + "\n" +
 		formatDiagnostic(diags[2]) + "\n"

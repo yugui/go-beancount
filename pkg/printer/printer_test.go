@@ -2,6 +2,7 @@ package printer_test
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,8 +14,15 @@ import (
 	"github.com/yugui/go-beancount/pkg/syntax"
 )
 
+// decimal parses a decimal literal for use as a fixture. Callers pass
+// hard-coded strings, so a parse failure is a programmer error in the test
+// itself; surface it loudly with the offending input rather than returning a
+// silent zero value.
 func decimal(s string) apd.Decimal {
-	d, _, _ := apd.NewFromString(s)
+	d, _, err := apd.NewFromString(s)
+	if err != nil {
+		panic(fmt.Sprintf("decimal(%q): %v", s, err))
+	}
 	return *d
 }
 
@@ -22,8 +30,13 @@ func amount(num string, cur string) ast.Amount {
 	return ast.Amount{Number: decimal(num), Currency: cur}
 }
 
+// date parses a YYYY-MM-DD fixture date. Like decimal, a parse failure
+// indicates a malformed test input and panics with the offending string.
 func date(s string) time.Time {
-	t, _ := time.Parse("2006-01-02", s)
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		panic(fmt.Sprintf("date(%q): %v", s, err))
+	}
 	return t
 }
 
@@ -50,7 +63,7 @@ func TestOption(t *testing.T) {
 	got := print(t, &ast.Option{Key: "title", Value: "My Ledger"})
 	want := "option \"title\" \"My Ledger\"\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -59,14 +72,14 @@ func TestPlugin(t *testing.T) {
 		got := print(t, &ast.Plugin{Name: "beancount.plugins.auto", Config: "config_val"})
 		want := "plugin \"beancount.plugins.auto\" \"config_val\"\n"
 		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("Fprint() = %q, want %q", got, want)
 		}
 	})
 	t.Run("without config", func(t *testing.T) {
 		got := print(t, &ast.Plugin{Name: "beancount.plugins.auto"})
 		want := "plugin \"beancount.plugins.auto\"\n"
 		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("Fprint() = %q, want %q", got, want)
 		}
 	})
 }
@@ -75,7 +88,7 @@ func TestInclude(t *testing.T) {
 	got := print(t, &ast.Include{Path: "other.beancount"})
 	want := "include \"other.beancount\"\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -87,7 +100,7 @@ func TestOpen(t *testing.T) {
 		})
 		want := "2024-01-01 open Assets:Bank\n"
 		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("Fprint() = %q, want %q", got, want)
 		}
 	})
 	t.Run("with currencies and booking", func(t *testing.T) {
@@ -99,7 +112,7 @@ func TestOpen(t *testing.T) {
 		})
 		want := "2024-01-01 open Assets:Bank USD,EUR \"STRICT\"\n"
 		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("Fprint() = %q, want %q", got, want)
 		}
 	})
 	t.Run("with metadata", func(t *testing.T) {
@@ -112,7 +125,7 @@ func TestOpen(t *testing.T) {
 		})
 		want := "2024-01-01 open Assets:Bank\n  institution: \"Chase\"\n"
 		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("Fprint() = %q, want %q", got, want)
 		}
 	})
 }
@@ -121,7 +134,7 @@ func TestClose(t *testing.T) {
 	got := print(t, &ast.Close{Date: date("2024-06-01"), Account: "Assets:Old"})
 	want := "2024-06-01 close Assets:Old\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -129,7 +142,7 @@ func TestCommodity(t *testing.T) {
 	got := print(t, &ast.Commodity{Date: date("2024-01-01"), Currency: "BTC"})
 	want := "2024-01-01 commodity BTC\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -142,7 +155,7 @@ func TestBalance(t *testing.T) {
 		})
 		want := "2024-01-15 balance Assets:Bank 1234.56 USD\n"
 		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("Fprint() = %q, want %q", got, want)
 		}
 	})
 	t.Run("with tolerance", func(t *testing.T) {
@@ -155,7 +168,7 @@ func TestBalance(t *testing.T) {
 		})
 		want := "2024-01-15 balance Assets:Bank 1234.56 ~ 0.01 USD\n"
 		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("Fprint() = %q, want %q", got, want)
 		}
 	})
 	t.Run("official example", func(t *testing.T) {
@@ -168,7 +181,7 @@ func TestBalance(t *testing.T) {
 		})
 		want := "2013-09-20 balance Assets:Investing:Funds 319.020 ~ 0.002 RGAGX\n"
 		if got != want {
-			t.Errorf("got %q, want %q", got, want)
+			t.Errorf("Fprint() = %q, want %q", got, want)
 		}
 	})
 }
@@ -181,7 +194,7 @@ func TestPad(t *testing.T) {
 	})
 	want := "2024-01-01 pad Assets:Bank Equity:Opening-Balances\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -193,7 +206,7 @@ func TestNote(t *testing.T) {
 	})
 	want := "2024-03-01 note Assets:Bank \"opened online\"\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -205,7 +218,7 @@ func TestDocument(t *testing.T) {
 	})
 	want := "2024-04-01 document Assets:Bank \"/path/to/doc.pdf\"\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -217,7 +230,7 @@ func TestEvent(t *testing.T) {
 	})
 	want := "2024-01-01 event \"location\" \"New York\"\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -229,7 +242,7 @@ func TestQuery(t *testing.T) {
 	})
 	want := "2024-01-01 query \"balance-check\" \"SELECT account, balance\"\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -241,7 +254,7 @@ func TestPriceDirective(t *testing.T) {
 	})
 	want := "2024-01-01 price BTC 42000.00 USD\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -257,7 +270,7 @@ func TestCustom(t *testing.T) {
 	})
 	want := "2024-01-01 custom \"budget\" Expenses:Food \"monthly\" 500.00 USD\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -640,7 +653,7 @@ func TestFileByValue(t *testing.T) {
 	got := print(t, f)
 	want := "option \"title\" \"Test\"\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -696,7 +709,7 @@ func TestAmountDirect(t *testing.T) {
 	got := print(t, a)
 	want := "1234.56 USD"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -705,7 +718,7 @@ func TestAmountPointer(t *testing.T) {
 	got := print(t, a)
 	want := "99.99 EUR"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -714,7 +727,7 @@ func TestAmountWithCommaGrouping(t *testing.T) {
 	got := print(t, a, format.WithCommaGrouping(true))
 	want := "1,234,567.89 USD"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -811,7 +824,7 @@ func TestMetaValueRendering(t *testing.T) {
 				Meta:     tt.meta,
 			})
 			if got != tt.want {
-				t.Errorf("got %q, want %q", got, tt.want)
+				t.Errorf("Fprint(%s) = %q, want %q", tt.name, got, tt.want)
 			}
 		})
 	}
@@ -884,7 +897,7 @@ func TestStringEscaping(t *testing.T) {
 	got := print(t, &ast.Option{Key: "title", Value: "My \"Ledger\""})
 	want := "option \"title\" \"My \\\"Ledger\\\"\"\n"
 	if got != want {
-		t.Errorf("got %q, want %q", got, want)
+		t.Errorf("Fprint() = %q, want %q", got, want)
 	}
 }
 
@@ -953,7 +966,7 @@ func TestStringQuoting(t *testing.T) {
 				Comment: tt.comment,
 			})
 			if got != tt.want {
-				t.Errorf("print note with comment %q: got %q, want %q", tt.comment, got, tt.want)
+				t.Errorf("Fprint(Note with comment %q) = %q, want %q", tt.comment, got, tt.want)
 			}
 		})
 	}
