@@ -8,6 +8,7 @@ import (
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/quote/api"
+	"github.com/yugui/go-beancount/pkg/quote/sourceutil"
 )
 
 // unit is the orchestrator's internal scheduling atom: one
@@ -32,6 +33,157 @@ type unit struct {
 	// this unit, used by the level loop to decide between "succeeded"
 	// and "advance to next fallback".
 	got bool
+}
+
+// plan describes the single batched source call dispatchSource will
+// issue for one (level, source) pair. invoke calls the appropriate
+// Quote* method on the source with the time arguments captured at
+// plan-creation time; mode is the api.Mode reported in the
+// EventCallStart / EventCallDone event pair surrounding the call.
+type plan struct {
+	mode   api.Mode
+	invoke func(ctx context.Context, queries []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)
+}
+
+// planCall picks the source method to call given spec.Mode and the
+// source's declared Capabilities (the demotion table on Fetch's
+// godoc) and returns a plan whose invoke closure carries the
+// concrete time arguments. The second return is false when no method
+// can serve the requested mode (mode-unsupported diagnostic
+// territory).
+//
+// When spec.Mode is ModeRange and the source declares only
+// SupportsAt, the AtSource is lifted to a RangeSource via
+// sourceutil.DateRangeIter with Calendar=AllDays. Source authors who
+// need calendar-aware iteration (e.g. WeekdaysOnly for FX) should
+// register a RangeSource themselves rather than relying on this
+// fallback.
+//
+// The type assertions inside the returned closures are intentionally
+// unchecked: planCall picks the mode based on the source's declared
+// Capabilities. If a source lies about its Capabilities (e.g.
+// SupportsLatest=true without implementing api.LatestSource), the
+// assertion will panic when invoke is called. That panic is
+// recovered by dispatchSource's runCall and converted into a
+// quote-fetch-error Diagnostic, so the affected unit advances to its
+// next fallback rather than tearing down the whole orchestrator.
+func planCall(spec api.Spec, src api.Source, cfg *runConfig) (plan, bool) {
+	caps := src.Capabilities()
+	switch spec.Mode {
+	case api.ModeLatest:
+		if caps.SupportsLatest {
+			return plan{
+				mode: api.ModeLatest,
+				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+					return src.(api.LatestSource).QuoteLatest(ctx, qs)
+				},
+			}, true
+		}
+		if caps.SupportsAt {
+			return plan{
+				mode: api.ModeAt,
+				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+					return src.(api.AtSource).QuoteAt(ctx, qs, cfg.now())
+				},
+			}, true
+		}
+		if caps.SupportsRange {
+			now := cfg.now()
+			return plan{
+				mode: api.ModeRange,
+				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+					return src.(api.RangeSource).QuoteRange(ctx, qs, now.AddDate(0, 0, -1), now.AddDate(0, 0, 1))
+				},
+			}, true
+		}
+	case api.ModeAt:
+		if caps.SupportsAt {
+			return plan{
+				mode: api.ModeAt,
+				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+					return src.(api.AtSource).QuoteAt(ctx, qs, spec.At)
+				},
+			}, true
+		}
+		if caps.SupportsRange {
+			return plan{
+				mode: api.ModeRange,
+				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+					return src.(api.RangeSource).QuoteRange(ctx, qs, spec.At, spec.At.AddDate(0, 0, 1))
+				},
+			}, true
+		}
+		if caps.SupportsLatest {
+			now := cfg.now()
+			if !now.Before(spec.At) && now.Before(spec.At.Add(24*time.Hour)) {
+				return plan{
+					mode: api.ModeLatest,
+					invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+						return src.(api.LatestSource).QuoteLatest(ctx, qs)
+					},
+				}, true
+			}
+		}
+	case api.ModeRange:
+		if caps.SupportsRange {
+			return plan{
+				mode: api.ModeRange,
+				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+					return src.(api.RangeSource).QuoteRange(ctx, qs, spec.Start, spec.End)
+				},
+			}, true
+		}
+		if caps.SupportsAt {
+			return plan{
+				mode: api.ModeRange,
+				invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+					wrapped := sourceutil.DateRangeIter(src.(api.AtSource), sourceutil.AllDays)
+					return wrapped.QuoteRange(ctx, qs, spec.Start, spec.End)
+				},
+			}, true
+		}
+		if caps.SupportsLatest {
+			now := cfg.now()
+			if !now.Before(spec.Start) && now.Before(spec.End) {
+				return plan{
+					mode: api.ModeLatest,
+					invoke: func(ctx context.Context, qs []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+						return src.(api.LatestSource).QuoteLatest(ctx, qs)
+					},
+				}, true
+			}
+		}
+	}
+	return plan{}, false
+}
+
+// attribute walks the Prices a call returned and marks the
+// originating units as got. Prices the call produced that don't
+// match any unit's Pair (the "ECB windfall") are still included in
+// the final result so the cache decorator can capitalise on them.
+func attribute(prices []ast.Price, units []*unit) {
+	for _, price := range prices {
+		pair := api.Pair{Commodity: price.Commodity, QuoteCurrency: price.Amount.Currency}
+		for _, u := range units {
+			if u.req.Pair == pair {
+				u.got = true
+			}
+		}
+	}
+}
+
+// fetchErrDiags turns a non-nil error from a source method into the
+// matching quote-fetch-error Diagnostic per affected unit.
+func fetchErrDiags(err error, sourceName string, affected []*unit) []ast.Diagnostic {
+	out := make([]ast.Diagnostic, 0, len(affected))
+	for _, u := range affected {
+		out = append(out, ast.Diagnostic{
+			Code:     "quote-fetch-error",
+			Severity: ast.Error,
+			Message:  fmt.Sprintf("quote: source %q failed for pair %s/%s: %v", sourceName, u.req.Pair.Commodity, u.req.Pair.QuoteCurrency, err),
+		})
+	}
+	return out
 }
 
 // runFetch is the entry point Fetch dispatches to once Options have
@@ -158,19 +310,6 @@ func dispatchSource(
 		return nil, diags
 	}
 
-	caps := src.Capabilities()
-
-	// Build the per-unit (Pair, Symbol) records once. A symbol comes
-	// from the unit's currently-active SourceRef.
-	type queryUnit struct {
-		u   *unit
-		sym string
-	}
-	qus := make([]queryUnit, 0, len(units))
-	for _, u := range units {
-		qus = append(qus, queryUnit{u: u, sym: u.req.Sources[u.depth].Symbol})
-	}
-
 	// runCall acquires the semaphore, emits the start event, runs fn,
 	// emits the done event, and returns the call's outputs. Panics
 	// in fn are recovered and converted to a synthetic error so that
@@ -212,202 +351,39 @@ func dispatchSource(
 		return prices, diags, err
 	}
 
-	// chooseMode decides which source method to use given spec.Mode
-	// and the source's declared Capabilities. The second return is
-	// false when no method can serve the requested mode (mode-
-	// unsupported diagnostic territory).
-	type method int
-	const (
-		methodNone method = iota
-		methodLatest
-		methodAt
-		methodRange
-	)
-	chooseMode := func() (method, bool) {
-		switch spec.Mode {
-		case api.ModeLatest:
-			if caps.SupportsLatest {
-				return methodLatest, true
-			}
-			if caps.SupportsAt {
-				return methodAt, true
-			}
-			if caps.SupportsRange {
-				return methodRange, true
-			}
-		case api.ModeAt:
-			if caps.SupportsAt {
-				return methodAt, true
-			}
-			if caps.SupportsRange {
-				return methodRange, true
-			}
-			if caps.SupportsLatest {
-				now := cfg.now()
-				if !now.Before(spec.At) && now.Before(spec.At.Add(24*time.Hour)) {
-					return methodLatest, true
-				}
-			}
-		case api.ModeRange:
-			if caps.SupportsRange {
-				return methodRange, true
-			}
-			if caps.SupportsAt {
-				return methodAt, true
-			}
-			if caps.SupportsLatest {
-				now := cfg.now()
-				if !now.Before(spec.Start) && now.Before(spec.End) {
-					return methodLatest, true
-				}
-			}
-		}
-		return methodNone, false
-	}
-
-	m, ok := chooseMode()
+	p, ok := planCall(spec, src, cfg)
 	if !ok {
-		diags := make([]ast.Diagnostic, 0, len(qus))
-		for _, q := range qus {
+		diags := make([]ast.Diagnostic, 0, len(units))
+		for _, u := range units {
 			diags = append(diags, ast.Diagnostic{
 				Code:     "quote-mode-unsupported",
 				Severity: ast.Warning,
-				Message:  fmt.Sprintf("quote: source %q cannot serve mode for pair %s/%s", sourceName, q.u.req.Pair.Commodity, q.u.req.Pair.QuoteCurrency),
+				Message:  fmt.Sprintf("quote: source %q cannot serve mode for pair %s/%s", sourceName, u.req.Pair.Commodity, u.req.Pair.QuoteCurrency),
 			})
 		}
 		return nil, diags
 	}
 
-	// attribute walks the Prices a call returned and marks the
-	// originating units as got. Prices the call produced that don't
-	// match any unit's Pair (the "ECB windfall") are still included
-	// in the final result so the cache decorator can capitalise on
-	// them.
-	attribute := func(in []ast.Price) {
-		for i := range in {
-			pair := api.Pair{Commodity: in[i].Commodity, QuoteCurrency: in[i].Amount.Currency}
-			for _, q := range qus {
-				if q.u.req.Pair == pair {
-					q.u.got = true
-				}
-			}
-		}
+	// Each unit contributes one query, with the symbol from its
+	// currently-active SourceRef (u.depth is stable within a level).
+	queries := make([]api.SourceQuery, 0, len(units))
+	for _, u := range units {
+		queries = append(queries, api.SourceQuery{Pair: u.req.Pair, Symbol: u.req.Sources[u.depth].Symbol})
 	}
-
-	// fetchErrDiag turns a non-nil error from a source method into
-	// the matching quote-fetch-error Diagnostic per affected unit.
-	fetchErrDiags := func(err error, affected []queryUnit) []ast.Diagnostic {
-		out := make([]ast.Diagnostic, 0, len(affected))
-		for _, q := range affected {
-			out = append(out, ast.Diagnostic{
-				Code:     "quote-fetch-error",
-				Severity: ast.Error,
-				Message:  fmt.Sprintf("quote: source %q failed for pair %s/%s: %v", sourceName, q.u.req.Pair.Commodity, q.u.req.Pair.QuoteCurrency, err),
-			})
-		}
-		return out
+	// For event reporting, when there is a single query in the batch,
+	// populate Pair/Symbol; otherwise leave them zero.
+	var pair api.Pair
+	var sym string
+	if len(units) == 1 {
+		pair = units[0].req.Pair
+		sym = units[0].req.Sources[units[0].depth].Symbol
 	}
-
-	// callOnce dispatches a single source call (already mode-
-	// resolved) on the given queries, with the given mode-specific
-	// time arguments. It assembles the SourceQuery slice from qSet
-	// and routes the result back through attribute / fetchErrDiags.
-	callOnce := func(mode api.Mode, qSet []queryUnit, atTime, startTime, endTime time.Time) ([]ast.Price, []ast.Diagnostic) {
-		queries := make([]api.SourceQuery, 0, len(qSet))
-		for _, q := range qSet {
-			queries = append(queries, api.SourceQuery{Pair: q.u.req.Pair, Symbol: q.sym})
-		}
-		// For event reporting, when there is a single query in the
-		// batch, populate Pair/Symbol; otherwise leave them zero.
-		var pair api.Pair
-		var sym string
-		if len(qSet) == 1 {
-			pair = qSet[0].u.req.Pair
-			sym = qSet[0].sym
-		}
-		prices, diags, err := runCall(pair, sym, mode, func() ([]ast.Price, []ast.Diagnostic, error) {
-			// The type assertions below are intentionally unchecked:
-			// chooseMode picked this mode based on the source's
-			// declared Capabilities. If a source lies about its
-			// Capabilities (e.g. SupportsLatest=true without
-			// implementing api.LatestSource), the assertion will
-			// panic. That panic is recovered by runCall and converted
-			// into a quote-fetch-error Diagnostic, so the affected
-			// unit advances to its next fallback rather than tearing
-			// down the whole orchestrator.
-			switch mode {
-			case api.ModeLatest:
-				return src.(api.LatestSource).QuoteLatest(ctx, queries)
-			case api.ModeAt:
-				return src.(api.AtSource).QuoteAt(ctx, queries, atTime)
-			case api.ModeRange:
-				return src.(api.RangeSource).QuoteRange(ctx, queries, startTime, endTime)
-			}
-			return nil, nil, fmt.Errorf("quote: internal: unknown mode %v", mode)
-		})
-		if err != nil {
-			return nil, append(diags, fetchErrDiags(err, qSet)...)
-		}
-		attribute(prices)
-		return prices, diags
+	prices, diags, err := runCall(pair, sym, p.mode, func() ([]ast.Price, []ast.Diagnostic, error) {
+		return p.invoke(ctx, queries)
+	})
+	if err != nil {
+		return nil, append(diags, fetchErrDiags(err, sourceName, units)...)
 	}
-
-	// Issue exactly one call per (level, source) carrying every query
-	// for that source. Source-side splitting (by query count or by
-	// date range) is the source author's responsibility; see the
-	// "Quoter author obligations" section of pkg/quote/api.
-	var (
-		allPrices []ast.Price
-		allDiags  []ast.Diagnostic
-	)
-
-	switch m {
-	case methodLatest:
-		ps, ds := callOnce(api.ModeLatest, qus, time.Time{}, time.Time{}, time.Time{})
-		allPrices = append(allPrices, ps...)
-		allDiags = append(allDiags, ds...)
-
-	case methodAt:
-		// For ModeLatest/ModeAt the call covers a single instant; for
-		// ModeRange demoted to AtSource we loop one calendar day at
-		// a time across [Start, End).
-		switch spec.Mode {
-		case api.ModeLatest:
-			ps, ds := callOnce(api.ModeAt, qus, cfg.now(), time.Time{}, time.Time{})
-			allPrices = append(allPrices, ps...)
-			allDiags = append(allDiags, ds...)
-		case api.ModeAt:
-			ps, ds := callOnce(api.ModeAt, qus, spec.At, time.Time{}, time.Time{})
-			allPrices = append(allPrices, ps...)
-			allDiags = append(allDiags, ds...)
-		case api.ModeRange:
-			for d := spec.Start; d.Before(spec.End); d = d.AddDate(0, 0, 1) {
-				ps, ds := callOnce(api.ModeAt, qus, d, time.Time{}, time.Time{})
-				allPrices = append(allPrices, ps...)
-				allDiags = append(allDiags, ds...)
-			}
-		}
-
-	case methodRange:
-		// Pick the [start, end) the call covers based on the source
-		// mode and pass the full interval through in a single call.
-		var rStart, rEnd time.Time
-		switch spec.Mode {
-		case api.ModeLatest:
-			now := cfg.now()
-			rStart = now.AddDate(0, 0, -1)
-			rEnd = now.AddDate(0, 0, 1)
-		case api.ModeAt:
-			rStart = spec.At
-			rEnd = spec.At.AddDate(0, 0, 1)
-		case api.ModeRange:
-			rStart = spec.Start
-			rEnd = spec.End
-		}
-		ps, ds := callOnce(api.ModeRange, qus, time.Time{}, rStart, rEnd)
-		allPrices = append(allPrices, ps...)
-		allDiags = append(allDiags, ds...)
-	}
-
-	return allPrices, allDiags
+	attribute(prices, units)
+	return prices, diags
 }

@@ -68,16 +68,21 @@ import (
 //	                           | unless now ∈      |                    |                         |
 //	                           | [t, t+1d); else   |                    |                         |
 //	                           | QuoteLatest       |                    |                         |
-//	ModeRange(s, e)            | QuoteLatest only  | one QuoteAt per    | QuoteRange(s, e)        | Prefer
-//	                           | when now ∈ [s,e), | calendar day in    |                         | Range > At-loop > Latest
-//	                           | else quote-mode-  | [s, e)             |                         |
+//	ModeRange(s, e)            | QuoteLatest only  | QuoteRange(s, e)   | QuoteRange(s, e)        | Prefer
+//	                           | when now ∈ [s,e), | via DateRangeIter  |                         | Range > At-lifted > Latest
+//	                           | else quote-mode-  | (Calendar=AllDays) |                         |
 //	                           | unsupported       |                    |                         |
 //
-// "now" is supplied by WithClock (default time.Now). The "calendar
-// day loop" inside ModeRange + AtSource-only is run by the
-// orchestrator one calendar day at a time across [s, e); per-day no-
-// result calls turn into Diagnostics rather than top-level errors, so
-// non-business-day calendars degrade gracefully.
+// "now" is supplied by WithClock (default time.Now). For ModeRange +
+// AtSource-only, the orchestrator lifts the AtSource to a RangeSource
+// via sourceutil.DateRangeIter with Calendar=AllDays and issues a
+// single QuoteRange call covering [s, e); the lift iterates calendar
+// days internally and stops at the first per-day error. Source authors
+// who need calendar-aware iteration (e.g. WeekdaysOnly for FX so that
+// weekend "no data" is skipped instead of aborting the range) should
+// register a RangeSource themselves -- typically by composing
+// sourceutil.DateRangeIter with the appropriate Calendar -- rather
+// than relying on this fallback.
 //
 // A ModeRange request with Start >= End is treated as a vacuous
 // request: no calls are issued to any source and no Diagnostics are
