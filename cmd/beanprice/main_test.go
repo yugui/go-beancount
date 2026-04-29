@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -298,6 +299,63 @@ func TestRun_PluginLoadFailure(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "plugin load failed") {
 		t.Errorf("stderr = %q, want it to mention 'plugin load failed'", stderr.String())
+	}
+}
+
+// pluginSupportedGOOS lists the operating systems where Go's plugin
+// package is documented to work. The plugin integration test skips on
+// anything else; this matches the goplug package's own gating.
+var pluginSupportedGOOS = map[string]bool{
+	"linux":   true,
+	"freebsd": true,
+	"darwin":  true,
+}
+
+// staticQuoterPath returns the runfiles path of the pre-built
+// staticquoter .so fixture. The plugin is produced by
+// //cmd/beanprice/testdata/staticquoter:staticquoter in Bazel and
+// materialised into the test binary's runfiles. Outside Bazel — e.g.
+// raw `go test` — the file is absent and the test self-skips.
+func staticQuoterPath(t *testing.T) string {
+	t.Helper()
+	if !pluginSupportedGOOS[runtime.GOOS] {
+		t.Skipf("beanprice: Go plugins are not supported on GOOS=%s", runtime.GOOS)
+	}
+	srcDir := os.Getenv("TEST_SRCDIR")
+	workspace := os.Getenv("TEST_WORKSPACE")
+	if srcDir == "" || workspace == "" {
+		t.Skipf("beanprice: no TEST_SRCDIR/TEST_WORKSPACE set (run via `bazel test //cmd/beanprice:beanprice_test`)")
+	}
+	path := filepath.Join(srcDir, workspace, "cmd", "beanprice", "testdata", "staticquoter", "staticquoter.so")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("beanprice: staticquoter.so not found at %s: %v", path, err)
+	}
+	return path
+}
+
+// TestPlugin_StaticQuoter_LoadsAndQuotes verifies the --plugin flag
+// drives the goplug.Load -> InitPlugin -> quote.Register chain end to
+// end. The fixture registers a quoter named "staticquoter" that
+// returns Number=1 for any pair, so a successful round-trip is visible
+// in stdout as a price line for EUR in USD.
+//
+// This test runs only under Bazel, where the .so is built with the
+// matching toolchain; under raw `go test` the runfile is missing and
+// the test self-skips.
+func TestPlugin_StaticQuoter_LoadsAndQuotes(t *testing.T) {
+	soPath := staticQuoterPath(t)
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{
+		"--plugin", soPath,
+		"--source", "EUR=USD:staticquoter/USD",
+		"--latest",
+	}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("run(--plugin staticquoter) = %d, want 0; stderr: %q\nstdout: %q", got, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "price EUR") || !strings.Contains(out, "USD") {
+		t.Errorf("stdout = %q, want a price line for EUR in USD", out)
 	}
 }
 

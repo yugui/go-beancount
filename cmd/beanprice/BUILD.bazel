@@ -23,10 +23,22 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
+# The staticquoter .so fixture is added on platforms that support
+# Go plugins; on others the data dep is dropped and the plugin
+# integration test self-skips at runtime via the same GOOS check
+# pkg/ext/goplug uses.
 go_test(
     name = "beanprice_test",
     srcs = ["main_test.go"],
-    data = glob(["testdata/**"]),
+    data = glob(
+        ["testdata/**"],
+        exclude = ["testdata/staticquoter/**"],
+    ) + select({
+        "@platforms//os:linux": ["//cmd/beanprice/testdata/staticquoter"],
+        "@platforms//os:macos": ["//cmd/beanprice/testdata/staticquoter"],
+        "@platforms//os:freebsd": ["//cmd/beanprice/testdata/staticquoter"],
+        "//conditions:default": [],
+    }),
     embed = [":beanprice_lib"],
     deps = [
         "//pkg/ast",

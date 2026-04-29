@@ -77,10 +77,25 @@
 //
 // # Plugin authors
 //
-// Out-of-tree quoters are distributed as goplug `.so` files whose
-// InitPlugin callback calls quote.Register(name, source). Choose the
-// upstream tool's own name when emulating one (e.g. "yahoo",
-// "google"); otherwise use the Go fully-qualified package path of
-// the implementing package, mirroring the convention used by
+// Out-of-tree quoters ship as goplug `.so` files. The full workflow
+// for authoring one:
+//
+//  1. Implement an [api.Source] (and any of [api.LatestSource],
+//     [api.AtSource], [api.RangeSource] you need to support).
+//  2. In a `package main` Go file, export
+//     `Manifest [github.com/yugui/go-beancount/pkg/ext/goplug.Manifest]`
+//     and `func InitPlugin() error`.
+//  3. From InitPlugin, call quote.Register(name, source).
+//  4. Build with `go build -buildmode=plugin -o quoter.so ./path/to/plugin`.
+//  5. Pass `--plugin /abs/path/to/quoter.so` to beanprice.
+//
+// Choose the upstream tool's own name when emulating one (e.g.
+// "yahoo", "google"); otherwise use the Go fully-qualified package
+// path of the implementing package, mirroring the convention used by
 // pkg/ext/postproc/std plugins such as checkclosing.
+//
+// The cmd/beanprice/testdata/staticquoter fixture is the canonical
+// reference implementation: every required symbol and the
+// quote.Register call from InitPlugin are present in roughly fifty
+// lines.
 package quote
