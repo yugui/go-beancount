@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sourceutil",
+    srcs = [
+        "concurrency.go",
+        "daterange.go",
+        "doc.go",
+        "groupbyquote.go",
+        "quotecache.go",
+        "ratelimit.go",
+        "retry.go",
+        "splitbatch.go",
+        "splitrange.go",
+        "wrap.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/quote/sourceutil",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote/api",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "sourceutil_test",
+    srcs = [
+        "concurrency_test.go",
+        "daterange_test.go",
+        "groupbyquote_test.go",
+        "helpers_test.go",
+        "quotecache_test.go",
+        "ratelimit_test.go",
+        "retry_test.go",
+        "splitbatch_test.go",
+        "splitrange_test.go",
+        "wrap_test.go",
+    ],
+    embed = [":sourceutil"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote/api",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

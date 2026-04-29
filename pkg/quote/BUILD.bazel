@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "quote",
+    srcs = [
+        "doc.go",
+        "event.go",
+        "fetch.go",
+        "registry.go",
+        "scheduler.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/quote",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote/api",
+        "//pkg/quote/sourceutil",
+    ],
+)
+
+go_test(
+    name = "quote_test",
+    srcs = [
+        "fetch_test.go",
+        "registry_test.go",
+    ],
+    embed = [":quote"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote/api",
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)

@@ -239,20 +239,33 @@ whole library.
 
 **Dependencies:** Phase 6 (plugin system)
 
-### Deliverables
+`pkg/quote` fetches commodity and FX prices from external sources and emits them as `ast.Price` directives that the rest of the pipeline can consume directly. There is no parallel "Quote" type: the wire-out shape is `ast.Price`, with per-source attribution carried on `Price.Meta`. Bean-price's `price` meta grammar on Commodity directives is accepted as-is by `pkg/quote/meta`, so existing ledgers carry over without rewriting; outside that single point of compatibility the layer is Go-native.
 
-- **`Quoter` interface:**
-  ```go
-  type Quoter interface {
-      Quote(ctx context.Context, commodity string, date time.Time) (Price, error)
-  }
-  ```
-- **`Price` type:** commodity pair, numeric value, source, timestamp.
-- **Built-in quoters:** at minimum one reference implementation (e.g., Yahoo Finance or a free market data API).
-- **Plugin-backed quoter:** wraps a Go plugin implementing `Quoter`.
-- **External-process quoter:** wraps a subprocess implementing the extproc protocol.
-- **Fan-out / fallback quoter:** tries multiple sources in order; returns first success.
-- **`pkg/quote/pricedb`:** converts a slice of `Price` values into `price` directives and merges them into an `ast.Ledger`, deduplicating by date and commodity.
+The library is split so that out-of-tree quoter authors only need to depend on a small declarative package, while the orchestration code stays internal to the host:
+
+- **`pkg/quote/api`** — declarative interface package shared with out-of-tree plugins. Holds `Pair`, `SourceRef`, `PriceRequest`, `Mode`, `SourceQuery`, and the `Source` / `LatestSource` / `AtSource` / `RangeSource` interfaces. Any incompatible change here requires a goplug `APIVersion` bump.
+- **`pkg/quote`** — the orchestrator: `Register`/`Lookup`/`Names` plus `Fetch(ctx, registry, spec, opts...)`, `WithConcurrency`, `WithClock`, `WithObserver`.
+- **`pkg/quote/meta`** — bean-price-compatible `price:` meta parser; returns `[]PriceRequest` from a Commodity directive. The default key is `"price"`, overridable via `--meta-key`.
+- **`pkg/quote/sourceutil`** — composable author-side decorators (`WrapSingleCell`, `DateRangeIter`, `BatchPairs`, `Concurrency`, `RateLimit`, `RetryOnError`, `Cache`) that each preserve the wrapped source's capability sub-interfaces so they stack freely (typical: `Cache(RateLimit(RetryOnError(source)))`).
+- **`pkg/quote/pricedb`** — `Dedup` (key: `(Date.UTC, Commodity, Amount.Currency)`) and `FormatStream` (sort + canonical print). It deliberately does not merge prices into existing ledger files; ledger write-back belongs to bean-daemon (Phase 10).
+- **`pkg/quote/std/ecb`** — the Phase 7 reference source.
+- **`cmd/beanprice`** — the CLI driver.
+
+Real-world sources have one natural batching axis: a single (pair, date) cell, a row keyed by date, a column keyed by commodity, a full matrix, or latest-only. Forcing every source to implement a single all-shapes method either drowns callers in `unsupported`-error handling or forces stub implementations. Phase 7 instead uses a hybrid: a base `Source` interface (just `Name`) plus optional `LatestSource` / `AtSource` / `RangeSource` sub-interfaces. A source declares only what it natively serves — by implementing the matching sub-interface — and the orchestrator detects support via type assertions, with documented demotion paths (e.g. `ModeRange` against an `AtSource` becomes a per-day loop). `Pair` is the logical request unit; `SourceQuery` adds the source-specific symbol so the same commodity can have different tickers across sources without polluting the output.
+
+`Fetch` walks each `PriceRequest`'s priority-ordered `Sources[]` in synchronised levels. At level k every still-unresolved unit contributes its k-th source name to a `{name → []unit}` grouping; each named source is consulted exactly once on the level (potentially expanding into several physical calls per `BatchPairs` and `RangePerCall`), the entire level finishes, and then unresolved units advance to k+1. The barrier between levels is what makes fallback safe under shared batch sources: two requests with opposing priorities over the same two batch sources cannot deadlock, because at every level each source is hit exactly once with the union of pending queries that named it. A speculative fan-out that ran primary and fallback in parallel was rejected because it triggers unbounded fallback explosion the moment several priority chains share downstream sources. There is no `FallbackSource` decorator — chains are first-class on `PriceRequest.Sources`.
+
+`pkg/quote/meta.ParsePriceMeta` accepts the bean-price grammar `value := psource (WS+ psource)*`, `psource := CCY ":" entry ("," entry)*`, `entry := SOURCE "/" SYMBOL`. The quote currency (`CCY:`) is required; the bean-price `^` inverted-quote prefix and CCY-less forms are surfaced as `quote-meta-unsupported` rather than silently accepted, leaving them as a typed extension point. There is no `--quote` override flag — the meta is the single source of truth and `--source` mirrors the same psource grammar one psource at a time.
+
+`pkg/quote/std/ecb` registers the `ecb` source. It was chosen for the Phase 7 reference slot because it is public, unauthenticated, stable, natively range-capable (one HTTP call returns many days), and rate-limit-free in practice, so CI runs hermetically against checked-in XML fixtures. ECB only publishes EUR-base reference rates, so the source serves only `Pair.Commodity == "EUR"`; this is a useful start, with more standard sources (yahoo, google, AlphaVantage, ...) landing in later phases. There is no quote-specific loader: out-of-tree quoters ship as goplug `.so` files whose `InitPlugin` callback calls `quote.Register(name, source)`, and `--plugin PATH` on `cmd/beanprice` walks the supplied list through `pkg/ext/goplug`. An out-of-process `Source` (extproc) is deferred until Phase 6c lands.
+
+Sub-phase status:
+
+- **7a — landed in this branch.** All packages above plus `cmd/beanprice` and the ECB reference source.
+- **7b — landed in this branch.** A goplug fixture under `cmd/beanprice/testdata` exercises the `--plugin` path end-to-end and locks in the plugin ABI surface.
+- **7c — deferred.** External-process `Source` is held until Phase 6c (extproc) lands and is out of scope for Phase 7.
+
+Acceptance is covered by tests in this branch: a deadlock-regression test for the level-by-level scheduler under shared batch sources, a table-driven test of the bean-price meta grammar (including the rejected `^` and CCY-less forms), hermetic ECB tests against checked-in XML fixtures (with a `live`-tagged smoke test held separately), and a `cmd/beanprice` CLI suite covering flag parsing, exit codes, and the `--plugin` fixture path. `cmd/beansprout quote` (Phase 12) will wrap this library as a user-facing subcommand; persisting prices back into ledger source files is bean-daemon's responsibility (Phase 10), so `pricedb` deliberately stops at producing a printable, deduplicated stream.
 
 ---
 

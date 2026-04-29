@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "meta",
+    srcs = ["meta.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/quote/meta",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote/api",
+    ],
+)
+
+go_test(
+    name = "meta_test",
+    srcs = ["meta_test.go"],
+    embed = [":meta"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote/api",
+        "@com_github_google_go_cmp//cmp",
+        "@com_github_google_go_cmp//cmp/cmpopts",
+    ],
+)

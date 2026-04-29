@@ -1,0 +1,49 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "beanprice_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/yugui/go-beancount/cmd/beanprice",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/goplug",
+        "//pkg/loader",
+        "//pkg/quote",
+        "//pkg/quote/api",
+        "//pkg/quote/meta",
+        "//pkg/quote/pricedb",
+        "//pkg/quote/std/ecb",
+    ],
+)
+
+go_binary(
+    name = "beanprice",
+    embed = [":beanprice_lib"],
+    visibility = ["//visibility:public"],
+)
+
+# The staticquoter .so fixture is added on platforms that support
+# Go plugins; on others the data dep is dropped and the plugin
+# integration test self-skips at runtime via the same GOOS check
+# pkg/ext/goplug uses.
+go_test(
+    name = "beanprice_test",
+    srcs = ["main_test.go"],
+    data = glob(
+        ["testdata/**"],
+        exclude = ["testdata/staticquoter/**"],
+    ) + select({
+        "@platforms//os:linux": ["//cmd/beanprice/testdata/staticquoter"],
+        "@platforms//os:macos": ["//cmd/beanprice/testdata/staticquoter"],
+        "@platforms//os:freebsd": ["//cmd/beanprice/testdata/staticquoter"],
+        "//conditions:default": [],
+    }),
+    embed = [":beanprice_lib"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/quote",
+        "//pkg/quote/api",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

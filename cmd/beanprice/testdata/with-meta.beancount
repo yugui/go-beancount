@@ -1,0 +1,7 @@
+; Test fixture for cmd/beanprice ledger-walk tests.
+; Two commodities, both carrying a bean-price-compatible price meta.
+1900-01-01 commodity USD
+  price: "EUR:fake/USD"
+
+1900-01-01 commodity AAPL
+  price: "USD:fake/AAPL"
