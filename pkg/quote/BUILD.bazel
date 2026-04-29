@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "quote",
+    srcs = [
+        "doc.go",
+        "registry.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/quote",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/quote/api"],
+)
+
+go_test(
+    name = "quote_test",
+    srcs = ["registry_test.go"],
+    embed = [":quote"],
+    deps = [
+        "//pkg/quote/api",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)
