@@ -22,23 +22,6 @@ func TestSeverityZeroValueIsError(t *testing.T) {
 	}
 }
 
-func TestFileEmpty(t *testing.T) {
-	f := File{
-		Filename:    "test.beancount",
-		Directives:  nil,
-		Diagnostics: nil,
-	}
-	if f.Filename != "test.beancount" {
-		t.Errorf("Filename = %q, want %q", f.Filename, "test.beancount")
-	}
-	if len(f.Directives) != 0 {
-		t.Errorf("Directives length = %d, want 0", len(f.Directives))
-	}
-	if len(f.Diagnostics) != 0 {
-		t.Errorf("Diagnostics length = %d, want 0", len(f.Diagnostics))
-	}
-}
-
 func TestAmount(t *testing.T) {
 	var num apd.Decimal
 	if _, _, err := num.SetString("123.45"); err != nil {

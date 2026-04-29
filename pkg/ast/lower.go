@@ -2,6 +2,7 @@ package ast
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -180,12 +181,18 @@ func unquoteString(t *syntax.Token) string {
 }
 
 // parseDate parses a DATE token's Raw value into time.Time.
-// Beancount dates are YYYY-MM-DD or YYYY/MM/DD.
+// Beancount dates are YYYY-MM-DD or YYYY/MM/DD; mixed separators
+// (e.g. "2024-01/15") are rejected.
 func parseDate(t *syntax.Token) (time.Time, error) {
 	s := t.Raw
-	// Normalize separator
-	s = strings.ReplaceAll(s, "/", "-")
-	return time.Parse("2006-01-02", s)
+	switch {
+	case strings.ContainsRune(s, '-') && !strings.ContainsRune(s, '/'):
+		return time.Parse("2006-01-02", s)
+	case strings.ContainsRune(s, '/') && !strings.ContainsRune(s, '-'):
+		return time.Parse("2006/01/02", s)
+	default:
+		return time.Time{}, fmt.Errorf("invalid date %q: separators must be all '-' or all '/'", s)
+	}
 }
 
 // lowerMetadata extracts all MetadataLineNode children from a CST node
@@ -1053,19 +1060,24 @@ func (l *lowerer) lowerTransaction(n *syntax.Node) {
 		txn.Narration = unquoteString(strs[1])
 	}
 
-	// Merge active (pushed) tags into this transaction.
+	// Merge active (pushed) tags into this transaction. Walk activeTags in
+	// sorted order so the resulting Tags slice is deterministic across runs;
+	// random map iteration would otherwise leak into goldens.
+	seen := make(map[string]struct{}, len(txn.Tags))
+	for _, t := range txn.Tags {
+		seen[t] = struct{}{}
+	}
+	pushed := make([]string, 0, len(l.activeTags))
 	for tag := range l.activeTags {
-		// Avoid duplicates: only add if not already present.
-		found := false
-		for _, t := range txn.Tags {
-			if t == tag {
-				found = true
-				break
-			}
+		pushed = append(pushed, tag)
+	}
+	sort.Strings(pushed)
+	for _, tag := range pushed {
+		if _, ok := seen[tag]; ok {
+			continue
 		}
-		if !found {
-			txn.Tags = append(txn.Tags, tag)
-		}
+		txn.Tags = append(txn.Tags, tag)
+		seen[tag] = struct{}{}
 	}
 
 	// Lower postings.
