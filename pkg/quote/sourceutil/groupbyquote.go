@@ -108,14 +108,14 @@ func partitionByQuoteCurrency(q []api.SourceQuery) ([]string, map[string][]api.S
 // that quote currency and folded into the merged diags. ctx
 // cancellation propagates as a top-level error after all spawned
 // goroutines have returned.
-func (s *groupByQuoteSource) runPartitions(ctx context.Context, q []api.SourceQuery, fn func(qc string, sub []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)) ([]ast.Price, []ast.Diagnostic, error) {
+func (s *groupByQuoteSource) runPartitions(ctx context.Context, q []api.SourceQuery, fn func(sub []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error)) ([]ast.Price, []ast.Diagnostic, error) {
 	keys, groups := partitionByQuoteCurrency(q)
 	switch len(keys) {
 	case 0:
 		return nil, nil, nil
 	case 1:
 		k := keys[0]
-		ps, ds, err := fn(k, groups[k])
+		ps, ds, err := fn(groups[k])
 		if err != nil {
 			ds = append(ds, ast.Diagnostic{
 				Code:    "quote-fetch-error",
@@ -137,7 +137,7 @@ func (s *groupByQuoteSource) runPartitions(ctx context.Context, q []api.SourceQu
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ps, ds, err := fn(k, groups[k])
+			ps, ds, err := fn(groups[k])
 			results[i] = result{prices: ps, diags: ds}
 			if err != nil {
 				results[i].diags = append(results[i].diags, ast.Diagnostic{
@@ -161,19 +161,19 @@ func (s *groupByQuoteSource) runPartitions(ctx context.Context, q []api.SourceQu
 }
 
 func (s *groupByQuoteSource) doLatest(ctx context.Context, q []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
-	return s.runPartitions(ctx, q, func(_ string, sub []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+	return s.runPartitions(ctx, q, func(sub []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 		return s.latest.QuoteLatest(ctx, sub)
 	})
 }
 
 func (s *groupByQuoteSource) doAt(ctx context.Context, q []api.SourceQuery, at time.Time) ([]ast.Price, []ast.Diagnostic, error) {
-	return s.runPartitions(ctx, q, func(_ string, sub []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+	return s.runPartitions(ctx, q, func(sub []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 		return s.at.QuoteAt(ctx, sub, at)
 	})
 }
 
 func (s *groupByQuoteSource) doRange(ctx context.Context, q []api.SourceQuery, start, end time.Time) ([]ast.Price, []ast.Diagnostic, error) {
-	return s.runPartitions(ctx, q, func(_ string, sub []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
+	return s.runPartitions(ctx, q, func(sub []api.SourceQuery) ([]ast.Price, []ast.Diagnostic, error) {
 		return s.rng.QuoteRange(ctx, sub, start, end)
 	})
 }
