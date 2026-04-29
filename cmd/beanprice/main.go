@@ -71,7 +71,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 
 	// Mode resolution.
-	mode, at, start, end, err := resolveMode(flags)
+	fetch, err := resolveFetcher(flags)
 	if err != nil {
 		fmt.Fprintf(stderr, "beanprice: %v\n", err)
 		return 2
@@ -108,43 +108,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Fetch. The mode is encoded in the function chosen, so the time
-	// arguments only flow into the entry point that actually consults
-	// them.
-	var (
-		prices     []ast.Price
-		fetchDiags []ast.Diagnostic
-		fetchErr   error
-	)
-	switch mode {
-	case api.ModeLatest:
-		prices, fetchDiags, fetchErr = quote.FetchLatest(
-			ctx,
-			quote.GlobalRegistry(),
-			requests,
-			quote.WithConcurrency(flags.concurrency),
-		)
-	case api.ModeAt:
-		prices, fetchDiags, fetchErr = quote.FetchAt(
-			ctx,
-			quote.GlobalRegistry(),
-			requests,
-			at,
-			quote.WithConcurrency(flags.concurrency),
-		)
-	case api.ModeRange:
-		prices, fetchDiags, fetchErr = quote.FetchRange(
-			ctx,
-			quote.GlobalRegistry(),
-			requests,
-			start,
-			end,
-			quote.WithConcurrency(flags.concurrency),
-		)
-	default:
-		fmt.Fprintf(stderr, "beanprice: internal error: unhandled fetch mode %v\n", mode)
-		return 2
-	}
+	// Fetch. The mode is encoded in the closure chosen by
+	// resolveFetcher, so the time arguments only flow into the entry
+	// point that actually consults them.
+	prices, fetchDiags, fetchErr := fetch(ctx, quote.GlobalRegistry(), requests, quote.WithConcurrency(flags.concurrency))
 	diags = append(diags, fetchDiags...)
 
 	// A bad --range (reversed/empty interval) surfaces here as
@@ -234,41 +201,52 @@ func parseFlags(args []string, stderr io.Writer) (*resolvedFlags, error) {
 	return r, nil
 }
 
-// resolveMode picks api.Mode and time fields from the date / range /
-// latest flags. --date and --range are mutually exclusive, and --latest
-// cannot be combined with either of them; if no mode flag is set,
-// ModeLatest is selected (--latest is the default).
-func resolveMode(r *resolvedFlags) (mode api.Mode, at, start, end time.Time, err error) {
+// fetcher is the common signature of pkg/quote.FetchLatest /
+// FetchAt / FetchRange after their mode-specific time arguments have
+// been bound. resolveFetcher returns one of these so that run() can
+// dispatch without re-deriving the mode.
+type fetcher func(ctx context.Context, reg quote.Registry, requests []api.PriceRequest, opts ...quote.Option) ([]ast.Price, []ast.Diagnostic, error)
+
+// resolveFetcher picks the fetch operation implied by the date /
+// range / latest flags. --date and --range are mutually exclusive,
+// and --latest cannot be combined with either of them; if no mode
+// flag is set, the latest-price fetch is selected (--latest is the
+// default).
+func resolveFetcher(r *resolvedFlags) (fetcher, error) {
 	if r.latest && (r.date != "" || r.rng != "") {
-		return 0, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("--latest is mutually exclusive with --date and --range")
+		return nil, fmt.Errorf("--latest is mutually exclusive with --date and --range")
 	}
 	if r.date != "" && r.rng != "" {
-		return 0, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("--date and --range are mutually exclusive")
+		return nil, fmt.Errorf("--date and --range are mutually exclusive")
 	}
 	switch {
 	case r.date != "":
 		t, perr := time.ParseInLocation("2006-01-02", r.date, time.UTC)
 		if perr != nil {
-			return 0, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("--date: %w", perr)
+			return nil, fmt.Errorf("--date: %w", perr)
 		}
-		return api.ModeAt, t, time.Time{}, time.Time{}, nil
+		return func(ctx context.Context, reg quote.Registry, reqs []api.PriceRequest, opts ...quote.Option) ([]ast.Price, []ast.Diagnostic, error) {
+			return quote.FetchAt(ctx, reg, reqs, t, opts...)
+		}, nil
 	case r.rng != "":
 		parts := strings.SplitN(r.rng, "..", 2)
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return 0, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("--range must be START..END (got %q)", r.rng)
+			return nil, fmt.Errorf("--range must be START..END (got %q)", r.rng)
 		}
 		s, perr := time.ParseInLocation("2006-01-02", parts[0], time.UTC)
 		if perr != nil {
-			return 0, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("--range start: %w", perr)
+			return nil, fmt.Errorf("--range start: %w", perr)
 		}
 		e, perr := time.ParseInLocation("2006-01-02", parts[1], time.UTC)
 		if perr != nil {
-			return 0, time.Time{}, time.Time{}, time.Time{}, fmt.Errorf("--range end: %w", perr)
+			return nil, fmt.Errorf("--range end: %w", perr)
 		}
-		return api.ModeRange, time.Time{}, s, e, nil
+		return func(ctx context.Context, reg quote.Registry, reqs []api.PriceRequest, opts ...quote.Option) ([]ast.Price, []ast.Diagnostic, error) {
+			return quote.FetchRange(ctx, reg, reqs, s, e, opts...)
+		}, nil
 	default:
 		// --latest is the default; explicit --latest is also accepted.
-		return api.ModeLatest, time.Time{}, time.Time{}, time.Time{}, nil
+		return quote.FetchLatest, nil
 	}
 }
 
