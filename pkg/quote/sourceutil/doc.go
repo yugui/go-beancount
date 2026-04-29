@@ -34,6 +34,11 @@
 //   - SplitRange caps per-call day count for a RangeSource; use it
 //     when the underlying API cannot natively span arbitrary ranges.
 //
+//   - GroupByQuoteCurrency partitions an inbound batch by
+//     Pair.QuoteCurrency and dispatches one downstream call per
+//     quote currency in parallel. Use it when the source can only
+//     batch pairs that share a single quote currency.
+//
 //   - Concurrency caps the number of in-flight calls to one source
 //     independent of the orchestrator's global concurrency window.
 //
@@ -67,6 +72,14 @@
 // circuit the entire stack; RateLimit sits between Cache and Retry so
 // retries are themselves rate-limited; Retry sits closest to the
 // source so it can observe the underlying transport errors.
+//
+// When both partitioning and per-call batch capping apply, the
+// typical stack is:
+//
+//	GroupByQuoteCurrency → SplitBatch → wrapped source
+//
+// because partitioning by quote currency may produce per-partition
+// slices of varying length that each then want batch-size capping.
 //
 // # Goroutine safety
 //

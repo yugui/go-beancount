@@ -128,7 +128,6 @@ func (s *splitBatchSource) runChunks(ctx context.Context, length int, fn func(lo
 	results := make([]result, len(chunks))
 	var wg sync.WaitGroup
 	for i, c := range chunks {
-		i, c := i, c
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
