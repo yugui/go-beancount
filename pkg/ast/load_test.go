@@ -4,9 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
@@ -314,106 +317,134 @@ func TestLoad_String_SelfInclude(t *testing.T) {
 	}
 }
 
-func TestLoad_GlobInclude_DoubleStar(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "sub", "a"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "sub", "b", "c"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "sub", "a", "inc.beancount"),
-		[]byte("2024-01-01 open Assets:Bank USD\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "sub", "b", "c", "inc.beancount"),
-		[]byte("2024-01-01 open Expenses:Food\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// A non-matching extension should be ignored.
-	if err := os.WriteFile(filepath.Join(dir, "sub", "notes.txt"),
-		[]byte("ignored"), 0644); err != nil {
-		t.Fatal(err)
+func TestLoadFile_GlobInclude(t *testing.T) {
+	type row struct {
+		name        string
+		rootRel     string
+		wantMarkers []string
+		// wantSeverity is only consulted when wantDiagSubstr != "".
+		wantSeverity ast.Severity
+		// wantDiagSubstr is matched against Diagnostic.Message. The coupling
+		// to the human-readable text is deliberate: ast.Diagnostic does not
+		// yet expose a typed code for this case, so the message is the only
+		// stable signal. Update both sides if the wording changes.
+		wantDiagSubstr string
 	}
 
-	root := filepath.Join(dir, "main.beancount")
-	if err := os.WriteFile(root, []byte(`include "sub/**/*.beancount"`+"\n"), 0644); err != nil {
-		t.Fatal(err)
+	rows := []row{
+		{
+			name:    "doublestar",
+			rootRel: "root_doublestar.beancount",
+			wantMarkers: []string{
+				"doublestar/a/leaf",
+				"doublestar/b/c/leaf",
+			},
+		},
+		{
+			name:    "singlestar",
+			rootRel: "root_singlestar.beancount",
+			wantMarkers: []string{
+				"singlestar/leaf_a",
+				"singlestar/leaf_b",
+			},
+		},
+		{
+			name:    "dirstar",
+			rootRel: "root_dirstar.beancount",
+			wantMarkers: []string{
+				"dirstar/a/leaf",
+				"dirstar/b/leaf",
+			},
+		},
+		{
+			name:    "charclass",
+			rootRel: "root_charclass.beancount",
+			wantMarkers: []string{
+				"charclass/leaf_a",
+				"charclass/leaf_b",
+				"charclass/leaf_c",
+			},
+		},
+		{
+			name:    "question",
+			rootRel: "root_question.beancount",
+			wantMarkers: []string{
+				"question/leaf_a",
+				"question/leaf_b",
+			},
+		},
+		{
+			name:    "multistar",
+			rootRel: "root_multistar.beancount",
+			wantMarkers: []string{
+				"multistar/p/q/inner/r/s/leaf",
+				"multistar/x/inner/y/leaf",
+			},
+		},
+		{
+			name:    "zerodir",
+			rootRel: "root_zerodir.beancount",
+			wantMarkers: []string{
+				"zerodir/deep/leaf",
+				"zerodir/leaf",
+			},
+		},
+		{
+			name:    "selfsibling",
+			rootRel: filepath.Join("singlestar", "selfsibling", "root_self.beancount"),
+			wantMarkers: []string{
+				"singlestar/selfsibling/leaf_a",
+				"singlestar/selfsibling/leaf_b",
+			},
+		},
+		{
+			name:           "nomatch",
+			rootRel:        "root_nomatch.beancount",
+			wantSeverity:   ast.Warning,
+			wantDiagSubstr: "matched no files",
+		},
 	}
 
-	ledger, err := ast.LoadFile(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range ledger.Diagnostics {
-		if d.Severity == ast.Error {
-			t.Fatalf("unexpected diagnostic: %s", d.Message)
-		}
-	}
-	if got := len(ledger.Files); got != 3 {
-		t.Errorf("Files count = %d, want 3 (root + 2 globbed includes)", got)
-	}
-	if got := ledger.Len(); got != 2 {
-		t.Errorf("Directives count = %d, want 2", got)
-	}
-}
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			path := filepath.Join("testdata", "include", r.rootRel)
+			ledger, err := ast.LoadFile(path)
+			if err != nil {
+				t.Fatalf("LoadFile(%q) returned error: %v", path, err)
+			}
 
-func TestLoad_GlobInclude_SingleStar(t *testing.T) {
-	dir := t.TempDir()
-	for _, name := range []string{"a.beancount", "b.beancount"} {
-		if err := os.WriteFile(filepath.Join(dir, name),
-			[]byte("2024-01-01 open Assets:X\n"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
+			var got []string
+			for _, d := range ledger.All() {
+				if n, ok := d.(*ast.Note); ok {
+					got = append(got, n.Comment)
+				}
+			}
+			sort.Strings(got)
+			if diff := cmp.Diff(r.wantMarkers, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("LoadFile(%q) markers mismatch (-want +got):\n%s", path, diff)
+			}
 
-	root := filepath.Join(dir, "main.beancount")
-	if err := os.WriteFile(root, []byte(`include "*.beancount"`+"\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
+			if r.wantDiagSubstr == "" {
+				for _, d := range ledger.Diagnostics {
+					if d.Severity == ast.Error || d.Severity == ast.Warning {
+						t.Errorf("LoadFile(%q) unexpected diagnostic: severity=%v message=%q", path, d.Severity, d.Message)
+					}
+				}
+				return
+			}
 
-	ledger, err := ast.LoadFile(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, d := range ledger.Diagnostics {
-		if d.Severity == ast.Error {
-			t.Fatalf("unexpected diagnostic: %s", d.Message)
-		}
-	}
-	// main.beancount is loaded once via LoadFile; the * glob also picks
-	// it up but is filtered by the cycle detector. So Files = main +
-	// a + b = 3.
-	if got := len(ledger.Files); got != 3 {
-		t.Errorf("Files count = %d, want 3", got)
-	}
-}
-
-func TestLoad_GlobInclude_NoMatches(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	root := filepath.Join(dir, "main.beancount")
-	if err := os.WriteFile(root, []byte(`include "sub/**/*.beancount"`+"\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	ledger, err := ast.LoadFile(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, d := range ledger.Diagnostics {
-		if d.Severity == ast.Error {
-			t.Fatalf("unexpected error diagnostic: %s", d.Message)
-		}
-		if d.Severity == ast.Warning && strings.Contains(d.Message, "matched no files") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("expected warning diagnostic for glob with no matches; got %+v", ledger.Diagnostics)
+			found := false
+			for _, d := range ledger.Diagnostics {
+				if d.Severity == r.wantSeverity && strings.Contains(d.Message, r.wantDiagSubstr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("LoadFile(%q) missing expected diagnostic (severity=%v, substring=%q); got %+v",
+					path, r.wantSeverity, r.wantDiagSubstr, ledger.Diagnostics)
+			}
+		})
 	}
 }
 
