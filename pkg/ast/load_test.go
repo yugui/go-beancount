@@ -314,6 +314,109 @@ func TestLoad_String_SelfInclude(t *testing.T) {
 	}
 }
 
+func TestLoad_GlobInclude_DoubleStar(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub", "a"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "sub", "b", "c"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "a", "inc.beancount"),
+		[]byte("2024-01-01 open Assets:Bank USD\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "sub", "b", "c", "inc.beancount"),
+		[]byte("2024-01-01 open Expenses:Food\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// A non-matching extension should be ignored.
+	if err := os.WriteFile(filepath.Join(dir, "sub", "notes.txt"),
+		[]byte("ignored"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	root := filepath.Join(dir, "main.beancount")
+	if err := os.WriteFile(root, []byte(`include "sub/**/*.beancount"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger, err := ast.LoadFile(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Fatalf("unexpected diagnostic: %s", d.Message)
+		}
+	}
+	if got := len(ledger.Files); got != 3 {
+		t.Errorf("Files count = %d, want 3 (root + 2 globbed includes)", got)
+	}
+	if got := ledger.Len(); got != 2 {
+		t.Errorf("Directives count = %d, want 2", got)
+	}
+}
+
+func TestLoad_GlobInclude_SingleStar(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"a.beancount", "b.beancount"} {
+		if err := os.WriteFile(filepath.Join(dir, name),
+			[]byte("2024-01-01 open Assets:X\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	root := filepath.Join(dir, "main.beancount")
+	if err := os.WriteFile(root, []byte(`include "*.beancount"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger, err := ast.LoadFile(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Fatalf("unexpected diagnostic: %s", d.Message)
+		}
+	}
+	// main.beancount is loaded once via LoadFile; the * glob also picks
+	// it up but is filtered by the cycle detector. So Files = main +
+	// a + b = 3.
+	if got := len(ledger.Files); got != 3 {
+		t.Errorf("Files count = %d, want 3", got)
+	}
+}
+
+func TestLoad_GlobInclude_NoMatches(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dir, "main.beancount")
+	if err := os.WriteFile(root, []byte(`include "sub/**/*.beancount"`+"\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ledger, err := ast.LoadFile(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Fatalf("unexpected error diagnostic: %s", d.Message)
+		}
+		if d.Severity == ast.Warning && strings.Contains(d.Message, "matched no files") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected warning diagnostic for glob with no matches; got %+v", ledger.Diagnostics)
+	}
+}
+
 func TestLoadFile_OverrideFilename(t *testing.T) {
 	dir := t.TempDir()
 	root := filepath.Join(dir, "main.beancount")

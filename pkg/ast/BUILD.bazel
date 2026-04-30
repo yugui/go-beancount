@@ -7,6 +7,7 @@ go_library(
         "ast.go",
         "booking.go",
         "directives.go",
+        "glob.go",
         "ledger.go",
         "load.go",
         "lower.go",
