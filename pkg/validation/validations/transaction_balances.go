@@ -3,6 +3,7 @@ package validations
 import (
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/internal/options"
@@ -103,7 +104,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 
 	residual := make([]string, 0, len(nonZero))
 	for _, cur := range nonZero {
-		within, err := withinTolerance(sums[cur], tolerances[cur])
+		within, err := tolerance.Within(sums[cur], tolerances[cur])
 		if err != nil {
 			return []ast.Diagnostic{{
 				Code:    string(validation.CodeUnbalancedTransaction),
@@ -127,7 +128,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 			return []ast.Diagnostic{{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
-				Message: fmt.Sprintf("cannot infer auto-posting amount: residual has %d non-zero currencies (%v)", len(residual), residual),
+				Message: fmt.Sprintf("cannot infer auto-posting amount: residual has %d non-zero currencies (%s)", len(residual), strings.Join(residual, ", ")),
 			}}
 		}
 	}
@@ -138,7 +139,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 		return []ast.Diagnostic{{
 			Code:    string(validation.CodeUnbalancedTransaction),
 			Span:    txn.Span,
-			Message: fmt.Sprintf("transaction does not balance: non-zero residual in %v", residual),
+			Message: fmt.Sprintf("transaction does not balance: non-zero residual in %s", strings.Join(residual, ", ")),
 		}}
 	}
 	return nil
@@ -176,13 +177,4 @@ func (s currencySum) nonZeroCurrencies() []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// withinTolerance reports whether |diff| <= tolerance.
-func withinTolerance(diff, tol *apd.Decimal) (bool, error) {
-	abs := new(apd.Decimal)
-	if _, err := apd.BaseContext.Abs(abs, diff); err != nil {
-		return false, err
-	}
-	return abs.Cmp(tol) <= 0, nil
 }

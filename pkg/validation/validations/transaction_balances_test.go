@@ -102,8 +102,7 @@ func TestTransactionBalances_UnbalancedSingleCurrency(t *testing.T) {
 	if e.Span != span {
 		t.Errorf("Span = %#v, want %#v", e.Span, span)
 	}
-	// Legacy wording: "transaction does not balance: non-zero residual in [USD]".
-	if want := `transaction does not balance: non-zero residual in [USD]`; e.Message != want {
+	if want := `transaction does not balance: non-zero residual in USD`; e.Message != want {
 		t.Errorf("Message = %q, want %q", e.Message, want)
 	}
 }
@@ -201,7 +200,7 @@ func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) 
 		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeUnbalancedTransaction)
 	}
 	// Established wording for multi-currency-auto-posting residual.
-	if want := `cannot infer auto-posting amount: residual has 2 non-zero currencies ([EUR USD])`; errs[0].Message != want {
+	if want := `cannot infer auto-posting amount: residual has 2 non-zero currencies (EUR, USD)`; errs[0].Message != want {
 		t.Errorf("Message = %q, want %q", errs[0].Message, want)
 	}
 }

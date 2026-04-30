@@ -39,10 +39,11 @@ const (
 	// could not be parsed into a known ast.BookingMethod value.
 	//
 	// Deprecated: ast.Open.Booking is now typed, and invalid keywords are
-	// reported as parse diagnostics by the lowerer rather than as
-	// validation errors. This constant is retained so existing imports and
-	// validation.FromInventoryError keep compiling; the validation
-	// package no longer emits it.
+	// reported as parse diagnostics by the lowerer. The validation package
+	// no longer produces this code while walking the AST; it is emitted
+	// only by [FromInventoryError] when adapting an inventory.Error from
+	// the booking layer, which still distinguishes the case for legacy
+	// inventory inputs.
 	CodeInvalidBookingMethod Code = "invalid-booking-method"
 )
 

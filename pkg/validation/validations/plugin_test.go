@@ -271,7 +271,7 @@ func TestPlugin_UnbalancedTransaction(t *testing.T) {
 	if e.Span != txnSpan {
 		t.Errorf("Span = %#v, want %#v", e.Span, txnSpan)
 	}
-	if want := `transaction does not balance: non-zero residual in [USD]`; e.Message != want {
+	if want := `transaction does not balance: non-zero residual in USD`; e.Message != want {
 		t.Errorf("Message = %q, want %q", e.Message, want)
 	}
 }
