@@ -4,9 +4,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
@@ -311,6 +314,139 @@ func TestLoad_String_SelfInclude(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected circular-include diagnostic; got %+v", ledger.Diagnostics)
+	}
+}
+
+func TestLoadFile_GlobInclude(t *testing.T) {
+	type row struct {
+		name        string
+		rootRel     string
+		wantMarkers []string
+		// wantSeverity is only consulted when wantDiagSubstr != "".
+		wantSeverity ast.Severity
+		// wantDiagSubstr is matched against Diagnostic.Message. The coupling
+		// to the human-readable text is deliberate: ast.Diagnostic does not
+		// yet expose a typed code for this case, so the message is the only
+		// stable signal. Update both sides if the wording changes.
+		wantDiagSubstr string
+	}
+
+	rows := []row{
+		{
+			name:    "doublestar",
+			rootRel: "root_doublestar.beancount",
+			wantMarkers: []string{
+				"doublestar/a/leaf",
+				"doublestar/b/c/leaf",
+			},
+		},
+		{
+			name:    "singlestar",
+			rootRel: "root_singlestar.beancount",
+			wantMarkers: []string{
+				"singlestar/leaf_a",
+				"singlestar/leaf_b",
+			},
+		},
+		{
+			name:    "dirstar",
+			rootRel: "root_dirstar.beancount",
+			wantMarkers: []string{
+				"dirstar/a/leaf",
+				"dirstar/b/leaf",
+			},
+		},
+		{
+			name:    "charclass",
+			rootRel: "root_charclass.beancount",
+			wantMarkers: []string{
+				"charclass/leaf_a",
+				"charclass/leaf_b",
+				"charclass/leaf_c",
+			},
+		},
+		{
+			name:    "question",
+			rootRel: "root_question.beancount",
+			wantMarkers: []string{
+				"question/leaf_a",
+				"question/leaf_b",
+			},
+		},
+		{
+			name:    "multistar",
+			rootRel: "root_multistar.beancount",
+			wantMarkers: []string{
+				"multistar/p/q/inner/r/s/leaf",
+				"multistar/x/inner/y/leaf",
+			},
+		},
+		{
+			name:    "zerodir",
+			rootRel: "root_zerodir.beancount",
+			wantMarkers: []string{
+				"zerodir/deep/leaf",
+				"zerodir/leaf",
+			},
+		},
+		{
+			name:    "selfsibling",
+			rootRel: filepath.Join("singlestar", "selfsibling", "root_self.beancount"),
+			wantMarkers: []string{
+				"singlestar/selfsibling/leaf_a",
+				"singlestar/selfsibling/leaf_b",
+			},
+			wantSeverity:   ast.Warning,
+			wantDiagSubstr: "already-loaded",
+		},
+		{
+			name:           "nomatch",
+			rootRel:        "root_nomatch.beancount",
+			wantSeverity:   ast.Warning,
+			wantDiagSubstr: "matched no files",
+		},
+	}
+
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			path := filepath.Join("testdata", "include", r.rootRel)
+			ledger, err := ast.LoadFile(path)
+			if err != nil {
+				t.Fatalf("LoadFile(%q) returned error: %v", path, err)
+			}
+
+			var got []string
+			for _, d := range ledger.All() {
+				if n, ok := d.(*ast.Note); ok {
+					got = append(got, n.Comment)
+				}
+			}
+			sort.Strings(got)
+			if diff := cmp.Diff(r.wantMarkers, got, cmpopts.EquateEmpty()); diff != "" {
+				t.Errorf("LoadFile(%q) markers mismatch (-want +got):\n%s", path, diff)
+			}
+
+			if r.wantDiagSubstr == "" {
+				for _, d := range ledger.Diagnostics {
+					if d.Severity == ast.Error || d.Severity == ast.Warning {
+						t.Errorf("LoadFile(%q) unexpected diagnostic: severity=%v message=%q", path, d.Severity, d.Message)
+					}
+				}
+				return
+			}
+
+			found := false
+			for _, d := range ledger.Diagnostics {
+				if d.Severity == r.wantSeverity && strings.Contains(d.Message, r.wantDiagSubstr) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("LoadFile(%q) missing expected diagnostic (severity=%v, substring=%q); got %+v",
+					path, r.wantSeverity, r.wantDiagSubstr, ledger.Diagnostics)
+			}
+		})
 	}
 }
 

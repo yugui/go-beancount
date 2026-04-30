@@ -7,6 +7,7 @@ go_library(
         "ast.go",
         "booking.go",
         "directives.go",
+        "glob.go",
         "ledger.go",
         "load.go",
         "lower.go",
@@ -34,9 +35,12 @@ go_test(
         "lower_integration_test.go",
         "lower_test.go",
     ],
+    data = glob(["testdata/**"]),
     embed = [":ast"],
     deps = [
         "//pkg/syntax",
         "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+        "@com_github_google_go_cmp//cmp/cmpopts",
     ],
 )

@@ -142,5 +142,42 @@ func (ld *loader) handleInclude(inc *Include, baseDir string) {
 		})
 		return
 	}
-	ld.loadFile(incAbs, incAbs, filepath.Dir(incAbs))
+	if !hasGlobMeta(incAbs) {
+		ld.loadFile(incAbs, incAbs, filepath.Dir(incAbs))
+		return
+	}
+	matches, err := expandGlob(incAbs)
+	if err != nil {
+		ld.diagnostics = append(ld.diagnostics, Diagnostic{
+			Span:     inc.Span,
+			Message:  fmt.Sprintf("expanding include glob %q: %v", inc.Path, err),
+			Severity: Error,
+		})
+		return
+	}
+	if len(matches) == 0 {
+		ld.diagnostics = append(ld.diagnostics, Diagnostic{
+			Span:     inc.Span,
+			Message:  fmt.Sprintf("include glob %q matched no files", inc.Path),
+			Severity: Warning,
+		})
+		return
+	}
+	for _, m := range matches {
+		// An already-loaded match (typically the file containing this
+		// include itself when the pattern is a sibling glob like
+		// "*.beancount") gets surfaced as a Warning rather than routed
+		// through loadFile's circular-include Error path: the directive
+		// is still well-formed, the load completes, and the user gets
+		// an audible signal that their pattern over-matched.
+		if ld.visited[m] {
+			ld.diagnostics = append(ld.diagnostics, Diagnostic{
+				Span:     inc.Span,
+				Message:  fmt.Sprintf("include glob %q matched already-loaded file %s", inc.Path, m),
+				Severity: Warning,
+			})
+			continue
+		}
+		ld.loadFile(m, m, filepath.Dir(m))
+	}
 }
