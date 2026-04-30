@@ -396,6 +396,8 @@ func TestLoadFile_GlobInclude(t *testing.T) {
 				"singlestar/selfsibling/leaf_a",
 				"singlestar/selfsibling/leaf_b",
 			},
+			wantSeverity:   ast.Warning,
+			wantDiagSubstr: "already-loaded",
 		},
 		{
 			name:           "nomatch",

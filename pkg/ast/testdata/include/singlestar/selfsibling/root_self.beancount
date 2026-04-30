@@ -1,1 +1,1 @@
-include "leaf_*.beancount"
+include "*.beancount"

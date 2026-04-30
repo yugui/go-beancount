@@ -164,11 +164,18 @@ func (ld *loader) handleInclude(inc *Include, baseDir string) {
 		return
 	}
 	for _, m := range matches {
-		// Glob expansion frequently picks up the file that issued the
-		// include (e.g. a "*.beancount" sibling pattern); treating that
-		// as a cycle would be noisy, so quietly drop already-loaded
-		// entries here instead of routing them through loadFile.
+		// An already-loaded match (typically the file containing this
+		// include itself when the pattern is a sibling glob like
+		// "*.beancount") gets surfaced as a Warning rather than routed
+		// through loadFile's circular-include Error path: the directive
+		// is still well-formed, the load completes, and the user gets
+		// an audible signal that their pattern over-matched.
 		if ld.visited[m] {
+			ld.diagnostics = append(ld.diagnostics, Diagnostic{
+				Span:     inc.Span,
+				Message:  fmt.Sprintf("include glob %q matched already-loaded file %s", inc.Path, m),
+				Severity: Warning,
+			})
 			continue
 		}
 		ld.loadFile(m, m, filepath.Dir(m))
