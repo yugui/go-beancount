@@ -354,6 +354,65 @@ func TestLower_NilRoot(t *testing.T) {
 	}
 }
 
+// TestLower_PopulatesLineAndColumn ensures that diagnostic spans carry
+// 1-based Line and Column derived from the source, not the previous
+// "always zero" placeholder. Column is counted in runes so multi-byte
+// characters before the position do not inflate it.
+func TestLower_PopulatesLineAndColumn(t *testing.T) {
+	// Line 3 of the source begins with two ASCII spaces followed by an
+	// open directive whose first token is at rune column 3.
+	src := "option \"title\" \"book\"\n" +
+		"\n" +
+		"  2024-01-02 open Assets:Bank USD\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("ledger.beancount", cst)
+	if len(f.Directives) < 2 {
+		t.Fatalf("Lower: got %d directives, want >= 2", len(f.Directives))
+	}
+	open := f.Directives[1]
+	got := open.DirSpan().Start
+	if got.Line != 3 {
+		t.Errorf("open.Span.Start.Line = %d, want 3", got.Line)
+	}
+	if got.Column != 3 {
+		t.Errorf("open.Span.Start.Column = %d, want 3", got.Column)
+	}
+	if got.Filename != "ledger.beancount" {
+		t.Errorf("open.Span.Start.Filename = %q, want %q", got.Filename, "ledger.beancount")
+	}
+}
+
+// TestLower_ColumnCountsRunes verifies that Column is reported in runes,
+// not bytes, so multi-byte characters before the position do not skew it.
+func TestLower_ColumnCountsRunes(t *testing.T) {
+	// The narration "日本" is 6 bytes but 2 runes; the trailing tag
+	// starts at rune column 18 (1-based).
+	src := "2024-01-02 * \"日本\" #tag\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("t.beancount", cst)
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower: got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("Lower: directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if got := txn.Span.Start.Line; got != 1 {
+		t.Errorf("txn.Span.Start.Line = %d, want 1", got)
+	}
+	if got := txn.Span.Start.Column; got != 1 {
+		t.Errorf("txn.Span.Start.Column = %d, want 1", got)
+	}
+	// End-of-directive column should also be rune-based.
+	if got := txn.Span.End.Line; got != 1 {
+		t.Errorf("txn.Span.End.Line = %d, want 1", got)
+	}
+	// "2024-01-02 * \"日本\" #tag" has 22 runes; End column is 23 (one past).
+	if got := txn.Span.End.Column; got != 23 {
+		t.Errorf("txn.Span.End.Column = %d, want 23", got)
+	}
+}
+
 func TestLower_Commodity(t *testing.T) {
 	cst := syntax.Parse("2024-01-01 commodity USD\n")
 	f := ast.Lower("test.beancount", cst)

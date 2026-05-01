@@ -320,6 +320,25 @@ func TestIllegalCharacter(t *testing.T) {
 	}
 }
 
+// TestIllegalMultiByteCharacter pins the contract that an unrecognised
+// non-ASCII character emits a single ILLEGAL token whose Raw covers the
+// full UTF-8 rune, not one ILLEGAL per byte.
+func TestIllegalMultiByteCharacter(t *testing.T) {
+	// '※' (U+203B REFERENCE MARK) is in category Po and is not part of
+	// any account/currency/identifier alphabet.
+	const ref = "※"
+	tokens := collectTokens(ref)
+	if len(tokens) != 2 {
+		t.Fatalf("expected 2 tokens (ILLEGAL + EOF), got %d", len(tokens))
+	}
+	if tokens[0].Kind != ILLEGAL {
+		t.Errorf("expected ILLEGAL, got %s", tokens[0].Kind)
+	}
+	if tokens[0].Raw != ref {
+		t.Errorf("expected Raw=%q, got %q", ref, tokens[0].Raw)
+	}
+}
+
 func TestCRLFNewline(t *testing.T) {
 	tokens := collectTokens("+\r\n-")
 	if len(tokens) != 3 { // PLUS, MINUS, EOF
@@ -598,6 +617,14 @@ func TestAccountTokens(t *testing.T) {
 		{"Assets:US:BofA:Checking", "Assets:US:BofA:Checking"},
 		{"Income:Salary:Base", "Income:Salary:Base"},
 		{"Assets:Bank:1stAccount", "Assets:Bank:1stAccount"},
+		// Account components composed of CJK letters.
+		{"Expenses:食費", "Expenses:食費"},
+		// U+30FB KATAKANA MIDDLE DOT is in Other_ID_Continue and is the
+		// conventional separator inside Japanese compound names; it must
+		// be recognised mid-component rather than terminating the account.
+		{"Expenses:Communication:宅配便・運送", "Expenses:Communication:宅配便・運送"},
+		// U+00B7 MIDDLE DOT (also Other_ID_Continue).
+		{"Expenses:Cat·alan", "Expenses:Cat·alan"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
