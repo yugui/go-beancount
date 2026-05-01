@@ -2,8 +2,10 @@ package ast
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/syntax"
@@ -13,10 +15,16 @@ import (
 // Directives that contain syntax errors are skipped and recorded as diagnostics.
 // Include resolution is not performed; Include directives appear as AST nodes.
 func Lower(filename string, cst *syntax.File) *File {
+	src := ""
+	if cst != nil {
+		src = cst.FullText()
+	}
 	l := &lowerer{
 		filename:   filename,
 		file:       &File{Filename: filename},
 		activeTags: make(map[string]struct{}),
+		source:     src,
+		lineStarts: computeLineStarts(src),
 	}
 	// Convert CST-level errors to diagnostics.
 	for _, e := range cst.Errors {
@@ -42,6 +50,22 @@ type lowerer struct {
 	filename   string
 	file       *File
 	activeTags map[string]struct{} // tags pushed via pushtag, not yet popped
+	source     string              // full source text (from cst.FullText), used to compute Line/Column
+	lineStarts []int               // byte offset of the start of each line; lineStarts[i] is the start of line i+1
+}
+
+// computeLineStarts returns the byte offsets at which each line of src begins.
+// The first entry is always 0 (the start of line 1). A new entry is appended
+// after every '\n', so the slice has one entry per line, including a trailing
+// empty line if src ends with '\n'.
+func computeLineStarts(src string) []int {
+	starts := []int{0}
+	for i := 0; i < len(src); i++ {
+		if src[i] == '\n' {
+			starts = append(starts, i+1)
+		}
+	}
+	return starts
 }
 
 func (l *lowerer) lowerDirective(n *syntax.Node) {
@@ -102,29 +126,43 @@ func (l *lowerer) spanFromNode(n *syntax.Node) Span {
 	}
 	return Span{
 		Start: l.posFromToken(first),
-		End: Position{
-			Filename: l.filename,
-			Offset:   last.Pos + len(last.Raw),
-		},
+		End:   l.posAt(last.Pos + len(last.Raw)),
 	}
 }
 
 // spanFromOffset creates a zero-width Span from a byte offset.
-// Line and Column are left as zero; they may be populated in future steps.
 func (l *lowerer) spanFromOffset(offset int) Span {
-	pos := Position{
-		Filename: l.filename,
-		Offset:   offset,
-	}
+	pos := l.posAt(offset)
 	return Span{Start: pos, End: pos}
 }
 
 // posFromToken creates a Position from a token.
 func (l *lowerer) posFromToken(t *syntax.Token) Position {
-	return Position{
+	return l.posAt(t.Pos)
+}
+
+// posAt builds a Position from a byte offset, populating Line (1-based) and
+// Column (1-based, counted in runes within the line) when offset falls
+// within the source range. Offsets outside the source leave Line and Column
+// at zero, preserving the previous behaviour for callers that synthesize
+// CSTs without source text.
+func (l *lowerer) posAt(offset int) Position {
+	pos := Position{
 		Filename: l.filename,
-		Offset:   t.Pos,
+		Offset:   offset,
 	}
+	if len(l.lineStarts) == 0 || offset < 0 || offset > len(l.source) {
+		return pos
+	}
+	// SearchInts returns the smallest index i such that lineStarts[i] > offset.
+	// The line containing offset is therefore i-1 (0-based), i.e. line i (1-based).
+	i := sort.SearchInts(l.lineStarts, offset+1) - 1
+	if i < 0 {
+		i = 0
+	}
+	pos.Line = i + 1
+	pos.Column = utf8.RuneCountInString(l.source[l.lineStarts[i]:offset]) + 1
+	return pos
 }
 
 // addDiagnostic records an Error-severity diagnostic for the given node.

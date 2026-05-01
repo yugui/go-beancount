@@ -221,8 +221,14 @@ func (s *scanner) scanToken() Token {
 		case ch >= 'a' && ch <= 'z':
 			return s.scanIdent()
 		default:
-			// Unrecognized character — emit ILLEGAL for a single byte
-			s.offset++
+			// Unrecognized character — emit ILLEGAL for a full UTF-8 rune
+			// so a single multi-byte character does not get sliced into
+			// per-byte ILLEGAL tokens.
+			_, size := utf8.DecodeRuneInString(s.src[s.offset:])
+			if size == 0 {
+				size = 1
+			}
+			s.offset += size
 			return Token{Kind: ILLEGAL, Pos: pos, Raw: s.src[pos:s.offset]}
 		}
 	}
@@ -326,7 +332,10 @@ func IsAccountComponentStart(r rune) bool {
 // IsAccountComponentCont reports whether r is valid as a continuation
 // character in an account component. It extends the IsAccountComponentStart
 // alphabet with ASCII lowercase letters [a-z], Unicode categories Ll, Mn,
-// Mc, and the ASCII hyphen '-'.
+// Mc, and the ASCII hyphen '-'. The Unicode "Other_ID_Continue" code points
+// are also accepted so that separators conventionally embedded in
+// identifiers — most notably U+30FB KATAKANA MIDDLE DOT — work in CJK
+// account components.
 func IsAccountComponentCont(r rune) bool {
 	if r == '-' {
 		return true
@@ -334,9 +343,33 @@ func IsAccountComponentCont(r rune) bool {
 	if r < 0x80 {
 		return (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 	}
+	if isOtherIDContinue(r) {
+		return true
+	}
 	return unicode.In(r, unicode.Lu, unicode.Lt, unicode.Lo, unicode.Lm,
 		unicode.Nd, unicode.Nl, unicode.No,
 		unicode.Ll, unicode.Mn, unicode.Mc)
+}
+
+// isOtherIDContinue reports whether r is one of the small fixed set of code
+// points Unicode marks with the property Other_ID_Continue. They are
+// normally outside the letter/mark/number categories but are promoted into
+// XID_Continue so identifier syntax can keep working across scripts that
+// embed separators (e.g. Japanese ・, Greek ano teleia, Ethiopic digits).
+func isOtherIDContinue(r rune) bool {
+	switch r {
+	case 0x00B7, // MIDDLE DOT
+		0x0387, // GREEK ANO TELEIA
+		0x19DA, // NEW TAI LUE THAM DIGIT ONE
+		0x30FB, // KATAKANA MIDDLE DOT
+		0xFF65: // HALFWIDTH KATAKANA MIDDLE DOT
+		return true
+	}
+	// ETHIOPIC DIGIT ONE..NINE
+	if r >= 0x1369 && r <= 0x1371 {
+		return true
+	}
+	return false
 }
 
 // isCurrency reports whether word matches the currency pattern:
