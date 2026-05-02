@@ -30,6 +30,127 @@ func TestLower_SyntaxError(t *testing.T) {
 	}
 }
 
+// TestLower_NoDuplicateGenericSyntaxError verifies that when the parser
+// already produced a position-tagged error covering the span of the
+// follow-up UnrecognizedLineNode, the lowerer does NOT add a redundant
+// generic "syntax error" diagnostic at that location. The user-visible
+// effect is that each malformed source location is reported once with
+// the most specific available message.
+func TestLower_NoDuplicateGenericSyntaxError(t *testing.T) {
+	// "option missing args\n" makes the parser's expect(STRING) fail
+	// twice. The unexpected IDENT tokens are not consumed by the option
+	// directive, so they get swept into a follow-up UnrecognizedLineNode
+	// whose token span contains the parser error offsets.
+	src := "option missing args\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+
+	// Sanity check: the parser must have produced at least one error in
+	// the span we expect to suppress; otherwise this test would pass
+	// trivially even if suppression were broken.
+	if len(cst.Errors) == 0 {
+		t.Fatalf("expected parser to record at least one error for %q, got none", src)
+	}
+
+	// There must be no generic "syntax error" diagnostic anywhere in
+	// the diagnostics list — every error here was already reported by
+	// the parser with a more specific message.
+	for _, d := range f.Diagnostics {
+		if d.Message == "syntax error" {
+			t.Errorf("unexpected generic %q diagnostic at offset %d; should be suppressed because parser already reported a specific error in that span. all diagnostics: %v",
+				d.Message, d.Span.Start.Offset, f.Diagnostics)
+		}
+	}
+
+	// At least one of the parser's specific messages must still be
+	// present, so we know we suppressed only the duplicate.
+	// NOTE: this match is coupled to the parser's exact "expected STRING"
+	// wording in pkg/syntax/parser.go::expect(); update both call sites
+	// together if the message is reworded.
+	var sawParserMsg bool
+	for _, d := range f.Diagnostics {
+		if strings.Contains(d.Message, "expected STRING") {
+			sawParserMsg = true
+			break
+		}
+	}
+	if !sawParserMsg {
+		t.Errorf("expected to retain parser's specific diagnostic, got %v", f.Diagnostics)
+	}
+}
+
+// TestLower_NoDuplicateGenericSyntaxError_MultipleSpans extends the
+// single-span guard to two independent UnrecognizedLineNodes on
+// consecutive lines, each with its own parser-recorded error.
+// It guards against an implementation that short-circuits after the
+// first match (e.g. a single shared cursor into cstErrOffsets) and
+// would silently leak generic "syntax error" diagnostics on the
+// second-and-later spans.
+func TestLower_NoDuplicateGenericSyntaxError_MultipleSpans(t *testing.T) {
+	src := "option missing args\noption also broken\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+
+	// Sanity: the parser must have recorded at least two errors so this
+	// test exercises distinct spans, not just one duplicated entry.
+	if len(cst.Errors) < 2 {
+		t.Fatalf("expected parser to record at least 2 errors for %q, got %d: %v",
+			src, len(cst.Errors), cst.Errors)
+	}
+
+	// No generic "syntax error" anywhere — each span has its own
+	// specific parser message that supersedes it.
+	for _, d := range f.Diagnostics {
+		if d.Message == "syntax error" {
+			t.Errorf("unexpected generic %q diagnostic at offset %d; should be suppressed on every span the parser already flagged. all diagnostics: %v",
+				d.Message, d.Span.Start.Offset, f.Diagnostics)
+		}
+	}
+
+	// Specific parser messages must survive for each malformed line.
+	// NOTE: this match is coupled to the parser's exact "expected STRING"
+	// wording in pkg/syntax/parser.go::expect(); update both call sites
+	// together if the message is reworded.
+	specificCount := 0
+	for _, d := range f.Diagnostics {
+		if strings.Contains(d.Message, "expected STRING") {
+			specificCount++
+		}
+	}
+	if specificCount < 2 {
+		t.Errorf("expected at least 2 %q diagnostics (one per malformed line), got %d in %v",
+			"expected STRING", specificCount, f.Diagnostics)
+	}
+}
+
+// TestLower_GenericSyntaxErrorPreservedWithoutParserError verifies that
+// suppression is span-scoped, not blanket: an UnrecognizedLineNode whose
+// token span carries no parser-recorded error still produces the generic
+// "syntax error" diagnostic so unknown top-level constructs remain
+// detectable to consumers.
+func TestLower_GenericSyntaxErrorPreservedWithoutParserError(t *testing.T) {
+	// A bare unknown identifier at column 0 is parsed as an
+	// UnrecognizedLineNode without the parser ever calling expect(),
+	// so cst.Errors stays empty and the lowerer must still emit a
+	// "syntax error" diagnostic to flag the line.
+	src := "frobnicate keyword arg\n"
+	cst := syntax.Parse(src)
+	if len(cst.Errors) != 0 {
+		t.Fatalf("expected no parser errors for %q, got %v", src, cst.Errors)
+	}
+	f := ast.Lower("test.beancount", cst)
+	var found bool
+	for _, d := range f.Diagnostics {
+		if d.Message == "syntax error" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected generic %q diagnostic for unrecognized line with no parser error, got %v", "syntax error", f.Diagnostics)
+	}
+}
+
 func TestLower_Custom(t *testing.T) {
 	src := "2024-01-01 custom \"budget\" Assets:Bank \"monthly\" 500 USD\n"
 	cst := syntax.Parse(src)
