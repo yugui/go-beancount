@@ -154,6 +154,32 @@ option "operating_currency" "USD"
 2024-01-01 open Assets:Cash USD
 EOF
 
+# Fixture 7: balance assertion exercising upstream beancount's
+# doubled-factor inferred tolerance for hand-written balance
+# assertions (get_balance_tolerance: 2 * inferred_tolerance_multiplier
+# * 10^expo). The assertion "-17.775 LONGCCY" has expo -3, giving a
+# default tolerance of 0.5 * 2 * 10^-3 = 0.001. The running balance
+# is -17.7758 LONGCCY so the diff is 0.0008, within the doubled
+# tolerance but NOT within the un-doubled 0.0005 tolerance. Without
+# the doubled factor this ledger fails to validate even though
+# upstream beancount accepts it; with the fix it validates cleanly.
+# The total-cost form {{ 100 JPY }} is unrelated to the tolerance
+# computation but mirrors the original user reproduction.
+doubledtol="$tmp/doubled_tolerance.beancount"
+cat >"$doubledtol" <<'EOF'
+option "title" "Doubled Tolerance"
+option "operating_currency" "JPY"
+
+2024-01-01 open Assets:Position   LONGCCY
+2024-01-01 open Equity:Opening    LONGCCY,JPY
+
+2024-01-05 * "Open position"
+  Assets:Position   -17.7758 LONGCCY {{ 100 JPY }}
+  Equity:Opening      100 JPY
+
+2024-02-01 balance Assets:Position   -17.775 LONGCCY
+EOF
+
 # 1. Clean ledger → exit 0, no stderr.
 if ! "$bin" "$good" >"$tmp/good.out" 2>"$tmp/good.err"; then
   fail "clean ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/good.err")"
@@ -230,6 +256,22 @@ if [[ "$unknownplugin_rc" -ne 1 ]]; then
 fi
 if ! grep -q 'plugin-not-registered' "$tmp/unknownplugin.err"; then
   fail "unknown-plugin stderr missing 'plugin-not-registered':"$'\n'"$(cat "$tmp/unknownplugin.err")"
+fi
+
+# 1f. Doubled-tolerance ledger → exit 0, no stderr. Regression for
+# upstream beancount's get_balance_tolerance: balance assertions use
+# 2 * inferred_tolerance_multiplier * 10^expo. Without the doubled
+# factor the assertion -17.775 LONGCCY rejects a -17.7758 running
+# balance (diff 0.0008 > 0.0005); with the fix the diff is within
+# the 0.001 tolerance and the ledger validates cleanly.
+if ! "$bin" "$doubledtol" >"$tmp/doubledtol.out" 2>"$tmp/doubledtol.err"; then
+  fail "doubled-tolerance ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/doubledtol.err")"
+fi
+if [[ -s "$tmp/doubledtol.err" ]]; then
+  fail "doubled-tolerance ledger wrote to stderr:"$'\n'"$(cat "$tmp/doubledtol.err")"
+fi
+if [[ -s "$tmp/doubledtol.out" ]]; then
+  fail "doubled-tolerance ledger wrote to stdout:"$'\n'"$(cat "$tmp/doubledtol.out")"
 fi
 
 # 2. Bad ledger → exit 1, stderr contains "error:" and the source path.

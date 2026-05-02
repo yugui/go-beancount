@@ -212,3 +212,40 @@ func TestForAmount_Exponents(t *testing.T) {
 		}
 	}
 }
+
+// TestForBalanceAssertion exercises the doubled-factor tolerance used
+// for balance assertions, mirroring upstream beancount's
+// get_balance_tolerance: tol = 2 * multiplier * 10^expo. The doubled
+// factor is upstream's deliberate relaxation for hand-written balance
+// assertions where rounding can exceed transaction-internal precision.
+func TestForBalanceAssertion(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		mult string // empty -> defaults
+		want string
+	}{
+		{name: "exp -1, default mult", in: "100.0", want: "0.1"},
+		{name: "exp -2, default mult", in: "100.00", want: "0.01"},
+		{name: "exp -3, default mult", in: "100.000", want: "0.001"},
+		{name: "exp 0, default mult", in: "100", want: "1"},
+		{name: "exp -2, mult 1.0", in: "100.00", mult: "1.0", want: "0.02"},
+		{name: "exp -3, mult 2.0", in: "100.000", mult: "2.0", want: "0.004"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var opts *options.Values
+			if tc.mult == "" {
+				opts = mustDefaults(t)
+			} else {
+				opts = mustOpts(t, map[string]string{"inferred_tolerance_multiplier": tc.mult})
+			}
+			a := amtStr(t, tc.in, "USD")
+			got := tolerance.ForBalanceAssertion(opts, a)
+			want := decimalFromString(t, tc.want)
+			if got.Cmp(&want) != 0 {
+				t.Errorf("ForBalanceAssertion(%q, mult=%q) = %s, want %s", tc.in, tc.mult, got.Text('f'), tc.want)
+			}
+		})
+	}
+}

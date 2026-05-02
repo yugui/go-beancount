@@ -250,7 +250,7 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *op
 			return diags
 		}
 	} else {
-		tol = tolerance.ForAmount(opts, b.Amount)
+		tol = tolerance.ForBalanceAssertion(opts, b.Amount)
 	}
 
 	ok, err := withinTolerance(diff, tol)

@@ -134,7 +134,9 @@ func TestPlugin_BalanceMismatch(t *testing.T) {
 // TestPlugin_BalanceWithinTolerance feeds a balance assertion that
 // differs from the running total by less than the inferred tolerance.
 // No errors should be emitted. The running balance is 100.004 and the
-// assertion is 100.00 (tol=0.005); diff=0.004 is within tolerance.
+// assertion is 100.00; under the doubled-factor balance-assertion
+// tolerance tol = 0.5 * 2 * 10^-2 = 0.01, so diff=0.004 is within
+// tolerance.
 func TestPlugin_BalanceWithinTolerance(t *testing.T) {
 	pos := amtStr(t, "100.004", "USD")
 	neg := amtStr(t, "-100.004", "USD")
@@ -433,14 +435,15 @@ func TestPlugin_AutoPostingNoInferenceWhenMultipleAutos(t *testing.T) {
 // entirely: any non-zero residual must surface as a mismatch, even
 // one that would be within tolerance under the default 0.5
 // multiplier. The plugin computes inferred tolerance from the
-// ASSERTION's amount exponent (tolerance.ForAmount called on
-// bal.Amount in checkBalance), not the posting's. Here
-// bal.Amount.Number is "100.00" so exp(bal.Amount.Number) = -2, so:
-//   - default multiplier 0.5 -> tol = 0.5 * 10^-2 = 0.005
-//   - multiplier 0           -> tol = 0   * 10^-2 = 0
+// ASSERTION's amount exponent (tolerance.ForBalanceAssertion called
+// on bal.Amount in checkBalance), not the posting's, and applies
+// the doubled factor for balance assertions. Here bal.Amount.Number
+// is "100.00" so exp(bal.Amount.Number) = -2, so:
+//   - default multiplier 0.5 -> tol = 0.5 * 2 * 10^-2 = 0.01
+//   - multiplier 0           -> tol = 0   * 2 * 10^-2 = 0
 //
 // The running balance is 100.004 USD; diff = |100.00 - 100.004| =
-// 0.004, which is within 0.005 (default) but strictly greater than
+// 0.004, which is within 0.01 (default) but strictly greater than
 // 0 (multiplier=0), so exactly one CodeBalanceMismatch must fire.
 func TestPlugin_ToleranceMultiplierZero(t *testing.T) {
 	pos := amtStr(t, "100.004", "USD")
@@ -487,25 +490,26 @@ func TestPlugin_ToleranceMultiplierZero(t *testing.T) {
 // TestPlugin_ToleranceMultiplierRelaxed pins the contract that
 // setting inferred_tolerance_multiplier > default relaxes the
 // inferred tolerance. The plugin computes inferred tolerance from
-// the ASSERTION's amount exponent (tolerance.ForAmount called on
-// bal.Amount in checkBalance), not the posting's. Here
+// the ASSERTION's amount exponent (tolerance.ForBalanceAssertion
+// called on bal.Amount in checkBalance), not the posting's, and
+// applies the doubled factor for balance assertions. Here
 // bal.Amount.Number is "100.00" so exp(bal.Amount.Number) = -2, so:
-//   - default multiplier 0.5 -> tol = 0.5 * 10^-2 = 0.005
-//   - multiplier 2.0         -> tol = 2.0 * 10^-2 = 0.02
+//   - default multiplier 0.5 -> tol = 0.5 * 2 * 10^-2 = 0.01
+//   - multiplier 2.0         -> tol = 2.0 * 2 * 10^-2 = 0.04
 //
-// The running balance is 100.009 USD; diff = |100.00 - 100.009| =
-// 0.009, which is strictly greater than 0.005 (fails under the
-// default) but strictly less than 0.02 (passes under multiplier=2.0).
+// The running balance is 100.015 USD; diff = |100.00 - 100.015| =
+// 0.015, which is strictly greater than 0.01 (fails under the
+// default) but strictly less than 0.04 (passes under multiplier=2.0).
 // The "default_multiplier_rejects" sub-case is a negative control
 // that proves the same inputs would fail without the option, so the
 // relaxed sub-case actually exercises the option rather than being a
 // trivial pass.
 func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
-	// Shared numeric inputs: the running balance is 100.009 USD and
-	// the assertion is 100.00 USD, so diff = 0.009 at exp -2.
+	// Shared numeric inputs: the running balance is 100.015 USD and
+	// the assertion is 100.00 USD, so diff = 0.015 at exp -2.
 	t.Run("default_multiplier_rejects", func(t *testing.T) {
-		pos := amtStr(t, "100.009", "USD")
-		neg := amtStr(t, "-100.009", "USD")
+		pos := amtStr(t, "100.015", "USD")
+		neg := amtStr(t, "-100.015", "USD")
 		txn := &ast.Transaction{
 			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
 			Flag: '*',
@@ -525,7 +529,7 @@ func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
 		if len(res.Diagnostics) != 1 {
-			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (diff 0.009 exceeds default tol 0.005); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (diff 0.015 exceeds default tol 0.01); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
 		}
 		if got, want := res.Diagnostics[0].Code, string(validation.CodeBalanceMismatch); got != want {
 			t.Errorf("Code = %q, want %q", got, want)
@@ -533,8 +537,8 @@ func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
 	})
 
 	t.Run("relaxed_multiplier_accepts", func(t *testing.T) {
-		pos := amtStr(t, "100.009", "USD")
-		neg := amtStr(t, "-100.009", "USD")
+		pos := amtStr(t, "100.015", "USD")
+		neg := amtStr(t, "-100.015", "USD")
 		txn := &ast.Transaction{
 			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
 			Flag: '*',
@@ -557,7 +561,83 @@ func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
 		if len(res.Diagnostics) != 0 {
-			t.Errorf("Result.Diagnostics = %v, want empty (diff 0.009 within relaxed tol 0.02)", res.Diagnostics)
+			t.Errorf("Result.Diagnostics = %v, want empty (diff 0.015 within relaxed tol 0.04)", res.Diagnostics)
+		}
+	})
+}
+
+// TestPlugin_BalanceAssertionDoubledFactor exercises upstream
+// beancount's get_balance_tolerance: balance assertions use a doubled
+// inferred-tolerance factor (2 * inferred_tolerance_multiplier *
+// 10^expo) because users hand-write the asserted amount and rounding
+// noise can exceed transaction-internal precision. With the default
+// multiplier 0.5 and an assertion of "-17.775" (exp -3), the doubled
+// tolerance is 0.001. A running balance differing by 0.0008 (within
+// 0.001) must pass, while a running balance differing by 0.0020
+// (above 0.001) must reject.
+func TestPlugin_BalanceAssertionDoubledFactor(t *testing.T) {
+	t.Run("accepts_under_doubled_factor", func(t *testing.T) {
+		pos := amtStr(t, "-17.7758", "LONGCCY")
+		neg := amtStr(t, "17.7758", "LONGCCY")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Position", Amount: &pos},
+				{Account: "Equity:Opening", Amount: &neg},
+			},
+		}
+		bal := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:Position",
+			Amount:  amtStr(t, "-17.775", "LONGCCY"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (diff 0.0008 within doubled tol 0.001)", res.Diagnostics)
+		}
+	})
+
+	t.Run("rejects_when_diff_exceeds_doubled_factor", func(t *testing.T) {
+		pos := amtStr(t, "-17.7770", "LONGCCY")
+		neg := amtStr(t, "17.7770", "LONGCCY")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Position", Amount: &pos},
+				{Account: "Equity:Opening", Amount: &neg},
+			},
+		}
+		balSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 99, Column: 1}}
+		bal := &ast.Balance{
+			Span:    balSpan,
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:Position",
+			Amount:  amtStr(t, "-17.775", "LONGCCY"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 1 {
+			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (diff 0.0020 exceeds doubled tol 0.001); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+		}
+		e := res.Diagnostics[0]
+		if e.Code != string(validation.CodeBalanceMismatch) {
+			t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
+		}
+		if e.Span != balSpan {
+			t.Errorf("Span = %#v, want %#v", e.Span, balSpan)
+		}
+		wantMsg := "balance assertion failed: account Assets:Position: expected -17.775 LONGCCY, got -17.7770 LONGCCY"
+		if e.Message != wantMsg {
+			t.Errorf("Message = %q, want %q", e.Message, wantMsg)
 		}
 	})
 }
