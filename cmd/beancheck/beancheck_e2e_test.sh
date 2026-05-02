@@ -85,6 +85,45 @@ option "operating_currency" "USD"
 2024-01-12 document Assets:Brokerage "$tmp/receipt.pdf" #trip-2024 ^invoice-42
 EOF
 
+# Fixture 5: clean ledger that exercises the std-plugin registration. The
+# "beancount.plugins.check_closing" directive only resolves when the std
+# umbrella package has been blank-imported by the binary; if the import
+# is missing the loader exits non-zero with plugin-not-registered.
+# The closing posting fully drains Assets:Cash, so the synthesized
+# zero-balance assertion (one day later) succeeds and the ledger is clean.
+closing="$tmp/closing.beancount"
+cat >"$closing" <<'EOF'
+plugin "beancount.plugins.check_closing"
+
+option "title" "Closing"
+option "operating_currency" "JPY"
+
+2024-01-01 open Assets:Cash       JPY
+2024-01-01 open Equity:Opening    JPY
+2024-01-01 open Equity:Closing    JPY
+
+2024-01-05 * "Initial funding"
+  Assets:Cash        1000 JPY
+  Equity:Opening    -1000 JPY
+
+2024-01-10 * "Close out cash"
+  Assets:Cash       -1000 JPY
+    closing: TRUE
+  Equity:Closing     1000 JPY
+EOF
+
+# Fixture 6: ledger naming an unknown plugin. Regression for the
+# plugin-not-registered diagnostic: the std blank-import resolves the
+# names we ship, but a typo or third-party name we have not registered
+# must still surface as a clear error rather than silently no-op.
+unknownplugin="$tmp/unknown_plugin.beancount"
+cat >"$unknownplugin" <<'EOF'
+plugin "this.does.not.exist"
+
+option "operating_currency" "USD"
+2024-01-01 open Assets:Cash USD
+EOF
+
 # 1. Clean ledger → exit 0, no stderr.
 if ! "$bin" "$good" >"$tmp/good.out" 2>"$tmp/good.err"; then
   fail "clean ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/good.err")"
@@ -119,6 +158,34 @@ if [[ -s "$tmp/tags.err" ]]; then
 fi
 if [[ -s "$tmp/tags.out" ]]; then
   fail "trailing-tags ledger wrote to stdout:"$'\n'"$(cat "$tmp/tags.out")"
+fi
+
+# 1d. Closing-plugin ledger → exit 0, no stderr. Regression for the
+# blank-import of pkg/ext/postproc/std: without it, the upstream-named
+# plugin directive fails with plugin-not-registered.
+if ! "$bin" "$closing" >"$tmp/closing.out" 2>"$tmp/closing.err"; then
+  fail "closing-plugin ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/closing.err")"
+fi
+if [[ -s "$tmp/closing.err" ]]; then
+  fail "closing-plugin ledger wrote to stderr:"$'\n'"$(cat "$tmp/closing.err")"
+fi
+if [[ -s "$tmp/closing.out" ]]; then
+  fail "closing-plugin ledger wrote to stdout:"$'\n'"$(cat "$tmp/closing.out")"
+fi
+
+# 1e. Unknown-plugin ledger → exit 1, stderr contains "plugin-not-registered".
+# This is the negative counterpart of 1d: 1d proves the registered name
+# resolves; 1e proves an unregistered name still produces a diagnostic so
+# typos and missing imports cannot pass silently.
+set +e
+"$bin" "$unknownplugin" >"$tmp/unknownplugin.out" 2>"$tmp/unknownplugin.err"
+unknownplugin_rc=$?
+set -e
+if [[ "$unknownplugin_rc" -ne 1 ]]; then
+  fail "unknown-plugin ledger exit code = $unknownplugin_rc, want 1; stderr:"$'\n'"$(cat "$tmp/unknownplugin.err")"
+fi
+if ! grep -q 'plugin-not-registered' "$tmp/unknownplugin.err"; then
+  fail "unknown-plugin stderr missing 'plugin-not-registered':"$'\n'"$(cat "$tmp/unknownplugin.err")"
 fi
 
 # 2. Bad ledger → exit 1, stderr contains "error:" and the source path.
