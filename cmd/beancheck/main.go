@@ -21,6 +21,14 @@ import (
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/loader"
+
+	// Side-effect: register every plugin shipped under
+	// pkg/ext/postproc/std so plugin directives that name the upstream
+	// Python module path (e.g. "beancount.plugins.check_closing")
+	// resolve through the postproc registry. Subset selection by
+	// blank-importing individual subpackages remains available to
+	// callers that build their own loader frontend.
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std"
 )
 
 var strict = flag.Bool("strict", false, "treat warnings as errors")
