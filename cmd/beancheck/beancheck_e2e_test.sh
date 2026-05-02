@@ -63,6 +63,28 @@ option "operating_currency" "USD"
   Equity:Opening     -10 BIG_COMMODITY_FOR_TEST_30A
 EOF
 
+# Fixture 4: clean ledger that exercises trailing #tag and ^link on
+# transaction, note, and document directives. Regression for accepting the
+# tags_links suffix on note and document, matching upstream beancount.
+# The document path points to a real file in $tmp so the document-missing-file
+# validation does not fire.
+: >"$tmp/receipt.pdf"
+tagsdir="$tmp/trailing_tags.beancount"
+cat >"$tagsdir" <<EOF
+option "title" "Trailing Tags"
+option "operating_currency" "USD"
+
+2024-01-01 open Assets:Brokerage  USD
+2024-01-01 open Assets:Cash       USD
+
+2024-01-10 * "Transfer" #trip-2024 ^invoice-42
+  Assets:Brokerage   100.00 USD
+  Assets:Cash       -100.00 USD
+
+2024-01-11 note Assets:Brokerage "review" #trip-2024 ^invoice-42
+2024-01-12 document Assets:Brokerage "$tmp/receipt.pdf" #trip-2024 ^invoice-42
+EOF
+
 # 1. Clean ledger → exit 0, no stderr.
 if ! "$bin" "$good" >"$tmp/good.out" 2>"$tmp/good.err"; then
   fail "clean ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/good.err")"
@@ -85,6 +107,18 @@ if [[ -s "$tmp/longcom.err" ]]; then
 fi
 if [[ -s "$tmp/longcom.out" ]]; then
   fail "long-commodity ledger wrote to stdout:"$'\n'"$(cat "$tmp/longcom.out")"
+fi
+
+# 1c. Trailing-tags ledger → exit 0, no stderr. Regression for note/document
+# accepting trailing #tag and ^link tokens (upstream beancount grammar).
+if ! "$bin" "$tagsdir" >"$tmp/tags.out" 2>"$tmp/tags.err"; then
+  fail "trailing-tags ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/tags.err")"
+fi
+if [[ -s "$tmp/tags.err" ]]; then
+  fail "trailing-tags ledger wrote to stderr:"$'\n'"$(cat "$tmp/tags.err")"
+fi
+if [[ -s "$tmp/tags.out" ]]; then
+  fail "trailing-tags ledger wrote to stdout:"$'\n'"$(cat "$tmp/tags.out")"
 fi
 
 # 2. Bad ledger → exit 1, stderr contains "error:" and the source path.

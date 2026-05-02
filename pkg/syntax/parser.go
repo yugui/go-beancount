@@ -318,6 +318,24 @@ func (p *parser) parseDatedDirective() *Node {
 	}
 }
 
+// parseTrailingTagsLinks consumes any TAG/LINK tokens on the current line
+// and attaches them as direct child tokens of node. Stops at the first
+// newline or non-tag/non-link token. This implements the trailing
+// tags_links list permitted by upstream beancount grammar.
+func (p *parser) parseTrailingTagsLinks(node *Node) {
+	for !p.isAtNextLine() && p.peek() != EOF {
+		if p.peek() == TAG {
+			tag := p.advance()
+			node.AddToken(&tag)
+		} else if p.peek() == LINK {
+			link := p.advance()
+			node.AddToken(&link)
+		} else {
+			break
+		}
+	}
+}
+
 // parseTransaction parses a transaction directive:
 // DATE (STAR | BANG | "txn") [payee] [narration] [tags/links].
 func (p *parser) parseTransaction(date *Token) *Node {
@@ -343,17 +361,7 @@ func (p *parser) parseTransaction(date *Token) *Node {
 	}
 
 	// Optional tags and links (on the same line)
-	for !p.isAtNextLine() && p.peek() != EOF {
-		if p.peek() == TAG {
-			tag := p.advance()
-			node.AddToken(&tag)
-		} else if p.peek() == LINK {
-			link := p.advance()
-			node.AddToken(&link)
-		} else {
-			break
-		}
-	}
+	p.parseTrailingTagsLinks(node)
 
 	// Postings and metadata on indented lines
 	p.parsePostingsAndMetadata(node)
@@ -682,7 +690,7 @@ func (p *parser) parseCommodity(date *Token) *Node {
 }
 
 func (p *parser) parseNote(date *Token) *Node {
-	// YYYY-MM-DD note Account "description"
+	// YYYY-MM-DD note Account "description" [tags/links]
 	node := &Node{Kind: NoteDirective}
 	node.AddToken(date)
 	kw := p.advance()
@@ -691,12 +699,13 @@ func (p *parser) parseNote(date *Token) *Node {
 	node.AddToken(&acct)
 	desc := p.expect(STRING)
 	node.AddToken(&desc)
+	p.parseTrailingTagsLinks(node)
 	p.parseMetadata(node)
 	return node
 }
 
 func (p *parser) parseDocument(date *Token) *Node {
-	// YYYY-MM-DD document Account "path"
+	// YYYY-MM-DD document Account "path" [tags/links]
 	node := &Node{Kind: DocumentDirective}
 	node.AddToken(date)
 	kw := p.advance()
@@ -705,6 +714,7 @@ func (p *parser) parseDocument(date *Token) *Node {
 	node.AddToken(&acct)
 	path := p.expect(STRING)
 	node.AddToken(&path)
+	p.parseTrailingTagsLinks(node)
 	p.parseMetadata(node)
 	return node
 }
