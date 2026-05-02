@@ -625,6 +625,10 @@ func TestAccountTokens(t *testing.T) {
 		{"Expenses:Communication:宅配便・運送", "Expenses:Communication:宅配便・運送"},
 		// U+00B7 MIDDLE DOT (also Other_ID_Continue).
 		{"Expenses:Cat·alan", "Expenses:Cat·alan"},
+		// scanUpperWord runs the account branch before isCurrency, so the
+		// removal of the 24-char cap on isCurrency must not perturb account
+		// recognition for components longer than 24 characters.
+		{"Assets:FakeAccountLongComponentName", "Assets:FakeAccountLongComponentName"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -655,6 +659,10 @@ func TestCurrencyTokens(t *testing.T) {
 		{"IVV", "IVV"},
 		{"A", "A"},
 		{"GLD", "GLD"},
+		// Length cap removed: 25-char currency must lex as CURRENCY, not IDENT.
+		{"LONG_CURRENCY_NAME_EXAM25", "LONG_CURRENCY_NAME_EXAM25"},
+		// Much longer fictional ticker to demonstrate no upper bound.
+		{"EXTRA_LONG_TICKER_FOR_TEST_50CHARS_AAAAAAAAAAAAAAAA", "EXTRA_LONG_TICKER_FOR_TEST_50CHARS_AAAAAAAAAAAAAAAA"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
@@ -685,6 +693,20 @@ func TestIdentTokens(t *testing.T) {
 		{"option", "option"},
 		{"pushtag", "pushtag"},
 		{"filename", "filename"},
+		// Length cap on isCurrency was removed; the only remaining gate at
+		// length > 24 is the boundary rule that the first and last char must
+		// be in [A-Z0-9]. scanUpperWord is reached only when the first byte
+		// is uppercase, so the realisable boundary failure at the upper-word
+		// entry point is a trailing inner-only char ('_', '.', '-', '\'').
+		// One case per inner-only char, each length 25+.
+		{"LONG_FAKE_TICKER_NAME_25_", "LONG_FAKE_TICKER_NAME_25_"},
+		{"LONG_FAKE_TICKER_NAME_25.", "LONG_FAKE_TICKER_NAME_25."},
+		{"LONG_FAKE_TICKER_NAME_25-", "LONG_FAKE_TICKER_NAME_25-"},
+		{"LONG_FAKE_TICKER_NAME_25'", "LONG_FAKE_TICKER_NAME_25'"},
+		// At length > 24 the all-uppercase check is the sole discriminator
+		// between CURRENCY and IDENT, so a mixed-case 25+ char word must
+		// still lex as IDENT.
+		{"LongFakeTickerNameMixed25", "LongFakeTickerNameMixed25"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
