@@ -209,6 +209,78 @@ func TestDocument(t *testing.T) {
 	}
 }
 
+func TestNoteWithTagsLinks(t *testing.T) {
+	got := print(t, &ast.Note{
+		Date:    date("2024-03-01"),
+		Account: "Assets:Brokerage",
+		Comment: "review",
+		Tags:    []string{"trip-2024"},
+		Links:   []string{"invoice-42"},
+	})
+	want := "2024-03-01 note Assets:Brokerage \"review\" #trip-2024 ^invoice-42\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestDocumentWithTagsLinks(t *testing.T) {
+	got := print(t, &ast.Document{
+		Date:    date("2024-04-01"),
+		Account: "Assets:Brokerage",
+		Path:    "receipt.pdf",
+		Tags:    []string{"trip-2024"},
+		Links:   []string{"invoice-42"},
+	})
+	want := "2024-04-01 document Assets:Brokerage \"receipt.pdf\" #trip-2024 ^invoice-42\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestNoteWithTagsLinksAndMetadata verifies the print order when a note
+// carries trailing tags/links AND metadata: the tags/links sit on the
+// same line as the comment string and end with a newline, after which
+// the metadata line is indented. This pins the boundary between the
+// tags/links sequence and the metadata block.
+func TestNoteWithTagsLinksAndMetadata(t *testing.T) {
+	got := print(t, &ast.Note{
+		Date:    date("2024-06-01"),
+		Account: "Assets:Brokerage",
+		Comment: "opened",
+		Tags:    []string{"trip-2024"},
+		Links:   []string{"invoice-42"},
+		Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+			"ref": {Kind: ast.MetaString, String: "PR-7"},
+		}},
+	})
+	want := "2024-06-01 note Assets:Brokerage \"opened\" #trip-2024 ^invoice-42\n  ref: \"PR-7\"\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// TestDocumentWithTagsLinksAndMetadata verifies the print order when a
+// document directive carries trailing tags/links AND metadata: the
+// tags/links sit on the same line as the path string and end with a
+// newline, after which the metadata line is indented. This pins the
+// boundary between the tags/links sequence and the metadata block.
+func TestDocumentWithTagsLinksAndMetadata(t *testing.T) {
+	got := print(t, &ast.Document{
+		Date:    date("2024-06-01"),
+		Account: "Assets:Brokerage",
+		Path:    "receipt.pdf",
+		Tags:    []string{"trip-2024"},
+		Links:   []string{"invoice-42"},
+		Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+			"ref": {Kind: ast.MetaString, String: "PR-7"},
+		}},
+	})
+	want := "2024-06-01 document Assets:Brokerage \"receipt.pdf\" #trip-2024 ^invoice-42\n  ref: \"PR-7\"\n"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 func TestEvent(t *testing.T) {
 	got := print(t, &ast.Event{
 		Date:  date("2024-01-01"),

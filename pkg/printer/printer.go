@@ -190,12 +190,26 @@ func (p *printer) printPad(pd *ast.Pad) {
 }
 
 func (p *printer) printNote(n *ast.Note) {
-	p.printf("%s note %s %s\n", n.Date.Format("2006-01-02"), n.Account, beancountQuote(n.Comment))
+	p.printf("%s note %s %s", n.Date.Format("2006-01-02"), n.Account, beancountQuote(n.Comment))
+	for _, tag := range n.Tags {
+		p.printf(" #%s", tag)
+	}
+	for _, link := range n.Links {
+		p.printf(" ^%s", link)
+	}
+	p.write("\n")
 	p.printMetadata(n.Meta, p.indent())
 }
 
 func (p *printer) printDocument(d *ast.Document) {
-	p.printf("%s document %s %s\n", d.Date.Format("2006-01-02"), d.Account, beancountQuote(d.Path))
+	p.printf("%s document %s %s", d.Date.Format("2006-01-02"), d.Account, beancountQuote(d.Path))
+	for _, tag := range d.Tags {
+		p.printf(" #%s", tag)
+	}
+	for _, link := range d.Links {
+		p.printf(" ^%s", link)
+	}
+	p.write("\n")
 	p.printMetadata(d.Meta, p.indent())
 }
 

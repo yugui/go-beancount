@@ -1,6 +1,7 @@
 package ast_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -779,6 +780,180 @@ func TestLower_Document(t *testing.T) {
 	}
 	if d.Path != "/path/to/statement.pdf" {
 		t.Errorf("Lower(document): Path = %q, want %q", d.Path, "/path/to/statement.pdf")
+	}
+}
+
+func TestLower_Document_TagsLinks(t *testing.T) {
+	src := "2024-01-01 document Assets:Brokerage \"receipt.pdf\" #trip-2024 ^invoice-42\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(document tags/links): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(document tags/links): got %d directives, want 1", len(f.Directives))
+	}
+	d, ok := f.Directives[0].(*ast.Document)
+	if !ok {
+		t.Fatalf("Lower(document tags/links): directive is %T, want *ast.Document", f.Directives[0])
+	}
+	if len(d.Tags) != 1 || d.Tags[0] != "trip-2024" {
+		t.Errorf("Lower(document tags/links): Tags = %v, want [trip-2024]", d.Tags)
+	}
+	if len(d.Links) != 1 || d.Links[0] != "invoice-42" {
+		t.Errorf("Lower(document tags/links): Links = %v, want [invoice-42]", d.Links)
+	}
+}
+
+func TestLower_Document_PushtagMerge(t *testing.T) {
+	src := "pushtag #trip-2024\n2024-01-01 document Assets:Brokerage \"receipt.pdf\"\npoptag #trip-2024\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(document pushtag): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(document pushtag): got %d directives, want 1", len(f.Directives))
+	}
+	d, ok := f.Directives[0].(*ast.Document)
+	if !ok {
+		t.Fatalf("Lower(document pushtag): directive is %T, want *ast.Document", f.Directives[0])
+	}
+	want := []string{"trip-2024"}
+	if !slices.Equal(d.Tags, want) {
+		t.Errorf("Lower(document pushtag): Tags = %v, want %v", d.Tags, want)
+	}
+}
+
+func TestLower_Document_PushtagAfterPoptag(t *testing.T) {
+	src := "pushtag #trip-2024\npoptag #trip-2024\n2024-01-02 document Assets:Brokerage \"receipt.pdf\"\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(document after poptag): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(document after poptag): got %d directives, want 1", len(f.Directives))
+	}
+	d, ok := f.Directives[0].(*ast.Document)
+	if !ok {
+		t.Fatalf("Lower(document after poptag): directive is %T, want *ast.Document", f.Directives[0])
+	}
+	if len(d.Tags) != 0 {
+		t.Errorf("Lower(document after poptag): Tags = %v, want empty", d.Tags)
+	}
+}
+
+func TestLower_Note_TagsLinks(t *testing.T) {
+	src := "2024-01-01 note Assets:Brokerage \"review\" #trip-2024 ^invoice-42\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(note tags/links): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(note tags/links): got %d directives, want 1", len(f.Directives))
+	}
+	n, ok := f.Directives[0].(*ast.Note)
+	if !ok {
+		t.Fatalf("Lower(note tags/links): directive is %T, want *ast.Note", f.Directives[0])
+	}
+	if len(n.Tags) != 1 || n.Tags[0] != "trip-2024" {
+		t.Errorf("Lower(note tags/links): Tags = %v, want [trip-2024]", n.Tags)
+	}
+	if len(n.Links) != 1 || n.Links[0] != "invoice-42" {
+		t.Errorf("Lower(note tags/links): Links = %v, want [invoice-42]", n.Links)
+	}
+}
+
+func TestLower_Note_PushtagMerge(t *testing.T) {
+	src := "pushtag #trip-2024\n2024-01-01 note Assets:Brokerage \"review\"\npoptag #trip-2024\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(note pushtag): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(note pushtag): got %d directives, want 1", len(f.Directives))
+	}
+	n, ok := f.Directives[0].(*ast.Note)
+	if !ok {
+		t.Fatalf("Lower(note pushtag): directive is %T, want *ast.Note", f.Directives[0])
+	}
+	want := []string{"trip-2024"}
+	if !slices.Equal(n.Tags, want) {
+		t.Errorf("Lower(note pushtag): Tags = %v, want %v", n.Tags, want)
+	}
+}
+
+func TestLower_Note_PushtagAfterPoptag(t *testing.T) {
+	src := "pushtag #trip-2024\npoptag #trip-2024\n2024-01-02 note Assets:Brokerage \"review\"\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(note after poptag): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("Lower(note after poptag): got %d directives, want 1", len(f.Directives))
+	}
+	n, ok := f.Directives[0].(*ast.Note)
+	if !ok {
+		t.Fatalf("Lower(note after poptag): directive is %T, want *ast.Note", f.Directives[0])
+	}
+	if len(n.Tags) != 0 {
+		t.Errorf("Lower(note after poptag): Tags = %v, want empty", n.Tags)
+	}
+}
+
+// TestLower_Document_PushtagDedup verifies that when a tag appears both as
+// an explicit trailing tag on a document AND as an active pushtag, the
+// resulting Document.Tags contains it exactly once. Mirrors the dedup
+// behavior of lowerTransaction.
+func TestLower_Document_PushtagDedup(t *testing.T) {
+	src := "pushtag #trip-2024\n2024-06-01 document Assets:Brokerage \"receipt.pdf\" #trip-2024\npoptag #trip-2024\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(document pushtag dedup): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	var doc *ast.Document
+	for _, d := range f.Directives {
+		if dc, ok := d.(*ast.Document); ok {
+			doc = dc
+			break
+		}
+	}
+	if doc == nil {
+		t.Fatalf("Lower(document pushtag dedup): no Document directive in %v", f.Directives)
+	}
+	if len(doc.Tags) != 1 || doc.Tags[0] != "trip-2024" {
+		t.Errorf("Lower(document pushtag dedup): Tags = %v, want [trip-2024] (deduped)", doc.Tags)
+	}
+}
+
+// TestLower_Note_PushtagDedup verifies that when a tag appears both as
+// an explicit trailing tag on a note AND as an active pushtag, the
+// resulting Note.Tags contains it exactly once. Mirrors the dedup
+// behavior of lowerTransaction.
+func TestLower_Note_PushtagDedup(t *testing.T) {
+	src := "pushtag #trip-2024\n2024-06-01 note Assets:Brokerage \"opened\" #trip-2024\npoptag #trip-2024\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("Lower(note pushtag dedup): unexpected diagnostics: %v", f.Diagnostics)
+	}
+	var note *ast.Note
+	for _, d := range f.Directives {
+		if nt, ok := d.(*ast.Note); ok {
+			note = nt
+			break
+		}
+	}
+	if note == nil {
+		t.Fatalf("Lower(note pushtag dedup): no Note directive in %v", f.Directives)
+	}
+	if len(note.Tags) != 1 || note.Tags[0] != "trip-2024" {
+		t.Errorf("Lower(note pushtag dedup): Tags = %v, want [trip-2024] (deduped)", note.Tags)
 	}
 }
 

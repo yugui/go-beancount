@@ -161,12 +161,19 @@ func (p *Pad) DirSpan() Span          { return p.Span }
 func (p *Pad) DirKind() DirectiveKind { return KindPad }
 func (p *Pad) DirDate() time.Time     { return p.Date }
 
-// Note represents a note directive: YYYY-MM-DD note Account "comment"
+// Note represents a note directive: YYYY-MM-DD note Account "comment" [tags/links]
+//
+// Tags and Links carry any explicit `#tag` and `^link` tokens that appear
+// after the comment string. Active tags from enclosing pushtag/poptag scopes
+// are merged into Tags during lowering, mirroring the behavior of upstream
+// beancount.
 type Note struct {
 	Span    Span
 	Date    time.Time
 	Account Account
 	Comment string
+	Tags    []string // e.g., ["trip-2024"] (without # prefix)
+	Links   []string // e.g., ["invoice-123"] (without ^ prefix)
 	Meta    Metadata
 }
 
@@ -175,12 +182,19 @@ func (n *Note) DirSpan() Span          { return n.Span }
 func (n *Note) DirKind() DirectiveKind { return KindOther }
 func (n *Note) DirDate() time.Time     { return n.Date }
 
-// Document represents a document directive: YYYY-MM-DD document Account "path"
+// Document represents a document directive: YYYY-MM-DD document Account "path" [tags/links]
+//
+// Tags and Links carry any explicit `#tag` and `^link` tokens that appear
+// after the path string. Active tags from enclosing pushtag/poptag scopes
+// are merged into Tags during lowering, mirroring the behavior of upstream
+// beancount.
 type Document struct {
 	Span    Span
 	Date    time.Time
 	Account Account
 	Path    string
+	Tags    []string // e.g., ["trip-2024"] (without # prefix)
+	Links   []string // e.g., ["invoice-123"] (without ^ prefix)
 	Meta    Metadata
 }
 

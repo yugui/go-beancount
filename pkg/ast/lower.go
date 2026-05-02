@@ -2,6 +2,7 @@ package ast
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -382,6 +383,21 @@ func (l *lowerer) handlePushtag(n *syntax.Node) {
 	}
 	tag := tagTok.Raw[1:] // strip # prefix
 	l.activeTags[tag] = struct{}{}
+}
+
+// mergeActiveTags appends each tag from active that is not already present
+// in tags, preserving the order in which explicit tags appear and avoiding
+// the duplication that would otherwise arise when an explicit tag also
+// happens to be active. The directive types that surface tags to users
+// (transaction, note, document) all share this contract per upstream
+// beancount semantics.
+func mergeActiveTags(tags []string, active map[string]struct{}) []string {
+	for tag := range active {
+		if !slices.Contains(tags, tag) {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
 }
 
 // handlePoptag removes a tag from the active tag set.
@@ -803,13 +819,30 @@ func (l *lowerer) lowerNote(n *syntax.Node) {
 		l.addDiagnostic(n, "note directive missing comment string")
 		return
 	}
-	l.addDirective(&Note{
+	note := &Note{
 		Span:    l.spanFromNode(n),
 		Date:    date,
 		Account: Account(acctTok.Raw),
 		Comment: unquoteString(strTokens[0]),
-		Meta:    l.lowerMetadata(n),
-	})
+	}
+
+	// Extract explicit trailing tags/links from direct child tokens.
+	for _, c := range n.Children {
+		if c.Token == nil {
+			continue
+		}
+		switch c.Token.Kind {
+		case syntax.TAG:
+			note.Tags = append(note.Tags, c.Token.Raw[1:])
+		case syntax.LINK:
+			note.Links = append(note.Links, c.Token.Raw[1:])
+		}
+	}
+
+	note.Tags = mergeActiveTags(note.Tags, l.activeTags)
+
+	note.Meta = l.lowerMetadata(n)
+	l.addDirective(note)
 }
 
 // lowerDocument converts a DocumentDirective CST node into a Document AST directive.
@@ -834,13 +867,30 @@ func (l *lowerer) lowerDocument(n *syntax.Node) {
 		l.addDiagnostic(n, "document directive missing path string")
 		return
 	}
-	l.addDirective(&Document{
+	doc := &Document{
 		Span:    l.spanFromNode(n),
 		Date:    date,
 		Account: Account(acctTok.Raw),
 		Path:    unquoteString(strTokens[0]),
-		Meta:    l.lowerMetadata(n),
-	})
+	}
+
+	// Extract explicit trailing tags/links from direct child tokens.
+	for _, c := range n.Children {
+		if c.Token == nil {
+			continue
+		}
+		switch c.Token.Kind {
+		case syntax.TAG:
+			doc.Tags = append(doc.Tags, c.Token.Raw[1:])
+		case syntax.LINK:
+			doc.Links = append(doc.Links, c.Token.Raw[1:])
+		}
+	}
+
+	doc.Tags = mergeActiveTags(doc.Tags, l.activeTags)
+
+	doc.Meta = l.lowerMetadata(n)
+	l.addDirective(doc)
 }
 
 // lowerEvent converts an EventDirective CST node into an Event AST directive.
@@ -1169,20 +1219,7 @@ func (l *lowerer) lowerTransaction(n *syntax.Node) {
 		txn.Narration = unquoteString(strs[1])
 	}
 
-	// Merge active (pushed) tags into this transaction.
-	for tag := range l.activeTags {
-		// Avoid duplicates: only add if not already present.
-		found := false
-		for _, t := range txn.Tags {
-			if t == tag {
-				found = true
-				break
-			}
-		}
-		if !found {
-			txn.Tags = append(txn.Tags, tag)
-		}
-	}
+	txn.Tags = mergeActiveTags(txn.Tags, l.activeTags)
 
 	// Lower postings.
 	for _, postingNode := range n.FindAllNodes(syntax.PostingNode) {

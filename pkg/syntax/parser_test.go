@@ -347,6 +347,74 @@ func TestParseDocument(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
+func TestParseNoteWithTagsLinks(t *testing.T) {
+	src := `2024-01-01 note Assets:Brokerage "review" #trip-2024 ^invoice-42`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(NoteDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected NoteDirective node", src)
+	}
+	var sawTag, sawLink bool
+	for _, c := range node.Children {
+		if c.Token == nil {
+			continue
+		}
+		switch c.Token.Kind {
+		case TAG:
+			if c.Token.Raw == "#trip-2024" {
+				sawTag = true
+			}
+		case LINK:
+			if c.Token.Raw == "^invoice-42" {
+				sawLink = true
+			}
+		}
+	}
+	if !sawTag {
+		t.Errorf("Parse(%q): expected TAG #trip-2024 as direct child of note node", src)
+	}
+	if !sawLink {
+		t.Errorf("Parse(%q): expected LINK ^invoice-42 as direct child of note node", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
+func TestParseDocumentWithTagsLinks(t *testing.T) {
+	src := `2024-01-01 document Assets:Brokerage "receipt.pdf" #trip-2024 ^invoice-42`
+	f := Parse(src)
+	assertNoErrors(t, f)
+
+	node := f.Root.FindNode(DocumentDirective)
+	if node == nil {
+		t.Fatalf("Parse(%q): expected DocumentDirective node", src)
+	}
+	var sawTag, sawLink bool
+	for _, c := range node.Children {
+		if c.Token == nil {
+			continue
+		}
+		switch c.Token.Kind {
+		case TAG:
+			if c.Token.Raw == "#trip-2024" {
+				sawTag = true
+			}
+		case LINK:
+			if c.Token.Raw == "^invoice-42" {
+				sawLink = true
+			}
+		}
+	}
+	if !sawTag {
+		t.Errorf("Parse(%q): expected TAG #trip-2024 as direct child of document node", src)
+	}
+	if !sawLink {
+		t.Errorf("Parse(%q): expected LINK ^invoice-42 as direct child of document node", src)
+	}
+	assertRoundTrip(t, src, f)
+}
+
 func TestParseEvent(t *testing.T) {
 	src := `2024-01-01 event "location" "Paris"`
 	f := Parse(src)
