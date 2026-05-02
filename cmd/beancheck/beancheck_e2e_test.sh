@@ -112,6 +112,36 @@ option "operating_currency" "JPY"
   Equity:Closing     1000 JPY
 EOF
 
+# Fixture 5b: clean ledger that emits balance, note, and document
+# directives on an account AFTER its close date. Regression for the
+# active-accounts dispatch fix: upstream beancount permits balance,
+# note, and document on closed accounts (only postings and pad are
+# rejected as inactive). The document path points to a real file in
+# $tmp so the document-missing-file validation does not fire.
+: >"$tmp/old_receipt.pdf"
+postclose="$tmp/postclose_ledger.beancount"
+cat >"$postclose" <<EOF
+option "title" "Post Close"
+option "operating_currency" "USD"
+
+2024-01-01 open Assets:OldAccount    USD
+2024-01-01 open Equity:Opening       USD
+
+2024-01-05 * "Initial deposit"
+  Assets:OldAccount    100.00 USD
+  Equity:Opening      -100.00 USD
+
+2024-01-10 * "Drain"
+  Assets:OldAccount   -100.00 USD
+  Equity:Opening       100.00 USD
+
+2024-02-01 close Assets:OldAccount
+
+2024-03-01 balance Assets:OldAccount  0.00 USD
+2024-03-02 note Assets:OldAccount "post-close annotation"
+2024-03-03 document Assets:OldAccount "$tmp/old_receipt.pdf"
+EOF
+
 # Fixture 6: ledger naming an unknown plugin. Regression for the
 # plugin-not-registered diagnostic: the std blank-import resolves the
 # names we ship, but a typo or third-party name we have not registered
@@ -171,6 +201,20 @@ if [[ -s "$tmp/closing.err" ]]; then
 fi
 if [[ -s "$tmp/closing.out" ]]; then
   fail "closing-plugin ledger wrote to stdout:"$'\n'"$(cat "$tmp/closing.out")"
+fi
+
+# 1d2. Post-close-info ledger → exit 0, no stderr. Regression for the
+# active-accounts dispatch fix: balance, note, and document directives
+# on a closed account must be accepted, while postings and pad on a
+# closed account remain rejected (covered by unit tests).
+if ! "$bin" "$postclose" >"$tmp/postclose.out" 2>"$tmp/postclose.err"; then
+  fail "post-close ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/postclose.err")"
+fi
+if [[ -s "$tmp/postclose.err" ]]; then
+  fail "post-close ledger wrote to stderr:"$'\n'"$(cat "$tmp/postclose.err")"
+fi
+if [[ -s "$tmp/postclose.out" ]]; then
+  fail "post-close ledger wrote to stdout:"$'\n'"$(cat "$tmp/postclose.out")"
 fi
 
 # 1e. Unknown-plugin ledger → exit 1, stderr contains "plugin-not-registered".

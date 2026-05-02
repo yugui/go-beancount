@@ -1,6 +1,8 @@
 package validations
 
 import (
+	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -323,6 +325,162 @@ func TestActiveAccounts_HappyPath_ExactlyOnCloseDateIsAllowed(t *testing.T) {
 	}
 	if errs := v.ProcessEntry(d); len(errs) != 0 {
 		t.Errorf("ProcessEntry(Balance on CloseDate) = %v, want no errors", errs)
+	}
+}
+
+// TestActiveAccounts_BalanceAfterClose_Accepted asserts that a balance
+// directive dated after the account's close date emits no diagnostic,
+// matching upstream beancount which permits retrospective balance
+// assertions on closed accounts.
+func TestActiveAccounts_BalanceAfterClose_Accepted(t *testing.T) {
+	state := mkState(
+		map[ast.Account]time.Time{"Assets:Cash": date(2023, 1, 1)},
+		map[ast.Account]time.Time{"Assets:Cash": date(2024, 1, 1)},
+	)
+	v := newActiveAccounts(state)
+	d := &ast.Balance{
+		Date:    date(2024, 6, 1),
+		Account: "Assets:Cash",
+		Span:    ast.Span{Start: ast.Position{Line: 1}},
+	}
+	if errs := v.ProcessEntry(d); len(errs) != 0 {
+		t.Errorf("ProcessEntry(Balance after close) = %v, want no errors", errs)
+	}
+}
+
+// TestActiveAccounts_NoteAfterClose_Accepted asserts that a note
+// directive dated after the account's close date emits no diagnostic,
+// matching upstream beancount.
+func TestActiveAccounts_NoteAfterClose_Accepted(t *testing.T) {
+	state := mkState(
+		map[ast.Account]time.Time{"Assets:Cash": date(2023, 1, 1)},
+		map[ast.Account]time.Time{"Assets:Cash": date(2024, 1, 1)},
+	)
+	v := newActiveAccounts(state)
+	d := &ast.Note{
+		Date:    date(2024, 6, 1),
+		Account: "Assets:Cash",
+		Span:    ast.Span{Start: ast.Position{Line: 1}},
+	}
+	if errs := v.ProcessEntry(d); len(errs) != 0 {
+		t.Errorf("ProcessEntry(Note after close) = %v, want no errors", errs)
+	}
+}
+
+// TestActiveAccounts_DocumentAfterClose_Accepted asserts that a
+// document directive dated after the account's close date emits no
+// diagnostic, matching upstream beancount.
+func TestActiveAccounts_DocumentAfterClose_Accepted(t *testing.T) {
+	state := mkState(
+		map[ast.Account]time.Time{"Assets:Cash": date(2023, 1, 1)},
+		map[ast.Account]time.Time{"Assets:Cash": date(2024, 1, 1)},
+	)
+	v := newActiveAccounts(state)
+	d := &ast.Document{
+		Date:    date(2024, 6, 1),
+		Account: "Assets:Cash",
+		Span:    ast.Span{Start: ast.Position{Line: 1}},
+	}
+	if errs := v.ProcessEntry(d); len(errs) != 0 {
+		t.Errorf("ProcessEntry(Document after close) = %v, want no errors", errs)
+	}
+}
+
+// TestActiveAccounts_PadAfterClose_StillRejected asserts that a pad
+// directive dated after the account's close date is still rejected for
+// both the destination and source account slots, matching upstream
+// beancount's "Invalid reference to inactive account" behavior.
+func TestActiveAccounts_PadAfterClose_StillRejected(t *testing.T) {
+	state := mkState(
+		map[ast.Account]time.Time{
+			"Assets:Target":  date(2023, 1, 1),
+			"Equity:Opening": date(2023, 1, 1),
+		},
+		map[ast.Account]time.Time{
+			"Assets:Target":  date(2024, 1, 1),
+			"Equity:Opening": date(2024, 1, 1),
+		},
+	)
+	v := newActiveAccounts(state)
+	d := &ast.Pad{
+		Date:       date(2024, 6, 1),
+		Account:    "Assets:Target",
+		PadAccount: "Equity:Opening",
+		Span:       ast.Span{Start: ast.Position{Line: 1}},
+	}
+	errs := v.ProcessEntry(d)
+	if len(errs) != 2 {
+		t.Fatalf("got %d errors, want 2; errs = %v", len(errs), errs)
+	}
+	// ProcessEntry visits Pad.Account before Pad.PadAccount today; sort
+	// the diagnostics so the assertion does not pin that visit order
+	// (both slots must surface the same close-date diagnostic regardless
+	// of which is checked first).
+	gotMsgs := []string{errs[0].Message, errs[1].Message}
+	sort.Strings(gotMsgs)
+	wantMsgs := []string{
+		`account "Assets:Target" is closed on 2024-06-01`,
+		`account "Equity:Opening" is closed on 2024-06-01`,
+	}
+	sort.Strings(wantMsgs)
+	for i, e := range errs {
+		if e.Code != string(validation.CodeAccountClosed) {
+			t.Errorf("errs[%d].Code = %q, want %q", i, e.Code, validation.CodeAccountClosed)
+		}
+	}
+	if !reflect.DeepEqual(gotMsgs, wantMsgs) {
+		t.Errorf("Messages (sorted) = %q, want %q", gotMsgs, wantMsgs)
+	}
+}
+
+// TestActiveAccounts_NoteBeforeOpen_NotYetOpen verifies that the
+// "before open" diagnostic still fires for note directives even though
+// the close-date check is now skipped for notes. Open / not-yet-open
+// semantics are unchanged by the dispatch refactor.
+func TestActiveAccounts_NoteBeforeOpen_NotYetOpen(t *testing.T) {
+	state := mkState(map[ast.Account]time.Time{
+		"Assets:Cash": date(2024, 2, 1),
+	}, nil)
+	v := newActiveAccounts(state)
+	d := &ast.Note{
+		Date:    date(2024, 1, 15),
+		Account: "Assets:Cash",
+		Span:    ast.Span{Start: ast.Position{Line: 1}},
+	}
+	errs := v.ProcessEntry(d)
+	if len(errs) != 1 {
+		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
+	}
+	if errs[0].Code != string(validation.CodeAccountNotYetOpen) {
+		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAccountNotYetOpen)
+	}
+	if want := `account "Assets:Cash" is not open on 2024-01-15`; errs[0].Message != want {
+		t.Errorf("Message = %q, want %q", errs[0].Message, want)
+	}
+}
+
+// TestActiveAccounts_DocumentBeforeOpen_NotYetOpen verifies that the
+// "before open" diagnostic still fires for document directives even
+// though the close-date check is now skipped for documents.
+func TestActiveAccounts_DocumentBeforeOpen_NotYetOpen(t *testing.T) {
+	state := mkState(map[ast.Account]time.Time{
+		"Assets:Cash": date(2024, 2, 1),
+	}, nil)
+	v := newActiveAccounts(state)
+	d := &ast.Document{
+		Date:    date(2024, 1, 15),
+		Account: "Assets:Cash",
+		Span:    ast.Span{Start: ast.Position{Line: 1}},
+	}
+	errs := v.ProcessEntry(d)
+	if len(errs) != 1 {
+		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
+	}
+	if errs[0].Code != string(validation.CodeAccountNotYetOpen) {
+		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAccountNotYetOpen)
+	}
+	if want := `account "Assets:Cash" is not open on 2024-01-15`; errs[0].Message != want {
+		t.Errorf("Message = %q, want %q", errs[0].Message, want)
 	}
 }
 
