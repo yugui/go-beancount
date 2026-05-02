@@ -43,6 +43,26 @@ option "operating_currency" "USD"
   Income:Salary    -999.00 USD
 EOF
 
+# Fixture 3: clean ledger that exercises a 25+ char fictional commodity
+# symbol. Regression coverage for the removal of the 24-char cap in
+# isCurrency: the parser → lower → balance pipeline must accept long
+# uppercase commodities end-to-end.
+longcom="$tmp/longcom.beancount"
+cat >"$longcom" <<'EOF'
+option "title" "Long Commodity"
+option "operating_currency" "USD"
+
+2024-01-01 commodity BIG_COMMODITY_FOR_TEST_30A
+2024-01-01 open Assets:Brokerage  BIG_COMMODITY_FOR_TEST_30A
+2024-01-01 open Equity:Opening    BIG_COMMODITY_FOR_TEST_30A
+
+2024-01-02 price BIG_COMMODITY_FOR_TEST_30A 1.00 USD
+
+2024-01-10 * "Initial position"
+  Assets:Brokerage    10 BIG_COMMODITY_FOR_TEST_30A
+  Equity:Opening     -10 BIG_COMMODITY_FOR_TEST_30A
+EOF
+
 # 1. Clean ledger → exit 0, no stderr.
 if ! "$bin" "$good" >"$tmp/good.out" 2>"$tmp/good.err"; then
   fail "clean ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/good.err")"
@@ -52,6 +72,19 @@ if [[ -s "$tmp/good.err" ]]; then
 fi
 if [[ -s "$tmp/good.out" ]]; then
   fail "clean ledger wrote to stdout:"$'\n'"$(cat "$tmp/good.out")"
+fi
+
+# 1b. Long-commodity ledger → exit 0, no stderr. Regression for the lifted
+# 24-char isCurrency cap: a legitimately long uppercase ticker must round-trip
+# cleanly through the parser, lowering, and balance check.
+if ! "$bin" "$longcom" >"$tmp/longcom.out" 2>"$tmp/longcom.err"; then
+  fail "long-commodity ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/longcom.err")"
+fi
+if [[ -s "$tmp/longcom.err" ]]; then
+  fail "long-commodity ledger wrote to stderr:"$'\n'"$(cat "$tmp/longcom.err")"
+fi
+if [[ -s "$tmp/longcom.out" ]]; then
+  fail "long-commodity ledger wrote to stdout:"$'\n'"$(cat "$tmp/longcom.out")"
 fi
 
 # 2. Bad ledger → exit 1, stderr contains "error:" and the source path.

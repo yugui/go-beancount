@@ -373,9 +373,9 @@ func isOtherIDContinue(r rune) bool {
 }
 
 // isCurrency reports whether word matches the currency pattern:
-// 1-24 chars, all [A-Z0-9'._-], starts and ends with [A-Z0-9].
+// 1+ chars, all [A-Z0-9'._-], starts and ends with [A-Z0-9].
 func isCurrency(word string) bool {
-	if len(word) == 0 || len(word) > 24 {
+	if len(word) == 0 {
 		return false
 	}
 	first := word[0]
