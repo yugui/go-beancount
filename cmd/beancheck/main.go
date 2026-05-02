@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/loader"
@@ -79,11 +80,34 @@ func check(ctx context.Context, filename string, strict bool, stderr io.Writer) 
 // report writes each diagnostic to w and returns the exit code per the
 // exit-code table documented in the package doc. It is a pure function of its
 // inputs so tests can drive it directly without invoking the loader.
+//
+// Diagnostics are sorted by source position before printing so output for a
+// single file reads top-to-bottom. This is purely an output-layer concern:
+// the loader API contract still surfaces diagnostics in append order
+// (parser, lowering, plugins), and callers that need that order should read
+// ledger.Diagnostics directly. Sorting is stable so plugins emitting
+// multiple diagnostics at the same position remain in deterministic order.
 func report(w io.Writer, diags []ast.Diagnostic, strict bool) int {
+	sorted := make([]ast.Diagnostic, len(diags))
+	copy(sorted, diags)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, b := sorted[i].Span.Start, sorted[j].Span.Start
+		if a.Filename != b.Filename {
+			return a.Filename < b.Filename
+		}
+		if a.Line != b.Line {
+			return a.Line < b.Line
+		}
+		if a.Column != b.Column {
+			return a.Column < b.Column
+		}
+		return a.Offset < b.Offset
+	})
+
 	hasError := false
 	hasWarning := false
 
-	for _, d := range diags {
+	for _, d := range sorted {
 		fmt.Fprintln(w, formatDiagnostic(d))
 		switch d.Severity {
 		case ast.Error:
