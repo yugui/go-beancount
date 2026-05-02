@@ -28,6 +28,26 @@ func ForAmount(opts *options.Values, amount ast.Amount) *apd.Decimal {
 	return forExponent(opts, amount.Number.Exponent)
 }
 
+// ForBalanceAssertion returns the inferred tolerance for a Balance
+// directive's asserted amount, mirroring upstream beancount's
+// get_balance_tolerance (beancount/ops/balance.py). The tolerance is
+// 2 × inferred_tolerance_multiplier × 10^expo where expo is the
+// exponent of the assertion amount's least-significant digit.
+// Upstream applies the doubled factor specifically to balance
+// assertions because users hand-write the asserted amount and
+// rounding noise can exceed transaction-internal precision;
+// transaction-balancing tolerance computed from the same amount
+// remains the un-doubled inferred_tolerance_multiplier × 10^expo via
+// ForAmount.
+func ForBalanceAssertion(opts *options.Values, amount ast.Amount) *apd.Decimal {
+	out := ForAmount(opts, amount)
+	// apd.Decimal stores sign separately and Coeff is a non-negative
+	// big.Int, so left-shifting the coefficient by 1 multiplies the
+	// magnitude by 2 without an arithmetic context round-trip.
+	out.Coeff.Lsh(&out.Coeff, 1)
+	return out
+}
+
 // Infer returns a per-currency residual tolerance map keyed by the
 // entries in residualCurrencies. For each such currency it computes
 // the units-based tolerance from posting precision scaled by the
