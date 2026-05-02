@@ -26,13 +26,22 @@ func Lower(filename string, cst *syntax.File) *File {
 		source:     src,
 		lineStarts: computeLineStarts(src),
 	}
-	// Convert CST-level errors to diagnostics.
-	for _, e := range cst.Errors {
-		l.file.Diagnostics = append(l.file.Diagnostics, Diagnostic{
-			Span:     l.spanFromOffset(e.Pos),
-			Message:  e.Msg,
-			Severity: Error,
-		})
+	// Convert CST-level errors to diagnostics. Also collect the parser
+	// error offsets in sorted order so lowerDirective can suppress
+	// duplicate generic "syntax error" diagnostics on the same span
+	// (the unexpected token is left in the stream and swept into a
+	// follow-up UnrecognizedLineNode after expect() reports an error).
+	if len(cst.Errors) > 0 {
+		l.cstErrOffsets = make([]int, 0, len(cst.Errors))
+		for _, e := range cst.Errors {
+			l.file.Diagnostics = append(l.file.Diagnostics, Diagnostic{
+				Span:     l.spanFromOffset(e.Pos),
+				Message:  e.Msg,
+				Severity: Error,
+			})
+			l.cstErrOffsets = append(l.cstErrOffsets, e.Pos)
+		}
+		sort.Ints(l.cstErrOffsets)
 	}
 	// Walk top-level children.
 	if cst.Root != nil {
@@ -47,11 +56,12 @@ func Lower(filename string, cst *syntax.File) *File {
 }
 
 type lowerer struct {
-	filename   string
-	file       *File
-	activeTags map[string]struct{} // tags pushed via pushtag, not yet popped
-	source     string              // full source text (from cst.FullText), used to compute Line/Column
-	lineStarts []int               // byte offset of the start of each line; lineStarts[i] is the start of line i+1
+	filename      string
+	file          *File
+	activeTags    map[string]struct{} // tags pushed via pushtag, not yet popped
+	source        string              // full source text (from cst.FullText), used to compute Line/Column
+	lineStarts    []int               // byte offset of the start of each line; lineStarts[i] is the start of line i+1
+	cstErrOffsets []int               // sorted byte offsets of parser-recorded errors, used to dedupe generic "syntax error" diagnostics
 }
 
 // computeLineStarts returns the byte offsets at which each line of src begins.
@@ -68,10 +78,50 @@ func computeLineStarts(src string) []int {
 	return starts
 }
 
+// hasParserErrorIn reports whether the CST already carries a parser error
+// whose byte offset falls within the token span of n. It lets the lowerer
+// avoid emitting a generic "syntax error" diagnostic that would duplicate
+// the more specific message the parser already produced for the same
+// source location.
+func (l *lowerer) hasParserErrorIn(n *syntax.Node) bool {
+	if len(l.cstErrOffsets) == 0 {
+		return false
+	}
+	var first, last *syntax.Token
+	for t := range n.Tokens() {
+		if first == nil {
+			first = t
+		}
+		last = t
+	}
+	if first == nil {
+		return false
+	}
+	start := first.Pos
+	end := last.Pos + len(last.Raw)
+	i := sort.SearchInts(l.cstErrOffsets, start)
+	// The interval is half-open: [start, end). An error offset at
+	// exactly `end` (one past the last byte of the unrecognized node)
+	// belongs to the following construct, not this one, so it must not
+	// match. Do not change `<` to `<=` here.
+	return i < len(l.cstErrOffsets) && l.cstErrOffsets[i] < end
+}
+
 func (l *lowerer) lowerDirective(n *syntax.Node) {
 	switch n.Kind {
 	case syntax.ErrorNode, syntax.UnrecognizedLineNode:
-		l.addDiagnostic(n, "syntax error")
+		// ErrorNode is currently never produced by the parser; the arm
+		// is kept for forward-compatibility with future error-recovery
+		// strategies. UnrecognizedLineNode covers the actual recovery
+		// path today.
+		//
+		// Skip the generic "syntax error" message when the parser has
+		// already reported a more specific error within this node's
+		// token span; otherwise the same source position would be
+		// flagged twice.
+		if !l.hasParserErrorIn(n) {
+			l.addDiagnostic(n, "syntax error")
+		}
 	case syntax.OptionDirective:
 		l.lowerOption(n)
 	case syntax.PluginDirective:
