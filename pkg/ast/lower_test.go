@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/syntax"
 )
@@ -1205,6 +1206,140 @@ func TestLower_PushtagScope(t *testing.T) {
 	for _, tag := range txn2.Tags {
 		if tag == "trip" {
 			t.Error("second transaction should not have tag \"trip\" after poptag")
+		}
+	}
+}
+
+// TestLower_Arithmetic_ExactDivThenMul exercises a posting whose amount
+// expression is mathematically exact but produces an intermediate value
+// (540.000...0) whose trailing zeros exceed apd's 34-digit precision
+// budget, causing apd to set Rounded. The lowerer must not surface that
+// representational flag as a diagnostic: the user's expression evaluates
+// to an exact integer (17280 JPY) and the directive must lower cleanly.
+func TestLower_Arithmetic_ExactDivThenMul(t *testing.T) {
+	src := "2024-01-01 * \"exact arithmetic\"\n  Income:A  -1620/3*32 JPY\n  Expenses:B   1620/3*32 JPY\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if len(txn.Postings) != 2 {
+		t.Fatalf("Postings count = %d, want 2", len(txn.Postings))
+	}
+	p := txn.Postings[1]
+	if p.Account != "Expenses:B" {
+		t.Errorf("Posting[1].Account = %q, want %q", p.Account, "Expenses:B")
+	}
+	if p.Amount == nil {
+		t.Fatal("Posting[1].Amount is nil, want non-nil")
+	}
+	if p.Amount.Currency != "JPY" {
+		t.Errorf("Posting[1].Amount.Currency = %q, want %q", p.Amount.Currency, "JPY")
+	}
+	// 1620/3*32 == 17280 exactly.
+	want, _, err := apd.NewFromString("17280")
+	if err != nil {
+		t.Fatalf("parse expected: %v", err)
+	}
+	if p.Amount.Number.Cmp(want) != 0 {
+		t.Errorf("Posting[1].Amount.Number = %s, want 17280", p.Amount.Number.String())
+	}
+}
+
+// TestLower_Arithmetic_InexactDivisionTruncates verifies that a division
+// with a non-terminating decimal expansion (10/3) lowers without error,
+// producing a value truncated to apd's 34-digit precision. Truncation at
+// 34 digits is far below any realistic per-currency tolerance, so the
+// lowerer must not treat Inexact/Rounded as fatal.
+func TestLower_Arithmetic_InexactDivisionTruncates(t *testing.T) {
+	src := "2024-01-01 * \"inexact division\"\n  Income:A  -10/3 USD\n  Expenses:B   10/3 USD\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	if len(f.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(f.Directives))
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	if len(txn.Postings) != 2 {
+		t.Fatalf("Postings count = %d, want 2", len(txn.Postings))
+	}
+	p := txn.Postings[1]
+	if p.Amount == nil {
+		t.Fatal("Posting[1].Amount is nil, want non-nil")
+	}
+	if p.Amount.Currency != "USD" {
+		t.Errorf("Posting[1].Amount.Currency = %q, want %q", p.Amount.Currency, "USD")
+	}
+	got := p.Amount.Number.Text('f')
+	if !strings.HasPrefix(got, "3.333") {
+		t.Errorf("Posting[1].Amount.Number = %q, want prefix %q", got, "3.333")
+	}
+}
+
+// TestLower_Arithmetic_DivisionByZeroStillErrors confirms that the
+// silenced informational flags (Rounded/Inexact) did not also silence
+// the trapped conditions: dividing by zero must still be reported as a
+// diagnostic, and the offending posting must be dropped from the
+// resulting transaction. (The transaction itself is preserved with
+// empty postings so downstream validation can still flag e.g. an
+// unbalanced or empty transaction.)
+//
+// NOTE: the other trapped apd conditions — overflow, underflow,
+// subnormal, division-undefined, division-impossible, and
+// invalid-operation — share the same err-is-fatal code path as
+// division-by-zero (a non-nil err return from Add/Sub/Mul/Quo aborts
+// evaluation and drops the posting). Constructing a literal beancount
+// input that reaches them in isolation is impractical: apd's
+// BaseContext caps MaxExponent at 100000, the same value as the
+// package-level system limit, so the only path that exceeds context
+// MaxExponent without also exceeding the system limit is unreachable
+// here. Any expression large enough to overflow the context simultaneously
+// trips SystemOverflow and surfaces as "exponent out of range" rather
+// than "overflow". The division-by-zero case below is sufficient to
+// pin the err-is-fatal contract that protects every trapped condition.
+func TestLower_Arithmetic_DivisionByZeroStillErrors(t *testing.T) {
+	src := "2024-01-01 * \"divide by zero\"\n  Income:A  -1/0 USD\n  Expenses:B   1/0 USD\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) == 0 {
+		t.Fatal("got 0 diagnostics, want at least 1 for division by zero")
+	}
+	// The exact "division by zero" wording is sourced from apd's
+	// Condition.GoError() and is therefore coupled to the third-party
+	// library; if apd ever rewords this, this assertion needs to follow.
+	// The stable contract this test pins is: an err-bearing arithmetic
+	// op produces a diagnostic AND drops the posting (asserted below).
+	found := false
+	for _, d := range f.Diagnostics {
+		if strings.Contains(strings.ToLower(d.Message), "division by zero") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no diagnostic mentions \"division by zero\"; got %v", f.Diagnostics)
+	}
+	// The postings carrying the failing arithmetic must be dropped,
+	// matching the established pattern for malformed amounts.
+	for _, d := range f.Directives {
+		txn, ok := d.(*ast.Transaction)
+		if !ok {
+			continue
+		}
+		if len(txn.Postings) != 0 {
+			t.Errorf("expected postings with failing arithmetic to be dropped; got %d postings", len(txn.Postings))
 		}
 	}
 }

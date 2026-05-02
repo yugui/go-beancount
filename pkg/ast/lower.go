@@ -630,7 +630,30 @@ func (l *lowerer) lowerAmountOptionalCurrency(n *syntax.Node) (Amount, bool) {
 }
 
 // arithCtx is the decimal context used for arithmetic expression evaluation.
-// 34 digits of precision (128-bit decimal) is standard for financial calculations.
+//
+// The precision is fixed at 34 digits, matching IEEE 754 decimal128. This is
+// the established standard for financial calculations: the per-operation
+// relative error is bounded by 5x10^-34, many orders of magnitude below any
+// realistic per-currency tolerance encountered in beancount ledgers (the
+// smallest practical tolerances sit around 10^-8 for high-precision
+// commodities and shares).
+//
+// apd's BaseContext traps overflow, underflow, subnormal, division-by-zero,
+// division-undefined, division-impossible, and invalid-operation; those
+// surface as a non-nil err return from Add/Sub/Mul/Quo and ARE treated as
+// fatal here. The Rounded and Inexact conditions, however, are NOT trapped
+// and NOT treated as errors: with 34-digit precision they fire on purely
+// representational truncation (e.g. 540.000...0 * 32 produces a result whose
+// trailing zeros exceed precision; 10/3 produces a non-terminating decimal).
+// Promoting either to a hard error would reject mathematically valid inputs
+// such as `1620/3*32 JPY` (exact 17280) just because the intermediate carries
+// more than 34 significant digits.
+//
+// Material precision loss that actually affects ledger correctness is
+// detected downstream where it has semantic meaning: pkg/validation/balance
+// applies the per-currency tolerance to balance assertions and to transaction
+// residuals, comparing the accumulated arithmetic result against the user's
+// declared (or inferred) tolerance.
 var arithCtx = apd.BaseContext.WithPrecision(34)
 
 // evalExpr evaluates an ArithExprNode into an apd.Decimal.
@@ -688,24 +711,29 @@ func (l *lowerer) evalExpr(n *syntax.Node) (apd.Decimal, bool) {
 			return apd.Decimal{}, false
 		}
 		var result apd.Decimal
-		var cond apd.Condition
-		// The second return value from apd arithmetic is the updated context,
-		// which we intentionally discard; all error state is captured in cond.
+		var err error
+		// The first return value (apd.Condition) carries informational flags
+		// such as Rounded/Inexact that fire on representational truncation at
+		// the configured precision; those are not failures, so we discard
+		// them and rely solely on err, which is non-nil only when one of the
+		// trapped conditions (overflow, underflow, subnormal, division-by-
+		// zero, division-undefined, division-impossible, invalid-operation)
+		// actually occurred. See the arithCtx comment above for rationale.
 		switch op.Kind {
 		case syntax.PLUS:
-			cond, _ = arithCtx.Add(&result, &left, &right)
+			_, err = arithCtx.Add(&result, &left, &right)
 		case syntax.MINUS:
-			cond, _ = arithCtx.Sub(&result, &left, &right)
+			_, err = arithCtx.Sub(&result, &left, &right)
 		case syntax.STAR:
-			cond, _ = arithCtx.Mul(&result, &left, &right)
+			_, err = arithCtx.Mul(&result, &left, &right)
 		case syntax.SLASH:
-			cond, _ = arithCtx.Quo(&result, &left, &right)
+			_, err = arithCtx.Quo(&result, &left, &right)
 		default:
 			l.addDiagnostic(n, fmt.Sprintf("unexpected operator %s in expression", op.Kind))
 			return apd.Decimal{}, false
 		}
-		if cond.Any() {
-			l.addDiagnostic(n, fmt.Sprintf("arithmetic error: %s", cond))
+		if err != nil {
+			l.addDiagnostic(n, fmt.Sprintf("arithmetic error: %v", err))
 			return apd.Decimal{}, false
 		}
 		return result, true

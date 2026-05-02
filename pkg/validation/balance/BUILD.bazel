@@ -18,11 +18,15 @@ go_library(
 
 go_test(
     name = "balance_test",
-    srcs = ["plugin_test.go"],
+    srcs = [
+        "arithmetic_integration_test.go",
+        "plugin_test.go",
+    ],
     deps = [
         ":balance",
         "//pkg/ast",
         "//pkg/ext/postproc/api",
+        "//pkg/syntax",
         "//pkg/validation",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
