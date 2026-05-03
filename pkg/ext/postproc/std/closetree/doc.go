@@ -16,8 +16,8 @@
 // output. For every [ast.Close] directive C it computes the set of
 // "subtree" accounts to also close: an account A qualifies when
 //
-//   - A is a strict descendant of C.Account in the component-aware
-//     account hierarchy (see "Component-aware ancestry" below);
+//   - A is a strict descendant of C.Account
+//     (per [ast.Account.IsAncestorOf]);
 //   - A has been Open'ed earlier in source order than C, and that Open's
 //     date is on or before C.Date (see "Date-aware Open visibility"
 //     below);
@@ -81,20 +81,6 @@
 //	2024-12-31 close Assets:Brokerage:Cash
 //	2024-12-31 close Assets:Brokerage:Stocks:AAPL
 //	2024-12-31 close Assets:Brokerage:Stocks:GOOG
-//
-// # Deviation: component-aware ancestry
-//
-// Upstream identifies descendants via raw string prefix
-// (`account.startswith(parent + ":")`). That treats `Assets:CashFlow`
-// as a descendant of `Assets:Cash`, which is a long-standing footgun —
-// the colon delimiter is consumed by the prefix match itself but the
-// component boundary is otherwise unenforced.
-//
-// This port walks the component hierarchy via [ast.Account.Parent]
-// instead, so only true component-children qualify. `Assets:Cash` and
-// `Assets:CashFlow` are siblings under `Assets`, neither a descendant
-// of the other. We treat the upstream behavior as a bug rather than a
-// contract; this is the only ancestry-shape deviation in the port.
 //
 // # Deviation: date-aware Open visibility
 //

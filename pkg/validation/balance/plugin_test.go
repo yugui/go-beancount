@@ -819,6 +819,202 @@ func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
 	})
 }
 
+// TestPlugin_SubtreeAggregation pins the upstream-compatible behavior
+// that a balance assertion on a parent account aggregates over the
+// entire subtree, not just postings to the parent itself. This mirrors
+// upstream beancount's realization.compute_balance(real_account,
+// leaf_only=False) semantics.
+func TestPlugin_SubtreeAggregation(t *testing.T) {
+	t.Run("parent assertion sums over leaf children", func(t *testing.T) {
+		amtB := amtInt(10, "USD")
+		amtC := amtInt(20, "USD")
+		neg := amtInt(-30, "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A:B", Amount: &amtB},
+				{Account: "Assets:A:C", Amount: &amtC},
+				{Account: "Income:Salary", Amount: &neg},
+			},
+		}
+		bal := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(30, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (parent must aggregate subtree)", res.Diagnostics)
+		}
+	})
+
+	t.Run("user-reported case: cost-basis posting to grandchild", func(t *testing.T) {
+		jpyNeg := amtInt(-9595, "JPY")
+		nac := amtStr(t, "10.1", "NAC")
+		jpyPos := amtInt(9595, "JPY")
+		nacNeg := amtStr(t, "-10.1", "NAC")
+		txn := &ast.Transaction{
+			Date: time.Date(2025, 6, 17, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A:B", Amount: &jpyNeg},
+				{Account: "Assets:A:C", Amount: &nac},
+				{Account: "Equity:Trading:NAC-JPY", Amount: &jpyPos},
+				{Account: "Equity:Trading:NAC-JPY", Amount: &nacNeg},
+			},
+		}
+		bal := &ast.Balance{
+			Date:    time.Date(2025, 6, 30, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtStr(t, "10.1", "NAC"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (Assets:A subtree holds 10.1 NAC)", res.Diagnostics)
+		}
+	})
+
+	t.Run("prefix-trap: sibling with shared string prefix excluded", func(t *testing.T) {
+		// Posting 99 USD to Assets:Apple must NOT contribute to the
+		// Assets:A subtree. The structural proof is that a 0 USD
+		// assertion on Assets:A passes (subtree empty), independent
+		// of any diagnostic message wording.
+		apple := amtInt(99, "USD")
+		neg := amtInt(-99, "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:Apple", Amount: &apple},
+				{Account: "Income:Salary", Amount: &neg},
+			},
+		}
+		balZero := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(0, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, balZero})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (Assets:Apple must not be aggregated under Assets:A)", res.Diagnostics)
+		}
+	})
+
+	t.Run("parent assertion sums own postings together with children", func(t *testing.T) {
+		// Postings to both Assets:A itself AND a child Assets:A:B.
+		// The aggregation must include the asserted account's own
+		// bucket (Covers identity branch) together with the child.
+		own := amtInt(7, "USD")
+		child := amtInt(3, "USD")
+		neg := amtInt(-10, "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &own},
+				{Account: "Assets:A:B", Amount: &child},
+				{Account: "Income:Salary", Amount: &neg},
+			},
+		}
+		bal := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(10, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (parent + child must both be aggregated)", res.Diagnostics)
+		}
+	})
+
+	t.Run("multi-currency subtree: only matching currency aggregated", func(t *testing.T) {
+		// Two children of Assets:A hold different currencies. A
+		// USD assertion on Assets:A must sum only the USD child;
+		// the EUR child must not be swept into the USD bucket.
+		usd := amtInt(100, "USD")
+		usdNeg := amtInt(-100, "USD")
+		eur := amtInt(50, "EUR")
+		eurNeg := amtInt(-50, "EUR")
+		txnUSD := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A:B", Amount: &usd},
+				{Account: "Income:Salary", Amount: &usdNeg},
+			},
+		}
+		txnEUR := &ast.Transaction{
+			Date: time.Date(2024, 2, 2, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A:C", Amount: &eur},
+				{Account: "Income:Salary", Amount: &eurNeg},
+			},
+		}
+		balUSD := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "USD"),
+		}
+		balEUR := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(50, "EUR"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txnUSD, txnEUR, balUSD, balEUR})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (per-currency subtree sums must be isolated)", res.Diagnostics)
+		}
+	})
+
+	t.Run("leaf assertion still passes when parent has no own postings", func(t *testing.T) {
+		pos := amtInt(50, "USD")
+		neg := amtInt(-50, "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A:B", Amount: &pos},
+				{Account: "Income:Salary", Amount: &neg},
+			},
+		}
+		bal := &ast.Balance{
+			Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A:B",
+			Amount:  amtInt(50, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (leaf assertion sees only its own bucket)", res.Diagnostics)
+		}
+	})
+}
+
 // TestPlugin_OptionsFromRawParseError confirms malformed options
 // surface as ast.Diagnostic{Code: "invalid-option"}, matching the
 // validations plugin's contract.

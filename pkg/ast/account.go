@@ -111,6 +111,35 @@ func (a Account) Parts() []string {
 	return strings.Split(string(a), ":")
 }
 
+// IsAncestorOf reports whether a is a strict ancestor of descendant in
+// the account hierarchy: descendant lies in the subtree rooted at a,
+// with descendant != a. Returns false when either operand is empty.
+// The check is component-aware, so "Assets:A".IsAncestorOf("Assets:Apple")
+// is false even though one is a string prefix of the other.
+func (a Account) IsAncestorOf(descendant Account) bool {
+	if a == "" || descendant == "" {
+		return false
+	}
+	if len(descendant) <= len(a) {
+		return false
+	}
+	if Account(descendant[:len(a)]) != a {
+		return false
+	}
+	return descendant[len(a)] == ':'
+}
+
+// Covers reports whether other equals a or lies in the subtree rooted
+// at a. It is the natural predicate when an operation on a parent
+// account should also apply to every descendant (e.g. summing balances
+// over a subtree). Returns false when either account is empty.
+func (a Account) Covers(other Account) bool {
+	if a == "" || other == "" {
+		return false
+	}
+	return a == other || a.IsAncestorOf(other)
+}
+
 // IsValid reports whether a satisfies the beancount account grammar:
 // a valid root component followed by zero or more valid sub-components
 // separated by ':'. Use IsValid at trust boundaries where an Account

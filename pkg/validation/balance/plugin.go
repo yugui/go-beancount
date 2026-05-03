@@ -14,6 +14,15 @@
 // weight. For a plain posting the two are identical; for a posting
 // with a price (@, @@) or cost ({}, {{}}) the weight currency differs
 // from the units currency, and balance assertions always check units.
+//
+// A balance assertion on a parent account aggregates over the entire
+// subtree rooted at that account, matching upstream's
+// realization.compute_balance(real_account, leaf_only=False). The
+// running balance is still keyed per (posting-account, currency); a
+// posting only ever updates the bucket whose account it names, even
+// when that account is itself a parent. The subtree sum is computed
+// on demand at assertion time by scanning buckets with
+// [ast.Account.Covers].
 package balance
 
 import (
@@ -212,17 +221,35 @@ func inferAutoPosting(tx *ast.Transaction, autoPosting *ast.Posting, txResidual 
 	return diags
 }
 
-// checkBalance verifies a balance assertion against the running
-// balance for (account, currency). The diff is computed as
-// expected - actual (mirroring upstream beancount). The tolerance
-// check operates on |diff|, so the sign of diff only affects error
-// message formatting.
+// checkBalance verifies a balance assertion. The actual value is the
+// sum of every (account, currency) bucket whose currency matches the
+// assertion and whose account is covered by b.Account — i.e. the
+// asserted account itself together with its entire subtree, mirroring
+// upstream's realization.compute_balance with leaf_only=False. The
+// diff is computed as expected - actual; the tolerance check operates
+// on |diff|, so the sign of diff only affects error message
+// formatting.
 func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *options.Values) []ast.Diagnostic {
 	var diags []ast.Diagnostic
-	key := balanceKey{Account: b.Account, Currency: b.Amount.Currency}
-	actual := balances[key]
-	if actual == nil {
-		actual = new(apd.Decimal)
+	actual := new(apd.Decimal)
+	for k, v := range balances {
+		if k.Currency != b.Amount.Currency {
+			continue
+		}
+		if !b.Account.Covers(k.Account) {
+			continue
+		}
+		if _, err := apd.BaseContext.Add(actual, actual, v); err != nil {
+			diags = append(diags, ast.Diagnostic{
+				Code: string(validation.CodeInternalError),
+				Span: b.Span,
+				Message: fmt.Sprintf(
+					"failed to aggregate subtree balance for %s %s: %v",
+					b.Account, b.Amount.Currency, err,
+				),
+			})
+			return diags
+		}
 	}
 
 	expCopy := b.Amount.Number
