@@ -109,7 +109,8 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 // for the parent Close c, in alphabetical order. An account A is a
 // descendant when:
 //
-//   - A is a strict component-child of c.Account (see [isDescendant]);
+//   - A is a strict descendant of c.Account
+//     (per [ast.Account.IsAncestorOf]);
 //   - A has been Open'ed in source order before c (entry in openedBy)
 //     and the Open's Date is on or before c.Date;
 //   - A has not been Closed in source order before c, and has not
@@ -124,7 +125,7 @@ func descendants(c *ast.Close, openedBy map[ast.Account]*ast.Open, closed map[as
 		if _, alreadyClosed := closed[acct]; alreadyClosed {
 			continue
 		}
-		if !isDescendant(acct, c.Account) {
+		if !c.Account.IsAncestorOf(acct) {
 			continue
 		}
 		// Skip Opens whose date is strictly after the parent Close's
@@ -138,24 +139,4 @@ func descendants(c *ast.Close, openedBy map[ast.Account]*ast.Open, closed map[as
 	}
 	sort.Slice(subs, func(i, j int) bool { return subs[i] < subs[j] })
 	return subs
-}
-
-// isDescendant reports whether child is a strict component-aware
-// descendant of parent. The walk is via [ast.Account.Parent], so
-// `Assets:CashFlow` is correctly NOT a descendant of `Assets:Cash`
-// (they are siblings under `Assets`). See doc.go's "component-aware
-// ancestry" deviation.
-func isDescendant(child, parent ast.Account) bool {
-	if child == "" || parent == "" {
-		return false
-	}
-	if child == parent {
-		return false
-	}
-	for a := child.Parent(); a != ""; a = a.Parent() {
-		if a == parent {
-			return true
-		}
-	}
-	return false
 }

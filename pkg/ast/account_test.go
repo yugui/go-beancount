@@ -178,6 +178,43 @@ func TestAccountIsValid(t *testing.T) {
 	}
 }
 
+func TestAccountIsAncestorOf(t *testing.T) {
+	// Each row pins both Covers directions on the same pair.
+	cases := []struct {
+		name                string
+		ancestor            Account
+		descendant          Account
+		isAncestorOf        bool
+		ancestorCoversDesc  bool
+		descendantCoversAnc bool
+	}{
+		{"identity", "Assets:A", "Assets:A", false, true, true},
+		{"direct child", "Assets:A", "Assets:A:B", true, true, false},
+		{"grandchild", "Assets:A", "Assets:A:B:C", true, true, false},
+		{"sibling", "Assets:A", "Assets:B", false, false, false},
+		{"prefix-trap apple", "Assets:A", "Assets:Apple", false, false, false},
+		{"different roots", Assets, Liabilities, false, false, false},
+		{"root over direct child", Assets, "Assets:Cash", true, true, false},
+		{"root over grandchild", Assets, "Assets:Cash:JPY", true, true, false},
+		{"empty receiver", "", "Assets:A", false, false, false},
+		{"empty operand", "Assets:A", "", false, false, false},
+		{"both empty", "", "", false, false, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.ancestor.IsAncestorOf(c.descendant); got != c.isAncestorOf {
+				t.Errorf("%q.IsAncestorOf(%q) = %v, want %v", c.ancestor, c.descendant, got, c.isAncestorOf)
+			}
+			if got := c.ancestor.Covers(c.descendant); got != c.ancestorCoversDesc {
+				t.Errorf("%q.Covers(%q) = %v, want %v", c.ancestor, c.descendant, got, c.ancestorCoversDesc)
+			}
+			if got := c.descendant.Covers(c.ancestor); got != c.descendantCoversAnc {
+				t.Errorf("%q.Covers(%q) = %v, want %v", c.descendant, c.ancestor, got, c.descendantCoversAnc)
+			}
+		})
+	}
+}
+
 func TestAccountSubChain(t *testing.T) {
 	a := Assets.MustSub("Cash").MustSub("JPY")
 	if want := Account("Assets:Cash:JPY"); a != want {
