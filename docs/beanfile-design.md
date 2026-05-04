@@ -57,16 +57,37 @@ beanfile [flags] --ledger ROOT.beancount [files...]
 
 | Directive kind | Routing key | Default destination |
 |---|---|---|
-| `Open`, `Close`, `Pad`, `Balance`, `Note`, `Document`, `Transaction` | account | `transactions/<account-segments>/<YYYYmm>.beancount` |
-| `Price` | commodity | `quotes/<COMMODITY>/<YYYYmm>.beancount` |
-| `Option`, `Plugin`, `Include`, `Pushtag`, `Poptag`, `Event`, `Query`, `Custom`, `Commodity` | — | not routable |
+| `Open`, `Close`, `Balance`, `Note`, `Document`, `Transaction` | `Account` | `transactions/{account}/{date}.beancount` |
+| `Pad` | `Account` (the *padded* account; `PadAccount` is **not** used for routing but does participate in dedup AST equality) | same as above |
+| `Price` | `Commodity` | `quotes/{commodity}/{date}.beancount` |
+| `Option`, `Plugin`, `Include`, `Event`, `Query`, `Custom`, `Commodity` | — | not routable |
 
-`Assets:Foo:Bar:Baz` becomes the path segment `Assets/Foo/Bar/Baz`. The
-`<YYYYmm>` token is the directive's date formatted under the configured
+(`pushtag` / `poptag` are CST-only constructs handled at lowering time —
+`pkg/syntax/node_kind.go:13-14` — and never appear as `ast.Directive`
+values, so they never reach beanfile.)
+
+Template tokens follow §4.1: `{account}` expands to slash-separated path
+segments (`Assets:Foo:Bar:Baz` → `Assets/Foo/Bar/Baz`), `{commodity}` to
+the currency name, and `{date}` to the date formatted under the configured
 file pattern (`YYYY` / `YYYYmm` / `YYYYmmdd`).
+
+The date is taken from the directive's `DirDate()` (a `time.Time`) and
+formatted by reading `.Year()`, `.Month()`, `.Day()` directly — no
+timezone conversion is performed. Beancount dates are date-only, so
+`DirDate()` carries no meaningful clock; reading the calendar fields
+directly side-steps any `time.Local` vs. `time.UTC` ambiguity. The
+same rule applies to dedup grouping (when grouping by month, the
+`(year, month)` tuple comes from these accessors).
 
 Non-routable directives produce an **error by default**. The
 `--pass-through` flag changes this to "emit on stdout, preserving input order".
+With multiple input sources (e.g. several positional files), `--pass-through`
+emits them in argument order, never interleaving streams.
+
+`Commodity` carries a date and a currency name and could in principle be
+routed (for example, to `commodities/<CCY>.beancount`), but no convention
+has been agreed in Phase 7.5. It is therefore treated as non-routable for
+now; deciding a routing convention is deferred to a follow-up phase.
 
 ### Transaction routing override
 
@@ -76,14 +97,23 @@ chosen. The order of resolution is:
 1. The transaction-level metadata `route-account: "Assets:Foo:Bar"` (string) —
    the value is taken as the destination account verbatim.
 2. The first posting whose metadata contains `route-account: TRUE` (bool) —
-   that posting's account is used.
+   that posting's account is used. A posting whose `route-account` is
+   `FALSE` is treated as if the entry were absent (it does not select
+   that posting and does not error). If *every* posting carries
+   `FALSE`, no posting matches and resolution falls through to rule 3.
+   Other malformed values are covered by Open Question #3.
 3. The configured `default_strategy` (`first-posting`, `last-posting`,
    `first-debit`, or `first-credit`).
 4. Fallback: the first posting's account.
 
 The metadata key is configurable (`override_meta_key`, default `route-account`).
 Whatever key is in effect is **stripped from the emitted directive** on every
-output, on both the transaction and the postings.
+output, on both the transaction and every posting — even the entries that
+were *not* selected by the resolution chain (e.g. when both a transaction-
+level string and a posting-level `TRUE` are present, rule 1 wins for
+routing but the posting-level `TRUE` is still stripped on emit). The
+original input directive is never mutated; stripping happens on a deep
+copy.
 
 ### Dedup: three-way decision per input directive
 
@@ -101,16 +131,26 @@ For each directive `D` whose routing destination is `P`:
 
 Equivalence is OR-combined from two rules:
 
-- **AST equality** via `go-cmp`, with `Span`/line/column information, the
-  origin filename, the `route-account` metadata, and the commented-out flag
-  excluded from the comparison.
+- **AST equality** via `go-cmp`, with the `Span` field of every directive
+  (and of every nested `Posting`) excluded from the comparison. `Span`
+  itself wraps two `Position` values (`pkg/ast/ast.go:18-22`), and each
+  `Position` carries filename, byte offset, line, and column
+  (`pkg/ast/ast.go:10-16`); excluding the `Span` wrapper covers both
+  sides at once. The `route-account` metadata entry is also stripped
+  from the comparison since it is an internal-only routing hint.
 - **Metadata-key equality**: for each entry in the resolved
   `equivalence_meta_keys` list, both directives carry that key with equal
   values. Useful when an upstream importer already stamps a stable
   `import-id` or similar.
 
+Note that the "commented-out" property is *not* a field of any AST type;
+it lives on the `CommentedDirective` wrapper in `pkg/distribute/comment`
+(§4.3). The wrapper is unwrapped before equality is computed, so the
+property never enters the comparison.
+
 The dedup index is also updated as directives are accepted within a single
-invocation, so duplicates within the input stream are themselves skipped.
+invocation, so duplicates within the input stream are themselves skipped
+(see §7 for the precise semantics).
 
 ### Merge semantics
 
@@ -138,8 +178,17 @@ On exit, unless `--quiet` is given, each destination file gets one stderr line:
 ```
 beanfile: transactions/Assets/Bank/202401.beancount: written=3 commented=1 skipped=0
 beanfile: quotes/JPY/202401.beancount:               written=12 commented=0 skipped=2
-beanfile: total: written=15 commented=1 skipped=2 passthrough=0
+beanfile: transactions/Assets/Cash/202312.beancount: written=0 commented=0 skipped=4
+beanfile: total: written=15 commented=1 skipped=6 passthrough=0
 ```
+
+The skip-only line (`written=0 commented=0 skipped=4`) is shown by
+default; whether to suppress such "nothing changed" lines is Open
+Question #13.
+
+`passthrough` is **global only** — non-routable directives have no
+destination path, so they are reported on the `total:` line only and do
+not contribute to any per-path row.
 
 ## 3. High-level architecture
 
@@ -170,8 +219,15 @@ beanfile: total: written=15 commented=1 skipped=2 passthrough=0
 │  - atomic write                             │
 └──────────────────────────────────────────┘
                  ↓ uses
-   pkg/syntax (CST), pkg/ast, pkg/printer, pkg/format, pkg/loader
+   pkg/syntax (CST), pkg/ast, pkg/printer, pkg/format
 ```
+
+The implementation deliberately bypasses `pkg/loader`: that package always
+runs the plugin pipeline plus the `postBuiltins` array
+(pad/balance/validations — `pkg/loader/loader.go:79-83`, applied via
+`runPipeline` at `loader.go:121-127`), neither of which beanfile needs.
+Include resolution alone is provided by `pkg/ast.LoadFile` / `LoadReader`
+(`pkg/ast/load.go:16-58`), and that is what beanfile uses.
 
 ## 4. Package details
 
@@ -197,7 +253,6 @@ type Config struct {
     Format             FormatSection // global format defaults
     AccountOverrides   []AccountOverride   // longest prefix wins
     CommodityOverrides []CommodityOverride
-    PassThrough        bool                // default false
 }
 
 type FormatSection struct { // every field optional
@@ -255,9 +310,21 @@ func Decide(d ast.Directive, cfg *Config) (Decision, error)
 
 - Account overrides match by **longest account-segment prefix**; ties resolve
   in TOML order. `Assets:JP` matches `Assets:JP:Cash` but not `Assets:JPN`.
+- `Order` is declared as `string` in the TOML/`Section` types and as
+  `OrderKind` (an int enum) in `Decision`. Conversion happens once at
+  config-load time with a case-insensitive match against the literals
+  `"ascending"`, `"descending"`, and `"append"`. Any other value (typos,
+  abbreviations like `"asc"`, empty strings) is rejected as a config
+  error before `Decide` is ever called; there is no fallback to the
+  default.
 - Template tokens: `{account}` becomes path segments, `{date}` is formatted
   per the resolved file pattern, `{commodity}` is substituted verbatim.
 - `Decide` is pure; it does not touch the filesystem.
+- `Decision.PassThrough` is purely a function of the directive's kind
+  (set when `Decide` cannot pick a destination). It does **not** depend
+  on the `--pass-through` CLI flag — that flag is read by the CLI in
+  step 5 of §4.5 to decide what to do *when* `Decision.PassThrough` is
+  true. `Config` therefore carries no pass-through field.
 - `Format` resolution is field-wise: each `*T` field falls back to its parent
   scope when nil. Resolution order, low to high precedence:
   1. `pkg/format` built-in defaults
@@ -281,22 +348,63 @@ type Index interface {
 
 type MatchKind int // MatchAST | MatchMeta | MatchNone
 
-func BuildIndex(ctx context.Context, ledgerRoot string, opts ...Option) (Index, error)
+func BuildIndex(ctx context.Context, ledgerRoot, configRoot string, opts ...Option) (Index, []ast.Diagnostic, error)
 ```
 
-`BuildIndex` walks the ledger via `pkg/loader.LoadFile`, then for each
-member source file:
+The `[]ast.Diagnostic` return carries every diagnostic produced during
+the ledger walk (parse errors, lower errors, include resolution
+problems). The CLI feeds it through the diagnostic policy in §4.5 step
+4 — Error severity aborts, Warning severity is logged unless `--quiet`.
+The `error` return is reserved for system-level failures
+(`ctx.Err()`, I/O on the root file).
 
-- Records every active directive under its origin path.
-- Reads the raw bytes and runs `pkg/distribute/comment.ExtractCommented` to
-  recover commented-out directives, lowering each successful parse to AST and
-  recording it under the same path with `commented = true`.
+`BuildIndex` walks the ledger via `pkg/ast.LoadFile(ledgerRoot)` (which
+resolves `include` directives but does not run plugins or validation —
+exactly what beanfile needs). For each member source file:
+
+- Records every active directive under its **canonicalized path key**
+  (see below).
+- Reads the raw bytes once and runs `pkg/distribute/comment.ExtractCommented`
+  to recover commented-out directives, lowering each successful parse to AST
+  and recording it under the same canonicalized path with `commented = true`.
+
+`ctx` is checked at member-file boundaries — `BuildIndex` calls
+`ctx.Err()` before each new file's read+parse+comment-extract pass, so
+a cancelled context aborts traversal cleanly. `ast.LoadFile` itself does
+not take a context, so the granularity is one file at a time; for typical
+ledgers (tens to hundreds of files) this is fine.
+
+**Path key canonicalization.** `ast.LoadFile` records each directive's
+origin in `Span.Filename` as an absolute filesystem path
+(`pkg/ast/load.go:44-52`). `route.Decide`, on the other hand, returns
+destination paths relative to `Config.Root`. To make `InDestination(P, ...)`
+queries succeed, `BuildIndex` normalizes every member file's absolute
+path into `Config.Root`-relative form using `filepath.Rel(configRoot, abs)`
+before using it as the index key. Member files that resolve to outside
+`Config.Root` (e.g., the root file includes `../shared/foo.beancount`)
+yield a `..`-prefixed key; routing never produces such paths, so those
+members are naturally out of scope and never match an `InDestination`
+query — which is the intended behaviour (the merger does not write to
+files outside the configured root).
+
+The same canonicalization is applied to the `path` argument of
+`Index.Add`, `InDestination`, and `InOtherActive` — by contract, callers
+pass `Config.Root`-relative paths only.
+
+The conventional setup places `--ledger` inside `--root` (typically at
+the root). When `--ledger` is *outside* `--root` (e.g., the user runs
+`beanfile --ledger /repo/main.beancount --root /repo/transactions/`),
+the root file's canonicalized key is `..`-prefixed and never matches a
+routing destination — which is the desired outcome, since the root
+file is not a routing target.
 
 Equivalence:
 
-- **AST equality** uses `go-cmp` with a fixed `cmp.Option` set (`equalityOpts`)
-  that ignores `Span`, `Pos`, line/column, the origin filename, the
-  `route-account` meta entry, and the `commented` flag.
+- **AST equality** uses `go-cmp` with the option set returned by the
+  `equalityOpts(overrideMetaKey)` helper (definition in §7), which
+  ignores every `ast.Span` value (`pkg/ast/ast.go:18-22`) anywhere in
+  the AST tree and strips the routing-hint metadata entry from both
+  sides.
 - **Meta equality** triggers when both directives carry one of the keys in
   `eqKeys` and the values compare equal.
 - The two rules are OR-combined; the first match wins and `MatchKind` records
@@ -318,9 +426,11 @@ calls `Add`, so a subsequent input directive that matches will be skipped.
 type CommentedDirective struct {
     SourcePath string
     StartLine  int
-    EndLine    int    // exclusive
+    EndLine    int    // exclusive; reflects the shrunk-to length on tail-shrink success
     Indent     string // ";" + zero or more ASCII whitespace characters
-    Body       []byte // candidate block with the prefix stripped
+    Body       []byte // the K lines that actually parsed (with prefix stripped),
+                     // not the full N-line candidate block — the tail lines that
+                     // were dropped during the shrink fallback are not stored here
     Directive  ast.Directive // non-nil iff the body parsed cleanly
 }
 
@@ -337,12 +447,12 @@ Detection rules:
    prefix. Empty lines, shorter prefixes, or EOF terminate the block.
 4. The block's lines (with prefix stripped) are concatenated and parsed via
    `pkg/syntax.Parse`.
-5. **Tail-shrink fallback**: if the full block fails to parse, retry with
-   `N-1`, `N-2`, … `1` trailing lines removed. The first prefix length that
-   parses to at least one directive defines the commented directive; the
-   remaining tail lines are treated as ordinary comments. This accommodates
-   the common pattern of a commented directive followed by a same-prefixed
-   plain-comment annotation:
+5. **Tail-shrink fallback**: if the full block fails to parse, retry
+   with `N-1`, `N-2`, … `1` trailing lines removed. The first prefix
+   length that parses to at least one directive defines the commented
+   directive; the remaining tail lines are treated as ordinary comments.
+   This accommodates the common pattern of a commented directive
+   followed by a same-prefixed plain-comment annotation:
 
    ```
    ; 2024-01-15 * "Coffee" "Espresso bar"
@@ -350,6 +460,11 @@ Detection rules:
    ;   Assets:Cash         -3.50 USD
    ; receipt was scanned 2024-01-16
    ```
+
+   Dropped tail lines stay in the source file unchanged — the merger
+   never edits regions outside its own insertions, so byte-exact
+   round-tripping is preserved regardless of which lines `Body` retains.
+   The tail lines simply do not participate in dedup.
 6. If no shrink length parses, the entire block is treated as a plain
    comment and contributes nothing to the dedup index.
 7. Newlines: both `\n` and `\r\n` are accepted.
@@ -365,17 +480,22 @@ and the scan only runs once per ledger build.
 
 ```go
 type Plan struct {
-    Path    string
-    Inserts []Insert // input order preserved
+    Path                              string
+    Order                             OrderKind // applies to every Insert; one sort order per file
+    BlankLinesBetweenDirectives       int       // file-level: target N for spacing rule (§4.4 step 5)
+    InsertBlankLinesBetweenDirectives bool      // file-level: B switch (§4.4 step 5)
+    Inserts                           []Insert  // input order preserved
 }
 
 type Insert struct {
     Directive     ast.Directive
-    Order         OrderKind
-    Commented     bool   // true → emit via comment.EmitCommented
-    Prefix        string // commented-only, default "; "
+    Commented     bool             // true → emit via comment.EmitCommented
+    Prefix        string           // commented-only, default "; "
     StripMetaKeys []string
-    Format        []format.Option
+    Format        []format.Option  // body-only options: comma_grouping, align_amounts,
+                                   // amount_column, east_asian_ambiguous_width, indent_width.
+                                   // Spacing options live on Plan; including them here is a
+                                   // schema violation that the merger ignores.
 }
 
 type Options struct {
@@ -392,15 +512,65 @@ type Stats struct {
 func Merge(plan Plan, opts Options) (Stats, error)
 ```
 
+`Order` belongs to the `Plan`, not to individual inserts: a single file
+has one canonical sort order, and mixing orders within one file would be
+nonsensical. The CLI groups inserts by destination path *and* by the
+`Order` resolved for that path; if a future scenario produces conflicting
+orders for the same path, the CLI must surface that as a config error
+before constructing the `Plan`.
+
+The split between `Plan` and `Insert` mirrors the scope of each option:
+the two spacing options (`blank_lines_between_directives`,
+`insert_blank_lines_between_directives`) describe the file's layout and
+must be uniform across all directives in that file, so they live on
+`Plan` as typed fields rather than as opaque `format.Option` functions.
+The five body-printing options (`comma_grouping`, `align_amounts`,
+`amount_column`, `east_asian_ambiguous_width`, `indent_width`) describe
+how an individual directive is rendered and stay on `Insert.Format` —
+this allows a cross-posting commented insert to be rendered with a
+different style if a future config requires it.
+
+Because `format.Option` is `func(*formatopt.Options)` — opaque at call
+sites — the merger cannot inspect a slice to filter out spacing-mutating
+closures. Instead, when emitting an insert it does the following:
+
+1. Resolve `Insert.Format` against `formatopt.Default()` to get an
+   effective `formatopt.Options` value.
+2. **Overwrite** the two spacing fields on that value with
+   `Plan.BlankLinesBetweenDirectives` and
+   `Plan.InsertBlankLinesBetweenDirectives`.
+3. Use the resulting options for both `printer.Fprint` (which only
+   reads the body fields when printing one directive) and for the
+   merger's own spacing logic (which reads only the spacing fields).
+
+Any spacing-mutating option that a caller *did* place in `Insert.Format`
+is therefore silently dropped by step 2 — a documented schema violation
+with a defined runtime behaviour rather than undefined behaviour.
+
 Behaviour:
 
-1. **New file path**: create parent directories, sort the inserts according
-   to their `Order`, print them with `printer.Fprint`, and write atomically
-   (temp file in the same directory + `fsync` + rename).
-2. **Existing file**: read the file, parse it with `pkg/syntax.ParseReader`,
-   and walk the top-level children. Each directive node's date is extracted
-   via `Node.FindToken(syntax.DATE)`. Undated directives (file headers) act
-   as fixed anchors and are excluded from the date search.
+1. **New file path**: create parent directories, sort the inserts (using a
+   **stable** sort, so same-date inserts retain their input/FIFO order)
+   according to `Plan.Order`, print each one with `printer.Fprint`, and
+   place `Plan.BlankLinesBetweenDirectives` blank lines between
+   consecutive inserts (the same `B`/`N` rule from step 5 below applies,
+   with no "existing side" since the file is new). The first insert
+   starts at byte 0 with no leading blank lines; the file ends with
+   exactly one trailing newline. Write atomically (temp file in the
+   same directory + `fsync` + rename).
+2. **Existing file**: read the file's bytes once into memory (the merger
+   needs them both for `syntax.ParseReader` and as the canvas for patches
+   in step 4), parse with `pkg/syntax.ParseReader`, and walk the top-level
+   children. Each directive node's date is extracted via
+   `Node.FindToken(syntax.DATE)`. `FindToken` is shallow-only
+   (`pkg/syntax/node.go:54`), but every dated-directive parser in
+   `pkg/syntax/parser.go` (`parseTransaction`, `parseOpen`, `parseClose`,
+   `parseCommodity`, `parseBalance`, `parsePad`, `parseNote`,
+   `parseDocument`, `parseEvent`, `parseQuery`, `parsePrice`,
+   `parseCustom`) attaches the DATE token directly on the directive
+   node, so the call always succeeds for the kinds beanfile cares about.
+   Undated directives (file headers) act as fixed anchors and are
+   excluded from the date search.
 3. **Insertion offset** per insert is decided by binary search; see §9.
    Same-date inserts to the same path collapse onto the same offset and are
    emitted in input order.
@@ -414,19 +584,51 @@ Behaviour:
    `BlankLinesBetweenDirectives` (`N`) and `InsertBlankLinesBetweenDirectives`
    (`B`) format options. The merger inspects the trailing newline run of the
    bytes immediately before the insertion offset and the leading newline run
-   of the bytes immediately after:
-   - **`B = true`**: ensure exactly `N` blank lines (i.e. `N+1` newlines) on
-     each side, padding the *new* side. The existing surrounding bytes are
-     never modified.
-   - **`B = false`**: keep the existing whitespace as-is; only ensure that at
-     least one newline separates new from neighbour. Excess blank lines on
-     the existing side are preserved (no normalization).
-   - File start and end lack one of the two sides; behave accordingly.
+   of the bytes immediately after.
+
+   `N` is the *target* count of blank lines between consecutive directives.
+   `B` controls whether the merger creates blank lines where none currently
+   exist. Note that the merger **deliberately departs** from
+   `internal/formatopt/options.go:12-16`'s documented `B = false`
+   semantics ("existing blank lines are normalized to
+   `BlankLinesBetweenDirectives` but no new blank lines are created"):
+   the merger cannot normalize *existing* blank lines without editing
+   bytes outside its own insertions, which would violate the
+   relative-position invariant. Normalizing pre-existing whitespace is
+   left to a follow-up `beanfmt` pass.
+
+   Let `X` be the count of blank lines already present on the existing
+   side immediately adjacent to the insertion offset.
+   - **`B = true`**: the merger contributes `max(0, N - X)` blank lines on
+     that side, aiming for `N` total. If the file already has more than `N`
+     blank lines there (`X > N`), the merger does not reduce them — it
+     never edits bytes outside its own insertions. Whole-file beanfmt
+     would then trim them; the merger leaves that to a later format pass.
+   - **`B = false`**: the merger contributes zero blank lines and only the
+     single newline needed to terminate its insertion. Whatever blank
+     lines already existed on the existing side stay as-is.
+   - **File start** (insertion before the first existing directive):
+     no leading blank lines are added — the new directive starts at byte
+     0 (or right after a leading byte-order mark / shebang if one exists,
+     though beancount source typically has neither). The trailing side
+     follows the normal `B`/`N` rule against whatever comes after.
+   - **File end** (insertion after the last existing directive, or
+     `append` Order, or empty file): no trailing blank lines are added,
+     but the merger ensures the file ends with exactly one newline (POSIX
+     text-file convention). The leading side follows the normal `B`/`N`
+     rule against the previous existing directive.
 6. **Atomic write**: temp file in the same directory, `fsync`, rename.
 
-Invariant: applying `pkg/format` (with the same options) to the merger's
-output should be a no-op for the bytes the merger produced. The merger does
-not reformat untouched existing regions.
+Invariant: the bytes the merger *itself* added (the new directive's body
+plus the *padding* it chose to inject on the new side) are canonically
+formatted under the resolved options. This is a per-insertion-side
+invariant, not a whole-file one: when the existing side already had more
+blank lines than `N`, the surrounding region as a whole does not satisfy
+`pkg/format` semantics, but the merger declines to touch existing bytes.
+Whole-file `beanfmt` (with the same options) would tidy such pre-existing
+oddities; the merger leaves that to a later format pass and accepts that
+its output is canonical only modulo whatever the existing file already
+contained.
 
 ### 4.5 `cmd/beanfile`
 
@@ -435,7 +637,9 @@ beanfile [flags] --ledger ROOT.beancount [files...]
 
   --ledger PATH                 ledger root file (REQUIRED)
   --config PATH                 TOML config (default: ./beanfile.toml if present)
-  --root PATH                   destination root (default: dir of --ledger)
+  --root PATH                   destination root for routing AND the base for
+                                dedup index path canonicalization (§4.2;
+                                default: dir of --ledger)
   --dry-run                     print proposed patches instead of writing
   --pass-through                emit non-routable directives on stdout
                                 (default: error out)
@@ -458,26 +662,70 @@ Orchestration:
 
 1. Load the config (explicit `--config` > `./beanfile.toml` > built-in
    defaults). CLI flags overlay the result.
-2. `dedup.BuildIndex(ctx, --ledger)` builds the active+commented index over
-   the entire transitive include closure.
+2. `dedup.BuildIndex(ctx, --ledger, --root)` builds the active+commented
+   index over the entire transitive include closure (using
+   `pkg/ast.LoadFile`, which resolves includes without running validation
+   or plugins). Returns `(Index, []ast.Diagnostic, error)`; the
+   diagnostic slice is fed through the policy in step 4 below before any
+   input is read.
 3. Read input: stdin when no positional args (or a single `-`), otherwise
-   each file in turn.
-4. Lower the input via `pkg/loader.LoadReader` (validation off, no include
-   resolution — the input is treated as a flat directive stream).
-5. For each directive:
+   each positional file in turn.
+4. Parse each input source with `pkg/ast.LoadReader` (stdin) or
+   `pkg/ast.LoadFile` (positional files). This bypasses the plugin
+   pipeline entirely and yields a flat AST directive stream alongside an
+   `*ast.Ledger` whose `Diagnostics` slice may be non-empty (parse
+   errors, lowering errors, include resolution failures).
+
+   **Diagnostic policy** (applies to both the ledger build in step 2 and
+   the input parse here):
+   - Any `Severity == Error` diagnostic is fatal: print all collected
+     diagnostics to stderr, then exit non-zero. No destination files are
+     touched.
+   - `Severity == Warning` diagnostics are printed to stderr unless
+     `--quiet` is set, but processing continues.
+
+   **Include directives in input are not resolved.** The CLI passes
+   `ast.WithBaseDir("")` to *both* `LoadReader` and `LoadFile` so that
+   relative includes uniformly emit an Error-severity diagnostic
+   (`pkg/ast/load.go:123-135`) and abort the run. This avoids surprise
+   when a positional input file accidentally `include`s another
+   beancount file from the same directory — without the override,
+   `LoadFile` would silently set `WithBaseDir(filepath.Dir(absPath))`
+   (`pkg/ast/load.go:49-52`) and pull external files into the input
+   stream. Absolute-path includes still resolve in either case; this
+   asymmetry is accepted as the Phase 7.5 contract. If a use case
+   emerges for resolving relative includes from inputs (e.g., a
+   hand-curated import-file batch), a future flag like
+   `--inputs-resolve-includes` can opt back in.
+5. For each directive in input order:
    - If `route.Decide` returns `PassThrough = true`:
-     - With `--pass-through`: emit on stdout; bump `passthrough`.
+     - With `--pass-through`: emit on stdout; bump the global `passthrough`
+       counter (counts directives, not bytes or lines).
      - Without: error out and stop.
-   - Otherwise apply the three-way dedup decision (§2):
-     - **InDestination match** → skip; bump `Skipped[P]`; do not call `Add`.
-     - **InOtherActive match** → record `Insert{Commented: true}` into the
-       per-path plan; bump `Commented[P]`; call `Add(P, d, commented=true)`.
-     - **No match** → record `Insert{Commented: false}`; bump `Written[P]`;
-       call `Add(P, d, commented=false)`.
+   - Otherwise apply the three-way dedup decision (§2). The path `P` is the
+     `Decision.Path` returned by `route.Decide` — this is the destination
+     the directive *would* be written to, and per-path stats are bucketed
+     under it regardless of which branch is taken below. The three
+     branches are tried in order and the first match short-circuits:
+     - **Rule 1** — `InDestination(P, d)` matches → skip; bump
+       `Skipped[P]`; do not call `Add`. This is the **only** branch that
+       contributes to `Skipped[P]`; rules 2 and 3 always write something.
+     - **Rule 2** — Rule 1 did not match, and `InOtherActive(P, d)`
+       matches → record `Insert{Commented: true}` into the per-path
+       plan; bump `Commented[P]`; call `Add(P, d, commented=true)`.
+     - **Rule 3** — neither matched → record `Insert{Commented: false}`;
+       bump `Written[P]`; call `Add(P, d, commented=false)`.
 6. Group inserts by path, preserving input order within each group, and
-   call `merge.Merge` per path.
-7. With `--dry-run`, print the proposed patches with `+` / `;+` line
-   prefixes instead of writing.
+   call `merge.Merge(plan, merge.Options{})` per path. The `Options`
+   struct is empty in Phase 7.5 (reserved for future per-call overrides);
+   pass a zero value.
+7. With `--dry-run`, print the proposed patches to stdout instead of
+   writing files. **MVP format** (locked in for the first sub-phase that
+   ships `--dry-run`; Open Question #8 may refine it later): one block
+   per destination, headed by `--- <relative path> ---`, then each
+   inserted line prefixed with `+ ` for active inserts and `;+ ` for
+   commented inserts. No surrounding context is shown; this is a
+   one-way preview, not a reversible diff.
 8. Print per-path and total stats on stderr unless `--quiet`.
 
 ## 5. Configuration file
@@ -503,13 +751,16 @@ override_meta_key = "route-account"
 
 # Global format defaults. All seven pkg/format options are settable.
 [routes.format]
+# These match internal/formatopt.Default() exactly; an empty
+# [routes.format] section (or omitting it entirely) yields identical
+# behaviour. Shown here for explicitness — change any field to override.
 comma_grouping                        = false
 align_amounts                         = true
-amount_column                         = 50
-east_asian_ambiguous_width            = 1
+amount_column                         = 52
+east_asian_ambiguous_width            = 2
 indent_width                          = 2
 blank_lines_between_directives        = 1
-insert_blank_lines_between_directives = true
+insert_blank_lines_between_directives = false
 
 # Section-level format overrides
 [routes.account.format]
@@ -586,23 +837,67 @@ Multi-line directives have the prefix (default `"; "`) prepended to every
 line, including continuation lines belonging to postings or metadata. A
 trailing newline ensures the next directive starts cleanly.
 
-### File-header directives
+### Non-routable directives
 
 Without `--pass-through`, encountering an `Option`, `Plugin`, `Include`,
-`Pushtag`, `Poptag`, `Event`, `Query`, `Custom`, or `Commodity` directive in
-the input is a hard error; the implementation does not currently know where
-to put them. With `--pass-through`, they are written verbatim to stdout in
-input order.
+`Event`, `Query`, `Custom`, or `Commodity` directive in the input is a
+hard error; the implementation does not currently know where to put them.
+With `--pass-through`, they are written verbatim to stdout in input order
+across each input source, with sources processed in the order given on
+the command line (no interleaving).
+
+`Commodity` is technically dated (`pkg/ast/directives.go:119-129`) and is
+*not* a file-header directive in the way `Option` / `Plugin` / `Include`
+are — it could plausibly be routed to a per-currency file. Phase 7.5
+nonetheless treats it as non-routable because no convention has been
+agreed; a later phase may set one.
 
 ## 7. Dedup and equivalence
 
 ### Equivalence rules (OR)
 
-1. **AST equality** — `go-cmp` with `equalityOpts` excluding:
-   - `Span`, `Pos`, line/column.
-   - Origin filename.
-   - The `route-account` metadata entry on transactions and postings.
-   - The `commented` flag on stored directives.
+1. **AST equality** — `go-cmp` invoked with the option set returned by
+   `equalityOpts(overrideMetaKey)`:
+
+   ```go
+   import (
+       "github.com/google/go-cmp/cmp"
+       "github.com/google/go-cmp/cmp/cmpopts"
+       "github.com/yugui/go-beancount/pkg/ast"
+   )
+
+   // overrideMetaKey is the resolved value of TransactionSection.OverrideMetaKey
+   // (default "route-account").
+   func equalityOpts(overrideMetaKey string) cmp.Options {
+       return cmp.Options{
+           // Ignore every ast.Span anywhere in the AST tree. ast.Span wraps
+           // two ast.Position values (filename, offset, line, column —
+           // pkg/ast/ast.go:10-22); a single IgnoreTypes for the wrapper
+           // covers every directive type and every nested Posting, and any
+           // new directive type that embeds Span is automatically covered.
+           cmpopts.IgnoreTypes(ast.Span{}),
+           // Strip the routing-hint metadata entry (under whatever key
+           // override_meta_key resolves to) from both sides before
+           // comparison. ast.Metadata is a struct wrapping
+           // Props map[string]MetaValue (pkg/ast/ast.go:173-177);
+           // cmp walks into the struct and IgnoreMapEntries fires on the
+           // inner map. The value type must match the map's value type
+           // (ast.MetaValue), not interface{}.
+           cmpopts.IgnoreMapEntries(func(k string, _ ast.MetaValue) bool {
+               return k == overrideMetaKey
+           }),
+       }
+   }
+   ```
+
+   "Commented-out" status is *not* an AST property; it lives on the
+   `CommentedDirective` wrapper from `pkg/distribute/comment` (§4.3) and
+   is unwrapped before the comparison runs.
+
+   No fields beyond the two above are excluded in Phase 7.5. If a future
+   sub-phase finds another field that needs to be ignored, it is added to
+   `equalityOpts` rather than handled at the call site.
+
 2. **Metadata equality** — the resolved `EqMetaKeys` for the directive's
    account-tree (transactions) or commodity (prices) yield at least one key
    present in both directives with equal values.
@@ -619,10 +914,39 @@ rule. They are notes, not a canonical record.
 
 ### Stream-internal dedup
 
-After each accepted insert, the CLI calls `Add(path, d, commented)`. A later
-input directive that hashes-equal to that one will fire `InDestination` and
-be skipped. This prevents accidental duplicates when the same input file is
-piped twice or when an upstream importer emits redundant records.
+After each accepted insert (active *or* commented), the CLI calls
+`Add(path, d, commented)`. After a *skip*, no `Add` is made (the matched
+existing directive is already in the index). A later input directive that
+matches will then fire `InDestination` against either the pre-existing
+ledger entry or the just-added one and be skipped.
+
+Concrete example: the input contains the same directive `D` twice, and
+neither already exists in the ledger.
+
+| Step | Decision | `Written[P]` | `Skipped[P]` | Index after |
+|---|---|---|---|---|
+| `D` (1st) | no match → write | `+1` | `0` | gains active `D@P` |
+| `D` (2nd) | `InDestination` match → skip | `+0` | `+1` | unchanged |
+
+Total stats for that path: `written=1, skipped=1`. The same logic catches
+accidental duplicates from a stream replayed through a pipe, or from an
+upstream importer emitting redundant records.
+
+A second example covers cross-posting cascade: input `D` matches an
+active equivalent at some other path `Q`, so it is recorded at `P` as
+commented-out (rule 2). A later input `D'` (equivalent to `D`) with the
+same destination `P` also matches the same active equivalent at `Q`
+*and* now matches the commented entry just added at `P` — `InDestination`
+fires (it covers both active and commented in same path per the §7
+scope table) and `D'` is skipped:
+
+| Step | Decision | `Commented[P]` | `Skipped[P]` | Index after |
+|---|---|---|---|---|
+| `D` (1st) | active at `Q` ≠ `P` → write commented at `P` | `+1` | `0` | gains commented `D@P` |
+| `D'` (2nd) | `InDestination` (commented at `P`) → skip | `+0` | `+1` | unchanged |
+
+So duplicate cross-posting markers do not accumulate — they are
+deduplicated on the second occurrence.
 
 ### Future: fuzzy matching
 
@@ -699,22 +1023,152 @@ integration depend on all three.
   - `Node.FindToken(syntax.DATE)` for date extraction (`pkg/syntax/node.go:54`).
 - `pkg/ast`:
   - All directive types, `ast.Directive` interface, `DirDate()`, `DirKind()`.
-  - `ast.Lower` (`pkg/ast/lower.go:15`) lowers a single CST file to AST.
+  - `ast.LoadFile(path, opts...)` and `ast.LoadReader(r, opts...)`
+    (`pkg/ast/load.go:16-58`) — parse with include resolution but no
+    plugin pipeline. These are the entry points for both the input stream
+    and the ledger index. Note: this means beanfile depends on the
+    `pkg/ast` loader entry points but **not** on `pkg/loader`,
+    `pkg/validation`, or `pkg/ext` (Phases 4 and 6 are not required).
 - `pkg/printer`:
-  - `Fprint(w, node, opts...)` (`pkg/printer/printer.go:20`) — accepts a
-    single directive.
-- `pkg/loader`:
-  - `LoadFile(ctx, path, opts...)` (`pkg/loader/loader.go:107`) — used to
-    walk the include closure when building the dedup index.
+  - `Fprint(w, node, opts...)` (`pkg/printer/printer.go:20`). Accepts
+    `*ast.File`, `ast.File`, `*ast.Ledger`, `ast.Ledger`,
+    `[]ast.Directive`, `*ast.Amount`, `ast.Amount`, or a single
+    `ast.Directive`. The merger feeds it one directive at a time.
 - `pkg/format`: `Option` plus the seven `With*` constructors
   (`pkg/format/option.go`).
+- `internal/formatopt`: not directly imported (private), but its
+  documented semantics for `InsertBlankLinesBetweenDirectives`
+  (`internal/formatopt/options.go:12-16`) anchor the merger's spacing
+  rules in §4.4.
 - `github.com/BurntSushi/toml`: already a transitive dependency, promoted
   to direct in 7.5f.
 - `github.com/google/go-cmp`: already direct, used for AST equality.
 
 ## 11. Integration with bean-daemon (Phase 10)
 
-Phase 10's `POST /directives` endpoint is the live-service equivalent of
-`beanfile`. When that phase lands, it should use `pkg/distribute/route` and
-`pkg/distribute/merge` (and `pkg/distribute/dedup` for idempotency on
-retries) rather than reimplementing the logic.
+PLAN.md describes Phase 10's `POST /directives` as appending to "a
+designated target file" *and* notes that the implementation reuses
+`pkg/distribute/{route,merge,dedup,comment}`. Those two statements
+describe different shapes:
+
+- The endpoint signature implies a **single-file** write — the caller
+  picks the destination, the server appends.
+- The reuse note implies **multi-file routing** — `pkg/distribute/route`
+  picks the destination per directive.
+
+The conflict is intentional left to Phase 10 to resolve. Two paths exist:
+
+1. Reshape `POST /directives` to accept a routing-aware request body
+   (omit the target file, let the server route via `pkg/distribute/route`).
+   The endpoint then becomes the live-service mirror of `beanfile`.
+2. Keep the single-file signature and reuse only `pkg/distribute/merge`
+   (CST round-trip insertion + spacing) and `pkg/distribute/dedup` (for
+   idempotent retries), leaving routing to the caller.
+
+This document does not commit Phase 10 to either; the `pkg/distribute/*`
+libraries are designed to be useful in both shapes, and Phase 7.5 makes
+no API stability promises that Phase 10 must honour. PLAN.md should be
+revisited at Phase 10 design time to disambiguate.
+
+## 12. Open questions
+
+The following are deferred to the sub-phase that touches them. Each entry
+will be resolved in discussion with the user before that sub-phase's
+implementation begins.
+
+| # | Topic | Sub-phase |
+|---|---|---|
+| 1 | The `printer.Fprint` signature accepts many node kinds. The merger calls it once per directive — confirm there is no preferable batch path (e.g. passing `[]ast.Directive`) and decide which form to use. | 7.5b |
+| 2 | Should `Decision` expose the resolved account / commodity used for routing, in addition to `Path` and `Format`? Useful for CLI logging but not strictly required, since `Format` already encodes the resolved style. | 7.5a / 7.5f |
+| 3 | When a `route-account` metadata value is present but malformed (string that is not a valid `Account`, an unsupported type, an empty string), what is the behaviour: silent ignore, warn, error? | 7.5g |
+| 4 | The exact construction of `equalityOpts` — per-type `cmpopts.IgnoreFields(...)` enumerated for every directive type, vs. a generic `Span`-suppressing transformer that walks via reflection. The former is verbose but explicit; the latter is concise but harder to audit. | 7.5e |
+| 5 | Promoting `github.com/BurntSushi/toml` from indirect to direct requires running `bazel run //:gazelle -- update-repos -from_file=go.mod` per CLAUDE.md. Confirm the workflow and capture it in the 7.5f sub-phase plan. | 7.5f |
+| 6 | `EmitCommented(prefix string)` documents a default of `"; "` but `prefix` is a required argument. Either drop the "default" wording or make `prefix` a functional option / use a wrapper that supplies the default. | 7.5c |
+| 7 | Inter-insert spacing rule when multiple patches collide at the same byte offset. **Default for 7.5b unless changed**: apply the same `B`/`N` rule between every consecutive pair of new inserts, then between the last insert and the existing-after side. Subsumed by #11 below; resolve together. | 7.5b |
+| 8 | Concrete `--dry-run` output format. Candidate forms: unified-diff per destination, `+` / `;+` per-line prefix list (the MVP form locked in §4.5 step 7), or a structured JSON dump. Refine when the merger's patch list type is concrete. | 7.5i |
+| 9 | Should destinations with `written=0 commented=0 skipped=N` (only-skipped) appear in the per-file stats output, or only the total line? Skip-only is common for re-runs where nothing new was added. | 7.5i |
+| 10 | Behaviour of `append` Order against EOF trivia (trailing comments and blank lines). Insert before or after such trivia? "After the last dated directive" and "at EOF" diverge when trivia is present. | 7.5h |
+| 11 | When several inserts collide at the same byte offset and mix `Commented` and active forms, what is the emit order — input order, active-first, commented-first? **Default for 7.5b unless changed**: input order (matches the same-day FIFO promise in §2 / §8). Together with #7 this fully specifies same-offset collision behaviour for 7.5b implementation. | 7.5b |
+| 16 | Round-trip stability of comment prefix variants. The recognizer accepts `;` followed by zero or more whitespace characters (so `;2024-01-15 ...` and `;  2024-01-15 ...` are both valid), but the emitter always uses `"; "`. A re-emit therefore canonicalizes existing prefixes — decide whether that is desired or whether the emitter should preserve the input's prefix when known. | 7.5c |
+
+## 13. Implementation workflow
+
+Phase 7.5 deliberately separates **design and orchestration** (top-level
+agent) from **implementation** (subagents). Each sub-phase from §9
+follows the same loop. The intent is to keep design intent close to the
+user, who reviews each step plan before any code is written.
+
+For sub-phase **S<sub>k</sub>**:
+
+1. **Plan the step.** The top-level agent expands the row in §9 into a
+   detailed step plan: which packages and files are touched, which
+   functions are added, which open questions from §12 are in scope.
+   Cross-checks the plan against this design document for consistency
+   and against the existing codebase for API drift.
+
+2. **Resolve unknowns with the user.** Any open question, ambiguity, or
+   discovered divergence between the plan and the codebase is discussed
+   with the user *before* implementation. The agent does not start
+   implementing on its own initiative; it waits for the user's explicit
+   approval of the step plan.
+
+3. **Delegate implementation.** Once the user approves the step plan, the
+   agent launches an **implementation subagent** with:
+   - The relevant section(s) of this design document, copied into the
+     prompt (subagents do not inherit the parent's transcript).
+   - The approved step plan.
+   - A clear task scope and the requirement that `bazel build //...` and
+     `bazel test //...` must pass before completion.
+
+4. **Verify against the spec.** When the implementation subagent reports
+   completion, the agent launches a *separate* **verification subagent**
+   that reviews the implementation against the design document and the
+   step plan. The verification subagent looks for missing behaviour,
+   contract violations, and test coverage gaps. Its output is a list of
+   findings.
+
+   If findings are non-empty, the agent dispatches them to a (possibly
+   new) implementation subagent for fix-up, then re-runs verification.
+   Loop until verification reports no findings.
+
+5. **Run go-code-reviewer.** Once verification is clean, the agent
+   invokes the `go-code-reviewer` skill to audit the code against
+   *Effective Go*, *Go Code Review Comments*, and *Test Comments*. Any
+   findings round-trip through an implementation subagent the same way.
+   Loop until the reviewer has no comments.
+
+6. **Commit and report.** When all loops have converged, the agent
+   commits using a CLAUDE.md-compliant message and reports back to the
+   user. Per CLAUDE.md's *Clean Commit History* policy, every fix-up
+   produced by the verification or `go-code-reviewer` loops is folded
+   into the sub-phase's original commit via `git commit --amend` (if the
+   sub-phase is still on a single in-flight commit) or `git rebase -i`
+   with `fixup` / `squash`. **Each sub-phase lands as exactly one commit
+   on the branch** — review-loop noise never appears in history. The
+   user decides whether to advance to S<sub>k+1</sub>.
+
+### Roles in this loop
+
+| Actor | Writes code? | Writes plans / docs? |
+|---|:---:|:---:|
+| Top-level agent | **No** | Yes |
+| Implementation subagent | Yes | No |
+| Verification subagent | No | No (produces a findings list) |
+| `go-code-reviewer` skill | No | No (produces a findings list) |
+| User | — | Approves step plans, resolves open questions |
+
+The top-level agent's `Edit`/`Write` access during a sub-phase is limited
+to design-level artefacts (this document, plan files, PLAN.md updates).
+Implementation belongs to subagents.
+
+### Why this loop
+
+- Subagents do not see the parent's transcript, so each invocation is a
+  blank slate. The verification subagent therefore reviews against the
+  written design, not the agent's mental model — catching cases where
+  the implementation drifted from the spec.
+- `go-code-reviewer` after verification means style fixes never mask
+  behavioural gaps.
+- The user signs off on each step plan, so any divergence between intent
+  and implementation surfaces in design discussion rather than during
+  late-stage code review.
