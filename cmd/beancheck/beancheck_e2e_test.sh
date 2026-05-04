@@ -154,6 +154,59 @@ option "operating_currency" "USD"
 2024-01-01 open Assets:Cash USD
 EOF
 
+# Fixture 6b: transfer with `{date, "label"}` cost spec on the
+# augmenting side. Regression for upstream-compatible cost
+# interpolation: a partial cost spec on an augmenting posting must
+# be filled in from the transaction residual rather than rejected
+# as augmentation-requires-cost. The reducing side carries the same
+# date+label, so the augmenting side resolves to the matched lot's
+# 100 JPY cost.
+xferdatelabel="$tmp/transfer_datelabel.beancount"
+cat >"$xferdatelabel" <<'EOF'
+option "title" "Transfer Date+Label"
+option "operating_currency" "JPY"
+
+2024-01-01 open Assets:A           STOCK
+2024-01-01 open Assets:B           STOCK
+2024-01-01 open Equity:Opening     JPY
+
+2025-01-01 * "buy"
+  Assets:B                                  10 STOCK { 100 JPY, "label" }
+  Equity:Opening                          -1000 JPY
+
+2025-02-17 * "transfer"
+  Assets:A                                   5 STOCK { 2025-01-01, "label" }
+  Assets:B                                  -5 STOCK { 2025-01-01, "label" }
+EOF
+
+# Fixture 6c: transfer with bare `{}` cost spec on the augmenting
+# side, demonstrating the "lot-tracked, cost TBD" idiom upstream
+# beancount accepts. Two augmenting postings seed Assets:B with the
+# same lot, and the transfer carries `{}` on the augmenting side
+# only — the reducer must interpolate the cost from the reducing
+# posting's resolved 100 JPY weight.
+xferempty="$tmp/transfer_emptybraces.beancount"
+cat >"$xferempty" <<'EOF'
+option "title" "Transfer Empty Braces"
+option "operating_currency" "JPY"
+
+2024-01-01 open Assets:A           STOCK
+2024-01-01 open Assets:B           STOCK
+2024-01-01 open Equity:Opening     JPY
+
+2025-01-01 * "first"
+  Assets:B                                  10 STOCK { 100 JPY, "label" }
+  Equity:Opening                          -1000 JPY
+
+2025-01-02 * "second"
+  Assets:B                                  10 STOCK { 100 JPY, "label" }
+  Equity:Opening                          -1000 JPY
+
+2025-02-17 * "transfer"
+  Assets:A                                   5 STOCK {}
+  Assets:B                                  -5 STOCK { 2025-01-01, "label" }
+EOF
+
 # Fixture 7: balance assertion exercising upstream beancount's
 # doubled-factor inferred tolerance for hand-written balance
 # assertions (get_balance_tolerance: 2 * inferred_tolerance_multiplier
@@ -256,6 +309,34 @@ if [[ "$unknownplugin_rc" -ne 1 ]]; then
 fi
 if ! grep -q 'plugin-not-registered' "$tmp/unknownplugin.err"; then
   fail "unknown-plugin stderr missing 'plugin-not-registered':"$'\n'"$(cat "$tmp/unknownplugin.err")"
+fi
+
+# 1g. Transfer-date+label ledger → exit 0, no stderr. Regression for
+# cost interpolation on `{date, "label"}` augmenting postings: the
+# missing per-unit number must be filled from the transaction
+# residual (the matched reducing lot's resolved cost) rather than
+# rejected as augmentation-requires-cost.
+if ! "$bin" "$xferdatelabel" >"$tmp/xferdl.out" 2>"$tmp/xferdl.err"; then
+  fail "transfer-date-label ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/xferdl.err")"
+fi
+if [[ -s "$tmp/xferdl.err" ]]; then
+  fail "transfer-date-label ledger wrote to stderr:"$'\n'"$(cat "$tmp/xferdl.err")"
+fi
+if [[ -s "$tmp/xferdl.out" ]]; then
+  fail "transfer-date-label ledger wrote to stdout:"$'\n'"$(cat "$tmp/xferdl.out")"
+fi
+
+# 1h. Transfer-empty-braces ledger → exit 0, no stderr. Companion to
+# 1g but exercising the bare `{}` augmenting form (lot-tracked with
+# cost-from-context).
+if ! "$bin" "$xferempty" >"$tmp/xferempty.out" 2>"$tmp/xferempty.err"; then
+  fail "transfer-emptybraces ledger should exit 0; stderr:"$'\n'"$(cat "$tmp/xferempty.err")"
+fi
+if [[ -s "$tmp/xferempty.err" ]]; then
+  fail "transfer-emptybraces ledger wrote to stderr:"$'\n'"$(cat "$tmp/xferempty.err")"
+fi
+if [[ -s "$tmp/xferempty.out" ]]; then
+  fail "transfer-emptybraces ledger wrote to stdout:"$'\n'"$(cat "$tmp/xferempty.out")"
 fi
 
 # 1f. Doubled-tolerance ledger → exit 0, no stderr. Regression for

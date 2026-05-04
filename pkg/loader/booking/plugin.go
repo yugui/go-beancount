@@ -228,8 +228,8 @@ func diagnosticCode(c inventory.Code) string {
 		return "augmentation-requires-cost"
 	case inventory.CodeMultipleAutoPostings:
 		return "multiple-auto-postings"
-	case inventory.CodeUnresolvableAutoPosting:
-		return "unresolvable-auto-posting"
+	case inventory.CodeUnresolvableInterpolation:
+		return "unresolvable-interpolation"
 	case inventory.CodeInvalidAutoPosting:
 		return "invalid-auto-posting"
 	case inventory.CodeMixedInventory:

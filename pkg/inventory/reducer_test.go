@@ -230,7 +230,7 @@ func TestReducerWalk_AutoPostingWithPriceRejected(t *testing.T) {
 
 // TestReducerWalk_AutoPostingZeroResidual ensures that an auto-posting
 // attached to an already-balanced transaction (explicit postings sum
-// to zero) is rejected with CodeUnresolvableAutoPosting. The explicit
+// to zero) is rejected with CodeUnresolvableInterpolation. The explicit
 // postings are booked before the auto pass runs, so they appear in
 // booked; the auto posting itself does not.
 func TestReducerWalk_AutoPostingZeroResidual(t *testing.T) {
@@ -257,8 +257,8 @@ func TestReducerWalk_AutoPostingZeroResidual(t *testing.T) {
 		gotBooked = append(gotBooked, booked...)
 		return true
 	})
-	if len(errs) != 1 || errs[0].Code != CodeUnresolvableAutoPosting {
-		t.Fatalf("Walk errs = %v, want [CodeUnresolvableAutoPosting]", errs)
+	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
 	}
 	// The two explicit postings were booked in pass 1; the auto
 	// posting is rejected in pass 2 without producing a BookedPosting.
@@ -297,8 +297,8 @@ func TestReducerWalk_AutoPostingMultiCurrencyResidual(t *testing.T) {
 		gotBooked = append(gotBooked, booked...)
 		return true
 	})
-	if len(errs) != 1 || errs[0].Code != CodeUnresolvableAutoPosting {
-		t.Fatalf("Walk errs = %v, want [CodeUnresolvableAutoPosting]", errs)
+	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
 	}
 	for _, bp := range gotBooked {
 		if bp.Account == "Equity:Plug" {
@@ -963,5 +963,462 @@ func TestReducerInspect_SnapshotIndependence(t *testing.T) {
 	}
 	if got := len(insp.Booked); got != bookedLen {
 		t.Errorf("Booked len changed: %d, want %d", got, bookedLen)
+	}
+}
+
+// TestReducerWalk_InterpolatesSingleDeferred_DateLabel exercises the
+// upstream "transfer with date+label cost spec" pattern: the
+// augmenting side carries `{date, "label"}` (no number), the reducing
+// side carries the same lot key. Pass 2 fills the missing per-unit
+// from the reduction's resolved weight. After Walk, both sides have a
+// resolved Lot and no errors are emitted.
+func TestReducerWalk_InterpolatesSingleDeferred_DateLabel(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	xferDate := time.Date(2025, 2, 17, 0, 0, 0, 0, time.UTC)
+
+	// Seed Assets:B with 10 STOCK at 100 JPY {date, "label"}.
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "JPY"),
+				Date:    &buyDate,
+				Label:   "label",
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
+	)
+	// Transfer 5 STOCK out of Assets:B into Assets:A. Assets:A's
+	// cost spec is "{date, "label"}" — no number — and the reducer
+	// must interpolate 100 JPY from Assets:B's resolved lot.
+	xfer := mkTxn(xferDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "5", "STOCK"),
+			Cost: &ast.CostSpec{
+				Date:  &buyDate,
+				Label: "label",
+			},
+		},
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "-5", "STOCK"),
+			Cost: &ast.CostSpec{
+				Date:  &buyDate,
+				Label: "label",
+			},
+		},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:B", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buy,
+		xfer,
+	)
+
+	r := NewReducer(ledger)
+	var xferBooked []BookedPosting
+	errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		if got == xfer {
+			xferBooked = append([]BookedPosting(nil), booked...)
+		}
+		return true
+	})
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+	if len(xferBooked) != 2 {
+		t.Fatalf("xfer booked len = %d, want 2", len(xferBooked))
+	}
+	want := decimalVal(t, "100")
+	for _, bp := range xferBooked {
+		switch bp.Account {
+		case "Assets:A":
+			if bp.Lot == nil {
+				t.Fatalf("Walk Assets:A: Lot is nil after interpolation")
+			}
+			if bp.Lot.Number.Cmp(&want) != 0 {
+				t.Errorf("Walk Assets:A: Lot.Number = %s, want 100", bp.Lot.Number.Text('f'))
+			}
+			if bp.Lot.Currency != "JPY" {
+				t.Errorf("Walk Assets:A: Lot.Currency = %q, want JPY", bp.Lot.Currency)
+			}
+			if !bp.Lot.Date.Equal(buyDate) {
+				t.Errorf("Walk Assets:A: Lot.Date = %v, want %v (preserved from spec)", bp.Lot.Date, buyDate)
+			}
+			if bp.Lot.Label != "label" {
+				t.Errorf("Walk Assets:A: Lot.Label = %q, want %q (preserved from spec)", bp.Lot.Label, "label")
+			}
+		case "Assets:B":
+			if len(bp.Reductions) == 0 {
+				t.Fatalf("Walk Assets:B: Reductions is empty, want a step")
+			}
+			step := bp.Reductions[0]
+			if step.Lot.Number.Cmp(&want) != 0 {
+				t.Errorf("Walk Assets:B: step Lot.Number = %s, want 100", step.Lot.Number.Text('f'))
+			}
+		}
+	}
+}
+
+// TestReducerWalk_InterpolatesSingleDeferred_EmptyBraces exercises
+// the `{}` form: the augmenting side declares "this is a lot, fill
+// the cost from context" and the reducing side picks an existing
+// lot. Identical to the date+label case from the reducer's
+// perspective; the assertions confirm the empty-braces shape is also
+// accepted.
+func TestReducerWalk_InterpolatesSingleDeferred_EmptyBraces(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	xferDate := time.Date(2025, 2, 17, 0, 0, 0, 0, time.UTC)
+
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "JPY"),
+				Date:    &buyDate,
+				Label:   "label",
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
+	)
+	xfer := mkTxn(xferDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "5", "STOCK"),
+			Cost:    &ast.CostSpec{}, // bare "{}"
+		},
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "-5", "STOCK"),
+			Cost: &ast.CostSpec{
+				Date:  &buyDate,
+				Label: "label",
+			},
+		},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:B", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buy,
+		xfer,
+	)
+
+	r := NewReducer(ledger)
+	var xferBooked []BookedPosting
+	errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		if got == xfer {
+			xferBooked = append([]BookedPosting(nil), booked...)
+		}
+		return true
+	})
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+	want := decimalVal(t, "100")
+	var sawA bool
+	for _, bp := range xferBooked {
+		if bp.Account == "Assets:A" {
+			sawA = true
+			if bp.Lot == nil || bp.Lot.Number.Cmp(&want) != 0 {
+				t.Errorf("Walk Assets:A: Lot = %+v, want Number=100 JPY", bp.Lot)
+			}
+			if bp.Lot != nil && bp.Lot.Currency != "JPY" {
+				t.Errorf("Walk Assets:A: Lot.Currency = %q, want JPY", bp.Lot.Currency)
+			}
+			// Bare "{}" omits Date and Label, so the resolved Lot's
+			// Date defaults to the transaction date and Label is empty.
+			if bp.Lot != nil && !bp.Lot.Date.Equal(xferDate) {
+				t.Errorf("Walk Assets:A: Lot.Date = %v, want %v (txnDate fallback)", bp.Lot.Date, xferDate)
+			}
+			if bp.Lot != nil && bp.Lot.Label != "" {
+				t.Errorf("Walk Assets:A: Lot.Label = %q, want \"\" (no label on \"{}\")", bp.Lot.Label)
+			}
+		}
+	}
+	if !sawA {
+		t.Errorf("Walk: Assets:A booking not observed")
+	}
+}
+
+// TestReducerWalk_InterpolationAmbiguousMultipleResidualCurrencies
+// exercises the multi-currency-residual rejection path with a
+// deferred cost spec (rather than an auto-posting). The transaction
+// has one deferred augment and two reductions that resolve to two
+// different currencies; the residual cannot be expressed in a single
+// cost currency.
+func TestReducerWalk_InterpolationAmbiguousMultipleResidualCurrencies(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	xferDate := time.Date(2025, 2, 17, 0, 0, 0, 0, time.UTC)
+
+	usd := mkAmountPtr(t, "100.00", "USD")
+	eur := mkAmountPtr(t, "200.00", "EUR")
+	deferred := &ast.Posting{
+		Account: "Assets:A",
+		Amount:  mkAmountPtr(t, "5", "STOCK"),
+		Cost:    &ast.CostSpec{}, // unknown
+	}
+	txn := mkTxn(xferDate,
+		&ast.Posting{Account: "Assets:USD", Amount: usd},
+		&ast.Posting{Account: "Assets:EUR", Amount: eur},
+		deferred,
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:USD", ast.BookingDefault),
+		mkOpen(openDate, "Assets:EUR", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger)
+	errs := r.Walk(nil)
+	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	}
+}
+
+// TestReducerWalk_InterpolationAmbiguousMultipleDeferred ensures that
+// two deferred postings in the same transaction are both rejected
+// with CodeUnresolvableInterpolation, even if a unique solution might
+// look possible by inspection: the system explicitly refuses to guess
+// among multiple unknowns.
+func TestReducerWalk_InterpolationAmbiguousMultipleDeferred(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	xferDate := time.Date(2025, 2, 17, 0, 0, 0, 0, time.UTC)
+
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "JPY"),
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
+	)
+	// Two deferred augmenting postings + one reducing posting.
+	d1 := &ast.Posting{
+		Account: "Assets:A",
+		Amount:  mkAmountPtr(t, "3", "STOCK"),
+		Cost:    &ast.CostSpec{},
+	}
+	d2 := &ast.Posting{
+		Account: "Assets:C",
+		Amount:  mkAmountPtr(t, "2", "STOCK"),
+		Cost:    &ast.CostSpec{},
+	}
+	xfer := mkTxn(xferDate, d1, d2, &ast.Posting{
+		Account: "Assets:B",
+		Amount:  mkAmountPtr(t, "-5", "STOCK"),
+		Cost: &ast.CostSpec{
+			Date: &buyDate,
+		},
+	})
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:B", ast.BookingDefault),
+		mkOpen(openDate, "Assets:C", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buy,
+		xfer,
+	)
+
+	r := NewReducer(ledger)
+	errs := r.Walk(nil)
+	if len(errs) != 2 {
+		t.Fatalf("Walk errs = %v, want 2 entries (one per deferred posting)", errs)
+	}
+	for _, e := range errs {
+		if e.Code != CodeUnresolvableInterpolation {
+			t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", e.Code)
+		}
+	}
+}
+
+// TestReducerWalk_InterpolationAmbiguousDeferredPlusAutoPosting
+// rejects the case where a transaction has both a deferred cost spec
+// and an auto-posting: each is a separate unknown the residual cannot
+// jointly resolve.
+func TestReducerWalk_InterpolationAmbiguousDeferredPlusAutoPosting(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	xferDate := time.Date(2025, 2, 17, 0, 0, 0, 0, time.UTC)
+
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "JPY"),
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
+	)
+	xfer := mkTxn(xferDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "5", "STOCK"),
+			Cost:    &ast.CostSpec{},
+		},
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "-5", "STOCK"),
+			Cost: &ast.CostSpec{
+				Date: &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Plug"}, // auto-posting
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:B", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Plug", ast.BookingDefault),
+		buy,
+		xfer,
+	)
+
+	r := NewReducer(ledger)
+	errs := r.Walk(nil)
+	if len(errs) != 2 {
+		t.Fatalf("Walk errs = %v, want 2 entries", errs)
+	}
+	for _, e := range errs {
+		if e.Code != CodeUnresolvableInterpolation {
+			t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", e.Code)
+		}
+	}
+}
+
+// TestReducerWalk_AutoPostingResidualUsesBookedReductions is a
+// regression test for the residual-computation correctness fix: a
+// transaction that combines a partial-cost reduction with an
+// auto-posting must compute the residual from the reduction's
+// resolved weight (a per-unit cost from the matched lot), not from
+// the AST's still-partial spec. Without the fix the auto-posting
+// would observe zero non-cost-currency residual and report
+// CodeUnresolvableInterpolation; with the fix the auto-posting
+// correctly absorbs the cost-currency residual.
+func TestReducerWalk_AutoPostingResidualUsesBookedReductions(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2025, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "JPY"),
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
+	)
+	// Sell with a partial cost spec (date only); the reducer must
+	// resolve the lot. The auto-posting should absorb +500 JPY.
+	sell := mkTxn(sellDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "-5", "STOCK"),
+			Cost: &ast.CostSpec{
+				Date: &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Assets:Cash"}, // auto-posting
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Brokerage", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buy,
+		sell,
+	)
+
+	r := NewReducer(ledger)
+	errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+	auto := &sell.Postings[1]
+	if auto.Amount == nil {
+		t.Fatalf("Walk: auto-posting Amount is still nil")
+	}
+	if auto.Amount.Currency != "JPY" {
+		t.Errorf("Walk: auto-posting currency = %q, want JPY", auto.Amount.Currency)
+	}
+	want := decimalVal(t, "500")
+	if auto.Amount.Number.Cmp(&want) != 0 {
+		t.Errorf("Walk: auto-posting number = %s, want 500", auto.Amount.Number.Text('f'))
+	}
+}
+
+// TestReducerWalk_InterpolationZeroUnits guards the divide-by-zero
+// branch: a deferred posting whose units are zero cannot have its
+// per-unit cost interpolated, even if the residual is otherwise
+// well-defined. The diagnostic surfaces as
+// CodeUnresolvableInterpolation rather than letting an arithmetic
+// overflow leak through.
+func TestReducerWalk_InterpolationZeroUnits(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	xferDate := time.Date(2025, 2, 17, 0, 0, 0, 0, time.UTC)
+
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "JPY"),
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
+	)
+	// Reducing posting alone produces -500 JPY of residual; the
+	// zero-unit deferred posting cannot absorb it because dividing
+	// the residual by zero units is undefined.
+	xfer := mkTxn(xferDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "0", "STOCK"), // zero-unit deferred
+			Cost:    &ast.CostSpec{},
+		},
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "-5", "STOCK"),
+			Cost: &ast.CostSpec{
+				Date: &buyDate,
+			},
+		},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:B", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buy,
+		xfer,
+	)
+
+	r := NewReducer(ledger)
+	errs := r.Walk(nil)
+	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
 	}
 }

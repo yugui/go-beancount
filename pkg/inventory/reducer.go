@@ -159,7 +159,13 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		autoIdx = i
 	}
 
-	// Pass 1: book explicit postings.
+	// Pass 1: book explicit postings. A posting that fails with
+	// CodeAugmentationRequiresCost AND has a cost spec without a
+	// number (the costNumberMissing predicate) is set aside as a
+	// deferred unknown; Pass 2 will try to interpolate the cost from
+	// the transaction's residual. Every other booking error is
+	// surfaced immediately.
+	var deferred []int
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount == nil {
@@ -173,31 +179,24 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		inv := r.ensureInventory(p.Account)
 		method := r.booking[p.Account] // zero value = BookingDefault
 		bp, errs := bookOne(inv, p, method, txn.Date, false)
+		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
+			// Hold this posting back; Pass 2 may be able to fill in
+			// the missing per-unit number from the residual.
+			deferred = append(deferred, i)
+			continue
+		}
 		r.errs = append(r.errs, errs...)
 		if len(errs) == 0 {
 			booked = append(booked, bp)
 		}
 	}
 
-	// Pass 2: auto-posting inference.
-	if autoIdx >= 0 {
-		residual, residualErrs := r.computeResidual(txn, autoIdx)
-		if len(residualErrs) > 0 {
-			r.errs = append(r.errs, residualErrs...)
-		} else {
-			p := &txn.Postings[autoIdx]
-			amt := &ast.Amount{Currency: residual.Currency}
-			amt.Number.Set(&residual.Number)
-			p.Amount = amt
-			captureBefore(r.state, before, touched, p.Account)
-			inv := r.ensureInventory(p.Account)
-			method := r.booking[p.Account]
-			bp, errs := bookOne(inv, p, method, txn.Date, true)
-			r.errs = append(r.errs, errs...)
-			if len(errs) == 0 {
-				booked = append(booked, bp)
-			}
-		}
+	// Pass 2: unified interpolation. Treats the auto-posting and any
+	// deferred cost-spec postings as a uniform set of "unknowns" the
+	// transaction's residual must resolve to a single concrete value.
+	if autoIdx >= 0 || len(deferred) > 0 {
+		extra := r.interpolate(txn, booked, deferred, autoIdx, touched, before)
+		booked = append(booked, extra...)
 	}
 
 	// Build the after snapshot. Every touched account is included, even
@@ -250,54 +249,91 @@ func (r *Reducer) ensureInventory(acct ast.Account) *Inventory {
 	return inv
 }
 
-// computeResidual sums the signed weights of every explicit posting in
-// txn and returns the amount the auto-posting at autoIdx must absorb.
+// interpolate runs the unified Pass 2: the transaction's residual
+// (computed from the postings already booked in Pass 1) is used to
+// fill in exactly one unknown — either an auto-posting Amount or a
+// deferred cost-spec's per-unit number — and the resolved posting is
+// then booked. When the count of unknowns is anything other than one,
+// or the residual cannot be expressed as a single non-zero currency,
+// a [CodeUnresolvableInterpolation] is emitted on every unknown so the
+// caller sees a clear pointer back to each ambiguous posting.
 //
-// Beancount permits multiple currencies in a single transaction (as in
-// a foreign-currency conversion), but the inferred auto-posting must
-// settle exactly one currency. A residual that is already zero in every
-// currency (or one that has more than one non-zero currency) is
-// rejected with [CodeUnresolvableAutoPosting].
-//
-// The decimal returned by [PostingWeight] is always a fresh
-// allocation, so negating it in place does not corrupt the AST.
-func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount, []Error) {
-	sums := map[string]*apd.Decimal{}
-	order := []string{} // stable reporting order
+// touched and before are threaded through so the lazy capture-before
+// dance stays consistent: an auto-posting account that was untouched
+// in Pass 1 still gets a nil before-snapshot recorded the moment Pass
+// 2 books it.
+func (r *Reducer) interpolate(
+	txn *ast.Transaction,
+	booked []BookedPosting,
+	deferred []int,
+	autoIdx int,
+	touched map[ast.Account]bool,
+	before map[ast.Account]*Inventory,
+) []BookedPosting {
+	unknownCount := len(deferred)
+	if autoIdx >= 0 {
+		unknownCount++
+	}
+	if unknownCount == 0 {
+		return nil
+	}
 
-	for i := range txn.Postings {
-		if i == autoIdx {
-			continue
-		}
-		p := &txn.Postings[i]
-		if p.Amount == nil {
-			// Should not happen: visitTxn has already rejected
-			// transactions with more than one auto-posting before
-			// reaching computeResidual.
-			continue
-		}
-		w, cur, err := PostingWeight(p)
-		if err != nil {
-			return ast.Amount{}, []Error{{
-				Code:    CodeInternalError,
+	if unknownCount > 1 {
+		// Ambiguous: too many unknowns for a single residual to pin
+		// down. Emit one diagnostic per unknown so a user fixing the
+		// ledger sees both sites.
+		for _, idx := range deferred {
+			p := &txn.Postings[idx]
+			r.errs = append(r.errs, Error{
+				Code:    CodeUnresolvableInterpolation,
 				Span:    p.Span,
 				Account: p.Account,
-				Message: "compute residual: posting weight: " + err.Error(),
-			}}
+				Message: fmt.Sprintf("cannot interpolate cost: transaction has %d unknown posting values, expected 1", unknownCount),
+			})
+		}
+		if autoIdx >= 0 {
+			p := &txn.Postings[autoIdx]
+			r.errs = append(r.errs, Error{
+				Code:    CodeUnresolvableInterpolation,
+				Span:    p.Span,
+				Account: p.Account,
+				Message: fmt.Sprintf("cannot interpolate amount: transaction has %d unknown posting values, expected 1", unknownCount),
+			})
+		}
+		return nil
+	}
+
+	// Compute the residual from the already-booked postings. Each
+	// BookedPosting reflects the resolved cost (e.g. a reduction's
+	// matched lot cost), which is what makes this loop correct in the
+	// presence of partial cost specs that the AST has not yet been
+	// written back for.
+	sums := map[string]*apd.Decimal{}
+	var order []string
+	for i := range booked {
+		bp := booked[i]
+		w, cur, err := bookedPostingWeight(bp)
+		if err != nil {
+			r.errs = append(r.errs, Error{
+				Code:    CodeInternalError,
+				Span:    bp.Source.Span,
+				Account: bp.Account,
+				Message: "interpolate: posting weight: " + err.Error(),
+			})
+			return nil
 		}
 		if w == nil {
-			// A nil weight with a nil error denotes an auto-posting,
-			// which we already filtered above. Defensive skip.
 			continue
 		}
 		if existing, ok := sums[cur]; ok {
 			if _, err := apd.BaseContext.Add(existing, existing, w); err != nil {
-				return ast.Amount{}, []Error{{
+				r.errs = append(r.errs, Error{
 					Code:    CodeInternalError,
-					Span:    p.Span,
-					Account: p.Account,
-					Message: "compute residual: accumulate weight: " + err.Error(),
-				}}
+					Span:    bp.Source.Span,
+					Account: bp.Account,
+					Message: "interpolate: accumulate weight: " + err.Error(),
+				})
+				return nil
 			}
 		} else {
 			sums[cur] = w
@@ -305,7 +341,6 @@ func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount
 		}
 	}
 
-	// Filter out currencies whose residual is exactly zero.
 	nonZero := make([]string, 0, len(order))
 	for _, cur := range order {
 		if !sums[cur].IsZero() {
@@ -313,39 +348,104 @@ func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount
 		}
 	}
 
-	autoP := &txn.Postings[autoIdx]
-	switch len(nonZero) {
-	case 0:
-		return ast.Amount{}, []Error{{
-			Code:    CodeUnresolvableAutoPosting,
-			Span:    autoP.Span,
-			Account: autoP.Account,
-			Message: "auto-balanced posting has no residual to absorb; every currency already balances",
-		}}
-	case 1:
-		cur := nonZero[0]
-		residual := sums[cur]
-		// Negate in place: PostingWeight returned a fresh allocation, so
-		// this does not disturb any AST field.
-		if _, err := apd.BaseContext.Neg(residual, residual); err != nil {
-			return ast.Amount{}, []Error{{
-				Code:    CodeInternalError,
-				Span:    autoP.Span,
-				Account: autoP.Account,
-				Message: "compute residual: negate: " + err.Error(),
-			}}
-		}
-		out := ast.Amount{Currency: cur}
-		out.Number.Set(residual)
-		return out, nil
-	default:
-		return ast.Amount{}, []Error{{
-			Code:    CodeUnresolvableAutoPosting,
-			Span:    autoP.Span,
-			Account: autoP.Account,
-			Message: fmt.Sprintf("auto-balanced posting cannot absorb residual across %d currencies: %v", len(nonZero), nonZero),
-		}}
+	// Locate the unknown's posting and span. Exactly one of the two
+	// branches fires by the unknownCount==1 contract above.
+	var unknownIdx int
+	if autoIdx >= 0 {
+		unknownIdx = autoIdx
+	} else {
+		unknownIdx = deferred[0]
 	}
+	unknownP := &txn.Postings[unknownIdx]
+
+	if len(nonZero) != 1 {
+		var msg string
+		if len(nonZero) == 0 {
+			if autoIdx >= 0 {
+				msg = "auto-balanced posting has no residual to absorb; every currency already balances"
+			} else {
+				msg = "deferred cost cannot be interpolated: every currency already balances"
+			}
+		} else {
+			msg = fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(nonZero), nonZero)
+		}
+		r.errs = append(r.errs, Error{
+			Code:    CodeUnresolvableInterpolation,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: msg,
+		})
+		return nil
+	}
+
+	cur := nonZero[0]
+	residual := sums[cur]
+	// Negate in place: bookedPostingWeight always returns a fresh
+	// allocation, so this does not disturb any AST or BookedPosting
+	// field.
+	if _, err := apd.BaseContext.Neg(residual, residual); err != nil {
+		r.errs = append(r.errs, Error{
+			Code:    CodeInternalError,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: "interpolate: negate residual: " + err.Error(),
+		})
+		return nil
+	}
+
+	if autoIdx >= 0 {
+		// Fill the auto-posting Amount with -residual in cur and book.
+		amt := &ast.Amount{Currency: cur}
+		amt.Number.Set(residual)
+		unknownP.Amount = amt
+		captureBefore(r.state, before, touched, unknownP.Account)
+		inv := r.ensureInventory(unknownP.Account)
+		method := r.booking[unknownP.Account]
+		bp, errs := bookOne(inv, unknownP, method, txn.Date, true)
+		r.errs = append(r.errs, errs...)
+		if len(errs) == 0 {
+			return []BookedPosting{bp}
+		}
+		return nil
+	}
+
+	// Deferred cost-spec interpolation: solve for cost_per_unit such
+	// that units * cost_per_unit cancels the residual. units is the
+	// posting's unit count; a zero unit count is unrecoverable.
+	if unknownP.Amount.Number.Sign() == 0 {
+		r.errs = append(r.errs, Error{
+			Code:    CodeUnresolvableInterpolation,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: "deferred cost cannot be interpolated: posting has zero units",
+		})
+		return nil
+	}
+	costPerUnit := new(apd.Decimal)
+	unitsNum := unknownP.Amount.Number
+	if _, err := quoContext.Quo(costPerUnit, residual, &unitsNum); err != nil {
+		r.errs = append(r.errs, Error{
+			Code:    CodeInternalError,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: "interpolate: divide residual by units: " + err.Error(),
+		})
+		return nil
+	}
+	// Write the interpolated per-unit number back into the AST so
+	// ResolveCost can complete the lot, and so the loader-level
+	// writeAugmentationCost step sees the same number when it folds
+	// the resolved Cost back into the spec.
+	unknownP.Cost.PerUnit = &ast.Amount{
+		Number:   *costPerUnit,
+		Currency: cur,
+	}
+	bp, errs := bookOne(r.ensureInventory(unknownP.Account), unknownP, r.booking[unknownP.Account], txn.Date, false)
+	r.errs = append(r.errs, errs...)
+	if len(errs) == 0 {
+		return []BookedPosting{bp}
+	}
+	return nil
 }
 
 // Run walks the ledger without a visitor, retaining only the final
