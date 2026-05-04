@@ -16,9 +16,15 @@ func (s *stubPlugin) Apply(_ context.Context, _ api.Input) (api.Result, error) {
 
 func withCleanRegistry(t *testing.T) {
 	t.Helper()
+	registryMu.Lock()
 	old := registry
 	registry = map[string]api.Plugin{}
-	t.Cleanup(func() { registry = old })
+	registryMu.Unlock()
+	t.Cleanup(func() {
+		registryMu.Lock()
+		registry = old
+		registryMu.Unlock()
+	})
 }
 
 func TestRegister_LookupRoundTrip(t *testing.T) {

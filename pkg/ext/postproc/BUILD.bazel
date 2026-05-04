@@ -10,8 +10,8 @@ go_library(
     srcs = [
         "apply.go",
         "doc.go",
+        "export_testonly.go",
         "registry.go",
-        "testhelpers.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/ext/postproc",
     visibility = ["//visibility:public"],
