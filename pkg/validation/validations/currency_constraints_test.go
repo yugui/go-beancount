@@ -172,9 +172,12 @@ func TestCurrencyConstraints_AccountMissingFromStateIgnored(t *testing.T) {
 	}
 }
 
-func TestCurrencyConstraints_AutoPostingSkipped(t *testing.T) {
-	// An auto-posting has Amount == nil and therefore no currency to
-	// check. The validator must skip it silently.
+// TestCurrencyConstraints_AutoPostingReports pins the defensive path:
+// a posting reaching the validator with a nil Amount is a sign that the
+// booking pass did not run. The validator emits
+// CodeAutoPostingUnresolved rather than silently skipping, so a
+// regression in booking is visible at validation time.
+func TestCurrencyConstraints_AutoPostingReports(t *testing.T) {
 	state := map[ast.Account]*accountstate.State{
 		"Assets:Cash": {
 			OpenDate:   time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
@@ -182,15 +185,54 @@ func TestCurrencyConstraints_AutoPostingSkipped(t *testing.T) {
 		},
 	}
 	v := newCurrencyConstraints(state)
+	txnSpan := ast.Span{Start: ast.Position{Line: 1}}
 	txn := &ast.Transaction{
 		Date: time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC),
-		Span: ast.Span{Start: ast.Position{Line: 1}},
+		Span: txnSpan,
 		Postings: []ast.Posting{
 			{Account: "Assets:Cash"}, // auto-posting
 		},
 	}
-	if errs := v.ProcessEntry(txn); len(errs) != 0 {
-		t.Errorf("ProcessEntry on auto-posting: got %v, want no errors", errs)
+	errs := v.ProcessEntry(txn)
+	if len(errs) != 1 {
+		t.Fatalf("ProcessEntry() got %d diagnostics, want 1; errs = %v", len(errs), errs)
+	}
+	if errs[0].Code != string(validation.CodeAutoPostingUnresolved) {
+		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAutoPostingUnresolved)
+	}
+	if errs[0].Span != txnSpan {
+		t.Errorf("ProcessEntry() Span = %#v, want %#v", errs[0].Span, txnSpan)
+	}
+	const wantMsg = `posting on account "Assets:Cash" has no amount; booking pass should have resolved it`
+	if errs[0].Message != wantMsg {
+		t.Errorf("ProcessEntry() Message = %q, want %q", errs[0].Message, wantMsg)
+	}
+}
+
+// TestCurrencyConstraints_BookedPostingChecked pins the booked-AST
+// happy path: a posting with an explicit Amount and an allowed currency
+// emits no diagnostic. This is the path that runs in the full pipeline,
+// where booking precedes validation and the resulting posting carries a
+// concrete Amount on a currency the account permits.
+func TestCurrencyConstraints_BookedPostingChecked(t *testing.T) {
+	state := map[ast.Account]*accountstate.State{
+		"Assets:Cash": {
+			OpenDate:   time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+			Currencies: []string{"USD"},
+		},
+	}
+	v := newCurrencyConstraints(state)
+	usd := amtDec(5, "USD")
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC),
+		Span: ast.Span{Start: ast.Position{Line: 1}},
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &usd},
+		},
+	}
+	errs := v.ProcessEntry(txn)
+	if len(errs) != 0 {
+		t.Errorf("ProcessEntry() got %d diagnostics, want 0; errs = %v", len(errs), errs)
 	}
 }
 

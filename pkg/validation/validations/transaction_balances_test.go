@@ -108,15 +108,21 @@ func TestTransactionBalances_UnbalancedSingleCurrency(t *testing.T) {
 	}
 }
 
-func TestTransactionBalances_SingleAutoPostingAbsorbs(t *testing.T) {
+// TestTransactionBalances_BookedAutoPosting pins the booked-AST happy
+// path: when the booking pass has already filled in every posting's
+// Amount, the validator sees a balanced transaction and emits no
+// diagnostics. This is the path that runs in the full pipeline, where
+// booking precedes validation.
+func TestTransactionBalances_BookedAutoPosting(t *testing.T) {
 	v := newTransactionBalances(mustDefaults(t))
 	pos := amtDec(100, "USD")
+	neg := amtDec(-100, "USD")
 	txn := &ast.Transaction{
 		Date: day(2024, 2, 1),
 		Span: ast.Span{Start: ast.Position{Line: 1}},
 		Postings: []ast.Posting{
 			{Account: "Assets:Cash", Amount: &pos},
-			{Account: "Expenses:Food"}, // auto
+			{Account: "Expenses:Food", Amount: &neg}, // booked auto
 		},
 	}
 	if errs := v.ProcessEntry(txn); len(errs) != 0 {
@@ -124,13 +130,18 @@ func TestTransactionBalances_SingleAutoPostingAbsorbs(t *testing.T) {
 	}
 }
 
-func TestTransactionBalances_MultipleAutoPostings(t *testing.T) {
+// TestTransactionBalances_AutoPostingNotBookedReports pins the
+// defensive path: a posting reaching the validator with a nil Amount
+// signals that the booking pass was skipped (or regressed). The
+// validator must emit one CodeAutoPostingUnresolved per such posting
+// rather than attempting to infer the missing amount itself.
+func TestTransactionBalances_AutoPostingNotBookedReports(t *testing.T) {
 	v := newTransactionBalances(mustDefaults(t))
 	pos := amtDec(100, "USD")
-	span := ast.Span{Start: ast.Position{Filename: "l.beancount", Line: 7}}
+	txnSpan := ast.Span{Start: ast.Position{Filename: "l.beancount", Line: 7}}
 	txn := &ast.Transaction{
 		Date: day(2024, 2, 1),
-		Span: span,
+		Span: txnSpan,
 		Postings: []ast.Posting{
 			{Account: "Assets:Cash", Amount: &pos},
 			{Account: "Expenses:Food"},
@@ -138,19 +149,28 @@ func TestTransactionBalances_MultipleAutoPostings(t *testing.T) {
 		},
 	}
 	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
+	// Both nil-Amount postings are skipped from the balance sum (with a
+	// CodeAutoPostingUnresolved diagnostic each), leaving the +100 USD on
+	// Assets:Cash unbalanced. ProcessEntry then emits
+	// CodeUnbalancedTransaction for the residual, so all three
+	// diagnostics are asserted together to pin both behaviors precisely.
+	wantCodes := []string{
+		string(validation.CodeAutoPostingUnresolved),
+		string(validation.CodeAutoPostingUnresolved),
+		string(validation.CodeUnbalancedTransaction),
 	}
-	e := errs[0]
-	if e.Code != string(validation.CodeMultipleAutoPostings) {
-		t.Errorf("Code = %q, want %q", e.Code, validation.CodeMultipleAutoPostings)
+	if len(errs) != len(wantCodes) {
+		t.Fatalf("ProcessEntry() got %d diagnostics, want %d; errs = %v", len(errs), len(wantCodes), errs)
 	}
-	if e.Span != span {
-		t.Errorf("Span = %#v, want %#v", e.Span, span)
+	for i, want := range wantCodes {
+		if errs[i].Code != want {
+			t.Errorf("errs[%d].Code = %q, want %q", i, errs[i].Code, want)
+		}
 	}
-	// Legacy message: "transaction has %d auto-balanced postings; at most one is allowed".
-	if want := `transaction has 2 auto-balanced postings; at most one is allowed`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	for i := range errs {
+		if errs[i].Span != txnSpan {
+			t.Errorf("ProcessEntry() errs[%d].Span = %#v, want %#v (txn.Span)", i, errs[i].Span, txnSpan)
+		}
 	}
 }
 
@@ -178,9 +198,11 @@ func TestTransactionBalances_MultiCurrencyPricedBalances(t *testing.T) {
 }
 
 func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) {
-	// Residual in two currencies and a single auto-posting cannot absorb
-	// both, matching upstream beancount's unbalanced multi-currency
-	// auto-posting behavior.
+	// A nil-Amount posting in the validator means booking was skipped;
+	// the validator emits CodeAutoPostingUnresolved for the offending
+	// posting and additionally reports the multi-currency residual as
+	// CodeUnbalancedTransaction. The legacy "cannot infer auto-posting"
+	// path is gone because validators no longer infer.
 	v := newTransactionBalances(mustDefaults(t))
 	usd := amtDec(100, "USD")
 	eur := amtDec(50, "EUR")
@@ -194,15 +216,20 @@ func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) 
 		},
 	}
 	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
+	wantCodes := []string{
+		string(validation.CodeAutoPostingUnresolved),
+		string(validation.CodeUnbalancedTransaction),
 	}
-	if errs[0].Code != string(validation.CodeUnbalancedTransaction) {
-		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeUnbalancedTransaction)
+	if len(errs) != len(wantCodes) {
+		t.Fatalf("ProcessEntry() got %d diagnostics, want %d; errs = %v", len(errs), len(wantCodes), errs)
 	}
-	// Established wording for multi-currency-auto-posting residual.
-	if want := `cannot infer auto-posting amount: residual has 2 non-zero currencies ([EUR USD])`; errs[0].Message != want {
-		t.Errorf("Message = %q, want %q", errs[0].Message, want)
+	for i, want := range wantCodes {
+		if errs[i].Code != want {
+			t.Errorf("errs[%d].Code = %q, want %q", i, errs[i].Code, want)
+		}
+	}
+	if want := `transaction does not balance: non-zero residual in [EUR USD]`; errs[1].Message != want {
+		t.Errorf("errs[1].Message = %q, want %q", errs[1].Message, want)
 	}
 }
 
