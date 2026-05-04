@@ -62,6 +62,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
+	"github.com/yugui/go-beancount/pkg/loader/booking"
 	"github.com/yugui/go-beancount/pkg/validation/balance"
 	"github.com/yugui/go-beancount/pkg/validation/document"
 	"github.com/yugui/go-beancount/pkg/validation/pad"
@@ -128,8 +129,12 @@ func runPipeline(ctx context.Context, ledger *ast.Ledger) (*ast.Ledger, error) {
 
 // applyDefault runs the default pipeline:
 //  1. preBuiltins: document directory scanning and file-existence verification
-//  2. directive-specified plugins via the global registry
-//  3. postBuiltins: pad → balance → validations
+//  2. booking: resolve incomplete cost specs against per-account inventory
+//     so subsequent passes see fully booked CostSpec values, mirroring
+//     upstream beancount's loader._load order (parse → booking → user
+//     plugins → validation).
+//  3. directive-specified plugins via the global registry
+//  4. postBuiltins: pad → balance → validations
 //
 // Each step halts on the first system-level error and propagates it to
 // the caller; subsequent steps are skipped.
@@ -138,6 +143,9 @@ func applyDefault(ctx context.Context, ledger *ast.Ledger, opts map[string]strin
 		if err := runBuiltin(ctx, ledger, opts, p); err != nil {
 			return err
 		}
+	}
+	if err := runBuiltin(ctx, ledger, opts, api.PluginFunc(booking.Apply)); err != nil {
+		return err
 	}
 	if err := postproc.Apply(ctx, ledger); err != nil {
 		return err
