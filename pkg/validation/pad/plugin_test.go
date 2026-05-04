@@ -564,6 +564,85 @@ func TestPlugin_AutoPostingNoExplicitFallsBackToTxnSpan(t *testing.T) {
 	}
 }
 
+// TestPlugin_PadTargetWithCostReports pins the defensive path: pad
+// refuses to invent a lot identity for a cost-bearing posting on the
+// target account and reports the structural mistake as
+// CodePadTargetHasCost. The auto-pad-on-cost-account fixture exercises
+// the lot-identity invariant documented in pkg/inventory's
+// "# Lot identity" package doc.
+func TestPlugin_PadTargetWithCostReports(t *testing.T) {
+	padSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 5, Column: 1}}
+	p := &ast.Pad{
+		Span:       padSpan,
+		Date:       day(2024, 1, 15),
+		Account:    "Assets:Stock",
+		PadAccount: "Equity:Opening",
+	}
+	// Cost-held augmentation on the pad's target account between the
+	// pad and the balance assertion.
+	stockAmt := amtInt(5, "ACME")
+	cashAmt := amtInt(-500, "USD")
+	perUnit := amtInt(100, "USD")
+	postSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 8, Column: 3}}
+	txn := &ast.Transaction{
+		Date: day(2024, 1, 20),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{
+				Span:    postSpan,
+				Account: "Assets:Stock",
+				Amount:  &stockAmt,
+				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			},
+			{Account: "Equity:Opening", Amount: &cashAmt},
+		},
+	}
+	bal := &ast.Balance{
+		Date:    day(2024, 2, 1),
+		Account: "Assets:Stock",
+		Amount:  amtInt(10, "ACME"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{p, txn, bal})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+
+	// At least one CodePadTargetHasCost diagnostic that names the
+	// target account.
+	var costDiag *ast.Diagnostic
+	for i := range res.Diagnostics {
+		if res.Diagnostics[i].Code == string(validation.CodePadTargetHasCost) {
+			costDiag = &res.Diagnostics[i]
+			break
+		}
+	}
+	if costDiag == nil {
+		t.Fatalf("Result.Diagnostics = %v, want one with Code %q", res.Diagnostics, string(validation.CodePadTargetHasCost))
+	}
+	if costDiag.Span != postSpan {
+		t.Errorf("pad.Apply: CodePadTargetHasCost Span = %v, want %v (= cost posting span)", costDiag.Span, postSpan)
+	}
+
+	// res.Directives may be nil (no synthesis happened) — that's the
+	// success case for this defensive test. If non-nil, count the
+	// *ast.Transaction entries and assert no synthetic padding was
+	// inserted: input has exactly one transaction (the cost-bearing
+	// one), so any synthesis would push the count to 2.
+	if res.Directives == nil {
+		return
+	}
+	got := 0
+	for _, d := range res.Directives {
+		if _, ok := d.(*ast.Transaction); ok {
+			got++
+		}
+	}
+	if got != 1 {
+		t.Errorf("pad.Apply: synthesized %d transactions, want 1 (no padding inserted)", got)
+	}
+}
+
 // TestPlugin_OptionsFromRawParseError confirms malformed options
 // surface as ast.Diagnostic{Code: "invalid-option"}, matching the balance
 // and validations plugins' contract.
