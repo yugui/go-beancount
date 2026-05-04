@@ -41,6 +41,9 @@ import (
 // Apply runs the balance-assertion check as a postproc plugin. It
 // does not mutate the ledger; the function returns a Result with a nil
 // Directives field so the runner preserves the input verbatim.
+//
+// Expects booked AST: postings without an Amount yield a
+// CodeAutoPostingUnresolved diagnostic instead of being inferred.
 func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
@@ -97,50 +100,28 @@ func parseOptions(raw map[string]string) (*options.Values, []ast.Diagnostic) {
 	return opts, diags
 }
 
-// applyTransaction accumulates tx's postings into balances and
-// handles auto-posting inference. It mirrors upstream beancount's
-// two-pass posting weight application: a subsequent balance
-// assertion against an auto-posting's account sees the inferred
-// amount rather than zero.
+// applyTransaction accumulates tx's postings into balances. The
+// running balance is updated only from postings that carry an
+// explicit Amount; postings without one are reported as
+// CodeAutoPostingUnresolved and skipped, since auto-posting
+// resolution is owned by the booking pass that runs before
+// validation. Cross-posting structural diagnostics (unbalanced
+// residual, multiple auto-postings) belong to the validations
+// plugin and remain out of scope here.
 func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) []ast.Diagnostic {
 	var diags []ast.Diagnostic
-
-	// First pass: accumulate explicit postings into the running
-	// balance (in the posting's NATIVE currency) and compute a
-	// per-transaction residual per currency.
-	txResidual, autoCount, autoPosting, accDiags := accumulatePostings(tx, balances)
-	diags = append(diags, accDiags...)
-
-	// Second pass: if exactly one auto-posting is present AND
-	// exactly one currency has a non-zero residual, infer the
-	// auto-posting's amount as the negation of that residual and
-	// add it to balances[(autoAccount, cur)]. Otherwise do
-	// nothing: malformed-transaction diagnostics (multiple
-	// auto-postings, multi-currency residual) are owned by the
-	// validations plugin, and the balance plugin must stay silent.
-	if autoCount == 1 && autoPosting != nil {
-		diags = append(diags, inferAutoPosting(tx, autoPosting, txResidual, balances)...)
-	}
-	return diags
-}
-
-// accumulatePostings walks tx.Postings, adding explicit posting
-// amounts into balances (native currency) and tracking per-currency
-// transaction residuals. It returns the residual map along with the
-// count of auto-postings observed and a pointer to the (last) auto
-// posting so the caller can attempt inference. When autoCount is
-// greater than 1, the returned pointer refers to the last auto-posting
-// encountered and should not be used for inference.
-func accumulatePostings(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) (map[string]*apd.Decimal, int, *ast.Posting, []ast.Diagnostic) {
-	var diags []ast.Diagnostic
-	txResidual := map[string]*apd.Decimal{}
-	autoCount := 0
-	var autoPosting *ast.Posting
 	for i := range tx.Postings {
 		p := &tx.Postings[i]
 		if p.Amount == nil {
-			autoCount++
-			autoPosting = p
+			span := p.Span
+			if span == (ast.Span{}) {
+				span = tx.Span
+			}
+			diags = append(diags, ast.Diagnostic{
+				Code:    string(validation.CodeAutoPostingUnresolved),
+				Span:    span,
+				Message: fmt.Sprintf("posting on account %q has no amount; booking pass should have resolved it", p.Account),
+			})
 			continue
 		}
 		num := p.Amount.Number
@@ -163,60 +144,6 @@ func accumulatePostings(tx *ast.Transaction, balances map[balanceKey]*apd.Decima
 			// bucket. Apd failures are pathological (huge
 			// exponents); emitting once per failure suffices.
 		}
-		resid, ok := txResidual[p.Amount.Currency]
-		if !ok {
-			resid = new(apd.Decimal)
-			txResidual[p.Amount.Currency] = resid
-		}
-		if _, err := apd.BaseContext.Add(resid, resid, &num); err != nil {
-			diags = append(diags, ast.Diagnostic{
-				Code:    string(validation.CodeInternalError),
-				Span:    tx.Span,
-				Message: fmt.Sprintf("failed to compute transaction residual: %v", err),
-			})
-		}
-	}
-	return txResidual, autoCount, autoPosting, diags
-}
-
-// inferAutoPosting applies the single-auto-posting inference rule:
-// if exactly one currency has a non-zero residual, add its negation
-// to the running balance under the auto-posting's account. Any
-// other shape is left untouched (diagnosed elsewhere).
-func inferAutoPosting(tx *ast.Transaction, autoPosting *ast.Posting, txResidual map[string]*apd.Decimal, balances map[balanceKey]*apd.Decimal) []ast.Diagnostic {
-	var diags []ast.Diagnostic
-	var inferCur string
-	nonZeroCount := 0
-	for cur, resid := range txResidual {
-		if !resid.IsZero() {
-			nonZeroCount++
-			inferCur = cur
-		}
-	}
-	if nonZeroCount != 1 {
-		return nil
-	}
-	inferred := new(apd.Decimal)
-	if _, err := apd.BaseContext.Neg(inferred, txResidual[inferCur]); err != nil {
-		diags = append(diags, ast.Diagnostic{
-			Code:    string(validation.CodeInternalError),
-			Span:    tx.Span,
-			Message: fmt.Sprintf("failed to infer auto-posting amount: %v", err),
-		})
-		return diags
-	}
-	key := balanceKey{Account: autoPosting.Account, Currency: inferCur}
-	cur, ok := balances[key]
-	if !ok {
-		cur = new(apd.Decimal)
-		balances[key] = cur
-	}
-	if _, err := apd.BaseContext.Add(cur, cur, inferred); err != nil {
-		diags = append(diags, ast.Diagnostic{
-			Code:    string(validation.CodeInternalError),
-			Span:    tx.Span,
-			Message: fmt.Sprintf("failed to update running balance: %v", err),
-		})
 	}
 	return diags
 }

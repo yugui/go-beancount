@@ -294,21 +294,24 @@ func TestPlugin_CanceledContext(t *testing.T) {
 	}
 }
 
-// TestPlugin_AutoPostingInferredOnDifferentAccount mirrors upstream
-// beancount's posting-weight application: a transaction with one
-// explicit posting and one auto-posting (no Amount) infers the
-// auto-posting's amount as the negation of the residual and applies
-// it to the auto-posting's account. A subsequent Balance directive
-// against the auto-posting's account must see the inferred amount,
-// not zero.
-func TestPlugin_AutoPostingInferredOnDifferentAccount(t *testing.T) {
+// TestPlugin_AutoPostingNotBookedReports pins the defensive path:
+// when raw AST slips through, the validator emits
+// CodeAutoPostingUnresolved rather than silently inferring. The
+// nil-Amount posting is skipped from the running balance, so a
+// subsequent balance assertion against that account sees zero rather
+// than an inferred amount, and a non-zero assertion therefore reports
+// CodeBalanceMismatch in addition to the per-posting unresolved
+// diagnostic.
+func TestPlugin_AutoPostingNotBookedReports(t *testing.T) {
 	expl := amtInt(100, "USD")
+	txnSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 5, Column: 1}}
 	txn := &ast.Transaction{
+		Span: txnSpan,
 		Date: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
 		Postings: []ast.Posting{
 			{Account: "Expenses:Food", Amount: &expl},
-			{Account: "Assets:Cash"}, // auto-posting
+			{Account: "Assets:Cash"}, // auto-posting; raw AST slipped past booking
 		},
 	}
 	bal := &ast.Balance{
@@ -321,17 +324,40 @@ func TestPlugin_AutoPostingInferredOnDifferentAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 0 {
-		t.Errorf("Result.Diagnostics = %v, want empty (auto-posting should be inferred as -100 USD on Assets:Cash)", res.Diagnostics)
+	wantCodes := []string{
+		string(validation.CodeAutoPostingUnresolved),
+		string(validation.CodeBalanceMismatch),
+	}
+	if len(res.Diagnostics) != len(wantCodes) {
+		t.Fatalf("len(Result.Diagnostics) = %d, want %d; diagnostics = %v", len(res.Diagnostics), len(wantCodes), res.Diagnostics)
+	}
+	for i, want := range wantCodes {
+		if res.Diagnostics[i].Code != want {
+			t.Errorf("balance.Apply: Diagnostics[%d].Code = %q, want %q", i, res.Diagnostics[i].Code, want)
+		}
+	}
+	// The unresolved diagnostic falls back to the transaction Span when
+	// the posting Span is zero.
+	if got := res.Diagnostics[0].Span; got != txnSpan {
+		t.Errorf("balance.Apply: Diagnostics[0].Span = %#v, want txn.Span %#v", got, txnSpan)
+	}
+	// Inventory was NOT updated for the nil-Amount posting, so the
+	// balance assertion against the auto-posting's account must see
+	// zero rather than the negated residual.
+	wantMsg := "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD"
+	if got := res.Diagnostics[1].Message; got != wantMsg {
+		t.Errorf("balance.Apply: Diagnostics[1].Message = %q, want %q", got, wantMsg)
 	}
 }
 
-// TestPlugin_AutoPostingNoInferenceWhenMultiCurrency verifies that
-// when a transaction has multiple currencies with non-zero residuals
-// AND an auto-posting, the plugin does NOT attempt inference and does
-// NOT touch the auto-posting's account running balance. The
-// validations plugin owns CodeUnbalancedTransaction in that case.
-func TestPlugin_AutoPostingNoInferenceWhenMultiCurrency(t *testing.T) {
+// TestPlugin_AutoPostingMultiCurrencyReports pins the defensive path:
+// when raw AST slips through, the validator emits
+// CodeAutoPostingUnresolved rather than silently inferring. With
+// multiple currencies among explicit postings the previous
+// implementation declined to infer; under the booked-AST contract the
+// same input now produces an explicit diagnostic and the nil-Amount
+// account stays at zero.
+func TestPlugin_AutoPostingMultiCurrencyReports(t *testing.T) {
 	usd := amtInt(100, "USD")
 	eur := amtInt(50, "EUR")
 	txn := &ast.Transaction{
@@ -340,19 +366,20 @@ func TestPlugin_AutoPostingNoInferenceWhenMultiCurrency(t *testing.T) {
 		Postings: []ast.Posting{
 			{Account: "Expenses:Food", Amount: &usd},
 			{Account: "Expenses:Travel", Amount: &eur},
-			{Account: "Assets:Cash"}, // auto-posting; residual ambiguous
+			{Account: "Assets:Cash"}, // auto-posting
 		},
 	}
 	// Assets:Cash must still read as zero in USD: no inference should
 	// have been applied. A non-zero balance assertion therefore emits
-	// exactly one CodeBalanceMismatch.
+	// exactly one CodeBalanceMismatch alongside the unresolved
+	// diagnostic.
 	balUSD := &ast.Balance{
 		Date:    time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
 		Account: "Assets:Cash",
 		Amount:  amtInt(-100, "USD"),
 	}
 	// A zero assertion on the same account must pass, since the
-	// auto-posting's account has no running balance in USD.
+	// auto-posting's account has no running balance in EUR either.
 	balZero := &ast.Balance{
 		Date:    time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
 		Account: "Assets:Cash",
@@ -363,27 +390,32 @@ func TestPlugin_AutoPostingNoInferenceWhenMultiCurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1 (only balUSD should mismatch); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+	wantCodes := []string{
+		string(validation.CodeAutoPostingUnresolved),
+		string(validation.CodeBalanceMismatch),
 	}
-	if got, want := res.Diagnostics[0].Code, string(validation.CodeBalanceMismatch); got != want {
-		t.Errorf("Code = %q, want %q", got, want)
+	if len(res.Diagnostics) != len(wantCodes) {
+		t.Fatalf("len(Result.Diagnostics) = %d, want %d; diagnostics = %v", len(res.Diagnostics), len(wantCodes), res.Diagnostics)
+	}
+	for i, want := range wantCodes {
+		if res.Diagnostics[i].Code != want {
+			t.Errorf("balance.Apply: Diagnostics[%d].Code = %q, want %q", i, res.Diagnostics[i].Code, want)
+		}
 	}
 	// The running balance for (Assets:Cash, USD) must be 0 — the
-	// auto-posting was NOT inferred despite the USD residual.
+	// auto-posting was NOT inferred.
 	wantMsg := "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD"
-	if res.Diagnostics[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", res.Diagnostics[0].Message, wantMsg)
+	if res.Diagnostics[1].Message != wantMsg {
+		t.Errorf("balance.Apply: Diagnostics[1].Message = %q, want %q", res.Diagnostics[1].Message, wantMsg)
 	}
 }
 
-// TestPlugin_AutoPostingNoInferenceWhenMultipleAutos verifies that
-// transactions with more than one auto-posting (malformed per the
-// validations plugin) do NOT trigger inference in the balance plugin.
-// A subsequent balance assertion against either auto-posting's
-// account must read zero: posting-weight application is skipped once
-// CodeMultipleAutoPostings has been flagged.
-func TestPlugin_AutoPostingNoInferenceWhenMultipleAutos(t *testing.T) {
+// TestPlugin_MultipleAutoPostingsReport pins the defensive path:
+// when raw AST slips through, the validator emits
+// CodeAutoPostingUnresolved rather than silently inferring. With more
+// than one nil-Amount posting the validator reports each one
+// independently and leaves both accounts' running balances at zero.
+func TestPlugin_MultipleAutoPostingsReport(t *testing.T) {
 	expl := amtInt(100, "USD")
 	txn := &ast.Transaction{
 		Date: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
@@ -418,15 +450,132 @@ func TestPlugin_AutoPostingNoInferenceWhenMultipleAutos(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1 (only balCashNonZero should mismatch); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+	wantCodes := []string{
+		string(validation.CodeAutoPostingUnresolved),
+		string(validation.CodeAutoPostingUnresolved),
+		string(validation.CodeBalanceMismatch),
 	}
-	if got, want := res.Diagnostics[0].Code, string(validation.CodeBalanceMismatch); got != want {
-		t.Errorf("Code = %q, want %q", got, want)
+	if len(res.Diagnostics) != len(wantCodes) {
+		t.Fatalf("len(Result.Diagnostics) = %d, want %d; diagnostics = %v", len(res.Diagnostics), len(wantCodes), res.Diagnostics)
+	}
+	for i, want := range wantCodes {
+		if res.Diagnostics[i].Code != want {
+			t.Errorf("balance.Apply: Diagnostics[%d].Code = %q, want %q", i, res.Diagnostics[i].Code, want)
+		}
 	}
 	wantMsg := "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD"
-	if res.Diagnostics[0].Message != wantMsg {
-		t.Errorf("Message = %q, want %q", res.Diagnostics[0].Message, wantMsg)
+	if res.Diagnostics[2].Message != wantMsg {
+		t.Errorf("balance.Apply: Diagnostics[2].Message = %q, want %q", res.Diagnostics[2].Message, wantMsg)
+	}
+}
+
+// TestPlugin_BookedTransactionUpdatesInventory exercises the
+// booked-AST happy path: a single-currency transaction whose postings
+// all carry an explicit Amount must update the running balance so a
+// downstream assertion against the offset account passes without
+// emitting any diagnostics. This is the case the deleted inference
+// path used to handle implicitly; under the booking invariant the
+// fixture is constructed in already-booked shape.
+func TestPlugin_BookedTransactionUpdatesInventory(t *testing.T) {
+	expl := amtInt(100, "USD")
+	booked := amtInt(-100, "USD")
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Expenses:Food", Amount: &expl},
+			{Account: "Assets:Cash", Amount: &booked},
+		},
+	}
+	bal := &ast.Balance{
+		Date:    time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Cash",
+		Amount:  amtInt(-100, "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+	res, err := balance.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("balance.Apply: unexpected error %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty (booked transaction must populate Assets:Cash)", res.Diagnostics)
+	}
+}
+
+// TestPlugin_BookedMultiCurrencyTransaction exercises the booked-AST
+// happy path: a multi-currency transaction with explicit Amounts on
+// every leg must update each per-(account, currency) bucket
+// independently, so subsequent balance assertions on the offset
+// account succeed in both currencies.
+func TestPlugin_BookedMultiCurrencyTransaction(t *testing.T) {
+	usd := amtInt(100, "USD")
+	eur := amtInt(50, "EUR")
+	usdOff := amtInt(-100, "USD")
+	eurOff := amtInt(-50, "EUR")
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Expenses:Food", Amount: &usd},
+			{Account: "Expenses:Travel", Amount: &eur},
+			{Account: "Assets:Cash", Amount: &usdOff},
+			{Account: "Assets:Cash", Amount: &eurOff},
+		},
+	}
+	balUSD := &ast.Balance{
+		Date:    time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Cash",
+		Amount:  amtInt(-100, "USD"),
+	}
+	balEUR := &ast.Balance{
+		Date:    time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Cash",
+		Amount:  amtInt(-50, "EUR"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{txn, balUSD, balEUR})}
+	res, err := balance.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("balance.Apply: unexpected error %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty (per-currency buckets must each be populated)", res.Diagnostics)
+	}
+}
+
+// TestPlugin_BookedMultiplePostings exercises the booked-AST happy
+// path: a transaction whose offset is split across multiple postings
+// (e.g., separate cash and savings legs) updates each account's
+// running balance independently when every Amount is explicit.
+func TestPlugin_BookedMultiplePostings(t *testing.T) {
+	expl := amtInt(100, "USD")
+	cashLeg := amtInt(-60, "USD")
+	savingsLeg := amtInt(-40, "USD")
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Expenses:Food", Amount: &expl},
+			{Account: "Assets:Cash", Amount: &cashLeg},
+			{Account: "Assets:Savings", Amount: &savingsLeg},
+		},
+	}
+	balCash := &ast.Balance{
+		Date:    time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Cash",
+		Amount:  amtInt(-60, "USD"),
+	}
+	balSavings := &ast.Balance{
+		Date:    time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Savings",
+		Amount:  amtInt(-40, "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{txn, balCash, balSavings})}
+	res, err := balance.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("balance.Apply: unexpected error %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("Result.Diagnostics = %v, want empty (each posting's account bucket must be updated)", res.Diagnostics)
 	}
 }
 
