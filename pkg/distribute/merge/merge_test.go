@@ -4,9 +4,11 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -467,20 +469,132 @@ func TestMerge_SameDayFIFOAtSameOffset(t *testing.T) {
 
 // --- Out-of-scope guards ---
 
-func TestMerge_RejectsCommentedInsert(t *testing.T) {
+func TestMerge_CommentedInsert_NewFile(t *testing.T) {
+	plan := defaultPlan([]Insert{
+		{Directive: open(t, "2024-01-15", "Assets:A"), Commented: true, Prefix: "; "},
+	})
+	got, stats, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if stats.Written != 0 {
+		t.Errorf("Written: got %d, want 0", stats.Written)
+	}
+	if stats.Commented != 1 {
+		t.Errorf("Commented: got %d, want 1", stats.Commented)
+	}
+	if want := "; 2024-01-15 open Assets:A\n"; string(got) != want {
+		t.Errorf("output = %q, want %q", string(got), want)
+	}
+}
+
+func TestMerge_CommentedInsert_DefaultsPrefix(t *testing.T) {
 	plan := defaultPlan([]Insert{
 		{Directive: open(t, "2024-01-15", "Assets:A"), Commented: true},
 	})
-	plan.Path = filepath.Join(t.TempDir(), "dest.beancount")
-	_, err := Merge(plan, Options{})
-	if err == nil {
-		t.Fatal("Merge with Commented=true: got nil error, want ErrCommentedNotSupported")
+	got, _, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
 	}
-	if !errors.Is(err, ErrCommentedNotSupported) {
-		t.Errorf("Merge(Commented=true) error = %v; want one matching errors.Is(err, ErrCommentedNotSupported)", err)
+	if want := "; 2024-01-15 open Assets:A\n"; string(got) != want {
+		t.Errorf("output = %q, want %q", string(got), want)
 	}
-	if _, statErr := os.Stat(plan.Path); !os.IsNotExist(statErr) {
-		t.Errorf("Merge with rejected input should not create file; stat err = %v", statErr)
+}
+
+// TestMerge_Existing_CommentedInsert exercises the existing-file patch
+// path with a commented insert between two existing dated directives.
+// Mirrors TestMerge_Existing_InsertBetween's shape so that the only
+// observable difference is the "; " prefix on the new line — confirming
+// that the commented branch in printInsert is wired through the
+// patch-composition path, not just the new-file path.
+func TestMerge_Existing_CommentedInsert(t *testing.T) {
+	src := readFixture(t, "insert_between.in.beancount")
+	plan := defaultPlan([]Insert{
+		{Directive: open(t, "2024-02-15", "Assets:C"), Commented: true, Prefix: "; "},
+	})
+	got, stats, err := runMerge(t, plan, src)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	want := readFixture(t, "commented_insert_between.want.beancount")
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
+	}
+	if stats.Written != 0 {
+		t.Errorf("Written: got %d, want 0", stats.Written)
+	}
+	if stats.Commented != 1 {
+		t.Errorf("Commented: got %d, want 1", stats.Commented)
+	}
+}
+
+// TestMerge_CommentedInsert_MultiLine verifies that comment.Emit
+// prefixes every line of a multi-line directive, including the indented
+// posting continuation lines. A Transaction with two postings is the
+// realistic dedup cross-posting case.
+func TestMerge_CommentedInsert_MultiLine(t *testing.T) {
+	dec := func(s string) apd.Decimal {
+		t.Helper()
+		d, _, err := apd.NewFromString(s)
+		if err != nil {
+			t.Fatalf("apd.NewFromString(%q): %v", s, err)
+		}
+		return *d
+	}
+	txn := &ast.Transaction{
+		Date:      mustDate(t, "2024-01-15"),
+		Flag:      '*',
+		Narration: "Coffee",
+		Postings: []ast.Posting{
+			{Account: ast.Expenses.MustSub("Food"), Amount: &ast.Amount{Number: dec("3.50"), Currency: "USD"}},
+			{Account: ast.Assets.MustSub("Cash"), Amount: &ast.Amount{Number: dec("-3.50"), Currency: "USD"}},
+		},
+	}
+	plan := defaultPlan([]Insert{{Directive: txn, Commented: true, Prefix: "; "}})
+	got, stats, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if stats.Commented != 1 {
+		t.Errorf("Commented: got %d, want 1", stats.Commented)
+	}
+	lines := strings.Split(strings.TrimRight(string(got), "\n"), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected at least 3 lines (header + 2 postings), got %q", got)
+	}
+	for i, line := range lines {
+		if line == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, ";") {
+			t.Errorf("line %d not commented-prefixed: %q", i, line)
+		}
+	}
+}
+
+// TestMerge_NewFile_MixedActiveAndCommented verifies that a Plan
+// containing both active and commented inserts produces a file with
+// both forms, that Stats correctly splits the count between Written
+// and Commented, and that B/N spacing is applied between them the
+// same way as between two active inserts.
+func TestMerge_NewFile_MixedActiveAndCommented(t *testing.T) {
+	plan := defaultPlan([]Insert{
+		{Directive: open(t, "2024-01-15", "Assets:A")},
+		{Directive: open(t, "2024-02-15", "Assets:B"), Commented: true, Prefix: "; "},
+	})
+	got, stats, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	want := readFixture(t, "mixed_active_and_commented.want.beancount")
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
+	}
+	if stats.Written != 1 {
+		t.Errorf("Written: got %d, want 1", stats.Written)
+	}
+	if stats.Commented != 1 {
+		t.Errorf("Commented: got %d, want 1", stats.Commented)
 	}
 }
 

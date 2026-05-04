@@ -37,21 +37,21 @@ type Plan struct {
 
 // Insert describes one directive to add to a destination file.
 //
-// In sub-phase 7.5b only the active form is supported: Commented==true
-// is rejected with ErrCommentedNotSupported; Prefix and StripMetaKeys
-// are accepted on the type but never read. They are reserved for the
-// 7.5c commented-emit path.
+// When Commented is true the directive is rendered as a commented-out
+// block: each line of the printed directive is prefixed with Prefix
+// (typically "; "). StripMetaKeys is reserved for 7.5g; it is accepted
+// on the type but not read in 7.5e.
 type Insert struct {
 	// Directive is the directive to render and insert.
 	Directive ast.Directive
-	// Commented requests a commented-out emit. Reserved for 7.5c; setting
-	// it to true in 7.5b causes Merge to return ErrCommentedNotSupported.
+	// Commented requests a commented-out emit. When true the rendered
+	// directive lines are each prefixed with Prefix.
 	Commented bool
-	// Prefix is the comment prefix used by the commented emit. Reserved
-	// for 7.5c; ignored in 7.5b.
+	// Prefix is the comment prefix used when Commented is true. The
+	// recommended value is "; ".
 	Prefix string
 	// StripMetaKeys names metadata keys to strip before emit. Reserved
-	// for 7.5c; ignored in 7.5b.
+	// for 7.5g; ignored in 7.5e.
 	StripMetaKeys []string
 	// Format carries body-level printing options. Spacing options
 	// (BlankLines* fields) included here are silently overridden by the
@@ -65,13 +65,13 @@ type Options struct{}
 
 // Stats reports what Merge did to the destination file.
 //
-// In sub-phase 7.5b Commented and Skipped are always 0; they are
-// reserved for the 7.5c (commented emit) and 7.5e (dedup integration)
-// sub-phases respectively.
+// Skipped is reserved for callers that elect to drop inserts entirely
+// (e.g. the dedup wiring in sub-phase 7.5e); Merge itself never bumps
+// Skipped because every Insert it receives is rendered.
 type Stats struct {
 	// Path is the destination file the stats describe.
 	Path string
-	// Written counts inserts that landed in the file.
+	// Written counts inserts that landed in the file as active directives.
 	Written int
 	// Commented counts inserts that landed as commented-out blocks.
 	Commented int
@@ -79,15 +79,24 @@ type Stats struct {
 	Skipped int
 }
 
-// ErrCommentedNotSupported is wrapped in the error Merge returns when an
-// Insert has Commented==true. Commented emit is the responsibility of
-// sub-phase 7.5c; callers can route around it with errors.Is.
-var ErrCommentedNotSupported = errors.New("merge: commented inserts not supported in sub-phase 7.5b (lands in 7.5c)")
-
 // ErrOrderNotSupported is wrapped in the error Merge returns when
 // Plan.Order is not route.OrderAscending. Descending and append orders
 // land in sub-phase 7.5h; callers can route around it with errors.Is.
-var ErrOrderNotSupported = errors.New("merge: only ascending order supported in sub-phase 7.5b (lands in 7.5h)")
+var ErrOrderNotSupported = errors.New("merge: only ascending order is supported")
+
+// tallyInserts splits the insert list into active and commented counts
+// for Stats. Same accounting is used by the new-file and existing-file
+// paths.
+func tallyInserts(inserts []Insert) (written, commented int) {
+	for _, ins := range inserts {
+		if ins.Commented {
+			commented++
+		} else {
+			written++
+		}
+	}
+	return written, commented
+}
 
 // Merge writes the directives in plan into plan.Path, preserving every
 // byte of surrounding content in an existing destination file (see the
@@ -102,13 +111,6 @@ func Merge(plan Plan, _ Options) (Stats, error) {
 		return Stats{Path: plan.Path}, nil
 	}
 
-	// Validate up-front, before any file I/O, so out-of-scope inputs
-	// fail loudly without side effects.
-	for i, ins := range plan.Inserts {
-		if ins.Commented {
-			return Stats{Path: plan.Path}, fmt.Errorf("merge: insert %d has Commented=true: %w", i, ErrCommentedNotSupported)
-		}
-	}
 	if plan.Order != route.OrderAscending {
 		return Stats{Path: plan.Path}, fmt.Errorf("merge: order %s: %w", orderName(plan.Order), ErrOrderNotSupported)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/yugui/go-beancount/internal/atomicfile"
 	"github.com/yugui/go-beancount/internal/formatopt"
+	"github.com/yugui/go-beancount/pkg/distribute/comment"
 	"github.com/yugui/go-beancount/pkg/printer"
 )
 
@@ -43,14 +44,26 @@ func mergeNewFile(plan Plan) (Stats, error) {
 	if err := atomicfile.Write(plan.Path, buf.Bytes()); err != nil {
 		return Stats{Path: plan.Path}, fmt.Errorf("merge: writing %q: %w", plan.Path, err)
 	}
-	return Stats{Path: plan.Path, Written: len(inserts)}, nil
+	written, commented := tallyInserts(inserts)
+	return Stats{Path: plan.Path, Written: written, Commented: commented}, nil
 }
 
 // printInsert resolves the per-insert format options against
 // formatopt.Default(), overrides the two spacing fields with the
 // plan's values (per the §4.4 schema rule), and prints the directive
-// to w. The printer emits a trailing newline.
+// to w. The printer emits a trailing newline. Commented inserts are
+// rendered through comment.Emit with the insert's Prefix.
 func printInsert(w *bytes.Buffer, plan Plan, ins Insert) error {
+	if ins.Commented {
+		prefix := ins.Prefix
+		if prefix == "" {
+			prefix = "; "
+		}
+		if err := comment.Emit(w, ins.Directive, prefix); err != nil {
+			return fmt.Errorf("merge: printing commented directive: %w", err)
+		}
+		return nil
+	}
 	eff := formatopt.Resolve(ins.Format)
 	eff.BlankLinesBetweenDirectives = plan.BlankLinesBetweenDirectives
 	eff.InsertBlankLinesBetweenDirectives = plan.InsertBlankLinesBetweenDirectives

@@ -36,12 +36,11 @@
 // pre-existing blank lines (X > N is left as-is) - whole-file
 // normalization is the job of a separate beanfmt pass.
 //
-// Sub-phase scope (7.5b)
+// # Sub-phase scope
 //
-// This package implements the MVP from §9 row 7.5b of the beanfile
-// design: ascending order only, active inserts only. Out-of-scope inputs
-// (Plan.Order != OrderAscending, Insert.Commented == true) are rejected
-// with sentinel errors so callers can [errors.Is] them and route to the
-// right follow-up sub-phase. Other Insert fields reserved for those
-// sub-phases (Prefix, StripMetaKeys) are accepted but not read.
+// This package implements the active and commented emit paths from §9
+// rows 7.5b and 7.5e of the beanfile design. Plan.Order other than
+// OrderAscending is rejected with [ErrOrderNotSupported] so callers can
+// [errors.Is] it and route to 7.5h. The Insert.StripMetaKeys field is
+// accepted but not read; it lands in 7.5g.
 package merge

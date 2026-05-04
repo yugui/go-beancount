@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -305,5 +306,137 @@ func TestRun_AbsoluteIncludeResolves(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "2024-01-15 price USD 110 JPY") {
 		t.Errorf("destination = %q, want included price directive", string(got))
+	}
+}
+
+// seedLedger writes a ledger root that includes every supplied
+// destination file (each authored with provided contents) so the dedup
+// index walks them. The ledger root and root directory are returned.
+func seedLedger(t *testing.T, files map[string]string) (rootDir, ledgerPath string) {
+	t.Helper()
+	rootDir = t.TempDir()
+	ledgerPath = filepath.Join(rootDir, "main.beancount")
+	relPaths := make([]string, 0, len(files))
+	for relPath := range files {
+		relPaths = append(relPaths, relPath)
+	}
+	sort.Strings(relPaths)
+	var includes strings.Builder
+	for _, relPath := range relPaths {
+		abs := filepath.Join(rootDir, relPath)
+		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+			t.Fatalf("mkdir %q: %v", filepath.Dir(abs), err)
+		}
+		if err := os.WriteFile(abs, []byte(files[relPath]), 0o644); err != nil {
+			t.Fatalf("writing %q: %v", abs, err)
+		}
+		fmt.Fprintf(&includes, "include %q\n", abs)
+	}
+	if err := os.WriteFile(ledgerPath, []byte(includes.String()), 0o644); err != nil {
+		t.Fatalf("writing ledger %q: %v", ledgerPath, err)
+	}
+	return rootDir, ledgerPath
+}
+
+func TestRun_DedupSkipsExisting(t *testing.T) {
+	priceLine := "2024-01-15 price USD 110 JPY\n"
+	root, ledger := seedLedger(t, map[string]string{
+		"quotes/USD/202401.beancount": priceLine,
+	})
+	dest := filepath.Join(root, "quotes/USD/202401.beancount")
+	before, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading seeded dest: %v", err)
+	}
+
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, priceLine)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+
+	after, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading dest after run: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("destination changed; before=%q after=%q", string(before), string(after))
+	}
+	if !strings.Contains(stderr, "skipped=1") {
+		t.Errorf("stderr = %q, want skipped=1", stderr)
+	}
+	if !strings.Contains(stderr, "total: written=0 commented=0 skipped=1") {
+		t.Errorf("stderr = %q, want total written=0 commented=0 skipped=1", stderr)
+	}
+}
+
+func TestRun_DedupCrossPostingComments(t *testing.T) {
+	openLine := "2024-01-10 open Assets:Bank USD\n"
+	root, ledger := seedLedger(t, map[string]string{
+		// Same Open directive at a non-default destination.
+		"transactions/Assets/Other/202401.beancount": openLine,
+	})
+
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, openLine)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+
+	dest := filepath.Join(root, "transactions/Assets/Bank/202401.beancount")
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading bank dest: %v", err)
+	}
+	if !strings.Contains(string(got), "; 2024-01-10 open Assets:Bank") {
+		t.Errorf("bank dest = %q, want commented Open", string(got))
+	}
+	if !strings.Contains(stderr, "transactions/Assets/Bank/202401.beancount") {
+		t.Errorf("stderr missing bank path: %q", stderr)
+	}
+	if !strings.Contains(stderr, "commented=1") {
+		t.Errorf("stderr = %q, want commented=1", stderr)
+	}
+	if !strings.Contains(stderr, "total: written=0 commented=1 skipped=0") {
+		t.Errorf("stderr = %q, want total written=0 commented=1", stderr)
+	}
+}
+
+func TestRun_DedupStreamInternal(t *testing.T) {
+	_, ledger := touchLedger(t)
+	src := "2024-01-15 price USD 110 JPY\n2024-01-15 price USD 110 JPY\n"
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	if !strings.Contains(stderr, "total: written=1 commented=0 skipped=1") {
+		t.Errorf("stderr = %q, want total written=1 commented=0 skipped=1", stderr)
+	}
+}
+
+func TestRun_DedupCrossPostingCascade(t *testing.T) {
+	openLine := "2024-01-10 open Assets:Bank USD\n"
+	root, ledger := seedLedger(t, map[string]string{
+		"transactions/Assets/Other/202401.beancount": openLine,
+	})
+
+	// Two equivalent inputs: first writes commented (active match
+	// elsewhere), second is then skipped because the destination now
+	// contains a commented equivalent.
+	src := openLine + openLine
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+
+	dest := filepath.Join(root, "transactions/Assets/Bank/202401.beancount")
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading bank dest: %v", err)
+	}
+	// Exactly one commented entry should land; the second is skipped.
+	if n := strings.Count(string(got), "; 2024-01-10 open Assets:Bank"); n != 1 {
+		t.Errorf("commented occurrences = %d, want 1; content=%q", n, string(got))
+	}
+	if !strings.Contains(stderr, "total: written=0 commented=1 skipped=1") {
+		t.Errorf("stderr = %q, want total written=0 commented=1 skipped=1", stderr)
 	}
 }

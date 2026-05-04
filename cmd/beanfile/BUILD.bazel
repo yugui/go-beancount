@@ -7,6 +7,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/ast",
+        "//pkg/distribute/dedup",
         "//pkg/distribute/merge",
         "//pkg/distribute/route",
         "//pkg/printer",

@@ -119,7 +119,8 @@ func mergeExistingFile(plan Plan) (Stats, error) {
 	if err := atomicfile.Write(plan.Path, out); err != nil {
 		return Stats{Path: plan.Path}, fmt.Errorf("merge: writing %q: %w", plan.Path, err)
 	}
-	return Stats{Path: plan.Path, Written: len(plan.Inserts)}, nil
+	written, commented := tallyInserts(plan.Inserts)
+	return Stats{Path: plan.Path, Written: written, Commented: commented}, nil
 }
 
 // indexDirectives walks the top-level children of f.Root and records

@@ -1,8 +1,10 @@
 // Command beanfile distributes beancount directives from input sources
 // (stdin or one or more positional files) into a tree of per-account and
 // per-commodity destination files under a chosen root, following the
-// standard convention from the beanfile design doc (§2). Sub-phase 7.5d
-// MVP: no dedup, no config file, no overrides, no dry-run.
+// standard convention from the beanfile design doc (§2). Sub-phase 7.5e
+// adds the active+commented dedup index (§7) so each input directive
+// is written, commented-out, or skipped per the three-way decision.
+// Config file, overrides, and dry-run remain out of scope.
 package main
 
 import (
@@ -17,6 +19,7 @@ import (
 	"sort"
 
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/distribute/dedup"
 	"github.com/yugui/go-beancount/pkg/distribute/merge"
 	"github.com/yugui/go-beancount/pkg/distribute/route"
 	"github.com/yugui/go-beancount/pkg/printer"
@@ -110,14 +113,26 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 	return execute(ctx, c, sourceReaders(positional, stdin), stdout, stderr)
 }
 
-// execute is the core orchestration: dispatch each source through the
-// routing loop, merge the resulting plans into their destinations, and
-// emit stats. It accepts the input stream as an iterator so that run
-// owns the stdin-vs-positional-files distinction (via sourceReaders)
-// while execute remains agnostic to where directives come from.
+// execute is the core orchestration: build the dedup index, dispatch
+// each source through the routing/three-way-decision loop, merge the
+// resulting plans into their destinations, and emit stats. It accepts
+// the input stream as an iterator so that run owns the
+// stdin-vs-positional-files distinction (via sourceReaders) while
+// execute remains agnostic to where directives come from.
 func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error], stdout, stderr io.Writer) int {
-	_ = ctx
+	index, ledgerDiags, err := dedup.BuildIndex(ctx, c.ledgerAbs, c.rootAbs)
+	if err != nil {
+		fmt.Fprintf(stderr, "beanfile: %v\n", err)
+		return 2
+	}
+	if emitDiagnostics(stderr, ledgerDiags, c.quiet) {
+		return 1
+	}
+
 	planByPath := map[string][]merge.Insert{}
+	writtenByPath := map[string]int{}
+	commentedByPath := map[string]int{}
+	skippedByPath := map[string]int{}
 	var passthroughCount int
 
 	for src, err := range sources {
@@ -160,15 +175,35 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 				passthroughCount++
 				continue
 			}
+
+			if matched, _ := index.InDestination(decision.Path, d, nil); matched {
+				skippedByPath[decision.Path]++
+				continue
+			}
+			commented, _ := index.InOtherActive(decision.Path, d, nil)
 			planByPath[decision.Path] = append(planByPath[decision.Path], merge.Insert{
 				Directive: d,
+				Commented: commented,
 				Format:    decision.Format,
 			})
+			if commented {
+				commentedByPath[decision.Path]++
+			} else {
+				writtenByPath[decision.Path]++
+			}
+			index.Add(decision.Path, d, commented)
 		}
 	}
 
-	paths := make([]string, 0, len(planByPath))
+	pathSet := map[string]struct{}{}
 	for p := range planByPath {
+		pathSet[p] = struct{}{}
+	}
+	for p := range skippedByPath {
+		pathSet[p] = struct{}{}
+	}
+	paths := make([]string, 0, len(pathSet))
+	for p := range pathSet {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
@@ -176,24 +211,26 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 	var stats []pathStat
 	mergeFailed := false
 	for _, p := range paths {
-		plan := merge.Plan{
-			Path:                              filepath.Join(c.rootAbs, p),
-			Order:                             route.OrderAscending,
-			BlankLinesBetweenDirectives:       1,
-			InsertBlankLinesBetweenDirectives: false,
-			Inserts:                           planByPath[p],
-		}
-		s, err := merge.Merge(plan, merge.Options{})
-		if err != nil {
-			fmt.Fprintf(stderr, "beanfile: merge %s: %v\n", p, err)
-			mergeFailed = true
-			continue
+		inserts := planByPath[p]
+		if len(inserts) > 0 {
+			plan := merge.Plan{
+				Path:                              filepath.Join(c.rootAbs, p),
+				Order:                             route.OrderAscending,
+				BlankLinesBetweenDirectives:       1,
+				InsertBlankLinesBetweenDirectives: false,
+				Inserts:                           inserts,
+			}
+			if _, err := merge.Merge(plan, merge.Options{}); err != nil {
+				fmt.Fprintf(stderr, "beanfile: merge %s: %v\n", p, err)
+				mergeFailed = true
+				continue
+			}
 		}
 		stats = append(stats, pathStat{
 			relPath:   p,
-			written:   s.Written,
-			commented: s.Commented,
-			skipped:   s.Skipped,
+			written:   writtenByPath[p],
+			commented: commentedByPath[p],
+			skipped:   skippedByPath[p],
 		})
 	}
 

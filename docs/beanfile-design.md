@@ -861,6 +861,7 @@ agreed; a later phase may set one.
 
    ```go
    import (
+       "github.com/cockroachdb/apd/v3"
        "github.com/google/go-cmp/cmp"
        "github.com/google/go-cmp/cmp/cmpopts"
        "github.com/yugui/go-beancount/pkg/ast"
@@ -876,15 +877,21 @@ agreed; a later phase may set one.
            // covers every directive type and every nested Posting, and any
            // new directive type that embeds Span is automatically covered.
            cmpopts.IgnoreTypes(ast.Span{}),
-           // Strip the routing-hint metadata entry (under whatever key
-           // override_meta_key resolves to) from both sides before
-           // comparison. ast.Metadata is a struct wrapping
-           // Props map[string]MetaValue (pkg/ast/ast.go:173-177);
-           // cmp walks into the struct and IgnoreMapEntries fires on the
-           // inner map. The value type must match the map's value type
-           // (ast.MetaValue), not interface{}.
-           cmpopts.IgnoreMapEntries(func(k string, _ ast.MetaValue) bool {
-               return k == overrideMetaKey
+           // Compare ast.Metadata via a dedicated Comparer rather than
+           // cmpopts.IgnoreMapEntries on the inner Props map. Filtering
+           // {overrideMetaKey: X} down to zero entries with IgnoreMapEntries
+           // yields an empty (non-nil) map, which go-cmp does not treat as
+           // equal to a nil map — so a directive that gained a route-account
+           // hint would not compare equal to one that never had any
+           // metadata. The Comparer strips the override key and then walks
+           // the remaining entries, equating nil and empty maps.
+           cmp.Comparer(func(a, b ast.Metadata) bool {
+               return metadataEqual(a, b, overrideMetaKey)
+           }),
+           // Compare apd.Decimal by numeric value: its underlying big.Int
+           // carries unexported fields that cmp cannot reflect into.
+           cmp.Comparer(func(a, b apd.Decimal) bool {
+               return a.Cmp(&b) == 0
            }),
        }
    }
@@ -1081,7 +1088,7 @@ implementation begins.
 | 1 | The `printer.Fprint` signature accepts many node kinds. The merger calls it once per directive — confirm there is no preferable batch path (e.g. passing `[]ast.Directive`) and decide which form to use. | 7.5b |
 | 2 | Should `Decision` expose the resolved account / commodity used for routing, in addition to `Path` and `Format`? Useful for CLI logging but not strictly required, since `Format` already encodes the resolved style. | 7.5a / 7.5f |
 | 3 | When a `route-account` metadata value is present but malformed (string that is not a valid `Account`, an unsupported type, an empty string), what is the behaviour: silent ignore, warn, error? | 7.5g |
-| 4 | The exact construction of `equalityOpts` — per-type `cmpopts.IgnoreFields(...)` enumerated for every directive type, vs. a generic `Span`-suppressing transformer that walks via reflection. The former is verbose but explicit; the latter is concise but harder to audit. | 7.5e |
+| 4 | ~~The exact construction of `equalityOpts` — per-type `cmpopts.IgnoreFields(...)` enumerated for every directive type, vs. a generic `Span`-suppressing transformer that walks via reflection.~~ **Resolved in 7.5e**: the generic `cmpopts.IgnoreTypes(ast.Span{})` form was chosen so any new directive type that embeds `Span` is covered automatically. See §7 for the full option set, including the dedicated `ast.Metadata` and `apd.Decimal` comparers required for nil-map and unexported-field handling. | 7.5e |
 | 5 | Promoting `github.com/BurntSushi/toml` from indirect to direct requires running `bazel run //:gazelle -- update-repos -from_file=go.mod` per CLAUDE.md. Confirm the workflow and capture it in the 7.5f sub-phase plan. | 7.5f |
 | 6 | `EmitCommented(prefix string)` documents a default of `"; "` but `prefix` is a required argument. Either drop the "default" wording or make `prefix` a functional option / use a wrapper that supplies the default. | 7.5c |
 | 7 | Inter-insert spacing rule when multiple patches collide at the same byte offset. **Default for 7.5b unless changed**: apply the same `B`/`N` rule between every consecutive pair of new inserts, then between the last insert and the existing-after side. Subsumed by #11 below; resolve together. | 7.5b |
