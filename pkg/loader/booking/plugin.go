@@ -65,7 +65,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	var cloned []ast.Directive
 	for _, d := range in.Directives {
 		if txn, ok := d.(*ast.Transaction); ok {
-			cloned = append(cloned, cloneTransaction(txn))
+			cloned = append(cloned, txn.Clone())
 			continue
 		}
 		cloned = append(cloned, d)
@@ -187,58 +187,6 @@ func writeReductionCost(p *ast.Posting, steps []inventory.ReductionStep) {
 		Currency: currency,
 	}
 	p.Cost.PerUnit = nil
-}
-
-// cloneTransaction deep-copies a transaction so the reducer can
-// mutate Posting.Amount on auto-postings and we can rewrite CostSpec
-// pointers without touching the caller's input. Only fields that are
-// actually mutated are deep-cloned; immutable scalars (Span, Date,
-// Flag, Payee, Narration) and slices we never edit (Tags, Links,
-// Meta) are shared.
-func cloneTransaction(src *ast.Transaction) *ast.Transaction {
-	out := *src
-	if src.Postings != nil {
-		out.Postings = make([]ast.Posting, len(src.Postings))
-		for i := range src.Postings {
-			out.Postings[i] = clonePosting(&src.Postings[i])
-		}
-	}
-	return &out
-}
-
-// clonePosting copies a posting with fresh allocations for every
-// field we may write to: Cost (replaced wholesale during write-back)
-// and Amount (the reducer fills it in place for auto-postings).
-func clonePosting(src *ast.Posting) ast.Posting {
-	out := *src
-	if src.Amount != nil {
-		amt := *src.Amount
-		out.Amount = &amt
-	}
-	if src.Cost != nil {
-		cs := *src.Cost
-		// PerUnit/Total/Date are pointers we may rewrite or replace;
-		// allocate fresh so the input AST stays intact regardless of
-		// which write-back path runs.
-		if src.Cost.PerUnit != nil {
-			pu := *src.Cost.PerUnit
-			cs.PerUnit = &pu
-		}
-		if src.Cost.Total != nil {
-			tot := *src.Cost.Total
-			cs.Total = &tot
-		}
-		if src.Cost.Date != nil {
-			d := *src.Cost.Date
-			cs.Date = &d
-		}
-		out.Cost = &cs
-	}
-	if src.Price != nil {
-		pr := *src.Price
-		out.Price = &pr
-	}
-	return out
 }
 
 // diagnosticCode maps an inventory error code to the diagnostic Code
