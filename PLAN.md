@@ -271,8 +271,10 @@ Acceptance is covered by tests in this branch: a deadlock-regression test for th
 
 ## Phase 7.5: Directive distribution CLI (`cmd/beanfile`)
 
-**Dependencies:** Phase 1 (CST), Phase 2 (AST), Phase 3 (printer / format),
-Phase 7 (quote, as a representative directive producer).
+**Dependencies:** Phase 1 (CST), Phase 2 (AST), Phase 3 (printer / format).
+Phase 4 (validation) and Phase 6 (plugin system) are deliberately *not*
+required: the CLI uses `pkg/ast.LoadFile` / `LoadReader` directly to get
+include resolution without the validation/plugin pipeline.
 
 `cmd/beanfile` is a stateless offline CLI that reads a directive stream
 (stdin or files) and merges each directive into the appropriate file in a
@@ -429,7 +431,7 @@ Phase 5:  pkg/inventory       (Phase 2, 4)
 Phase 6:  pkg/ext             (no deps)
 Phase 7:  pkg/quote           (Phase 6)
 Phase 7.5: pkg/distribute     (Phase 1, 2, 3)
-           cmd/beanfile       (Phase 7.5, optionally Phase 7 for upstream)
+           cmd/beanfile       (Phase 7.5)
 Phase 8:  pkg/importer        (Phase 2, 6)
 Phase 9:  pkg/query           (Phase 2, 4, 5)
 Phase 10: cmd/bean-daemon     (Phase 2, 4, 5, 9)
