@@ -6,7 +6,10 @@ go_library(
     srcs = ["main.go"],
     importpath = "github.com/yugui/go-beancount/cmd/beanfmt",
     visibility = ["//visibility:private"],
-    deps = ["//pkg/format"],
+    deps = [
+        "//internal/atomicfile",
+        "//pkg/format",
+    ],
 )
 
 go_binary(
