@@ -38,8 +38,9 @@ func (*currencyConstraints) Name() string { return "currency_constraints" }
 
 // ProcessEntry inspects each posting of a transaction and emits one
 // CodeCurrencyNotAllowed diagnostic per posting whose currency violates
-// the account's open-directive allowlist. Auto-postings (Amount == nil)
-// carry no currency and are skipped.
+// the account's open-directive allowlist. Expects booked AST: postings
+// without an Amount yield a CodeAutoPostingUnresolved diagnostic rather
+// than being silently skipped.
 func (v *currencyConstraints) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 	txn, ok := d.(*ast.Transaction)
 	if !ok {
@@ -49,6 +50,15 @@ func (v *currencyConstraints) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount == nil {
+			span := p.Span
+			if span == (ast.Span{}) {
+				span = txn.Span
+			}
+			diags = append(diags, ast.Diagnostic{
+				Code:    string(validation.CodeAutoPostingUnresolved),
+				Span:    span,
+				Message: fmt.Sprintf("posting on account %q has no amount; booking pass should have resolved it", p.Account),
+			})
 			continue
 		}
 		st, ok := v.state[p.Account]

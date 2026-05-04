@@ -23,6 +23,10 @@ const (
 	// CodeMultipleAutoPostings indicates a transaction contains more than one posting
 	// whose amount must be inferred.
 	CodeMultipleAutoPostings Code = "multiple-auto-postings"
+	// CodeAutoPostingUnresolved indicates a posting reached validation with a
+	// nil Amount. Validation runs on booked AST, so this signals either a
+	// skipped booking pass or a regression in booking itself.
+	CodeAutoPostingUnresolved Code = "auto-posting-unresolved"
 	// CodeBalanceMismatch indicates a balance assertion did not match the computed balance.
 	CodeBalanceMismatch Code = "balance-mismatch"
 	// CodePadUnresolved indicates a pad directive could not be resolved to a balance assertion.

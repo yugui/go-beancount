@@ -36,6 +36,11 @@ import (
 
 // Apply transforms a beancount ledger by synthesizing padding
 // transactions to resolve `pad`/`balance` discrepancies.
+//
+// Expects booked AST: postings without an Amount yield a
+// CodeAutoPostingUnresolved diagnostic instead of being inferred.
+// Auto-posting resolution is owned by the booking pass that runs
+// before validation.
 func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	if err := ctx.Err(); err != nil {
 		return api.Result{}, err
@@ -153,58 +158,30 @@ type pendingPad struct {
 	index int
 }
 
-// applyTransaction accumulates tx's postings into balances and infers
-// a single auto-posting when exactly one currency has a non-zero
-// residual. Duplicates the two-pass logic in the balance plugin; a
-// future refactor can extract a shared helper.
+// applyTransaction accumulates tx's postings into balances. The
+// running balance is updated only from postings that carry an
+// explicit Amount; postings without one are reported as
+// CodeAutoPostingUnresolved and skipped, since auto-posting
+// resolution is owned by the booking pass that runs before
+// validation.
 func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) []ast.Diagnostic {
 	var diags []ast.Diagnostic
-	txResidual := map[string]*apd.Decimal{}
-	autoCount := 0
-	var autoPosting *ast.Posting
 	for j := range tx.Postings {
 		p := &tx.Postings[j]
 		if p.Amount == nil {
-			autoCount++
-			autoPosting = p
+			span := p.Span
+			if span == (ast.Span{}) {
+				span = tx.Span
+			}
+			diags = append(diags, ast.Diagnostic{
+				Code:    string(validation.CodeAutoPostingUnresolved),
+				Span:    span,
+				Message: fmt.Sprintf("posting on account %q has no amount; booking pass should have resolved it", p.Account),
+			})
 			continue
 		}
 		num := p.Amount.Number
 		addToBalance(balances, p.Account, p.Amount.Currency, &num)
-		resid, ok := txResidual[p.Amount.Currency]
-		if !ok {
-			resid = new(apd.Decimal)
-			txResidual[p.Amount.Currency] = resid
-		}
-		if _, err := apd.BaseContext.Add(resid, resid, &num); err != nil {
-			diags = append(diags, ast.Diagnostic{
-				Code:    string(validation.CodeInternalError),
-				Span:    tx.Span,
-				Message: fmt.Sprintf("failed to compute transaction residual: %v", err),
-			})
-		}
-	}
-	if autoCount == 1 && autoPosting != nil {
-		var inferCur string
-		nonZeroCount := 0
-		for cur, resid := range txResidual {
-			if !resid.IsZero() {
-				nonZeroCount++
-				inferCur = cur
-			}
-		}
-		if nonZeroCount == 1 {
-			inferred := new(apd.Decimal)
-			if _, err := apd.BaseContext.Neg(inferred, txResidual[inferCur]); err != nil {
-				diags = append(diags, ast.Diagnostic{
-					Code:    string(validation.CodeInternalError),
-					Span:    tx.Span,
-					Message: fmt.Sprintf("failed to infer auto-posting amount: %v", err),
-				})
-				return diags
-			}
-			addToBalance(balances, autoPosting.Account, inferCur, inferred)
-		}
 	}
 	return diags
 }

@@ -1,7 +1,6 @@
 package inventory_test
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,19 +9,22 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
-	"github.com/yugui/go-beancount/pkg/loader"
 )
 
-// loadInspectionFixture loads testdata/inspection_e2e.beancount, asserts
-// no parse/lower diagnostics, runs the default plugin pipeline, and fails
-// the test if any pipeline diagnostic is produced.
+// loadInspectionFixture loads testdata/inspection_e2e.beancount via the
+// ast layer directly (no loader pipeline) and fails the test on any
+// parse or lowering diagnostics. The bypass is deliberate: these tests
+// exercise the inventory Reducer over the raw AST shape that comes out
+// of parsing, including auto-balanced postings whose Amount is still
+// nil. Going through the full loader pipeline would pre-fill those
+// Amounts (the loader-level booking pass writes them in) and erase
+// the InferredAuto signal the inventory tests assert on.
 func loadInspectionFixture(t *testing.T) *ast.Ledger {
 	t.Helper()
 	path := filepath.Join("testdata", "inspection_e2e.beancount")
-	ctx := context.Background()
-	ledger, err := loader.LoadFile(ctx, path)
+	ledger, err := ast.LoadFile(path)
 	if err != nil {
-		t.Fatalf("loader.LoadFile(%q): %v", path, err)
+		t.Fatalf("ast.LoadFile(%q): %v", path, err)
 	}
 	var errs []string
 	for _, d := range ledger.Diagnostics {
@@ -31,7 +33,7 @@ func loadInspectionFixture(t *testing.T) *ast.Ledger {
 		}
 	}
 	if len(errs) != 0 {
-		t.Fatalf("loader.LoadFile(%q): got %d error-severity diagnostics, want 0:\n  %s",
+		t.Fatalf("ast.LoadFile(%q): got %d error-severity diagnostics, want 0:\n  %s",
 			path, len(errs), strings.Join(errs, "\n  "))
 	}
 	return ledger

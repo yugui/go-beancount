@@ -13,17 +13,16 @@ import (
 )
 
 // transactionBalances enforces per-currency balance for every
-// transaction, tolerating at most one auto-computed posting. It
-// mirrors upstream beancount's check_balance routine, but without
-// maintaining the running per-account balance map (balance assertions
-// live in the sibling pkg/validation/balance plugin).
+// transaction. It mirrors upstream beancount's check_balance routine,
+// but without maintaining the running per-account balance map (balance
+// assertions live in the sibling pkg/validation/balance plugin).
 //
 // Diagnostics produced:
-//   - CodeMultipleAutoPostings when a transaction has more than one
-//     auto-posting (Amount == nil).
+//   - CodeAutoPostingUnresolved when a posting reaches the validator
+//     with a nil Amount; the booking pass is expected to have resolved
+//     such postings before validation runs.
 //   - CodeUnbalancedTransaction when the per-currency residual exceeds the
-//     inferred tolerance and no auto-posting absorbs it, or when more than
-//     one residual currency remains for a single auto-posting to absorb.
+//     inferred tolerance.
 //   - CodeInternalError when tolerance inference itself fails (surfaced
 //     as `failed to derive transaction tolerance`).
 //
@@ -47,10 +46,8 @@ func newTransactionBalances(opts *options.Values) *transactionBalances {
 func (*transactionBalances) Name() string { return "transaction_balances" }
 
 // ProcessEntry inspects a single directive. Non-transaction directives
-// are ignored. For transactions, it replicates upstream beancount's
-// check_balance control flow: count auto-postings, compute per-currency
-// weight sums, infer tolerance, and emit at most one diagnostic per
-// failure mode.
+// are ignored. Expects booked AST: postings without an Amount yield a
+// CodeAutoPostingUnresolved diagnostic rather than being inferred.
 func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 	txn, ok := d.(*ast.Transaction)
 	if !ok {
@@ -58,90 +55,84 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 	}
 
 	sums := make(currencySum)
-	autoCount := 0
+	var diags []ast.Diagnostic
 
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount == nil {
-			autoCount++
+			span := p.Span
+			if span == (ast.Span{}) {
+				span = txn.Span
+			}
+			diags = append(diags, ast.Diagnostic{
+				Code:    string(validation.CodeAutoPostingUnresolved),
+				Span:    span,
+				Message: fmt.Sprintf("posting on account %q has no amount; booking pass should have resolved it", p.Account),
+			})
 			continue
 		}
+		// On any early-return path below (here and the sums.add,
+		// tolerance.Infer, and withinTolerance sites), we append to diags
+		// rather than discarding any preceding CodeAutoPostingUnresolved
+		// diagnostics already collected for this transaction so callers
+		// see the full picture of observable problems.
 		w, cur, err := inventory.PostingWeight(p)
 		if err != nil {
-			return []ast.Diagnostic{{
+			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
 				Message: fmt.Sprintf("failed to compute posting weight: %v", err),
-			}}
+			})
+			return diags
 		}
 		if err := sums.add(cur, w); err != nil {
-			return []ast.Diagnostic{{
+			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
 				Message: fmt.Sprintf("failed to accumulate posting weight: %v", err),
-			}}
+			})
+			return diags
 		}
-	}
-
-	if autoCount > 1 {
-		return []ast.Diagnostic{{
-			Code:    string(validation.CodeMultipleAutoPostings),
-			Span:    txn.Span,
-			Message: fmt.Sprintf("transaction has %d auto-balanced postings; at most one is allowed", autoCount),
-		}}
 	}
 
 	nonZero := sums.nonZeroCurrencies()
 	tolerances, err := tolerance.Infer(txn.Postings, v.opts, nonZero)
 	if err != nil {
-		return []ast.Diagnostic{{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeInternalError),
 			Span:    txn.Span,
 			Message: fmt.Sprintf("failed to derive transaction tolerance: %v", err),
-		}}
+		})
+		return diags
 	}
 
 	residual := make([]string, 0, len(nonZero))
 	for _, cur := range nonZero {
 		within, err := withinTolerance(sums[cur], tolerances[cur])
 		if err != nil {
-			return []ast.Diagnostic{{
+			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
 				Message: fmt.Sprintf("failed to evaluate balance tolerance: %v", err),
-			}}
+			})
+			return diags
 		}
 		if !within {
 			residual = append(residual, cur)
 		}
 	}
 
-	if autoCount == 1 {
-		// The single auto-posting absorbs at most one residual currency.
-		// Zero or one residual currencies → balanced; anything more is a
-		// multi-currency auto-posting we cannot infer.
-		switch len(residual) {
-		case 0, 1:
-			return nil
-		default:
-			return []ast.Diagnostic{{
-				Code:    string(validation.CodeUnbalancedTransaction),
-				Span:    txn.Span,
-				Message: fmt.Sprintf("cannot infer auto-posting amount: residual has %d non-zero currencies (%v)", len(residual), residual),
-			}}
-		}
-	}
-
-	// No auto-postings: any residual currency means the transaction is
-	// unbalanced.
+	// Any residual currency means the transaction is unbalanced. Booking
+	// resolves auto-postings before this point, so there is no
+	// auto-posting absorption path left.
 	if len(residual) > 0 {
-		return []ast.Diagnostic{{
+		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeUnbalancedTransaction),
 			Span:    txn.Span,
 			Message: fmt.Sprintf("transaction does not balance: non-zero residual in %v", residual),
-		}}
+		})
 	}
-	return nil
+	return diags
 }
 
 // Finish has no deferred diagnostics: all balance checks are

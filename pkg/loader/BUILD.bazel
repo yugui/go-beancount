@@ -13,6 +13,7 @@ go_library(
         "//pkg/ast",
         "//pkg/ext/postproc",
         "//pkg/ext/postproc/api",
+        "//pkg/loader/booking",
         "//pkg/validation/balance",
         "//pkg/validation/document",
         "//pkg/validation/pad",

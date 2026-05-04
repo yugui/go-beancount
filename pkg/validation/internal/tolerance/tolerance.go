@@ -62,6 +62,9 @@ func Infer(postings []ast.Posting, opts *options.Values, residualCurrencies []st
 	minExpPerCurrency := make(map[string]int32)
 	for i := range postings {
 		p := &postings[i]
+		// tolerance is an internal helper; the public validators that call it
+		// have already emitted CodeAutoPostingUnresolved for any nil-Amount
+		// posting. Silent skip avoids duplicating the diagnostic.
 		if p.Amount == nil {
 			continue
 		}
