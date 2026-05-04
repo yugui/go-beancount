@@ -637,6 +637,108 @@ func TestCostSpecEmpty(t *testing.T) {
 	}
 }
 
+// roundTripCostSpec parses src, lowers it (without any booking pass), prints
+// the resulting AST, and compares against want. It centralizes the
+// parse → lower → print → compare flow shared by the incomplete-CostSpec
+// round-trip cases below so each individual test stays focused on its input
+// and expected output.
+func roundTripCostSpec(t *testing.T, src, want string) {
+	t.Helper()
+	cst := syntax.Parse(src)
+	if len(cst.Errors) > 0 {
+		t.Fatalf("parse errors: %v", cst.Errors)
+	}
+	file := ast.Lower("test.beancount", cst)
+	if len(file.Diagnostics) > 0 {
+		t.Fatalf("lower diagnostics: %v", file.Diagnostics)
+	}
+	var buf bytes.Buffer
+	if err := printer.Fprint(&buf, file); err != nil {
+		t.Fatalf("Fprint: %v", err)
+	}
+	if got := buf.String(); got != want {
+		t.Errorf("printer round-trip output mismatch\ngot:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestCostSpecDateOnlyRoundTrip exercises the parse → lower → print pipeline
+// for a CostSpec that carries only a date (no per-unit, total, or label).
+// This is an incomplete cost shape that the lowerer accepts without booking,
+// and the printer must round-trip it verbatim.
+func TestCostSpecDateOnlyRoundTrip(t *testing.T) {
+	src := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo  -1 ABC {2024-05-14}\n" +
+		"  Expenses:Bar  10 USD\n"
+	want := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo                                  -1 ABC {2024-05-14}\n" +
+		"  Expenses:Bar                                10 USD\n"
+	roundTripCostSpec(t, src, want)
+}
+
+// TestCostSpecLabelOnlyRoundTrip exercises the parse → lower → print pipeline
+// for a CostSpec that carries only a label.
+func TestCostSpecLabelOnlyRoundTrip(t *testing.T) {
+	src := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo  -1 ABC {\"lot1\"}\n" +
+		"  Expenses:Bar  10 USD\n"
+	want := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo                                  -1 ABC {\"lot1\"}\n" +
+		"  Expenses:Bar                                10 USD\n"
+	roundTripCostSpec(t, src, want)
+}
+
+// TestCostSpecPerUnitOnlyRoundTrip exercises the parse → lower → print
+// pipeline for a CostSpec that carries only a per-unit amount, with no date
+// or label. The pre-existing TestCostSpecPerUnit always supplies date and
+// label, so this case pins the bare per-unit rendering.
+func TestCostSpecPerUnitOnlyRoundTrip(t *testing.T) {
+	src := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo  -1 ABC {100.00 USD}\n" +
+		"  Expenses:Bar  10 USD\n"
+	want := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo                                  -1 ABC {100.00 USD}\n" +
+		"  Expenses:Bar                                10 USD\n"
+	roundTripCostSpec(t, src, want)
+}
+
+// TestCostSpecTotalOnlyRoundTrip exercises the parse → lower → print
+// pipeline for the legacy total-only "{{...}}" form. The pre-existing
+// TestCostSpecTotal builds the AST manually; this case pins the full
+// source-to-source round-trip.
+func TestCostSpecTotalOnlyRoundTrip(t *testing.T) {
+	src := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo  -1 ABC {{200.00 USD}}\n" +
+		"  Expenses:Bar  10 USD\n"
+	want := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo                                  -1 ABC {{200.00 USD}}\n" +
+		"  Expenses:Bar                                10 USD\n"
+	roundTripCostSpec(t, src, want)
+}
+
+// TestCostSpecEmptyRoundTrip exercises the parse → lower → print pipeline
+// for a fully empty cost annotation "{}". The pre-existing TestCostSpecEmpty
+// builds the AST manually; this case pins the full source-to-source
+// round-trip.
+func TestCostSpecEmptyRoundTrip(t *testing.T) {
+	src := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo  -1 ABC {}\n" +
+		"  Expenses:Bar  10 USD\n"
+	want := "" +
+		"2025-01-01 * \"test\"\n" +
+		"  Assets:Foo                                  -1 ABC {}\n" +
+		"  Expenses:Bar                                10 USD\n"
+	roundTripCostSpec(t, src, want)
+}
+
 func TestPriceAnnotationPerUnit(t *testing.T) {
 	got := print(t, &ast.Transaction{
 		Date:      date("2024-01-15"),
