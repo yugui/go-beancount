@@ -42,11 +42,14 @@ import (
 	"github.com/yugui/go-beancount/pkg/inventory"
 )
 
-// Apply runs the booking pass over the input directives. It deep-clones
-// every transaction so the reducer's in-place mutations to auto-posting
-// Amount fields and our per-posting CostSpec writes do not touch the
-// caller's directives. All non-Transaction directives are forwarded by
-// reference; they have no fields the reducer could disturb.
+// Apply runs the booking pass over the input directives. Transactions
+// the booking pass could mutate — those carrying a CostSpec on any
+// posting or an auto-posting whose Amount the reducer must fill — are
+// deep-cloned so the caller's AST is not disturbed. Transactions that
+// the reducer and the write-back step provably leave alone are passed
+// through by reference, which avoids redundant copying on the common
+// case of cash-flow ledgers. All non-Transaction directives are
+// likewise forwarded by reference.
 //
 // Reducer-emitted errors are surfaced as ast.Diagnostic entries on the
 // returned Result so the load pipeline can continue and surface them
@@ -60,12 +63,17 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, nil
 	}
 
-	// Materialize directives and deep-clone every Transaction so the
-	// reducer can mutate without touching the caller's AST.
+	// Materialize directives, cloning only the Transactions the booking
+	// pass could mutate. See needsBookingClone for the predicate's
+	// rationale.
 	var cloned []ast.Directive
 	for _, d := range in.Directives {
 		if txn, ok := d.(*ast.Transaction); ok {
-			cloned = append(cloned, txn.Clone())
+			if needsBookingClone(txn) {
+				cloned = append(cloned, txn.Clone())
+			} else {
+				cloned = append(cloned, txn)
+			}
 			continue
 		}
 		cloned = append(cloned, d)
@@ -100,6 +108,21 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 
 	return api.Result{Directives: cloned, Diagnostics: diags}, nil
+}
+
+// needsBookingClone reports whether txn could be mutated by the booking
+// pass and therefore must be cloned before being handed to the reducer.
+// The reducer fills auto-posting amounts in place, and the cost-spec
+// write-back step targets only postings that already carry a Cost; a
+// transaction with neither marker passes through observationally
+// unchanged, so reusing its pointer is safe.
+func needsBookingClone(txn *ast.Transaction) bool {
+	for _, p := range txn.Postings {
+		if p.Cost != nil || p.Amount == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // writeBackCost folds the booking decision recorded in bp into the AST

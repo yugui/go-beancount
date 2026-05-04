@@ -424,3 +424,81 @@ func TestApply_DoesNotMutateInputDirectives(t *testing.T) {
 		t.Errorf("input auto-posting Amount was mutated: got %+v, want nil", original.Postings[1].Amount)
 	}
 }
+
+// TestApply_DoesNotCloneCostlessTransaction pins the on-demand clone
+// optimization: a Transaction with no CostSpec on any posting and no
+// auto-posting cannot be mutated by the booking pass, so the plugin
+// must thread the caller's pointer through unchanged rather than spend
+// a deep clone on it.
+func TestApply_DoesNotCloneCostlessTransaction(t *testing.T) {
+	openA := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Cash"}
+	openB := &ast.Open{Date: day(2024, 1, 1), Account: "Expenses:Misc"}
+	txn := &ast.Transaction{
+		Date:      day(2025, 1, 1),
+		Flag:      '*',
+		Narration: "ordinary",
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: amt("-10", "USD")},
+			{Account: "Expenses:Misc", Amount: amt("10", "USD")},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{openA, openB, txn})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	var got *ast.Transaction
+	for _, d := range res.Directives {
+		if tx, ok := d.(*ast.Transaction); ok {
+			got = tx
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("booking.Apply() Directives: no transaction found, want one")
+	}
+	if got != txn {
+		t.Errorf("booking.Apply() cloned a costless transaction; want input pointer threaded through")
+	}
+}
+
+// TestApply_ClonesCostBearingTransaction pins the other branch of the
+// on-demand clone predicate: a Transaction with a CostSpec on any
+// posting can be mutated by the write-back step, so the plugin must
+// emit a distinct clone rather than the caller's pointer.
+func TestApply_ClonesCostBearingTransaction(t *testing.T) {
+	openA := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Brokerage"}
+	openB := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Cash"}
+	txn := &ast.Transaction{
+		Date: day(2024, 1, 15),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("10", "AAPL"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100.00", "USD"),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("-1000.00", "USD")},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{openA, openB, txn})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	var got *ast.Transaction
+	for _, d := range res.Directives {
+		if tx, ok := d.(*ast.Transaction); ok {
+			got = tx
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("booking.Apply() Directives: no transaction found, want one")
+	}
+	if got == txn {
+		t.Errorf("booking.Apply() returned input pointer for cost-bearing transaction; want a distinct clone")
+	}
+}
