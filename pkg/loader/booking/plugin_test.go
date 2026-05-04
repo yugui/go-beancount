@@ -617,6 +617,59 @@ func TestApply_DoesNotCloneCostlessTransaction(t *testing.T) {
 	}
 }
 
+// TestApply_CashReductionExceedingInventoryIsAllowed pins the cash
+// overdraft rule: when a reducing posting consumes more units than the
+// account currently holds, but every matched candidate is cash (no
+// CostSpec), the booking pass must NOT raise a
+// reduction-exceeds-inventory diagnostic. Cash positions have no lot
+// identity (currency units are fully fungible), so an overdraft is the
+// balance assertion's concern, not booking's. This regression check
+// covers a ledger like:
+//
+//	2025-01-02 *
+//	  Assets:Cash 500 JPY
+//	  Income:Misc
+//	2025-01-03 *
+//	  Assets:Cash -1000 JPY
+//	  Expenses:Misc
+//
+// where pad would later synthesize the missing units, but pad runs
+// after booking and therefore cannot help booking see them.
+func TestApply_CashReductionExceedingInventoryIsAllowed(t *testing.T) {
+	openCash := &ast.Open{Date: day(2025, 1, 1), Account: "Assets:Cash", Currencies: []string{"JPY"}}
+	openInc := &ast.Open{Date: day(2025, 1, 1), Account: "Income:Misc"}
+	openExp := &ast.Open{Date: day(2025, 1, 1), Account: "Expenses:Misc"}
+	deposit := &ast.Transaction{
+		Date:      day(2025, 1, 2),
+		Flag:      '*',
+		Narration: "deposit",
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: amt("500", "JPY")},
+			{Account: "Income:Misc", Amount: amt("-500", "JPY")},
+		},
+	}
+	withdraw := &ast.Transaction{
+		Date:      day(2025, 1, 3),
+		Flag:      '*',
+		Narration: "withdraw",
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: amt("-1000", "JPY")},
+			{Account: "Expenses:Misc", Amount: amt("1000", "JPY")},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{openCash, openInc, openExp, deposit, withdraw})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: unexpected error %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
+	}
+}
+
 // TestApply_ClonesCostBearingTransaction pins the other branch of the
 // on-demand clone predicate: a Transaction with a CostSpec on any
 // posting can be mutated by the write-back step, so the plugin must

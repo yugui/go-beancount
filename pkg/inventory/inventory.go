@@ -293,7 +293,17 @@ func (i *Inventory) Reduce(
 		}
 		totalAvailable.Set(&sum)
 	}
-	if remaining.Cmp(&totalAvailable) > 0 {
+	// Cash candidates have no lot identity (currency units are fungible),
+	// so an overdraft is the balance assertion's concern, not booking's.
+	// See package doc "# Lot identity" for the full rationale.
+	allCash := true
+	for _, c := range candidates {
+		if i.positions[c.idx].Cost != nil {
+			allCash = false
+			break
+		}
+	}
+	if !allCash && remaining.Cmp(&totalAvailable) > 0 {
 		return nil, Error{
 			Code:    CodeReductionExceedsInventory,
 			Message: "reducing posting requests more units than the matched lots contain",
