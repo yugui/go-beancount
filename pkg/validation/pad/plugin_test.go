@@ -459,6 +459,111 @@ func TestPlugin_CanceledContext(t *testing.T) {
 	}
 }
 
+// TestPlugin_AutoPostingNotBookedReports pins the defensive path:
+// when raw AST slips through the booking pass, the validator emits
+// CodeAutoPostingUnresolved rather than silently inferring the
+// missing amount. The inventory state used by the pad insertion
+// calculation must NOT include the unbooked posting's amount, so
+// the synthesized padding amount equals the full asserted value
+// (no inferred offset).
+func TestPlugin_AutoPostingNotBookedReports(t *testing.T) {
+	padSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 5, Column: 1}}
+	p := &ast.Pad{
+		Span:       padSpan,
+		Date:       day(2024, 1, 15),
+		Account:    "Assets:Cash",
+		PadAccount: "Equity:Opening",
+	}
+	// Transaction with one explicit posting and one nil-Amount
+	// posting that should have been booked. The validator must
+	// report the nil-Amount posting and skip it (no inference),
+	// so only the +50 USD explicit posting is folded into the
+	// running balance.
+	pos := amtInt(50, "USD")
+	txnSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 6, Column: 1}}
+	postSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 8, Column: 3}}
+	txn := &ast.Transaction{
+		Span: txnSpan,
+		Date: day(2024, 1, 20),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &pos},
+			{Span: postSpan, Account: "Income:Salary", Amount: nil},
+		},
+	}
+	bal := &ast.Balance{
+		Date:    day(2024, 2, 1),
+		Account: "Assets:Cash",
+		Amount:  amtInt(150, "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{p, txn, bal})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+
+	// Exactly one CodeAutoPostingUnresolved diagnostic for the
+	// nil-Amount posting; no padding-related diagnostics because
+	// the pad resolves against the partial running balance.
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+	}
+	e := res.Diagnostics[0]
+	if e.Code != string(validation.CodeAutoPostingUnresolved) {
+		t.Errorf("pad.Apply Code = %q, want %q", e.Code, string(validation.CodeAutoPostingUnresolved))
+	}
+	if e.Span != postSpan {
+		t.Errorf("pad.Apply Span = %v, want %v (= posting Span)", e.Span, postSpan)
+	}
+	wantMsg := "posting on account \"Income:Salary\" has no amount; booking pass should have resolved it"
+	if e.Message != wantMsg {
+		t.Errorf("pad.Apply Message = %q, want %q", e.Message, wantMsg)
+	}
+
+	// The synthesized transaction must reflect that the running
+	// balance saw only +50 USD from the explicit posting (no
+	// inference of the missing -50 USD leg). With the assertion
+	// at 150 USD, the residual to inject is 100 USD.
+	if len(res.Directives) != 4 {
+		t.Fatalf("len(Result.Directives) = %d, want 4 (pad, synth, txn, bal)", len(res.Directives))
+	}
+	tx, ok := res.Directives[1].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
+	}
+	if got := tx.Postings[0].Amount.Number.String(); got != "100" {
+		t.Errorf("synth target amount = %q, want %q (150 expected - 50 explicit; missing leg is NOT inferred)", got, "100")
+	}
+}
+
+// TestPlugin_AutoPostingNoExplicitFallsBackToTxnSpan verifies the Span
+// fallback when a nil-Amount posting carries no Span of its own: the
+// diagnostic should attach to the enclosing transaction's Span.
+func TestPlugin_AutoPostingNoExplicitFallsBackToTxnSpan(t *testing.T) {
+	txnSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 9, Column: 1}}
+	pos := amtInt(50, "USD")
+	txn := &ast.Transaction{
+		Span: txnSpan,
+		Date: day(2024, 1, 20),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &pos},
+			{Account: "Income:Salary", Amount: nil},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{txn})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+	if len(res.Diagnostics) != 1 {
+		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+	}
+	if res.Diagnostics[0].Span != txnSpan {
+		t.Errorf("pad.Apply Span = %v, want %v (txn fallback)", res.Diagnostics[0].Span, txnSpan)
+	}
+}
+
 // TestPlugin_OptionsFromRawParseError confirms malformed options
 // surface as ast.Diagnostic{Code: "invalid-option"}, matching the balance
 // and validations plugins' contract.
