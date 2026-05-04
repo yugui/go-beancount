@@ -31,6 +31,13 @@ const (
 	CodeBalanceMismatch Code = "balance-mismatch"
 	// CodePadUnresolved indicates a pad directive could not be resolved to a balance assertion.
 	CodePadUnresolved Code = "pad-unresolved"
+	// CodePadTargetHasCost indicates a Pad directive targets an account
+	// whose inventory holds (or will hold, during the pad → balance window)
+	// any cost-bearing position. Pad cannot invent a (Cost, Date, Label)
+	// lot identity for the synthetic balancing entry, so the ledger must
+	// be rewritten to use explicit transactions for the cost-held lots.
+	// See pkg/inventory's "# Lot identity" package doc for the full rationale.
+	CodePadTargetHasCost Code = "pad-target-has-cost"
 	// CodeCurrencyNotAllowed indicates a posting uses a currency not permitted by the account's open directive.
 	CodeCurrencyNotAllowed Code = "currency-not-allowed"
 	// CodeInternalError indicates an internal validation failure such as an

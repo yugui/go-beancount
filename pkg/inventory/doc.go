@@ -32,6 +32,28 @@
 // O(N) per call and is intended for interactive use, not for scanning
 // an entire ledger.
 //
+// # Lot identity
+//
+// The package distinguishes two kinds of positions by whether they
+// carry a non-nil Cost. The distinction governs every observable
+// difference between cash and cost-held bookkeeping:
+//
+//	Position kind     Lot identity               Negative inventory   Pad
+//	----------------  -------------------------  -------------------  ----------
+//	Cash (Cost==nil)  none (fungible currency)   allowed (overdraft)  no-cost OK
+//	Cost-held         (Cost, Date, Label) tuple  structural error     refused
+//
+// Therefore:
+//
+//   - Reduce skips CodeReductionExceedsInventory when every matched
+//     candidate is cash; the resulting position is allowed to go
+//     negative. Cash sufficiency is the balance assertion's concern.
+//   - Pad cannot invent a (Cost, Date, Label) lot identity, so the
+//     pad plugin refuses to operate on accounts that hold (or will
+//     hold during the pad → balance window) any cost-bearing
+//     position. This mirrors upstream beancount's
+//     "Attempt to pad an entry with cost" error.
+//
 // # Beancount parity
 //
 // The resolved [Cost] type mirrors the upstream Beancount position model:

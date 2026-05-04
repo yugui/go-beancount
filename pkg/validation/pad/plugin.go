@@ -83,7 +83,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	for i, d := range in.Directives {
 		switch x := d.(type) {
 		case *ast.Transaction:
-			diags = append(diags, applyTransaction(x, balances)...)
+			diags = append(diags, applyTransaction(x, balances, pending)...)
 		case *ast.Pad:
 			diags = append(diags, recordPad(x, i, pending)...)
 		case *ast.Balance:
@@ -153,9 +153,23 @@ type balanceKey struct {
 // balance assertion on the same target account. Source order is
 // preserved via the index so the output slice can reinstate the
 // synthesized transaction at the pad's original position.
+//
+// costPostingSeen is the poison gate: when true, an intervening
+// transaction posted a cost-bearing entry on the target account.
+// resolveBalance turns that marker into a CodePadTargetHasCost
+// diagnostic and skips synthesis. costPostingSpan records the location
+// of the offending posting (with fallback to the transaction's span)
+// so the diagnostic can point at it.
+//
+// Pad synthesizes a no-cost balancing entry, which works only for cash
+// accounts. Cost-held positions require a (Cost, Date, Label) lot
+// identity that pad cannot invent. See pkg/inventory's "# Lot identity"
+// package doc for the full rationale.
 type pendingPad struct {
-	dir   *ast.Pad
-	index int
+	dir             *ast.Pad
+	index           int
+	costPostingSeen bool
+	costPostingSpan ast.Span
 }
 
 // applyTransaction accumulates tx's postings into balances. The
@@ -164,7 +178,12 @@ type pendingPad struct {
 // CodeAutoPostingUnresolved and skipped, since auto-posting
 // resolution is owned by the booking pass that runs before
 // validation.
-func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal) []ast.Diagnostic {
+//
+// applyTransaction also notes any cost-bearing posting whose account
+// matches a currently pending pad. The pad is marked so resolveBalance
+// can refuse to synthesize a balancing entry. See pendingPad for why
+// a cost-bearing posting on the target poisons the pad.
+func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal, pending map[ast.Account]*pendingPad) []ast.Diagnostic {
 	var diags []ast.Diagnostic
 	for j := range tx.Postings {
 		p := &tx.Postings[j]
@@ -179,6 +198,16 @@ func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal)
 				Message: fmt.Sprintf("posting on account %q has no amount; booking pass should have resolved it", p.Account),
 			})
 			continue
+		}
+		// Record only the first occurrence; later cost-bearing postings on the
+		// same pad target are ignored once the gate is set.
+		if pp := pending[p.Account]; p.Cost != nil && pp != nil && !pp.costPostingSeen {
+			pp.costPostingSeen = true
+			span := p.Span
+			if span == (ast.Span{}) {
+				span = tx.Span
+			}
+			pp.costPostingSpan = span
 		}
 		num := p.Amount.Number
 		addToBalance(balances, p.Account, p.Amount.Currency, &num)
@@ -214,6 +243,21 @@ func resolveBalance(b *ast.Balance, pending map[ast.Account]*pendingPad, balance
 	pp, ok := pending[b.Account]
 	if !ok {
 		return nil
+	}
+	// See pendingPad for why a cost-bearing posting on the target
+	// poisons the pad: refuse to synthesize and clear the pending entry.
+	if pp.costPostingSeen {
+		span := pp.costPostingSpan
+		if span == (ast.Span{}) {
+			span = pp.dir.Span
+		}
+		diags = append(diags, ast.Diagnostic{
+			Code:    string(validation.CodePadTargetHasCost),
+			Span:    span,
+			Message: fmt.Sprintf("cannot pad account %q: holds cost-bearing position", pp.dir.Account),
+		})
+		delete(pending, b.Account)
+		return diags
 	}
 	// Compute the residual the synthesized transaction must absorb
 	// so that the downstream balance assertion passes:

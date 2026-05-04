@@ -325,6 +325,39 @@ func TestInventoryReduceExceedsInventory(t *testing.T) {
 	}
 }
 
+// TestInventoryReduceCashOverflowAllowed pins the lot-identity rule
+// for cash candidates: a reducing posting that exceeds the available
+// units must NOT be rejected with CodeReductionExceedsInventory when
+// every matched candidate is cash (Cost == nil). Currency units are
+// fungible — they have no lot identity to consume that does not exist
+// — so an overdraft is the balance assertion's concern, not booking's.
+// See package doc "# Lot identity" for the full rationale.
+func TestInventoryReduceCashOverflowAllowed(t *testing.T) {
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "500", "JPY", nil)); err != nil {
+		t.Fatal(err)
+	}
+
+	steps, err := inv.Reduce(
+		ast.Amount{Number: decimalVal(t, "-1000"), Currency: "JPY"},
+		CostMatcher{},
+		ast.BookingFIFO,
+	)
+	if err != nil {
+		t.Fatalf("Reduce returned unexpected error: %v", err)
+	}
+	if len(steps) == 0 {
+		t.Fatalf("Reduce returned no steps; want at least one cash consumption step")
+	}
+	// Each step is a cash step: the zero-value Lot signals "consumed
+	// from a cash position". Currency must be empty for cash steps.
+	for i, s := range steps {
+		if s.Lot.Currency != "" {
+			t.Errorf("Reduce step[%d].Lot.Currency = %q, want \"\" (cash)", i, s.Lot.Currency)
+		}
+	}
+}
+
 func TestInventoryReduceNoMatchingLot(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
