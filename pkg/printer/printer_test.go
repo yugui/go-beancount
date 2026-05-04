@@ -345,10 +345,10 @@ func TestTransactionBasic(t *testing.T) {
 		},
 	})
 	// "  Expenses:Food" = 15, "50.00 USD" = 9, padding = 52-15-9 = 28
-	want := "" +
-		"2024-01-15 * \"Grocery Store\" \"Weekly shopping\"\n" +
-		"  Expenses:Food                            50.00 USD\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "Grocery Store" "Weekly shopping"
+  Expenses:Food                            50.00 USD
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -365,10 +365,10 @@ func TestTransactionNarrationOnly(t *testing.T) {
 		},
 	})
 	// "  Assets:Savings" = 16, "100.00 USD" = 10, padding = 52-16-10 = 26
-	want := "" +
-		"2024-01-15 * \"Transfer\"\n" +
-		"  Assets:Savings                          100.00 USD\n" +
-		"  Assets:Checking\n"
+	want := `2024-01-15 * "Transfer"
+  Assets:Savings                          100.00 USD
+  Assets:Checking
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -386,10 +386,10 @@ func TestTransactionWithTagsAndLinks(t *testing.T) {
 			{Account: "Liabilities:Credit"},
 		},
 	})
-	want := "" +
-		"2024-01-15 ! \"Pending\" #trip-2024 ^invoice-123\n" +
-		"  Expenses:Travel                         200.00 USD\n" +
-		"  Liabilities:Credit\n"
+	want := `2024-01-15 ! "Pending" #trip-2024 ^invoice-123
+  Expenses:Travel                         200.00 USD
+  Liabilities:Credit
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -405,10 +405,10 @@ func TestTransactionWithPostingFlag(t *testing.T) {
 			{Account: "Assets:Bank"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Mixed\"\n" +
-		"  ! Expenses:Food                          30.00 USD\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "Mixed"
+  ! Expenses:Food                          30.00 USD
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -433,12 +433,12 @@ func TestTransactionWithMetadata(t *testing.T) {
 			{Account: "Assets:Cash"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Lunch\"\n" +
-		"  source: \"receipt\"\n" +
-		"  Expenses:Food                            15.00 USD\n" +
-		"    category: \"lunch\"\n" +
-		"  Assets:Cash\n"
+	want := `2024-01-15 * "Lunch"
+  source: "receipt"
+  Expenses:Food                            15.00 USD
+    category: "lunch"
+  Assets:Cash
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -462,10 +462,10 @@ func TestCostSpecPerUnit(t *testing.T) {
 			{Account: "Assets:Bank"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Buy stock\"\n" +
-		"  Assets:Brokerage                           10 AAPL {150.00 USD, 2024-01-15, \"lot1\"}\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "Buy stock"
+  Assets:Brokerage                           10 AAPL {150.00 USD, 2024-01-15, "lot1"}
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -487,10 +487,10 @@ func TestCostSpecTotal(t *testing.T) {
 			{Account: "Assets:Bank"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Buy stock total\"\n" +
-		"  Assets:Brokerage                           10 AAPL {{1500.00 USD}}\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "Buy stock total"
+  Assets:Brokerage                           10 AAPL {{1500.00 USD}}
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -513,10 +513,10 @@ func TestCostSpecCombined(t *testing.T) {
 			{Account: "Assets:Bank"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Buy stock combined\"\n" +
-		"  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD}\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "Buy stock combined"
+  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD}
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -542,10 +542,10 @@ func TestCostSpecCombinedExplicitCurrencies(t *testing.T) {
 			{Account: "Assets:Bank"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Mismatched cost\"\n" +
-		"  Assets:Brokerage                           10 AAPL {502.12 EUR # 9.95 USD}\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "Mismatched cost"
+  Assets:Brokerage                           10 AAPL {502.12 EUR # 9.95 USD}
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -570,10 +570,10 @@ func TestCostSpecCombinedWithDateAndLabel(t *testing.T) {
 			{Account: "Assets:Bank"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Buy stock combined annotated\"\n" +
-		"  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD, 2024-01-15, \"lot1\"}\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "Buy stock combined annotated"
+  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD, 2024-01-15, "lot1"}
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -583,10 +583,10 @@ func TestCostSpecCombinedRoundTrip(t *testing.T) {
 	// First parse → lower → print test for the combined form. This test
 	// deliberately skips validation because validation has not yet been updated
 	// to accept the combined form.
-	src := "" +
-		"2024-01-15 * \"Buy stock combined\"\n" +
-		"  Assets:Brokerage  10 AAPL {502.12 # 9.95 USD}\n" +
-		"  Assets:Bank\n"
+	src := `2024-01-15 * "Buy stock combined"
+  Assets:Brokerage  10 AAPL {502.12 # 9.95 USD}
+  Assets:Bank
+`
 
 	cst := syntax.Parse(src)
 	if len(cst.Errors) > 0 {
@@ -605,10 +605,10 @@ func TestCostSpecCombinedRoundTrip(t *testing.T) {
 	// The printer normalizes the amount-column alignment, so the round-tripped
 	// output is not byte-identical to src; compare against the canonical printer
 	// output instead. Update this constant if the printer's formatting changes.
-	const want = "" +
-		"2024-01-15 * \"Buy stock combined\"\n" +
-		"  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD}\n" +
-		"  Assets:Bank\n"
+	const want = `2024-01-15 * "Buy stock combined"
+  Assets:Brokerage                           10 AAPL {502.12 # 9.95 USD}
+  Assets:Bank
+`
 	if out != want {
 		t.Errorf("printer round-trip output mismatch\ngot:\n%s\nwant:\n%s", out, want)
 	}
@@ -628,10 +628,10 @@ func TestCostSpecEmpty(t *testing.T) {
 			{Account: "Income:Gains"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Sell stock\"\n" +
-		"  Assets:Brokerage                          -10 AAPL {}\n" +
-		"  Income:Gains\n"
+	want := `2024-01-15 * "Sell stock"
+  Assets:Brokerage                          -10 AAPL {}
+  Income:Gains
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -666,28 +666,28 @@ func roundTripCostSpec(t *testing.T, src, want string) {
 // This is an incomplete cost shape that the lowerer accepts without booking,
 // and the printer must round-trip it verbatim.
 func TestCostSpecDateOnlyRoundTrip(t *testing.T) {
-	src := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo  -1 ABC {2024-05-14}\n" +
-		"  Expenses:Bar  10 USD\n"
-	want := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo                                  -1 ABC {2024-05-14}\n" +
-		"  Expenses:Bar                                10 USD\n"
+	src := `2025-01-01 * "test"
+  Assets:Foo  -1 ABC {2024-05-14}
+  Expenses:Bar  10 USD
+`
+	want := `2025-01-01 * "test"
+  Assets:Foo                                  -1 ABC {2024-05-14}
+  Expenses:Bar                                10 USD
+`
 	roundTripCostSpec(t, src, want)
 }
 
 // TestCostSpecLabelOnlyRoundTrip exercises the parse → lower → print pipeline
 // for a CostSpec that carries only a label.
 func TestCostSpecLabelOnlyRoundTrip(t *testing.T) {
-	src := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo  -1 ABC {\"lot1\"}\n" +
-		"  Expenses:Bar  10 USD\n"
-	want := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo                                  -1 ABC {\"lot1\"}\n" +
-		"  Expenses:Bar                                10 USD\n"
+	src := `2025-01-01 * "test"
+  Assets:Foo  -1 ABC {"lot1"}
+  Expenses:Bar  10 USD
+`
+	want := `2025-01-01 * "test"
+  Assets:Foo                                  -1 ABC {"lot1"}
+  Expenses:Bar                                10 USD
+`
 	roundTripCostSpec(t, src, want)
 }
 
@@ -696,14 +696,14 @@ func TestCostSpecLabelOnlyRoundTrip(t *testing.T) {
 // or label. The pre-existing TestCostSpecPerUnit always supplies date and
 // label, so this case pins the bare per-unit rendering.
 func TestCostSpecPerUnitOnlyRoundTrip(t *testing.T) {
-	src := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo  -1 ABC {100.00 USD}\n" +
-		"  Expenses:Bar  10 USD\n"
-	want := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo                                  -1 ABC {100.00 USD}\n" +
-		"  Expenses:Bar                                10 USD\n"
+	src := `2025-01-01 * "test"
+  Assets:Foo  -1 ABC {100.00 USD}
+  Expenses:Bar  10 USD
+`
+	want := `2025-01-01 * "test"
+  Assets:Foo                                  -1 ABC {100.00 USD}
+  Expenses:Bar                                10 USD
+`
 	roundTripCostSpec(t, src, want)
 }
 
@@ -712,14 +712,14 @@ func TestCostSpecPerUnitOnlyRoundTrip(t *testing.T) {
 // TestCostSpecTotal builds the AST manually; this case pins the full
 // source-to-source round-trip.
 func TestCostSpecTotalOnlyRoundTrip(t *testing.T) {
-	src := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo  -1 ABC {{200.00 USD}}\n" +
-		"  Expenses:Bar  10 USD\n"
-	want := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo                                  -1 ABC {{200.00 USD}}\n" +
-		"  Expenses:Bar                                10 USD\n"
+	src := `2025-01-01 * "test"
+  Assets:Foo  -1 ABC {{200.00 USD}}
+  Expenses:Bar  10 USD
+`
+	want := `2025-01-01 * "test"
+  Assets:Foo                                  -1 ABC {{200.00 USD}}
+  Expenses:Bar                                10 USD
+`
 	roundTripCostSpec(t, src, want)
 }
 
@@ -728,14 +728,14 @@ func TestCostSpecTotalOnlyRoundTrip(t *testing.T) {
 // builds the AST manually; this case pins the full source-to-source
 // round-trip.
 func TestCostSpecEmptyRoundTrip(t *testing.T) {
-	src := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo  -1 ABC {}\n" +
-		"  Expenses:Bar  10 USD\n"
-	want := "" +
-		"2025-01-01 * \"test\"\n" +
-		"  Assets:Foo                                  -1 ABC {}\n" +
-		"  Expenses:Bar                                10 USD\n"
+	src := `2025-01-01 * "test"
+  Assets:Foo  -1 ABC {}
+  Expenses:Bar  10 USD
+`
+	want := `2025-01-01 * "test"
+  Assets:Foo                                  -1 ABC {}
+  Expenses:Bar                                10 USD
+`
 	roundTripCostSpec(t, src, want)
 }
 
@@ -753,10 +753,10 @@ func TestPriceAnnotationPerUnit(t *testing.T) {
 			{Account: "Assets:USD"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Exchange\"\n" +
-		"  Assets:EUR                                 100 EUR @ 1.10 USD\n" +
-		"  Assets:USD\n"
+	want := `2024-01-15 * "Exchange"
+  Assets:EUR                                 100 EUR @ 1.10 USD
+  Assets:USD
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -776,10 +776,10 @@ func TestPriceAnnotationTotal(t *testing.T) {
 			{Account: "Assets:USD"},
 		},
 	})
-	want := "" +
-		"2024-01-15 * \"Exchange total\"\n" +
-		"  Assets:EUR                                 100 EUR @@ 110.00 USD\n" +
-		"  Assets:USD\n"
+	want := `2024-01-15 * "Exchange total"
+  Assets:EUR                                 100 EUR @@ 110.00 USD
+  Assets:USD
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -794,12 +794,12 @@ func TestFileWithMultipleDirectives(t *testing.T) {
 		},
 	}
 	got := print(t, &f, format.WithInsertBlankLinesBetweenDirectives(true))
-	want := "" +
-		"option \"title\" \"Test\"\n" +
-		"\n" +
-		"2024-01-01 open Assets:Bank\n" +
-		"\n" +
-		"2024-12-31 close Assets:Bank\n"
+	want := `option "title" "Test"
+
+2024-01-01 open Assets:Bank
+
+2024-12-31 close Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -825,10 +825,10 @@ func TestLedger(t *testing.T) {
 		&ast.Open{Date: date("2024-01-01"), Account: "Assets:Cash"},
 	})
 	got := print(t, &l, format.WithInsertBlankLinesBetweenDirectives(true))
-	want := "" +
-		"option \"title\" \"Ledger\"\n" +
-		"\n" +
-		"2024-01-01 open Assets:Cash\n"
+	want := `option "title" "Ledger"
+
+2024-01-01 open Assets:Cash
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -840,10 +840,10 @@ func TestDirectiveSlice(t *testing.T) {
 		&ast.Include{Path: "b.beancount"},
 	}
 	got := print(t, dirs, format.WithInsertBlankLinesBetweenDirectives(true))
-	want := "" +
-		"include \"a.beancount\"\n" +
-		"\n" +
-		"include \"b.beancount\"\n"
+	want := `include "a.beancount"
+
+include "b.beancount"
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -856,10 +856,10 @@ func TestDirectivesNoBlankLinesInsertedByDefault(t *testing.T) {
 		&ast.Include{Path: "c.beancount"},
 	}
 	got := print(t, dirs)
-	want := "" +
-		"include \"a.beancount\"\n" +
-		"include \"b.beancount\"\n" +
-		"include \"c.beancount\"\n"
+	want := `include "a.beancount"
+include "b.beancount"
+include "c.beancount"
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -1001,11 +1001,11 @@ func TestMetadataKeysSorted(t *testing.T) {
 			"mid":   {Kind: ast.MetaString, String: "m"},
 		}},
 	})
-	want := "" +
-		"2024-01-01 commodity USD\n" +
-		"  alpha: \"a\"\n" +
-		"  mid: \"m\"\n" +
-		"  zebra: \"z\"\n"
+	want := `2024-01-01 commodity USD
+  alpha: "a"
+  mid: "m"
+  zebra: "z"
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -1021,10 +1021,10 @@ func TestAmountAlignmentDisabled(t *testing.T) {
 			{Account: "Assets:Bank"},
 		},
 	}, format.WithAlignAmounts(false))
-	want := "" +
-		"2024-01-15 * \"No align\"\n" +
-		"  Expenses:Food  50.00 USD\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "No align"
+  Expenses:Food  50.00 USD
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -1044,11 +1044,11 @@ func TestBlankLinesBetweenDirectives(t *testing.T) {
 		&ast.Include{Path: "b.beancount"},
 	}
 	got := print(t, dirs, format.WithBlankLinesBetweenDirectives(2), format.WithInsertBlankLinesBetweenDirectives(true))
-	want := "" +
-		"include \"a.beancount\"\n" +
-		"\n" +
-		"\n" +
-		"include \"b.beancount\"\n"
+	want := `include "a.beancount"
+
+
+include "b.beancount"
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
@@ -1143,10 +1143,10 @@ func TestCommaGroupingInTransaction(t *testing.T) {
 			{Account: "Assets:Bank"},
 		},
 	}, format.WithCommaGrouping(true))
-	want := "" +
-		"2024-01-15 * \"Big purchase\"\n" +
-		"  Expenses:Home                     1,234,567.89 USD\n" +
-		"  Assets:Bank\n"
+	want := `2024-01-15 * "Big purchase"
+  Expenses:Home                     1,234,567.89 USD
+  Assets:Bank
+`
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
