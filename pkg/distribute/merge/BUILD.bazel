@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "merge",
+    srcs = [
+        "doc.go",
+        "existing.go",
+        "merge.go",
+        "newfile.go",
+        "patches.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/distribute/merge",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//internal/atomicfile",
+        "//internal/formatopt",
+        "//pkg/ast",
+        "//pkg/distribute/route",
+        "//pkg/format",
+        "//pkg/printer",
+        "//pkg/syntax",
+    ],
+)
+
+go_test(
+    name = "merge_test",
+    srcs = ["merge_test.go"],
+    data = glob(["testdata/**"]),
+    embed = [":merge"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/distribute/route",
+        "//pkg/format",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)
