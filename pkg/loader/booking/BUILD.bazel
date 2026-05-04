@@ -20,7 +20,6 @@ go_test(
         ":booking",
         "//pkg/ast",
         "//pkg/ext/postproc/api",
-        "//pkg/loader",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_google_go_cmp//cmp",
         "@com_github_google_go_cmp//cmp/cmpopts",

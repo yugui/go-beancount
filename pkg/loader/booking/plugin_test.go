@@ -11,7 +11,6 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
-	"github.com/yugui/go-beancount/pkg/loader"
 	"github.com/yugui/go-beancount/pkg/loader/booking"
 )
 
@@ -43,10 +42,15 @@ func dec(s string) apd.Decimal {
 	return *d
 }
 
+// amt returns a *ast.Amount with the given decimal string and currency.
+// It panics if num is not a valid decimal string, which is acceptable
+// inside test inputs.
 func amt(num string, cur string) *ast.Amount {
 	return &ast.Amount{Number: dec(num), Currency: cur}
 }
 
+// seqOf adapts a directive slice into the iter.Seq2[int, ast.Directive]
+// shape required by api.Input.Directives.
 func seqOf(directives []ast.Directive) iter.Seq2[int, ast.Directive] {
 	return func(yield func(int, ast.Directive) bool) {
 		for i, d := range directives {
@@ -58,10 +62,10 @@ func seqOf(directives []ast.Directive) iter.Seq2[int, ast.Directive] {
 }
 
 // errorSeverityCount returns the number of error-severity diagnostics
-// in ledger. Warning-level diagnostics are intentionally excluded.
-func errorSeverityCount(ledger *ast.Ledger) int {
+// in diags. Warning-level diagnostics are intentionally excluded.
+func errorSeverityCount(diags []ast.Diagnostic) int {
 	n := 0
-	for _, d := range ledger.Diagnostics {
+	for _, d := range diags {
 		if d.Severity == ast.Error {
 			n++
 		}
@@ -69,31 +73,60 @@ func errorSeverityCount(ledger *ast.Ledger) int {
 	return n
 }
 
-// TestLoad_DateOnlyCostReducesWithoutImbalance is the regression test for
-// the failing case that motivated this plugin: a reducing posting whose
-// CostSpec carries only an acquisition date must not be reported as
-// imbalanced after the loader runs.
-func TestLoad_DateOnlyCostReducesWithoutImbalance(t *testing.T) {
-	const src = `2024-05-14 open Assets:Gift-Certificates DISCOUNT
-2024-05-14 open Expenses:Misc
-2024-05-14 open Income:Gifts
-2024-05-14 * "buy"
-  Assets:Gift-Certificates  2 DISCOUNT { 1300 JPY, 2024-05-14 }
-  Income:Gifts             -2600 JPY
-2025-05-31 * "失効"
-  Assets:Gift-Certificates  -2 DISCOUNT { 2024-05-14 }
-  Expenses:Misc              2 * 1300 JPY
-`
-	ctx := context.Background()
-	ledger, err := loader.Load(ctx, src)
-	if err != nil {
-		t.Fatalf("loader.Load: unexpected error %v", err)
+// TestApply_DateOnlyCostReducesWithoutImbalance is the regression test
+// for the failing case that motivated this plugin: a reducing posting
+// whose CostSpec carries only an acquisition date must be resolved
+// into a concrete Total by the booking pass, with no error-severity
+// diagnostics surfaced.
+func TestApply_DateOnlyCostReducesWithoutImbalance(t *testing.T) {
+	openGC := &ast.Open{
+		Date:       day(2024, 5, 14),
+		Account:    "Assets:Gift-Certificates",
+		Currencies: []string{"DISCOUNT"},
 	}
-	if got := errorSeverityCount(ledger); got != 0 {
-		for _, d := range ledger.Diagnostics {
+	openExp := &ast.Open{Date: day(2024, 5, 14), Account: "Expenses:Misc"}
+	openInc := &ast.Open{Date: day(2024, 5, 14), Account: "Income:Gifts"}
+	buy := &ast.Transaction{
+		Date:      day(2024, 5, 14),
+		Flag:      '*',
+		Narration: "buy",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Gift-Certificates",
+				Amount:  amt("2", "DISCOUNT"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("1300", "JPY"),
+					Date:    dayp(2024, 5, 14),
+				},
+			},
+			{Account: "Income:Gifts", Amount: amt("-2600", "JPY")},
+		},
+	}
+	sell := &ast.Transaction{
+		Date:      day(2025, 5, 31),
+		Flag:      '*',
+		Narration: "失効",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Gift-Certificates",
+				Amount:  amt("-2", "DISCOUNT"),
+				Cost: &ast.CostSpec{
+					Date: dayp(2024, 5, 14),
+				},
+			},
+			{Account: "Expenses:Misc", Amount: amt("2600", "JPY")},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{openGC, openExp, openInc, buy, sell})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: unexpected error %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
 			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
 		}
-		t.Fatalf("error-severity diagnostics = %d, want 0", got)
+		t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
 	}
 }
 
@@ -178,43 +211,83 @@ func TestApply_AugmentationFillsPerUnit(t *testing.T) {
 // from that combined lot. The booked CostSpec.Total must equal
 // |units consumed| × per-unit cost across all matched steps.
 func TestApply_ReductionAggregatesTotal(t *testing.T) {
-	const src = `2024-01-01 open Assets:Brokerage
-2024-01-01 open Assets:Cash
-2024-01-01 open Income:Gain
-2024-01-01 * "buy lot A"
-  Assets:Brokerage  2 ABC { 100.00 USD, 2024-01-01 }
-  Assets:Cash      -200.00 USD
-2024-02-01 * "buy lot B"
-  Assets:Brokerage  3 ABC { 110.00 USD, 2024-02-01 }
-  Assets:Cash      -330.00 USD
-2024-03-01 * "sell from lot A"
-  Assets:Brokerage  -2 ABC { 2024-01-01 }
-  Assets:Cash       200.00 USD
-`
-	ctx := context.Background()
-	ledger, err := loader.Load(ctx, src)
-	if err != nil {
-		t.Fatalf("loader.Load: %v", err)
+	openBrokerage := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Brokerage"}
+	openCash := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Cash"}
+	// openGain is included as realistic fixture context for a sale that
+	// would book a gain; the booking pass itself does not require it.
+	openGain := &ast.Open{Date: day(2024, 1, 1), Account: "Income:Gain"}
+	buyA := &ast.Transaction{
+		Date:      day(2024, 1, 1),
+		Flag:      '*',
+		Narration: "buy lot A",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("2", "ABC"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100.00", "USD"),
+					Date:    dayp(2024, 1, 1),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("-200.00", "USD")},
+		},
 	}
-	if got := errorSeverityCount(ledger); got != 0 {
-		for _, d := range ledger.Diagnostics {
+	buyB := &ast.Transaction{
+		Date:      day(2024, 2, 1),
+		Flag:      '*',
+		Narration: "buy lot B",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("3", "ABC"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("110.00", "USD"),
+					Date:    dayp(2024, 2, 1),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("-330.00", "USD")},
+		},
+	}
+	sell := &ast.Transaction{
+		Date:      day(2024, 3, 1),
+		Flag:      '*',
+		Narration: "sell from lot A",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("-2", "ABC"),
+				Cost: &ast.CostSpec{
+					Date: dayp(2024, 1, 1),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("200.00", "USD")},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{openBrokerage, openCash, openGain, buyA, buyB, sell})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
 			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
 		}
-		t.Fatalf("error-severity diagnostics = %d, want 0", got)
+		t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
 	}
 
-	// Find the sell transaction and verify its booked CostSpec.
-	var sell *ast.Transaction
-	for _, d := range ledger.All() {
+	// Find the sell transaction in the booked output and verify its
+	// CostSpec.
+	var bookedSell *ast.Transaction
+	for _, d := range res.Directives {
 		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "sell from lot A" {
-			sell = tx
+			bookedSell = tx
 			break
 		}
 	}
-	if sell == nil {
-		t.Fatalf("sell transaction not found in ledger")
+	if bookedSell == nil {
+		t.Fatalf("sell transaction not found in booked directives")
 	}
-	cs := sell.Postings[0].Cost
+	cs := bookedSell.Postings[0].Cost
 	if cs == nil {
 		t.Fatalf("CostSpec on reducing posting is nil")
 	}
@@ -235,32 +308,37 @@ func TestApply_ReductionAggregatesTotal(t *testing.T) {
 // already mutates the work copy in place; we just need to verify the
 // clone's posting reflects the inferred amount).
 func TestApply_AutoPostingAmountIsFilled(t *testing.T) {
-	const src = `2024-01-01 open Assets:Bank
-2024-01-01 open Equity:Opening
-2024-01-15 * "deposit"
-  Assets:Bank        100 USD
-  Equity:Opening
-`
-	ctx := context.Background()
-	ledger, err := loader.Load(ctx, src)
-	if err != nil {
-		t.Fatalf("loader.Load: %v", err)
+	openBank := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Bank"}
+	openEquity := &ast.Open{Date: day(2024, 1, 1), Account: "Equity:Opening"}
+	deposit := &ast.Transaction{
+		Date:      day(2024, 1, 15),
+		Flag:      '*',
+		Narration: "deposit",
+		Postings: []ast.Posting{
+			{Account: "Assets:Bank", Amount: amt("100", "USD")},
+			{Account: "Equity:Opening"}, // auto-posting
+		},
 	}
-	if got := errorSeverityCount(ledger); got != 0 {
-		for _, d := range ledger.Diagnostics {
+	in := api.Input{Directives: seqOf([]ast.Directive{openBank, openEquity, deposit})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
 			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
 		}
-		t.Fatalf("error-severity diagnostics = %d, want 0", got)
+		t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
 	}
 	var txn *ast.Transaction
-	for _, d := range ledger.All() {
+	for _, d := range res.Directives {
 		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "deposit" {
 			txn = tx
 			break
 		}
 	}
 	if txn == nil {
-		t.Fatalf("deposit transaction not found")
+		t.Fatalf("deposit transaction not found in booked directives")
 	}
 	auto := &txn.Postings[1]
 	if auto.Amount == nil {
@@ -318,22 +396,61 @@ func TestApply_CostlessTransactionUnchanged(t *testing.T) {
 // the cost-spec date does not match any held lot, so the matcher
 // fails.
 func TestApply_ReducerErrorsBecomeDiagnostics(t *testing.T) {
-	const src = `2024-01-01 open Assets:Brokerage
-2024-01-01 open Assets:Cash
-2024-01-15 * "buy"
-  Assets:Brokerage  2 ABC { 100.00 USD, 2024-01-01 }
-  Assets:Cash      -200.00 USD
-2024-02-15 * "sell from non-existent lot"
-  Assets:Brokerage  -1 ABC { 50.00 USD, 2099-12-31 }
-  Assets:Cash        50.00 USD
-`
-	ctx := context.Background()
-	ledger, err := loader.Load(ctx, src)
-	if err != nil {
-		t.Fatalf("loader.Load: %v", err)
+	const wantCode = "no-matching-lot"
+	openBrokerage := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Brokerage"}
+	openCash := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Cash"}
+	buy := &ast.Transaction{
+		Date:      day(2024, 1, 15),
+		Flag:      '*',
+		Narration: "buy",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("2", "ABC"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100.00", "USD"),
+					Date:    dayp(2024, 1, 1),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("-200.00", "USD")},
+		},
 	}
-	if got := errorSeverityCount(ledger); got == 0 {
-		t.Fatalf("booking.Apply via loader.Load: error-severity diagnostics = %d, want >= 1 (no-matching-lot)", got)
+	sell := &ast.Transaction{
+		Date:      day(2024, 2, 15),
+		Flag:      '*',
+		Narration: "sell from non-existent lot",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("-1", "ABC"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("50.00", "USD"),
+					Date:    dayp(2099, 12, 31),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("50.00", "USD")},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{openBrokerage, openCash, buy, sell})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	if len(res.Diagnostics) == 0 {
+		t.Fatalf("Diagnostics = empty, want >= 1 (%s)", wantCode)
+	}
+	found := false
+	for _, d := range res.Diagnostics {
+		if d.Code == wantCode {
+			found = true
+			break
+		}
+	}
+	if !found {
+		for _, d := range res.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("no diagnostic with Code = %q found", wantCode)
 	}
 }
 
@@ -342,53 +459,85 @@ func TestApply_ReducerErrorsBecomeDiagnostics(t *testing.T) {
 // diagnostics. The reducer's outputs must be a function of the input
 // AST alone, with no aggregation drift across repeated runs.
 func TestApply_Idempotent(t *testing.T) {
-	const src = `2024-01-01 open Assets:Brokerage
-2024-01-01 open Assets:Cash
-2024-01-01 * "buy"
-  Assets:Brokerage  2 ABC { 100.00 USD, 2024-01-01 }
-  Assets:Cash      -200.00 USD
-2024-02-01 * "sell"
-  Assets:Brokerage  -2 ABC { 2024-01-01 }
-  Assets:Cash       200.00 USD
-`
-	ctx := context.Background()
-	ledger, err := loader.Load(ctx, src)
-	if err != nil {
-		t.Fatalf("loader.Load: %v", err)
+	openBrokerage := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Brokerage"}
+	openCash := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Cash"}
+	buy := &ast.Transaction{
+		Date:      day(2024, 1, 1),
+		Flag:      '*',
+		Narration: "buy",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("2", "ABC"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100.00", "USD"),
+					Date:    dayp(2024, 1, 1),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("-200.00", "USD")},
+		},
 	}
-	if got := errorSeverityCount(ledger); got != 0 {
-		for _, d := range ledger.Diagnostics {
-			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
-		}
-		t.Fatalf("error-severity diagnostics = %d, want 0", got)
+	sell := &ast.Transaction{
+		Date:      day(2024, 2, 1),
+		Flag:      '*',
+		Narration: "sell",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("-2", "ABC"),
+				Cost: &ast.CostSpec{
+					Date: dayp(2024, 1, 1),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("200.00", "USD")},
+		},
 	}
 
-	// Run the booking plugin a second time over the booked ledger and
-	// confirm the Total on the reducing posting has not changed.
-	in := api.Input{Directives: ledger.All()}
-	res, err := booking.Apply(context.Background(), in)
+	directives := []ast.Directive{openBrokerage, openCash, buy, sell}
+
+	// First booking pass.
+	first, err := booking.Apply(context.Background(), api.Input{Directives: seqOf(directives)})
+	if err != nil {
+		t.Fatalf("booking.Apply (first run): %v", err)
+	}
+	if got := errorSeverityCount(first.Diagnostics); got != 0 {
+		for _, d := range first.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("first-run error-severity diagnostics = %d, want 0", got)
+	}
+
+	// Second booking pass over the already-booked directives. The
+	// reducer's outputs must be a function of the input AST alone, so
+	// the booked CostSpec on the reducing posting must not drift.
+	second, err := booking.Apply(context.Background(), api.Input{Directives: seqOf(first.Directives)})
 	if err != nil {
 		t.Fatalf("booking.Apply (second run): %v", err)
 	}
-	for _, d := range res.Diagnostics {
-		if d.Severity == ast.Error {
-			t.Errorf("second-run diagnostic: %s [%s]", d.Message, d.Code)
+	if got := errorSeverityCount(second.Diagnostics); got != 0 {
+		for _, d := range second.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
 		}
+		t.Fatalf("second-run error-severity diagnostics = %d, want 0", got)
 	}
-	var sell *ast.Transaction
-	for _, d := range res.Directives {
-		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "sell" {
-			sell = tx
-			break
+
+	findSell := func(directives []ast.Directive) *ast.Transaction {
+		for _, d := range directives {
+			if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "sell" {
+				return tx
+			}
 		}
+		return nil
 	}
-	if sell == nil {
+	firstSell := findSell(first.Directives)
+	if firstSell == nil {
+		t.Fatalf("sell transaction not found after first booking pass")
+	}
+	secondSell := findSell(second.Directives)
+	if secondSell == nil {
 		t.Fatalf("sell transaction not found after second booking pass")
 	}
-	cs := sell.Postings[0].Cost
-	if cs == nil || cs.Total == nil {
-		t.Fatalf("CostSpec.Total = nil after second booking, want preserved aggregate")
-	}
+
 	wantCS := &ast.CostSpec{
 		Total: &ast.Amount{Number: dec("200.00"), Currency: "USD"},
 		Date:  dayp(2024, 1, 1),
@@ -396,8 +545,14 @@ func TestApply_Idempotent(t *testing.T) {
 	opts := append(cmp.Options{
 		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
 	}, astCmpOpts...)
-	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
-		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(wantCS, firstSell.Postings[0].Cost, opts...); diff != "" {
+		t.Errorf("booking.Apply() first-run CostSpec mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(wantCS, secondSell.Postings[0].Cost, opts...); diff != "" {
+		t.Errorf("booking.Apply() second-run CostSpec mismatch (-want +got):\n%s", diff)
+	}
+	if diff := cmp.Diff(firstSell.Postings[0].Cost, secondSell.Postings[0].Cost, opts...); diff != "" {
+		t.Errorf("booking.Apply() CostSpec drift across runs (-first +second):\n%s", diff)
 	}
 }
 
