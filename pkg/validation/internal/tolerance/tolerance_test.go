@@ -55,14 +55,15 @@ func TestInfer_EmptyPostings(t *testing.T) {
 
 // TestInfer_SingleCurrencyNoCost verifies units-based tolerance using the
 // default multiplier 0.5 for postings without a cost spec. The result must
-// be multiplier * 10^e where e is the most negative exponent in that
-// currency.
+// be multiplier * 10^e where e is the *least* negative exponent in that
+// currency — balance checks favor the looser/larger tolerance, so the
+// coarsest posting dominates.
 func TestInfer_SingleCurrencyNoCost(t *testing.T) {
-	pos := amtStr(t, "100.00", "USD")   // exp -2 -> tolerance 0.005
-	neg := amtStr(t, "-100.000", "USD") // exp -3 -> tolerance 0.0005
+	coarse := amtStr(t, "100.00", "USD") // exp -2 -> tolerance 0.005 (dominates)
+	fine := amtStr(t, "-100.000", "USD") // exp -3 -> tolerance 0.0005
 	postings := []ast.Posting{
-		{Account: "Assets:Cash", Amount: &pos},
-		{Account: "Expenses:Food", Amount: &neg},
+		{Account: "Assets:Cash", Amount: &coarse},
+		{Account: "Expenses:Food", Amount: &fine},
 	}
 	tol, err := tolerance.Infer(postings, mustDefaults(t), []string{"USD"})
 	if err != nil {
@@ -72,8 +73,8 @@ func TestInfer_SingleCurrencyNoCost(t *testing.T) {
 	if got == nil {
 		t.Fatalf("Infer: USD tolerance missing")
 	}
-	if got.Text('f') != "0.0005" {
-		t.Errorf("tolerance = %q, want %q", got.Text('f'), "0.0005")
+	if got.Text('f') != "0.005" {
+		t.Errorf("tolerance = %q, want %q", got.Text('f'), "0.005")
 	}
 }
 
