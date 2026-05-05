@@ -130,15 +130,14 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	booked []BookedPosting,
 	stop bool,
 ) {
-	touched := map[ast.Account]bool{}
-	before = map[ast.Account]*Inventory{}
-
 	// Reject structurally-invalid transactions before mutating any
 	// account state, so a rejected transaction leaves inventory
 	// untouched.
 	if !r.validateStructure(txn) {
-		return before, nil, nil, false
+		return map[ast.Account]*Inventory{}, nil, nil, false
 	}
+
+	trace := newStateTrace(r.state)
 
 	// Pass 1: book explicit postings while collecting unknowns. A
 	// posting that fails with CodeAugmentationRequiresCost AND has a
@@ -157,9 +156,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			continue
 		}
 
-		captureBefore(r.state, before, touched, p.Account)
-
-		inv := r.ensureInventory(p.Account)
+		inv := trace.prepareForEdit(p.Account)
 		method := r.booking[p.Account] // zero value = BookingDefault
 		bp, errs := bookOne(inv, p, method, txn.Date, false)
 		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
@@ -185,9 +182,9 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			var bp BookedPosting
 			var fillOk bool
 			if unknownP.Amount == nil {
-				bp, fillOk = r.fillAutoPosting(txn, unknownP, residual, touched, before)
+				bp, fillOk = r.fillAutoPosting(txn, unknownP, residual, trace)
 			} else {
-				bp, fillOk = r.fillDeferredCost(txn, unknownP, residual)
+				bp, fillOk = r.fillDeferredCost(txn, unknownP, residual, trace)
 			}
 			if fillOk {
 				booked = append(booked, bp)
@@ -195,18 +192,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 	}
 
-	// Build the after snapshot. Every touched account is included, even
-	// if its inventory is empty — the contract is that after[acct] is
-	// always non-nil for touched accounts.
-	after = map[ast.Account]*Inventory{}
-	for acct := range touched {
-		if inv := r.state[acct]; inv != nil {
-			after[acct] = inv.Clone()
-		} else {
-			after[acct] = NewInventory()
-		}
-	}
-
+	before, after = trace.diff()
 	return before, after, booked, false
 }
 
@@ -247,39 +233,73 @@ func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
 	return true
 }
 
-// captureBefore records the account's current inventory state in the
-// before map the first time the account is touched within a single
-// transaction. Snapshots are deep-copied via [Inventory.Clone] so the
-// visitor may retain them safely after Walk resumes mutating state.
-// Accounts not yet present in state map to a nil *Inventory snapshot;
-// a nil before-value is the signal that the account had never been
-// touched prior to this transaction.
-func captureBefore(
-	state map[ast.Account]*Inventory,
-	before map[ast.Account]*Inventory,
-	touched map[ast.Account]bool,
-	acct ast.Account,
-) {
-	if touched[acct] {
-		return
-	}
-	touched[acct] = true
-	if inv, ok := state[acct]; ok && inv != nil {
-		before[acct] = inv.Clone()
-	} else {
-		before[acct] = nil
+// stateTrace records edits to a per-account inventory map within the
+// scope of a single transaction. It pairs the long-lived state map
+// (shared with the owning Reducer, mutated in place by edits) with a
+// before-snapshot map (owned by the trace, populated lazily on first
+// touch of each account) so the two stay consistent by construction.
+//
+// A nil before-value records that the account had no inventory prior
+// to this trace — that nil is the visitor-contract signal for "newly
+// touched account".
+type stateTrace struct {
+	state  map[ast.Account]*Inventory
+	before map[ast.Account]*Inventory
+}
+
+// newStateTrace begins recording edits against state. before-snapshots
+// are scoped to this trace; state is shared with the caller and is
+// mutated in place by [stateTrace.prepareForEdit].
+func newStateTrace(state map[ast.Account]*Inventory) *stateTrace {
+	return &stateTrace{
+		state:  state,
+		before: map[ast.Account]*Inventory{},
 	}
 }
 
-// ensureInventory returns the inventory for acct, lazily creating and
-// installing one in r.state on first touch.
-func (r *Reducer) ensureInventory(acct ast.Account) *Inventory {
-	if inv, ok := r.state[acct]; ok && inv != nil {
-		return inv
+// prepareForEdit returns the inventory to mutate for acct. On the
+// first call for a given acct in this trace, it deep-clones the
+// account's current inventory into the before-snapshot (or records
+// nil if the account had no inventory yet) and lazily creates an
+// inventory if one did not exist. Subsequent calls return the same
+// inventory pointer without re-snapshotting.
+func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
+	if _, seen := st.before[acct]; seen {
+		return st.state[acct]
 	}
-	inv := NewInventory()
-	r.state[acct] = inv
+	inv := st.state[acct]
+	if inv == nil {
+		inv = NewInventory()
+		st.state[acct] = inv
+		st.before[acct] = nil
+	} else {
+		st.before[acct] = inv.Clone()
+	}
 	return inv
+}
+
+// diff returns the (before, after) pair for the visitor callback.
+// The before map is the trace's own — diff transfers ownership to
+// the caller, which is safe because a stateTrace is scoped to a
+// single visitTxn invocation and is discarded immediately after.
+// after is freshly constructed as clones of the current state for
+// every account first touched by this trace.
+func (st *stateTrace) diff() (before, after map[ast.Account]*Inventory) {
+	after = make(map[ast.Account]*Inventory, len(st.before))
+	for acct := range st.before {
+		if inv := st.state[acct]; inv != nil {
+			after[acct] = inv.Clone()
+		} else {
+			// Defensive: prepareForEdit always installs a non-nil
+			// inventory and the booking layer never deletes one,
+			// so this branch should be unreachable in practice. Fall
+			// back to an empty inventory so the visitor contract
+			// (after[acct] non-nil for every touched account) is
+			// preserved even if the invariant ever shifts.
+			after[acct] = NewInventory()
+		}
+	}
+	return st.before, after
 }
 
 // flagAmbiguousUnknowns emits one CodeUnresolvableInterpolation per
@@ -389,20 +409,18 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 }
 
 // fillAutoPosting writes the resolved residual into the auto-posting's
-// Amount and books it, threading touched/before so the lazy capture-
-// before dance stays consistent for an account first touched by the
-// auto-posting. Errors emitted by bookOne are appended to r.errs; ok
-// is true exactly when the booking succeeded.
+// Amount and books it, using trace.prepareForEdit to record the prior
+// state of the auto-posting's account if this is the first time the
+// transaction has touched it. Errors emitted by bookOne are appended
+// to r.errs; ok is true exactly when the booking succeeded.
 func (r *Reducer) fillAutoPosting(
 	txn *ast.Transaction,
 	auto *ast.Posting,
 	residual *ast.Amount,
-	touched map[ast.Account]bool,
-	before map[ast.Account]*Inventory,
+	trace *stateTrace,
 ) (BookedPosting, bool) {
 	auto.Amount = residual
-	captureBefore(r.state, before, touched, auto.Account)
-	inv := r.ensureInventory(auto.Account)
+	inv := trace.prepareForEdit(auto.Account)
 	method := r.booking[auto.Account]
 	bp, errs := bookOne(inv, auto, method, txn.Date, true)
 	r.errs = append(r.errs, errs...)
@@ -413,11 +431,14 @@ func (r *Reducer) fillAutoPosting(
 // across the posting's units, writes it back into deferred.Cost.PerUnit
 // (so ResolveCost and the loader's writeAugmentationCost see the same
 // number), and re-books the posting. A zero unit count or arithmetic
-// failure is reported via r.errs and yields ok=false.
+// failure is reported via r.errs and yields ok=false. The deferred
+// posting's account was already prepared for edit during Pass 1, so
+// the prepareForEdit call here is a fetch.
 func (r *Reducer) fillDeferredCost(
 	txn *ast.Transaction,
 	deferred *ast.Posting,
 	residual *ast.Amount,
+	trace *stateTrace,
 ) (BookedPosting, bool) {
 	if deferred.Amount.Number.Sign() == 0 {
 		r.errs = append(r.errs, Error{
@@ -439,7 +460,8 @@ func (r *Reducer) fillDeferredCost(
 		return BookedPosting{}, false
 	}
 	deferred.Cost.PerUnit = perUnit
-	bp, errs := bookOne(r.ensureInventory(deferred.Account), deferred, r.booking[deferred.Account], txn.Date, false)
+	inv := trace.prepareForEdit(deferred.Account)
+	bp, errs := bookOne(inv, deferred, r.booking[deferred.Account], txn.Date, false)
 	r.errs = append(r.errs, errs...)
 	return bp, len(errs) == 0
 }
