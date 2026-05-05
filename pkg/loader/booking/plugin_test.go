@@ -303,6 +303,212 @@ func TestApply_ReductionAggregatesTotal(t *testing.T) {
 	}
 }
 
+// TestApply_StrictTotalMatchPerUnitCost pins upstream beancount's
+// "total match" rule end-to-end: under STRICT booking, a reduction
+// whose absolute magnitude equals the sum of all matching lots must
+// succeed even when the matcher resolves to multiple lots, because
+// the booking is unambiguous (every matching lot is consumed in
+// full). The cost-spec write-back must then collapse the per-step
+// cost into a single CostSpec.Total so downstream balance validation
+// sees a concrete weight. Without this rule the reducer would emit
+// an ambiguous-lot-match diagnostic.
+func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
+	openA := &ast.Open{
+		Date:       day(2025, 1, 1),
+		Account:    "Assets:A",
+		Currencies: []string{"JPY", "STOCK"},
+		Booking:    ast.BookingStrict,
+	}
+	openOpening := &ast.Open{Date: day(2025, 1, 1), Account: "Equity:Opening-Balances"}
+	openGain := &ast.Open{Date: day(2025, 1, 1), Account: "Income:Gain"}
+	buyFirst := &ast.Transaction{
+		Date:      day(2025, 1, 1),
+		Flag:      '*',
+		Narration: "first",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("10", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100", "JPY"),
+					Label:   "first",
+				},
+			},
+			{Account: "Equity:Opening-Balances", Amount: amt("-1000", "JPY")},
+		},
+	}
+	buySecond := &ast.Transaction{
+		Date:      day(2025, 1, 1),
+		Flag:      '*',
+		Narration: "second",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("10", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100", "JPY"),
+					Label:   "second",
+				},
+			},
+			{Account: "Equity:Opening-Balances", Amount: amt("-1000", "JPY")},
+		},
+	}
+	transfer := &ast.Transaction{
+		Date:      day(2025, 2, 17),
+		Flag:      '*',
+		Narration: "transfer",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("-20", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100", "JPY"),
+				},
+			},
+			{Account: "Assets:A", Amount: amt("3000", "JPY")},
+			{Account: "Income:Gain", Amount: amt("-1000", "JPY")},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{openA, openOpening, openGain, buyFirst, buySecond, transfer})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
+	}
+
+	// The booked transfer's reducing posting must carry a synthesized
+	// Total (sum of |step.Units| × step.Lot.Number = 10*100 + 10*100 =
+	// 2000 JPY) with PerUnit cleared.
+	var bookedTransfer *ast.Transaction
+	for _, d := range res.Directives {
+		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "transfer" {
+			bookedTransfer = tx
+			break
+		}
+	}
+	if bookedTransfer == nil {
+		t.Fatalf("transfer transaction not found in booked directives")
+	}
+	cs := bookedTransfer.Postings[0].Cost
+	if cs == nil {
+		t.Fatalf("CostSpec on reducing posting is nil")
+	}
+	wantCS := &ast.CostSpec{
+		Total: &ast.Amount{Number: dec("2000"), Currency: "JPY"},
+	}
+	opts := append(cmp.Options{
+		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
+	}, astCmpOpts...)
+	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
+		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestApply_StrictTotalMatchEmptyCost mirrors
+// TestApply_StrictTotalMatchPerUnitCost but with an empty `{}` cost
+// spec on the reducing posting. The empty matcher accepts every lot,
+// so under STRICT this reduction is also a total match: requested
+// 20 STOCK == 10 + 10 across the two held lots. After booking, the
+// reducing posting's CostSpec must be filled with a concrete Total
+// so the transaction-balance validator no longer sees an unbalanced
+// residual in STOCK.
+func TestApply_StrictTotalMatchEmptyCost(t *testing.T) {
+	openA := &ast.Open{
+		Date:       day(2025, 1, 1),
+		Account:    "Assets:A",
+		Currencies: []string{"JPY", "STOCK"},
+		Booking:    ast.BookingStrict,
+	}
+	openOpening := &ast.Open{Date: day(2025, 1, 1), Account: "Equity:Opening-Balances"}
+	openGain := &ast.Open{Date: day(2025, 1, 1), Account: "Income:Gain"}
+	buyFirst := &ast.Transaction{
+		Date:      day(2025, 1, 1),
+		Flag:      '*',
+		Narration: "first",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("10", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100", "JPY"),
+					Label:   "first",
+				},
+			},
+			{Account: "Equity:Opening-Balances", Amount: amt("-1000", "JPY")},
+		},
+	}
+	buySecond := &ast.Transaction{
+		Date:      day(2025, 1, 1),
+		Flag:      '*',
+		Narration: "second",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("10", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100", "JPY"),
+					Label:   "second",
+				},
+			},
+			{Account: "Equity:Opening-Balances", Amount: amt("-1000", "JPY")},
+		},
+	}
+	transfer := &ast.Transaction{
+		Date:      day(2025, 2, 17),
+		Flag:      '*',
+		Narration: "transfer",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("-20", "STOCK"),
+				Cost:    &ast.CostSpec{}, // empty `{}`
+			},
+			{Account: "Assets:A", Amount: amt("3000", "JPY")},
+			{Account: "Income:Gain", Amount: amt("-1000", "JPY")},
+		},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{openA, openOpening, openGain, buyFirst, buySecond, transfer})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
+	}
+
+	var bookedTransfer *ast.Transaction
+	for _, d := range res.Directives {
+		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "transfer" {
+			bookedTransfer = tx
+			break
+		}
+	}
+	if bookedTransfer == nil {
+		t.Fatalf("transfer transaction not found in booked directives")
+	}
+	cs := bookedTransfer.Postings[0].Cost
+	if cs == nil {
+		t.Fatalf("CostSpec on reducing posting is nil")
+	}
+	wantCS := &ast.CostSpec{
+		Total: &ast.Amount{Number: dec("2000"), Currency: "JPY"},
+	}
+	opts := append(cmp.Options{
+		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
+	}, astCmpOpts...)
+	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
+		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestApply_AutoPostingAmountIsFilled confirms that the booking pass
 // fills in the Amount of an auto-balanced posting (the reducer
 // already mutates the work copy in place; we just need to verify the
