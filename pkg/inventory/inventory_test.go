@@ -296,6 +296,119 @@ func TestInventoryReduceStrictAmbiguous(t *testing.T) {
 	}
 }
 
+// TestInventoryReduceStrictTotalMatch pins upstream beancount's
+// "total match" rule: when a STRICT reduction matches more than one
+// lot but the requested magnitude equals the sum of all candidate
+// magnitudes, the booking is unambiguous (every matching lot is
+// consumed in full) and must succeed rather than be rejected as
+// CodeAmbiguousLotMatch.
+func TestInventoryReduceStrictTotalMatch(t *testing.T) {
+	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "first"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "second"))); err != nil {
+		t.Fatal(err)
+	}
+
+	// `{ 100 USD }` matcher: per-unit cost matches both lots; magnitudes
+	// (10 + 10) sum to exactly the requested 20.
+	matcher := CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"}
+	steps, err := inv.Reduce(
+		ast.Amount{Number: decimalVal(t, "-20"), Currency: "ACME"},
+		matcher,
+		ast.BookingStrict,
+	)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("len(steps) = %d, want 2", len(steps))
+	}
+	want10 := decimalVal(t, "10")
+	for i, s := range steps {
+		if s.Units.Cmp(&want10) != 0 {
+			t.Errorf("step[%d].Units = %s, want 10", i, s.Units.String())
+		}
+	}
+	if !inv.IsEmpty() {
+		t.Errorf("inventory not empty after total match: Len = %d", inv.Len())
+	}
+}
+
+// TestInventoryReduceStrictTotalMatchEmptyMatcher mirrors the bug
+// repro's `{}` variant: an empty matcher accepts every lot, so under
+// STRICT a multi-lot inventory is normally ambiguous; total match
+// still applies when |reduction| equals the sum of all candidate
+// magnitudes.
+func TestInventoryReduceStrictTotalMatchEmptyMatcher(t *testing.T) {
+	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "first"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "second"))); err != nil {
+		t.Fatal(err)
+	}
+
+	steps, err := inv.Reduce(
+		ast.Amount{Number: decimalVal(t, "-20"), Currency: "ACME"},
+		CostMatcher{},
+		ast.BookingStrict,
+	)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("len(steps) = %d, want 2", len(steps))
+	}
+	if !inv.IsEmpty() {
+		t.Errorf("inventory not empty after total match: Len = %d", inv.Len())
+	}
+}
+
+// TestInventoryReduceDefaultTotalMatch confirms BookingDefault gets
+// the same total-match treatment as BookingStrict, matching the
+// "DEFAULT behaves like STRICT for lot selection" rule.
+func TestInventoryReduceDefaultTotalMatch(t *testing.T) {
+	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "7", "ACME", mkCost(t, "100", "USD", d1, "a"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "13", "ACME", mkCost(t, "100", "USD", d2, "b"))); err != nil {
+		t.Fatal(err)
+	}
+
+	steps, err := inv.Reduce(
+		ast.Amount{Number: decimalVal(t, "-20"), Currency: "ACME"},
+		CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"},
+		ast.BookingDefault,
+	)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(steps) != 2 {
+		t.Fatalf("len(steps) = %d, want 2", len(steps))
+	}
+	// FIFO order: 7 from lot a, then 13 from lot b.
+	want7 := decimalVal(t, "7")
+	want13 := decimalVal(t, "13")
+	if steps[0].Units.Cmp(&want7) != 0 {
+		t.Errorf("step[0].Units = %s, want 7", steps[0].Units.String())
+	}
+	if steps[1].Units.Cmp(&want13) != 0 {
+		t.Errorf("step[1].Units = %s, want 13", steps[1].Units.String())
+	}
+	if !inv.IsEmpty() {
+		t.Errorf("inventory not empty after total match: Len = %d", inv.Len())
+	}
+}
+
 func TestInventoryReduceExceedsInventory(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()

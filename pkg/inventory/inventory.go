@@ -131,9 +131,11 @@ func costsEqualForMerge(a, b *Cost) bool {
 //   - [CodeNoMatchingLot] — zero candidates remain after filtering by
 //     commodity and matcher.
 //   - [CodeAmbiguousLotMatch] — under BookingStrict or BookingDefault
-//     more than one candidate remains. Note that a strict booking with
-//     an empty matcher is still ambiguous if multiple lots exist: the
-//     emptiness of the matcher does not suppress the ambiguity check.
+//     more than one candidate remains AND the requested magnitude does
+//     not equal the sum of magnitudes across all candidates. When the
+//     two are equal the booking is unambiguous (a "total match" in
+//     upstream beancount's terminology — every matching lot is
+//     consumed in full) and Reduce proceeds normally.
 //   - [CodeReductionExceedsInventory] — the magnitude to consume
 //     exceeds the total units available across all candidates.
 //   - [CodeInvalidBookingMethod] — BookingAverage, which is not yet
@@ -212,10 +214,38 @@ func (i *Inventory) Reduce(
 		}
 	}
 
+	// Sum the magnitudes of all candidate units. Used both as an
+	// availability bound for the overdraft check below and as the
+	// "total match" predicate for the STRICT/DEFAULT ambiguity rule:
+	// when the requested magnitude equals this sum, the booking is
+	// unambiguous because every matching lot is consumed in full.
+	var totalAvailable apd.Decimal
+	for _, c := range candidates {
+		var abs apd.Decimal
+		if _, err := apd.BaseContext.Abs(&abs, &i.positions[c.idx].Units.Number); err != nil {
+			return nil, Error{
+				Code:    CodeInternalError,
+				Message: "inventory reduce: abs lot units: " + err.Error(),
+			}
+		}
+		var sum apd.Decimal
+		if _, err := apd.BaseContext.Add(&sum, &totalAvailable, &abs); err != nil {
+			return nil, Error{
+				Code:    CodeInternalError,
+				Message: "inventory reduce: accumulate available: " + err.Error(),
+			}
+		}
+		totalAvailable.Set(&sum)
+	}
+
 	// STRICT (and DEFAULT, which behaves like STRICT for the purposes
-	// of lot selection) requires the match to be unambiguous.
-	if m == ast.BookingStrict || m == ast.BookingDefault {
-		if len(candidates) > 1 {
+	// of lot selection) requires the match to be unambiguous. Multiple
+	// candidates are still unambiguous when the requested magnitude
+	// equals the sum of all candidate magnitudes — the only possible
+	// booking is to consume every matching lot in full (upstream
+	// beancount calls this a "total match").
+	if (m == ast.BookingStrict || m == ast.BookingDefault) && len(candidates) > 1 {
+		if remaining.Cmp(&totalAvailable) != 0 {
 			return nil, Error{
 				Code:    CodeAmbiguousLotMatch,
 				Message: "reducing posting matches more than one lot under STRICT booking",
@@ -224,9 +254,11 @@ func (i *Inventory) Reduce(
 	}
 
 	// Order the candidates per booking method. FIFO consumes oldest
-	// first, LIFO consumes newest first; STRICT/DEFAULT with exactly
-	// one candidate is order-insensitive but we fall through the same
-	// FIFO path for simplicity.
+	// first, LIFO consumes newest first. The single-candidate
+	// STRICT/DEFAULT case and the multi-candidate total-match case are
+	// both order-insensitive at the consumption level (the latter
+	// always exhausts every candidate); they fall through the same
+	// FIFO path so the emitted ReductionStep sequence is deterministic.
 	switch m {
 	case ast.BookingLIFO:
 		slices.SortStableFunc(candidates, func(a, b candidate) int {
@@ -273,26 +305,9 @@ func (i *Inventory) Reduce(
 	}
 
 	// Pre-check: do the candidates contain enough units to cover the
-	// reduction? We walk them once and sum magnitudes. This avoids
-	// partially mutating the inventory and then erroring out.
-	var totalAvailable apd.Decimal
-	for _, c := range candidates {
-		var abs apd.Decimal
-		if _, err := apd.BaseContext.Abs(&abs, &i.positions[c.idx].Units.Number); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Message: "inventory reduce: abs lot units: " + err.Error(),
-			}
-		}
-		var sum apd.Decimal
-		if _, err := apd.BaseContext.Add(&sum, &totalAvailable, &abs); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Message: "inventory reduce: accumulate available: " + err.Error(),
-			}
-		}
-		totalAvailable.Set(&sum)
-	}
+	// reduction? totalAvailable was computed above for the total-match
+	// predicate; reuse it here to avoid partially mutating the
+	// inventory and then erroring out.
 	// Cash candidates have no lot identity (currency units are fungible),
 	// so an overdraft is the balance assertion's concern, not booking's.
 	// See package doc "# Lot identity" for the full rationale.
