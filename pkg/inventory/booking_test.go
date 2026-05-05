@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
@@ -527,6 +528,61 @@ func TestBookOne_ReduceWithPerUnitPrice_RealizedLoss(t *testing.T) {
 	}
 	if step.GainCurrency != "USD" {
 		t.Errorf("GainCurrency = %q, want USD", step.GainCurrency)
+	}
+}
+
+// TestBookOne_ReduceTotalMatchPerStepRealizedGain pins the per-step
+// realized-gain calculation under upstream beancount's "total match"
+// rule: when a STRICT reduction exhausts multiple lots that share a
+// matcher but carry different per-unit costs, each emitted step must
+// carry its own RealizedGain derived from its own Lot.Number.
+//
+// Setup: 10 ACME at 100 USD ("a") and 10 ACME at 110 USD ("b"); sell
+// all 20 at @@ 2500 USD (per-unit sale price 125). Steps must carry
+// gains (125-100)*10 = 250 and (125-110)*10 = 150 respectively.
+// matcher with no per-unit constraint admits both lots; sum (20)
+// equals the requested magnitude (20) so total-match accepts under
+// STRICT.
+func TestBookOne_ReduceTotalMatchPerStepRealizedGain(t *testing.T) {
+	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "a"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "110", "USD", d2, "b"))); err != nil {
+		t.Fatal(err)
+	}
+	// `{}` cost spec hints to USD via the price annotation; matcher
+	// admits both lots regardless of per-unit cost.
+	p := mkPosting(t, "Assets:A", mkAmount(t, "-20", "ACME"), &ast.CostSpec{},
+		&ast.PriceAnnotation{Amount: mkAmount(t, "2500", "USD"), IsTotal: true})
+
+	bp, errs := bookOne(inv, p, ast.BookingStrict, d2, false)
+	if len(errs) > 0 {
+		t.Fatalf("bookOne: %v", errs)
+	}
+	if len(bp.Reductions) != 2 {
+		t.Fatalf("bookOne Reductions len = %d, want 2", len(bp.Reductions))
+	}
+	wantSP := decimalVal(t, "125")
+	wantGains := []apd.Decimal{decimalVal(t, "250"), decimalVal(t, "150")}
+	for i, step := range bp.Reductions {
+		switch {
+		case step.SalePricePer == nil:
+			t.Errorf("step[%d].SalePricePer = nil, want 125", i)
+		case step.SalePricePer.Cmp(&wantSP) != 0:
+			t.Errorf("step[%d].SalePricePer = %s, want 125", i, step.SalePricePer.String())
+		}
+		switch {
+		case step.RealizedGain == nil:
+			t.Errorf("step[%d].RealizedGain = nil, want %s", i, wantGains[i].String())
+		case step.RealizedGain.Cmp(&wantGains[i]) != 0:
+			t.Errorf("step[%d].RealizedGain = %s, want %s", i, step.RealizedGain.String(), wantGains[i].String())
+		}
+		if step.GainCurrency != "USD" {
+			t.Errorf("step[%d].GainCurrency = %q, want USD", i, step.GainCurrency)
+		}
 	}
 }
 

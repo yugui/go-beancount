@@ -289,7 +289,7 @@ func TestInventoryReduceStrictAmbiguous(t *testing.T) {
 	}
 	var invErr Error
 	if !errors.As(err, &invErr) {
-		t.Fatalf("error type = %T, want inventory.Error", err)
+		t.Fatalf("Reduce: error type = %T, want inventory.Error", err)
 	}
 	if invErr.Code != CodeAmbiguousLotMatch {
 		t.Errorf("Code = %v, want CodeAmbiguousLotMatch", invErr.Code)
@@ -301,15 +301,16 @@ func TestInventoryReduceStrictAmbiguous(t *testing.T) {
 // lot but the requested magnitude equals the sum of all candidate
 // magnitudes, the booking is unambiguous (every matching lot is
 // consumed in full) and must succeed rather than be rejected as
-// CodeAmbiguousLotMatch.
+// CodeAmbiguousLotMatch. Both lots share the same date so the test
+// also pins the FIFO same-date tiebreak (insertion order) on the
+// emitted ReductionStep sequence.
 func TestInventoryReduceStrictTotalMatch(t *testing.T) {
-	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	date := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "first"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "first"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "second"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "second"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -328,9 +329,13 @@ func TestInventoryReduceStrictTotalMatch(t *testing.T) {
 		t.Fatalf("len(steps) = %d, want 2", len(steps))
 	}
 	want10 := decimalVal(t, "10")
+	wantLabels := []string{"first", "second"}
 	for i, s := range steps {
 		if s.Units.Cmp(&want10) != 0 {
 			t.Errorf("step[%d].Units = %s, want 10", i, s.Units.String())
+		}
+		if s.Lot.Label != wantLabels[i] {
+			t.Errorf("step[%d].Lot.Label = %q, want %q", i, s.Lot.Label, wantLabels[i])
 		}
 	}
 	if !inv.IsEmpty() {
@@ -403,6 +408,132 @@ func TestInventoryReduceDefaultTotalMatch(t *testing.T) {
 	}
 	if steps[1].Units.Cmp(&want13) != 0 {
 		t.Errorf("step[1].Units = %s, want 13", steps[1].Units.String())
+	}
+	if !inv.IsEmpty() {
+		t.Errorf("inventory not empty after total match: Len = %d", inv.Len())
+	}
+}
+
+// TestInventoryReduceStrictAlmostTotalMatch confirms the total-match
+// predicate is equality, not "at most the sum": a STRICT reduction
+// whose magnitude is strictly less than the sum of candidate
+// magnitudes is still ambiguous, even when there is enough inventory
+// to cover it. Without an exact match the choice of which lot(s) to
+// partially consume is undetermined.
+func TestInventoryReduceStrictAlmostTotalMatch(t *testing.T) {
+	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "first"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "second"))); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := inv.Reduce(
+		ast.Amount{Number: decimalVal(t, "-15"), Currency: "ACME"},
+		CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"},
+		ast.BookingStrict,
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var invErr Error
+	if !errors.As(err, &invErr) {
+		t.Fatalf("Reduce: error type = %T, want inventory.Error", err)
+	}
+	if invErr.Code != CodeAmbiguousLotMatch {
+		t.Errorf("Code = %v, want CodeAmbiguousLotMatch", invErr.Code)
+	}
+	// The inventory must not have been partially mutated.
+	want10 := decimalVal(t, "10")
+	for i, pos := range inv.positions {
+		if pos.Units.Number.Cmp(&want10) != 0 {
+			t.Errorf("position[%d] mutated: units = %s, want 10", i, pos.Units.Number.String())
+		}
+	}
+}
+
+// TestInventoryReduceStrictOverdraftBeatsAmbiguity pins the rule
+// that under STRICT/DEFAULT a reduction whose magnitude exceeds the
+// total candidate magnitude is reported as exceeding inventory, not
+// as ambiguous: the user's likely error (a wrong units number) is
+// better surfaced by the more specific diagnostic.
+func TestInventoryReduceStrictOverdraftBeatsAmbiguity(t *testing.T) {
+	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "first"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "second"))); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := inv.Reduce(
+		ast.Amount{Number: decimalVal(t, "-25"), Currency: "ACME"},
+		CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"},
+		ast.BookingStrict,
+	)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var invErr Error
+	if !errors.As(err, &invErr) {
+		t.Fatalf("Reduce: error type = %T, want inventory.Error", err)
+	}
+	if invErr.Code != CodeReductionExceedsInventory {
+		t.Errorf("Code = %v, want CodeReductionExceedsInventory", invErr.Code)
+	}
+	// The inventory must not have been partially mutated.
+	want10 := decimalVal(t, "10")
+	for i, pos := range inv.positions {
+		if pos.Units.Number.Cmp(&want10) != 0 {
+			t.Errorf("position[%d] mutated: units = %s, want 10", i, pos.Units.Number.String())
+		}
+	}
+}
+
+// TestInventoryReduceStrictTotalMatchThreeLots confirms the total-
+// match path generalizes beyond two candidates and that the FIFO
+// consumption order produces one step per lot in date order.
+func TestInventoryReduceStrictTotalMatchThreeLots(t *testing.T) {
+	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	d3 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "5", "ACME", mkCost(t, "100", "USD", d1, "a"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "7", "ACME", mkCost(t, "100", "USD", d2, "b"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "8", "ACME", mkCost(t, "100", "USD", d3, "c"))); err != nil {
+		t.Fatal(err)
+	}
+
+	steps, err := inv.Reduce(
+		ast.Amount{Number: decimalVal(t, "-20"), Currency: "ACME"},
+		CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"},
+		ast.BookingStrict,
+	)
+	if err != nil {
+		t.Fatalf("Reduce: %v", err)
+	}
+	if len(steps) != 3 {
+		t.Fatalf("len(steps) = %d, want 3", len(steps))
+	}
+	wantUnits := []string{"5", "7", "8"}
+	wantLabels := []string{"a", "b", "c"}
+	for i, s := range steps {
+		want := decimalVal(t, wantUnits[i])
+		if s.Units.Cmp(&want) != 0 {
+			t.Errorf("step[%d].Units = %s, want %s", i, s.Units.String(), wantUnits[i])
+		}
+		if s.Lot.Label != wantLabels[i] {
+			t.Errorf("step[%d].Lot.Label = %q, want %q", i, s.Lot.Label, wantLabels[i])
+		}
 	}
 	if !inv.IsEmpty() {
 		t.Errorf("inventory not empty after total match: Len = %d", inv.Len())

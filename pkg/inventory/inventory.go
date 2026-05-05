@@ -131,11 +131,15 @@ func costsEqualForMerge(a, b *Cost) bool {
 //   - [CodeNoMatchingLot] — zero candidates remain after filtering by
 //     commodity and matcher.
 //   - [CodeAmbiguousLotMatch] — under BookingStrict or BookingDefault
-//     more than one candidate remains AND the requested magnitude does
-//     not equal the sum of magnitudes across all candidates. When the
-//     two are equal the booking is unambiguous (a "total match" in
-//     upstream beancount's terminology — every matching lot is
-//     consumed in full) and Reduce proceeds normally.
+//     more than one candidate remains AND the requested magnitude is
+//     strictly less than the sum of magnitudes across all candidates.
+//     When the two are equal the booking is unambiguous (a "total
+//     match" in upstream beancount's terminology — every matching lot
+//     is consumed in full) and Reduce proceeds normally. When the
+//     requested magnitude exceeds that sum the diagnostic falls
+//     through to [CodeReductionExceedsInventory] (or, for cash
+//     candidates, the consumption proceeds and the overdraft is the
+//     balance assertion's concern).
 //   - [CodeReductionExceedsInventory] — the magnitude to consume
 //     exceeds the total units available across all candidates.
 //   - [CodeInvalidBookingMethod] — BookingAverage, which is not yet
@@ -243,12 +247,16 @@ func (i *Inventory) Reduce(
 	// candidates are still unambiguous when the requested magnitude
 	// equals the sum of all candidate magnitudes — the only possible
 	// booking is to consume every matching lot in full (upstream
-	// beancount calls this a "total match").
+	// beancount calls this a "total match"). The strictly-less-than
+	// comparison is deliberate: when remaining > totalAvailable the
+	// reduction is over-drafted rather than ambiguous, and falls
+	// through to the CodeReductionExceedsInventory check below so
+	// users see the more specific diagnostic.
 	if (m == ast.BookingStrict || m == ast.BookingDefault) && len(candidates) > 1 {
-		if remaining.Cmp(&totalAvailable) != 0 {
+		if remaining.Cmp(&totalAvailable) < 0 {
 			return nil, Error{
 				Code:    CodeAmbiguousLotMatch,
-				Message: "reducing posting matches more than one lot under STRICT booking",
+				Message: "reducing posting matches more than one lot under STRICT booking and does not consume them all",
 			}
 		}
 	}
@@ -258,7 +266,9 @@ func (i *Inventory) Reduce(
 	// STRICT/DEFAULT case and the multi-candidate total-match case are
 	// both order-insensitive at the consumption level (the latter
 	// always exhausts every candidate); they fall through the same
-	// FIFO path so the emitted ReductionStep sequence is deterministic.
+	// ordered consumption path so the emitted ReductionStep sequence
+	// is deterministic. STRICT/DEFAULT shares the FIFO branch by
+	// default; LIFO is only selected when explicitly requested.
 	switch m {
 	case ast.BookingLIFO:
 		slices.SortStableFunc(candidates, func(a, b candidate) int {
