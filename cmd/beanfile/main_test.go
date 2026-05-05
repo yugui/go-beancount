@@ -412,6 +412,213 @@ func TestRun_DedupStreamInternal(t *testing.T) {
 	}
 }
 
+func writeConfig(t *testing.T, body string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "beanfile.toml")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	return p
+}
+
+func TestRun_ExplicitConfigChangesAmountColumn(t *testing.T) {
+	root, ledger := touchLedger(t)
+	cfgPath := writeConfig(t, `
+[routes.format]
+amount_column = 30
+`)
+	src := `2024-01-12 * "lunch"
+  Assets:Bank   -10.00 USD
+  Assets:Cash    10.00 USD
+`
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--config", cfgPath}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "transactions/Assets/Bank/202401.beancount")
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	// With amount_column=30 the right edge of the amount falls at
+	// column 30 (1-based). The default of 52 would push it out further.
+	for _, line := range strings.Split(string(got), "\n") {
+		if !strings.Contains(line, "USD") || !strings.Contains(line, "10.00") {
+			continue
+		}
+		// The amount's last character of the numeric part must end
+		// before column 30 + len(" USD") slack. A regression that
+		// ignored amount_column would push the number to align at 52.
+		usdIdx := strings.Index(line, " USD")
+		if usdIdx < 0 || usdIdx >= 50 {
+			t.Errorf("amount alignment unexpected (USD at %d): %q", usdIdx, line)
+		}
+	}
+}
+
+func TestRun_AutoDiscoveredConfig(t *testing.T) {
+	root, ledger := touchLedger(t)
+	// Stage a beanfile.toml in a temp CWD; the CLI auto-discovers it.
+	cwd := t.TempDir()
+	tomlPath := filepath.Join(cwd, "beanfile.toml")
+	if err := os.WriteFile(tomlPath, []byte(`
+[[routes.account.override]]
+prefix   = "Assets:Bank"
+template = "auto/{account}/{date}.beancount"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	t.Chdir(cwd)
+
+	src := "2024-01-10 open Assets:Bank USD\n"
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "auto/Assets/Bank/202401.beancount")
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("expected auto-discovered destination %q: %v", dest, err)
+	}
+}
+
+func TestRun_EquivalenceMetaKeysSkipsByMetaMatch(t *testing.T) {
+	openLine := `2024-01-10 open Assets:Bank USD
+  import-id: "abc"
+`
+	root, ledger := seedLedger(t, map[string]string{
+		"transactions/Assets/Bank/202401.beancount": openLine,
+	})
+	cfgPath := writeConfig(t, `
+[routes.account]
+equivalence_meta_keys = ["import-id"]
+`)
+	// Different account, same import-id → meta-key match against the
+	// active entry under transactions/Assets/Other path. We probe a
+	// different account so the AST-equality branch can't fire (different
+	// account values), forcing the meta branch to be the only path.
+	probe := `2024-02-20 open Assets:Other USD
+  import-id: "abc"
+`
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--config", cfgPath}, probe)
+	if exit != 0 {
+		t.Fatalf("exit = %d; stderr=%q", exit, stderr)
+	}
+	// The destination of the probe is transactions/Assets/Other/202402.beancount.
+	destOther := filepath.Join(root, "transactions/Assets/Other/202402.beancount")
+	got, err := os.ReadFile(destOther)
+	if err != nil {
+		t.Fatalf("read other dest: %v", err)
+	}
+	// Because import-id matched against the seeded active entry under a
+	// different path, this directive must land commented-out (Rule 2).
+	if !strings.Contains(string(got), "; 2024-02-20 open Assets:Other") {
+		t.Errorf("expected commented Open at other dest, got: %q", string(got))
+	}
+	if !strings.Contains(stderr, "commented=1") {
+		t.Errorf("stderr = %q, want commented=1", stderr)
+	}
+}
+
+func TestRun_AccountOverrideRedirectsPath(t *testing.T) {
+	root, ledger := touchLedger(t)
+	cfgPath := writeConfig(t, `
+[[routes.account.override]]
+prefix   = "Assets:JP"
+template = "japan/{account}/{date}.beancount"
+`)
+	src := "2024-01-10 open Assets:JP:Cash USD\n"
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--config", cfgPath}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "japan/Assets/JP/Cash/202401.beancount")
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("expected override destination %q: %v", dest, err)
+	}
+}
+
+func TestRun_CommodityOverrideRedirectsPath(t *testing.T) {
+	root, ledger := touchLedger(t)
+	cfgPath := writeConfig(t, `
+[[routes.price.override]]
+commodity = "JPY"
+template  = "yen/{commodity}/{date}.beancount"
+`)
+	src := "2024-01-15 price JPY 0.0066 USD\n"
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--config", cfgPath}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "yen/JPY/202401.beancount")
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("expected override destination %q: %v", dest, err)
+	}
+}
+
+func TestRun_FormatFlagOverridesTOML(t *testing.T) {
+	root, ledger := touchLedger(t)
+	cfgPath := writeConfig(t, `
+[routes.format]
+amount_column = 30
+`)
+	src := `2024-01-12 * "lunch"
+  Assets:Bank   -10.00 USD
+  Assets:Cash    10.00 USD
+`
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--config", cfgPath, "--format-amount-column", "70"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "transactions/Assets/Bank/202401.beancount")
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	// CLI flag set amount_column=70 (overrides the TOML's 30). The
+	// amount's right edge must therefore align well past column 30.
+	for _, line := range strings.Split(string(got), "\n") {
+		if !strings.Contains(line, "USD") || !strings.Contains(line, "10.00") {
+			continue
+		}
+		usdIdx := strings.Index(line, " USD")
+		if usdIdx < 50 {
+			t.Errorf("USD at index %d, want >=50 (CLI 70 should beat TOML 30): %q", usdIdx, line)
+		}
+	}
+}
+
+func TestRun_BadConfigRejectedClearly(t *testing.T) {
+	_, ledger := touchLedger(t)
+	cfgPath := writeConfig(t, `
+[routes.account]
+order = "descending"
+`)
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--config", cfgPath}, "")
+	if exit != 2 {
+		t.Fatalf("exit = %d, want 2", exit)
+	}
+	if !strings.Contains(stderr, "descending") {
+		t.Errorf("stderr = %q, want descending mention", stderr)
+	}
+}
+
+func TestRun_UnknownConfigKeyRejected(t *testing.T) {
+	_, ledger := touchLedger(t)
+	cfgPath := writeConfig(t, `
+[routes.account]
+template = "x"
+nonsense = 42
+`)
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--config", cfgPath}, "")
+	if exit != 2 {
+		t.Fatalf("exit = %d, want 2", exit)
+	}
+	if !strings.Contains(stderr, "nonsense") {
+		t.Errorf("stderr = %q, want nonsense mention", stderr)
+	}
+}
+
 func TestRun_DedupCrossPostingCascade(t *testing.T) {
 	openLine := "2024-01-10 open Assets:Bank USD\n"
 	root, ledger := seedLedger(t, map[string]string{

@@ -232,6 +232,35 @@ func TestMatchKindValues(t *testing.T) {
 	}
 }
 
+func TestBuildIndex_WithOverrideMetaKey(t *testing.T) {
+	root := t.TempDir()
+	// The seeded directive carries an "x-route" metadata entry; the input
+	// probe lacks one. With the default override key ("route-account")
+	// the two would NOT compare equal because x-route differs from no
+	// metadata. Configuring "x-route" as the override key strips it
+	// before comparison and the two become equivalent.
+	ledgerPath := writeFile(t, root, "main.beancount", `2024-01-15 open Assets:A
+  x-route: "Assets:Other"
+`)
+	probe := mustParse(t, "2024-01-15 open Assets:A\n")
+
+	withDefault, _, err := BuildIndex(context.Background(), ledgerPath, root)
+	if err != nil {
+		t.Fatalf("BuildIndex (default key): %v", err)
+	}
+	if matched, _ := withDefault.InDestination("main.beancount", probe, nil); matched {
+		t.Error("InDestination with default override key matched a directive carrying x-route; want false")
+	}
+
+	withCustom, _, err := BuildIndex(context.Background(), ledgerPath, root, WithOverrideMetaKey("x-route"))
+	if err != nil {
+		t.Fatalf("BuildIndex (custom key): %v", err)
+	}
+	if matched, kind := withCustom.InDestination("main.beancount", probe, nil); !matched || kind != MatchAST {
+		t.Errorf("InDestination with custom override key x-route: matched=%v kind=%v, want true MatchAST", matched, kind)
+	}
+}
+
 // BuildIndex must surface ledger diagnostics so the CLI's policy can
 // decide whether to abort. Use a missing include to provoke an error.
 func TestBuildIndex_SurfacesDiagnostics(t *testing.T) {

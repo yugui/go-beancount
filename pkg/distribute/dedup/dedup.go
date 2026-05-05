@@ -17,10 +17,11 @@ import (
 	"github.com/yugui/go-beancount/pkg/distribute/comment"
 )
 
-// overrideMetaKey is the metadata key whose entry is stripped before
-// AST equality. In 7.5e the value is hardcoded; 7.5g flows it from
-// TransactionSection.OverrideMetaKey.
-const overrideMetaKey = "route-account"
+// DefaultOverrideMetaKey is the built-in metadata key whose entry is
+// stripped before AST equality. Callers can override it via
+// WithOverrideMetaKey when the user has reconfigured the routing-override
+// key in [routes.transaction].
+const DefaultOverrideMetaKey = "route-account"
 
 // MatchKind identifies which equivalence rule fired for a query.
 type MatchKind int
@@ -50,12 +51,27 @@ type Index interface {
 	Add(path string, d ast.Directive, commented bool)
 }
 
-// Option is reserved for future BuildIndex extensions. No concrete
-// option exists in 7.5e; the slot is in place so callers can pass
-// opts ...Option without a signature change later.
+// Option configures BuildIndex. The slot is generic so future tunables
+// can land without a signature change.
 type Option func(*options)
 
-type options struct{}
+type options struct {
+	overrideMetaKey string
+}
+
+// WithOverrideMetaKey overrides the default metadata key
+// (DefaultOverrideMetaKey) stripped from AST equality comparisons. The
+// empty string is treated as "not set" — passing it leaves the default
+// in place. To disable stripping entirely, callers must explicitly opt
+// into a future flag; today, stripping always uses some non-empty key.
+func WithOverrideMetaKey(key string) Option {
+	return func(o *options) {
+		if key == "" {
+			return
+		}
+		o.overrideMetaKey = key
+	}
+}
 
 // indexEntry is one directive recorded in the index.
 type indexEntry struct {
@@ -65,9 +81,11 @@ type indexEntry struct {
 }
 
 // memoryIndex is the in-memory implementation. A linear scan per query
-// is acceptable for Phase 7.5 (tens of files, thousands of directives).
+// is acceptable at the expected scale (tens of files, thousands of
+// directives).
 type memoryIndex struct {
-	entries []indexEntry
+	entries         []indexEntry
+	overrideMetaKey string
 }
 
 func (m *memoryIndex) InDestination(path string, d ast.Directive, eqKeys []string) (bool, MatchKind) {
@@ -75,7 +93,7 @@ func (m *memoryIndex) InDestination(path string, d ast.Directive, eqKeys []strin
 		if e.path != path {
 			continue
 		}
-		if k := equivalent(e.directive, d, overrideMetaKey, eqKeys); k != MatchNone {
+		if k := equivalent(e.directive, d, m.overrideMetaKey, eqKeys); k != MatchNone {
 			return true, k
 		}
 	}
@@ -87,7 +105,7 @@ func (m *memoryIndex) InOtherActive(path string, d ast.Directive, eqKeys []strin
 		if e.path == path || e.commented {
 			continue
 		}
-		if k := equivalent(e.directive, d, overrideMetaKey, eqKeys); k != MatchNone {
+		if k := equivalent(e.directive, d, m.overrideMetaKey, eqKeys); k != MatchNone {
 			return true, k
 		}
 	}
@@ -115,9 +133,13 @@ func (m *memoryIndex) Add(path string, d ast.Directive, commented bool) {
 // the ledger walk; callers are expected to feed it through the
 // CLI's diagnostic policy. The error return is reserved for
 // system-level failures (ctx cancellation, I/O on the root file).
-func BuildIndex(ctx context.Context, ledgerRoot, configRoot string, _ ...Option) (Index, []ast.Diagnostic, error) {
+func BuildIndex(ctx context.Context, ledgerRoot, configRoot string, opts ...Option) (Index, []ast.Diagnostic, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
+	}
+	o := options{overrideMetaKey: DefaultOverrideMetaKey}
+	for _, fn := range opts {
+		fn(&o)
 	}
 	// I/O on the root file is a system-level failure surfaced via the
 	// error return; missing or unreadable include files surface as
@@ -130,7 +152,7 @@ func BuildIndex(ctx context.Context, ledgerRoot, configRoot string, _ ...Option)
 		return nil, nil, fmt.Errorf("dedup: loading ledger %q: %w", ledgerRoot, err)
 	}
 
-	idx := &memoryIndex{}
+	idx := &memoryIndex{overrideMetaKey: o.overrideMetaKey}
 	for _, file := range ledger.Files {
 		if err := ctx.Err(); err != nil {
 			return nil, ledger.Diagnostics, err

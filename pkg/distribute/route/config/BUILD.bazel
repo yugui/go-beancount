@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "config",
+    srcs = ["config.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/distribute/route/config",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/distribute/route",
+        "@com_github_burntsushi_toml//:toml",
+    ],
+)
+
+go_test(
+    name = "config_test",
+    srcs = ["config_test.go"],
+    embed = [":config"],
+    deps = [
+        "//internal/formatopt",
+        "//pkg/ast",
+        "//pkg/distribute/route",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)

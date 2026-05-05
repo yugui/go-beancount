@@ -1,10 +1,9 @@
 // Command beanfile distributes beancount directives from input sources
 // (stdin or one or more positional files) into a tree of per-account and
 // per-commodity destination files under a chosen root, following the
-// standard convention from the beanfile design doc (§2). Sub-phase 7.5e
-// adds the active+commented dedup index (§7) so each input directive
-// is written, commented-out, or skipped per the three-way decision.
-// Config file, overrides, and dry-run remain out of scope.
+// standard convention from the beanfile design doc (§2). Routing rules,
+// account and commodity overrides, and output formatting are configured
+// via a TOML file and overlaid by command-line flags.
 package main
 
 import (
@@ -22,6 +21,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/distribute/dedup"
 	"github.com/yugui/go-beancount/pkg/distribute/merge"
 	"github.com/yugui/go-beancount/pkg/distribute/route"
+	routeconfig "github.com/yugui/go-beancount/pkg/distribute/route/config"
 	"github.com/yugui/go-beancount/pkg/printer"
 )
 
@@ -29,61 +29,108 @@ func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
-// cfg carries everything execute needs after flag parsing and path
-// resolution: the absolute ledger and destination root, the boolean
-// behavior switches, and the positional source list run uses to build
-// cfg holds the resolved configuration that execute reads at runtime.
-// It is constructed by parseFlags after path resolution and validation.
+// defaultConfigFile is the auto-discovery path searched when --config is
+// not given; it is interpreted relative to the current working directory.
+const defaultConfigFile = "beanfile.toml"
+
+// cfg carries everything execute needs after flag parsing and config
+// loading: the absolute ledger and destination root, the boolean
+// behavior switches, and the resolved route.Config (TOML + flag overlay).
 type cfg struct {
 	ledgerAbs   string
 	rootAbs     string
 	passThrough bool
 	quiet       bool
+	route       *route.Config
 }
 
-// parseFlags parses args, validates --ledger, and resolves --ledger
-// and --root to absolute paths. On user error (bad flag, missing or
-// unreadable --ledger) it prints to stderr itself and returns a nil
-// cfg with the intended exit code (2). On -h/--help it returns
-// (nil, nil, 0). On success it returns the populated cfg, the list of
-// positional source paths, and 0. Positional args are returned as a
-// separate value because execute consumes them via sourceReaders, not
-// via cfg.
-func parseFlags(args []string, stderr io.Writer) (*cfg, []string, int) {
-	var ledgerArg, rootArg string
+// parsedFlags bundles the parsed flag values together with set-ness
+// information so parseFlags can overlay only those flags the user
+// explicitly passed onto the TOML-derived config.
+type parsedFlags struct {
+	configPath string
+	ledgerArg  string
+	rootArg    string
+
+	order           string
+	filePattern     string
+	txnStrategy     string
+	overrideMetaKey string
+
+	commaGrouping               bool
+	alignAmounts                bool
+	amountColumn                int
+	eastAsianAmbiguousWidth     int
+	indentWidth                 int
+	blankLinesBetweenDirs       int
+	insertBlankLinesBetweenDirs bool
+
+	set map[string]bool
+}
+
+func newFlagSet(stderr io.Writer) (*flag.FlagSet, *parsedFlags, *cfg) {
 	c := &cfg{}
+	fs := &parsedFlags{set: map[string]bool{}}
 	cmd := flag.NewFlagSet("beanfile", flag.ContinueOnError)
 	cmd.SetOutput(stderr)
-	cmd.StringVar(&ledgerArg, "ledger", "", "root ledger file (required)")
-	cmd.StringVar(&rootArg, "root", "", "destination root directory (default: directory of --ledger)")
+
+	cmd.StringVar(&fs.ledgerArg, "ledger", "", "root ledger file (required)")
+	cmd.StringVar(&fs.configPath, "config", "", "TOML config (default: ./beanfile.toml if present)")
+	cmd.StringVar(&fs.rootArg, "root", "", "destination root directory (default: directory of --ledger)")
 	cmd.BoolVar(&c.passThrough, "pass-through", false, "emit non-routable directives to stdout instead of erroring")
 	cmd.BoolVar(&c.quiet, "quiet", false, "suppress per-file and total stats on stderr")
-	cmd.Usage = func() { printUsage(stderr, cmd) }
 
+	cmd.StringVar(&fs.order, "order", "", "ascending | descending | append")
+	cmd.StringVar(&fs.filePattern, "file-pattern", "", "YYYY | YYYYmm | YYYYmmdd")
+	cmd.StringVar(&fs.txnStrategy, "txn-strategy", "", "first-posting | last-posting | first-debit | first-credit")
+	cmd.StringVar(&fs.overrideMetaKey, "override-meta-key", "", "metadata key (default: route-account)")
+
+	cmd.BoolVar(&fs.commaGrouping, "format-comma-grouping", false, "insert thousands separators in numbers")
+	cmd.BoolVar(&fs.alignAmounts, "format-align-amounts", false, "column-align posting amounts")
+	cmd.IntVar(&fs.amountColumn, "format-amount-column", 0, "right-edge column for amounts")
+	cmd.IntVar(&fs.eastAsianAmbiguousWidth, "format-east-asian-ambiguous-width", 0, "EA Ambiguous char width: 1 or 2")
+	cmd.IntVar(&fs.indentWidth, "format-indent-width", 0, "spaces per indent level")
+	cmd.IntVar(&fs.blankLinesBetweenDirs, "format-blank-lines-between-directives", 0, "target blank lines between directives")
+	cmd.BoolVar(&fs.insertBlankLinesBetweenDirs, "format-insert-blank-lines-between-directives", false, "actively insert blank lines between directives")
+
+	cmd.Usage = func() { printUsage(stderr, cmd) }
+	return cmd, fs, c
+}
+
+// parseFlags parses args, validates --ledger, resolves --ledger and
+// --root to absolute paths, and loads the routing config. On user error
+// (bad flag, missing --ledger, bad TOML) it prints to stderr and returns
+// a nil cfg with the intended exit code (2). On -h/--help it returns
+// (nil, nil, 0). On success it returns the populated cfg, the list of
+// positional source paths, and 0.
+func parseFlags(args []string, stderr io.Writer) (*cfg, []string, int) {
+	cmd, fs, c := newFlagSet(stderr)
 	if err := cmd.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil, nil, 0
 		}
 		return nil, nil, 2
 	}
+	cmd.Visit(func(f *flag.Flag) { fs.set[f.Name] = true })
 
-	if ledgerArg == "" {
+	if fs.ledgerArg == "" {
 		fmt.Fprintln(stderr, "beanfile: --ledger is required")
 		return nil, nil, 2
 	}
-	if _, err := os.Stat(ledgerArg); err != nil {
+	if _, err := os.Stat(fs.ledgerArg); err != nil {
 		fmt.Fprintf(stderr, "beanfile: %v\n", err)
 		return nil, nil, 2
 	}
-	abs, err := filepath.Abs(ledgerArg)
+	abs, err := filepath.Abs(fs.ledgerArg)
 	if err != nil {
-		fmt.Fprintf(stderr, "beanfile: resolving ledger %q: %v\n", ledgerArg, err)
+		fmt.Fprintf(stderr, "beanfile: resolving ledger %q: %v\n", fs.ledgerArg, err)
 		return nil, nil, 2
 	}
 	c.ledgerAbs = abs
 
+	rootArg := fs.rootArg
 	if rootArg == "" {
-		rootArg = filepath.Dir(ledgerArg)
+		rootArg = filepath.Dir(fs.ledgerArg)
 	}
 	rootAbs, err := filepath.Abs(rootArg)
 	if err != nil {
@@ -91,7 +138,94 @@ func parseFlags(args []string, stderr io.Writer) (*cfg, []string, int) {
 		return nil, nil, 2
 	}
 	c.rootAbs = rootAbs
+
+	rcfg, err := loadRouteConfig(fs)
+	if err != nil {
+		fmt.Fprintf(stderr, "beanfile: %v\n", err)
+		return nil, nil, 2
+	}
+	rcfg.Root = rootAbs
+	c.route = rcfg
+
 	return c, cmd.Args(), 0
+}
+
+// loadRouteConfig resolves the routing config from explicit --config
+// (when set), then ./beanfile.toml (when present), and finally a
+// zero-value Config. CLI --order / --file-pattern / --txn-strategy /
+// --override-meta-key / --format-* flags overlay the result.
+func loadRouteConfig(fs *parsedFlags) (*route.Config, error) {
+	var rcfg *route.Config
+	if fs.set["config"] {
+		loaded, err := routeconfig.Load(fs.configPath)
+		if err != nil {
+			return nil, err
+		}
+		rcfg = loaded
+	} else {
+		loaded, err := routeconfig.LoadIfExists(defaultConfigFile)
+		if err != nil {
+			return nil, err
+		}
+		rcfg = loaded
+	}
+	if rcfg == nil {
+		rcfg = &route.Config{}
+	}
+	overlayFlags(rcfg, fs)
+	return rcfg, nil
+}
+
+// overlayFlags writes the user's --order / --file-pattern /
+// --txn-strategy / --override-meta-key and --format-* flags onto rcfg.
+// Each flag is applied only when the user actually set it on the
+// command line, leaving inherited values untouched otherwise.
+func overlayFlags(rcfg *route.Config, fs *parsedFlags) {
+	if fs.set["order"] {
+		rcfg.Account.Order = fs.order
+		rcfg.Price.Order = fs.order
+	}
+	if fs.set["file-pattern"] {
+		rcfg.Account.FilePattern = fs.filePattern
+		rcfg.Price.FilePattern = fs.filePattern
+	}
+	if fs.set["txn-strategy"] {
+		rcfg.Transaction.DefaultStrategy = fs.txnStrategy
+	}
+	if fs.set["override-meta-key"] {
+		rcfg.Transaction.OverrideMetaKey = fs.overrideMetaKey
+	}
+
+	flagFormat := route.FormatSection{}
+	if fs.set["format-comma-grouping"] {
+		v := fs.commaGrouping
+		flagFormat.CommaGrouping = &v
+	}
+	if fs.set["format-align-amounts"] {
+		v := fs.alignAmounts
+		flagFormat.AlignAmounts = &v
+	}
+	if fs.set["format-amount-column"] {
+		v := fs.amountColumn
+		flagFormat.AmountColumn = &v
+	}
+	if fs.set["format-east-asian-ambiguous-width"] {
+		v := fs.eastAsianAmbiguousWidth
+		flagFormat.EastAsianAmbiguousWidth = &v
+	}
+	if fs.set["format-indent-width"] {
+		v := fs.indentWidth
+		flagFormat.IndentWidth = &v
+	}
+	if fs.set["format-blank-lines-between-directives"] {
+		v := fs.blankLinesBetweenDirs
+		flagFormat.BlankLinesBetweenDirectives = &v
+	}
+	if fs.set["format-insert-blank-lines-between-directives"] {
+		v := fs.insertBlankLinesBetweenDirs
+		flagFormat.InsertBlankLinesBetweenDirectives = &v
+	}
+	rcfg.Format = route.MergeFormatSections(rcfg.Format, flagFormat)
 }
 
 func printUsage(w io.Writer, cmd *flag.FlagSet) {
@@ -115,12 +249,9 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 
 // execute is the core orchestration: build the dedup index, dispatch
 // each source through the routing/three-way-decision loop, merge the
-// resulting plans into their destinations, and emit stats. It accepts
-// the input stream as an iterator so that run owns the
-// stdin-vs-positional-files distinction (via sourceReaders) while
-// execute remains agnostic to where directives come from.
+// resulting plans into their destinations, and emit stats.
 func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error], stdout, stderr io.Writer) int {
-	index, ledgerDiags, err := dedup.BuildIndex(ctx, c.ledgerAbs, c.rootAbs)
+	index, ledgerDiags, err := dedup.BuildIndex(ctx, c.ledgerAbs, c.rootAbs, dedup.WithOverrideMetaKey(c.route.Transaction.OverrideMetaKey))
 	if err != nil {
 		fmt.Fprintf(stderr, "beanfile: %v\n", err)
 		return 2
@@ -130,6 +261,7 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 	}
 
 	planByPath := map[string][]merge.Insert{}
+	spacingByPath := map[string]planSpacing{}
 	writtenByPath := map[string]int{}
 	commentedByPath := map[string]int{}
 	skippedByPath := map[string]int{}
@@ -152,7 +284,7 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 		// here while the Include directives themselves (already consumed
 		// by the loader) do not.
 		for _, d := range ledger.All() {
-			decision, err := route.Decide(d, &route.Config{Root: c.rootAbs})
+			decision, err := route.Decide(d, c.route)
 			if err != nil {
 				fmt.Fprintf(stderr, "beanfile: route: %v\n", err)
 				return 1
@@ -176,16 +308,20 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 				continue
 			}
 
-			if matched, _ := index.InDestination(decision.Path, d, nil); matched {
+			if matched, _ := index.InDestination(decision.Path, d, decision.EqMetaKeys); matched {
 				skippedByPath[decision.Path]++
 				continue
 			}
-			commented, _ := index.InOtherActive(decision.Path, d, nil)
+			commented, _ := index.InOtherActive(decision.Path, d, decision.EqMetaKeys)
 			planByPath[decision.Path] = append(planByPath[decision.Path], merge.Insert{
 				Directive: d,
 				Commented: commented,
 				Format:    decision.Format,
 			})
+			spacingByPath[decision.Path] = planSpacing{
+				blankLines:       decision.ResolvedBlankLinesBetweenDirectives,
+				insertBlankLines: decision.ResolvedInsertBlankLinesBetweenDirectives,
+			}
 			if commented {
 				commentedByPath[decision.Path]++
 			} else {
@@ -213,11 +349,12 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 	for _, p := range paths {
 		inserts := planByPath[p]
 		if len(inserts) > 0 {
+			sp := spacingByPath[p]
 			plan := merge.Plan{
 				Path:                              filepath.Join(c.rootAbs, p),
 				Order:                             route.OrderAscending,
-				BlankLinesBetweenDirectives:       1,
-				InsertBlankLinesBetweenDirectives: false,
+				BlankLinesBetweenDirectives:       sp.blankLines,
+				InsertBlankLinesBetweenDirectives: sp.insertBlankLines,
 				Inserts:                           inserts,
 			}
 			if _, err := merge.Merge(plan, merge.Options{}); err != nil {
@@ -244,6 +381,14 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 	return 0
 }
 
+// planSpacing carries the resolved spacing fields for one destination
+// file. The values come from route.Decide via Decision.ResolvedBlank*
+// fields and feed merge.Plan's spacing knobs unchanged.
+type planSpacing struct {
+	blankLines       int
+	insertBlankLines bool
+}
+
 // inputSource is one element of the input stream: a named reader. The
 // name is "-" for stdin or the absolute path for a positional file; it
 // flows into ast.LoadReader's WithFilename so diagnostics from the
@@ -254,13 +399,7 @@ type inputSource struct {
 }
 
 // sourceReaders yields one inputSource per CLI input source in
-// argument order. Stdin is yielded as ("-", io.NopCloser(stdin)) when
-// positional is empty or a single "-"; otherwise each positional file
-// is opened and yielded with its absolute path. The caller is
-// responsible for closing each yielded reader (loadSource does so).
-// File-open errors are surfaced via the iterator's error slot rather
-// than aborting iteration; an early break in the consumer closes the
-// in-flight reader and stops iteration.
+// argument order.
 func sourceReaders(positional []string, stdin io.Reader) iter.Seq2[*inputSource, error] {
 	return func(yield func(*inputSource, error) bool) {
 		if len(positional) == 0 || (len(positional) == 1 && positional[0] == "-") {
@@ -291,9 +430,7 @@ func sourceReaders(positional []string, stdin io.Reader) iter.Seq2[*inputSource,
 }
 
 // loadSource consumes src.r in full and returns the parsed ledger.
-// Relative include directives in input are rejected via WithBaseDir("")
-// per the design's §4.5 step 4; absolute include paths still resolve.
-// The reader is closed before returning regardless of outcome.
+// Relative include directives in input are rejected via WithBaseDir("").
 func loadSource(src *inputSource) (*ast.Ledger, error) {
 	defer src.r.Close()
 	opts := []ast.LoadOption{ast.WithBaseDir("")}
@@ -303,10 +440,10 @@ func loadSource(src *inputSource) (*ast.Ledger, error) {
 	return ast.LoadReader(src.r, opts...)
 }
 
-// emitDiagnostics writes diagnostics to stderr and reports whether any
-// were Error-severity. Errors are always emitted (a fatal condition
-// must be visible regardless of --quiet); Warnings are suppressed when
-// quiet is set. The caller maps the returned bool to its exit code.
+// emitDiagnostics prints diags to stderr in source-position order.
+// Errors are always emitted; warnings are suppressed when quiet is true.
+// The returned bool is true when at least one error was present, signaling
+// the caller to exit non-zero.
 func emitDiagnostics(stderr io.Writer, diags []ast.Diagnostic, quiet bool) (hasError bool) {
 	for _, d := range diags {
 		if d.Severity == ast.Error {
