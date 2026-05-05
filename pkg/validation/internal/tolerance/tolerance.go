@@ -56,10 +56,24 @@ func ForBalanceAssertion(opts *options.Values, amount ast.Amount) *apd.Decimal {
 // contributions are also included. See the package doc for the full
 // derivation.
 func Infer(postings []ast.Posting, opts *options.Values, residualCurrencies []string) (map[string]*apd.Decimal, error) {
-	// Per-currency max precision means the smallest (most negative)
-	// exponent among posting amounts in that currency. We track the
-	// minimum exponent observed.
-	minExpPerCurrency := make(map[string]int32)
+	// Units-based tolerance per currency: multiplier × 10^maxExp where
+	// maxExp is the *largest* (least negative) exponent observed among
+	// posting amounts in that currency. This matches upstream beancount's
+	// infer_tolerances called with mode="max" — the mode it uses for
+	// transaction balance verification (see beancount/parser/booking_full.py).
+	// Upstream's docstring on the choice: "the tolerance has a dual purpose:
+	// it's used to infer the resolution for interpolation (where we might
+	// want the min()) and also for balance checks (where we favor the
+	// looser/larger tolerance)."
+	//
+	// Concretely, a transaction mixing a coarsely-written posting (e.g.
+	// 100.1111 JPY, exp=-4) with a high-precision interpolation residue
+	// (e.g. 200.22222222222222 JPY, exp=-14) gets a JPY tolerance of
+	// 0.5×10⁻⁴, dominated by the coarse posting. The high-precision
+	// posting's exponent does NOT tighten the tolerance, since balance
+	// checks should not penalize the user for arithmetic precision they
+	// did not author.
+	maxExpPerCurrency := make(map[string]int32)
 	for i := range postings {
 		p := &postings[i]
 		// tolerance is an internal helper; the public validators that call it
@@ -70,14 +84,14 @@ func Infer(postings []ast.Posting, opts *options.Values, residualCurrencies []st
 		}
 		cur := p.Amount.Currency
 		e := p.Amount.Number.Exponent
-		if existing, ok := minExpPerCurrency[cur]; !ok || e < existing {
-			minExpPerCurrency[cur] = e
+		if existing, ok := maxExpPerCurrency[cur]; !ok || e > existing {
+			maxExpPerCurrency[cur] = e
 		}
 	}
 
 	unitsTol := make(map[string]*apd.Decimal, len(residualCurrencies))
 	for _, cur := range residualCurrencies {
-		if e, ok := minExpPerCurrency[cur]; ok {
+		if e, ok := maxExpPerCurrency[cur]; ok {
 			unitsTol[cur] = forExponent(opts, e)
 		} else {
 			unitsTol[cur] = new(apd.Decimal)
@@ -88,7 +102,40 @@ func Infer(postings []ast.Posting, opts *options.Values, residualCurrencies []st
 		return unitsTol, nil
 	}
 
-	// Second scan: per-posting cost-based contributions.
+	// Cost-tolerance accumulation: this branch deliberately diverges from
+	// upstream beancount. Both designs bound a real source of imprecision,
+	// but they bound *different* ones:
+	//
+	//   Upstream's model (beancount/core/interpolate.py infer_tolerances):
+	//     contribution = (multiplier × 10^unitsExp) × cost_number
+	//     accumulation = sum across postings within a cost currency
+	//   This bounds units-number imprecision propagated through cost.
+	//   Concretely, "1 GOOG {2.00 USD}" treats the integer units as
+	//   "1 ± 0.5" and hence ±(0.5 × 2.00) = ±1 USD of cost-side slop.
+	//   The sum then bounds the worst-case adversarial alignment of those
+	//   per-posting slops. This is permissive for integer unit counts
+	//   against high-magnitude cost numbers, which is one reason upstream
+	//   gates the whole branch behind infer_tolerance_from_cost=false by
+	//   default.
+	//
+	//   Our model (below):
+	//     contribution = |units| × (multiplier × 10^costExp)
+	//     accumulation = max across postings within a cost currency
+	//   This bounds cost-number imprecision propagated through units.
+	//   Concretely, "10 STOCK {2.00 USD}" treats 2.00 as "2 ± 0.005"
+	//   per unit and hence ±(10 × 0.005) = ±0.05 USD of cost-side slop.
+	//   The max keeps the bound tied to the single most-impactful posting
+	//   rather than summing speculative slops.
+	//
+	// Both are partial: a complete bound would include both terms (they
+	// are independent error sources that can co-occur). We keep our own
+	// model intentionally — it tracks the imprecision actually authored
+	// by the user (the digits they wrote in the cost number) and tends
+	// to produce more proportionate tolerances for typical "integer
+	// units, fractional cost" ledger styles. The known weakness is that
+	// for the {{ total CUR }} form the |units| factor over-inflates the
+	// bound (the imprecision in a *total* cost should not be multiplied
+	// by units count); revisit if a real ledger encounters that regime.
 	costTol := make(map[string]*apd.Decimal)
 	for i := range postings {
 		p := &postings[i]

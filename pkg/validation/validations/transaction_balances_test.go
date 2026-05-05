@@ -291,6 +291,41 @@ func TestTransactionBalances_MultiplierAffectsResidualTolerance(t *testing.T) {
 	}
 }
 
+// TestTransactionBalances_MixedPrecisionResidualWithinCoarseTolerance
+// pins the upstream-compatible "looser tolerance wins" rule. The
+// transaction mixes a coarse JPY posting (exp=-4) with a high-precision
+// JPY posting (exp=-14); the residual sits at exp=-5, which lies above
+// the inferred tolerance derived from the coarse posting (5e-5 JPY) but
+// vastly above the one derived from the precise posting (5e-15 JPY).
+// Upstream beancount uses mode="max" (looser tolerance) for balance
+// checks, so the transaction balances; an earlier go-beancount revision
+// used mode="min" and erroneously rejected it. Picking the cost form
+// "{{ total CUR }}" keeps the cost-bearing posting's weight equal to
+// the explicit total without introducing per-unit cost arithmetic.
+func TestTransactionBalances_MixedPrecisionResidualWithinCoarseTolerance(t *testing.T) {
+	v := newTransactionBalances(mustDefaults(t))
+	stockUnits := amtStrDec(t, "-10", "STOCK")
+	totalCost := amtStrDec(t, "100.1111", "JPY")
+	cashHigh := amtStrDec(t, "200.22222222222222", "JPY")
+	gain := amtStrDec(t, "-100.1111", "JPY")
+	txn := &ast.Transaction{
+		Date: day(2026, 5, 2),
+		Span: ast.Span{Start: ast.Position{Line: 1}},
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  &stockUnits,
+				Cost:    &ast.CostSpec{Total: &totalCost},
+			},
+			{Account: "Assets:A", Amount: &cashHigh},
+			{Account: "Income:Gain", Amount: &gain},
+		},
+	}
+	if errs := v.ProcessEntry(txn); len(errs) != 0 {
+		t.Errorf("ProcessEntry: got %v, want no errors (residual must fit within coarse-posting tolerance)", errs)
+	}
+}
+
 // TestTransactionBalances_InferToleranceFromCost verifies that with
 // infer_tolerance_from_cost enabled, a per-unit cost spec broadens the
 // cost-currency tolerance enough to absorb a residual that would
