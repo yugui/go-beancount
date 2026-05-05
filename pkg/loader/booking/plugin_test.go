@@ -710,3 +710,282 @@ func TestApply_ClonesCostBearingTransaction(t *testing.T) {
 		t.Errorf("booking.Apply() returned input pointer for cost-bearing transaction; want a distinct clone")
 	}
 }
+
+// TestApply_DeferredAugmentationInterpolated covers the upstream
+// "transfer with partial cost spec" pattern through the loader-level
+// booking pass: an augmenting posting with a cost spec that lacks a
+// concrete number (`{date, "label"}` or bare `{}`) is filled in by
+// the reducer's interpolation pass, and writeAugmentationCost folds
+// the resolved per-unit number back into the AST. The pre-existing
+// Date and Label on the spec are preserved so downstream consumers
+// (printer, BQL) still see the user's lot identity.
+func TestApply_DeferredAugmentationInterpolated(t *testing.T) {
+	openA := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:A"}
+	openB := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:B"}
+	openEq := &ast.Open{Date: day(2024, 1, 1), Account: "Equity:Opening"}
+
+	buyDate := day(2025, 1, 1)
+	buy := &ast.Transaction{
+		Date:      buyDate,
+		Flag:      '*',
+		Narration: "buy",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:B",
+				Amount:  amt("10", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100", "JPY"),
+					Date:    &buyDate,
+					Label:   "label",
+				},
+			},
+			{Account: "Equity:Opening", Amount: amt("-1000", "JPY")},
+		},
+	}
+	xfer := &ast.Transaction{
+		Date:      day(2025, 2, 17),
+		Flag:      '*',
+		Narration: "xfer",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("5", "STOCK"),
+				Cost: &ast.CostSpec{
+					Date:  &buyDate,
+					Label: "label",
+				},
+			},
+			{
+				Account: "Assets:B",
+				Amount:  amt("-5", "STOCK"),
+				Cost: &ast.CostSpec{
+					Date:  &buyDate,
+					Label: "label",
+				},
+			},
+		},
+	}
+
+	in := api.Input{Directives: seqOf([]ast.Directive{openA, openB, openEq, buy, xfer})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("error-severity diagnostics = %d, want 0", got)
+	}
+
+	var bookedXfer *ast.Transaction
+	for _, d := range res.Directives {
+		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "xfer" {
+			bookedXfer = tx
+			break
+		}
+	}
+	if bookedXfer == nil {
+		t.Fatalf("xfer transaction not found in booked directives")
+	}
+	// Augmenting posting (Assets:A): partial spec is filled with
+	// PerUnit=100 JPY, Date and Label preserved.
+	cs := bookedXfer.Postings[0].Cost
+	wantCS := &ast.CostSpec{
+		PerUnit: &ast.Amount{Number: dec("100"), Currency: "JPY"},
+		Date:    dayp(2025, 1, 1),
+		Label:   "label",
+	}
+	opts := append(cmp.Options{
+		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
+	}, astCmpOpts...)
+	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
+		t.Errorf("Assets:A interpolated CostSpec mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestApply_EmptyBracesAugmentationInterpolated is the bare `{}`
+// variant: the user signals "lot-tracked, fill the cost from
+// context" without providing a date or label, and the booking pass
+// must still resolve a concrete per-unit number from the residual.
+func TestApply_EmptyBracesAugmentationInterpolated(t *testing.T) {
+	openA := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:A"}
+	openB := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:B"}
+	openEq := &ast.Open{Date: day(2024, 1, 1), Account: "Equity:Opening"}
+
+	buyDate := day(2025, 1, 1)
+	buy := &ast.Transaction{
+		Date:      buyDate,
+		Flag:      '*',
+		Narration: "buy",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:B",
+				Amount:  amt("10", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100", "JPY"),
+					Date:    &buyDate,
+				},
+			},
+			{Account: "Equity:Opening", Amount: amt("-1000", "JPY")},
+		},
+	}
+	xfer := &ast.Transaction{
+		Date:      day(2025, 2, 17),
+		Flag:      '*',
+		Narration: "xfer",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("5", "STOCK"),
+				Cost:    &ast.CostSpec{}, // bare {}
+			},
+			{
+				Account: "Assets:B",
+				Amount:  amt("-5", "STOCK"),
+				Cost: &ast.CostSpec{
+					Date: &buyDate,
+				},
+			},
+		},
+	}
+
+	in := api.Input{Directives: seqOf([]ast.Directive{openA, openB, openEq, buy, xfer})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("error-severity diagnostics = %d, want 0", got)
+	}
+	var bookedXfer *ast.Transaction
+	for _, d := range res.Directives {
+		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "xfer" {
+			bookedXfer = tx
+			break
+		}
+	}
+	if bookedXfer == nil {
+		t.Fatalf("Apply: xfer not found")
+	}
+	cs := bookedXfer.Postings[0].Cost
+	if cs == nil || cs.PerUnit == nil {
+		t.Fatalf("Apply: Assets:A CostSpec.PerUnit is nil; want interpolated 100 JPY")
+	}
+	want := dec("100")
+	if cs.PerUnit.Number.Cmp(&want) != 0 || cs.PerUnit.Currency != "JPY" {
+		t.Errorf("Apply: Assets:A PerUnit = %+v, want 100 JPY", cs.PerUnit)
+	}
+	// writeAugmentationCost only fills PerUnit/Total; the user wrote
+	// no Date and no Label on `{}` so the spec keeps both empty. The
+	// txnDate fallback the resolver applied lives on the booked
+	// inventory.Cost record, not on the AST.
+	if cs.Date != nil {
+		t.Errorf("Apply: Assets:A Cost.Date = %v, want nil (preserved from \"{}\" input)", cs.Date)
+	}
+	if cs.Label != "" {
+		t.Errorf("Apply: Assets:A Cost.Label = %q, want \"\" (preserved from \"{}\" input)", cs.Label)
+	}
+}
+
+// TestApply_IdempotentInterpolatedAugmentation pins idempotency for
+// the new cost-interpolation path: re-running Apply over the
+// already-interpolated AST must produce the same booked CostSpec
+// without re-deferring or drifting the per-unit value. The first run
+// fills PerUnit on the bare `{}` augmenting posting; the second run
+// observes a concrete spec and books normally with no diagnostics
+// and no further mutation.
+func TestApply_IdempotentInterpolatedAugmentation(t *testing.T) {
+	openA := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:A"}
+	openB := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:B"}
+	openEq := &ast.Open{Date: day(2024, 1, 1), Account: "Equity:Opening"}
+
+	buyDate := day(2025, 1, 1)
+	buy := &ast.Transaction{
+		Date:      buyDate,
+		Flag:      '*',
+		Narration: "buy",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:B",
+				Amount:  amt("10", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit: amt("100", "JPY"),
+					Date:    &buyDate,
+					Label:   "label",
+				},
+			},
+			{Account: "Equity:Opening", Amount: amt("-1000", "JPY")},
+		},
+	}
+	xfer := &ast.Transaction{
+		Date:      day(2025, 2, 17),
+		Flag:      '*',
+		Narration: "xfer",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("5", "STOCK"),
+				Cost: &ast.CostSpec{
+					Date:  &buyDate,
+					Label: "label",
+				},
+			},
+			{
+				Account: "Assets:B",
+				Amount:  amt("-5", "STOCK"),
+				Cost: &ast.CostSpec{
+					Date:  &buyDate,
+					Label: "label",
+				},
+			},
+		},
+	}
+
+	directives := []ast.Directive{openA, openB, openEq, buy, xfer}
+
+	first, err := booking.Apply(context.Background(), api.Input{Directives: seqOf(directives)})
+	if err != nil {
+		t.Fatalf("booking.Apply (first): %v", err)
+	}
+	if got := errorSeverityCount(first.Diagnostics); got != 0 {
+		for _, d := range first.Diagnostics {
+			t.Logf("first-run diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("first-run error-severity diagnostics = %d, want 0", got)
+	}
+
+	second, err := booking.Apply(context.Background(), api.Input{Directives: seqOf(first.Directives)})
+	if err != nil {
+		t.Fatalf("booking.Apply (second): %v", err)
+	}
+	if got := errorSeverityCount(second.Diagnostics); got != 0 {
+		for _, d := range second.Diagnostics {
+			t.Logf("second-run diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("second-run error-severity diagnostics = %d, want 0", got)
+	}
+
+	findXfer := func(directives []ast.Directive) *ast.Transaction {
+		for _, d := range directives {
+			if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "xfer" {
+				return tx
+			}
+		}
+		return nil
+	}
+	firstXfer := findXfer(first.Directives)
+	secondXfer := findXfer(second.Directives)
+	if firstXfer == nil || secondXfer == nil {
+		t.Fatalf("xfer not found: first=%v second=%v", firstXfer, secondXfer)
+	}
+	opts := append(cmp.Options{
+		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
+	}, astCmpOpts...)
+	if diff := cmp.Diff(firstXfer.Postings[0].Cost, secondXfer.Postings[0].Cost, opts...); diff != "" {
+		t.Errorf("Apply: interpolated CostSpec drifted across runs (-first +second):\n%s", diff)
+	}
+}

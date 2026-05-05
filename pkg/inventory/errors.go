@@ -30,10 +30,15 @@ const (
 	// CodeMultipleAutoPostings indicates that a transaction contains more
 	// than one posting whose amount must be inferred.
 	CodeMultipleAutoPostings
-	// CodeUnresolvableAutoPosting indicates that the residual of a
-	// transaction's balanced postings could not be expressed as a single
-	// auto-posting amount.
-	CodeUnresolvableAutoPosting
+	// CodeUnresolvableInterpolation indicates that the booking layer was
+	// unable to fill in a missing posting unknown — either an auto-
+	// posting Amount or a partial cost spec's per-unit number — because
+	// the transaction's residual was over- or under-determined. This
+	// covers all of: zero residual where a non-zero one was needed, a
+	// residual that spans more than one currency for a single-currency
+	// unknown, and the case where two or more unknowns share the same
+	// transaction.
+	CodeUnresolvableInterpolation
 	// CodeInvalidAutoPosting indicates that an auto-balanced posting
 	// (Amount == nil) carries a cost or price annotation, which the
 	// inventory layer rejects as semantically ambiguous.

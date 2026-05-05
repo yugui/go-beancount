@@ -66,6 +66,13 @@ type VisitFunc func(
 // permitted — state is reset to empty at the start of each call — but
 // each call pays the full O(N) cost of re-streaming the ledger.
 //
+// As a side effect of interpolation, Walk writes resolved values back
+// into the ledger's posting AST: an auto-balanced posting (nil Amount)
+// receives the inferred Amount, and a deferred cost-spec posting (Cost
+// present, PerUnit nil) receives the inferred PerUnit. Callers that
+// retain pointers into transaction postings must be aware those fields
+// may transition from nil to populated during Walk.
+//
 // Errors collected during the walk are returned as a fresh slice the
 // caller may retain. An error does not stop iteration unless the
 // visitor returns false; subsequent transactions still run even after
@@ -123,16 +130,81 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	booked []BookedPosting,
 	stop bool,
 ) {
-	touched := map[ast.Account]bool{}
-	before = map[ast.Account]*Inventory{}
-
-	// Pre-pass: scan for auto-posting structural violations. An
-	// auto-balanced posting (nil Amount) must not carry a Cost or
-	// Price spec, and a transaction must not contain more than one
-	// auto-balanced posting. We reject these before mutating any
-	// account state so a rejected transaction leaves inventory
+	// Reject structurally-invalid transactions before mutating any
+	// account state, so a rejected transaction leaves inventory
 	// untouched.
-	autoIdx := -1
+	if !r.validateStructure(txn) {
+		return map[ast.Account]*Inventory{}, nil, nil, false
+	}
+
+	trace := newStateTrace(r.state)
+
+	// Pass 1: book explicit postings while collecting unknowns. A
+	// posting that fails with CodeAugmentationRequiresCost AND has a
+	// cost spec without a number is held back as a deferred unknown
+	// (Pass 2 may infer its per-unit cost from the residual). The
+	// auto-posting (Amount == nil) is also an unknown. If more than
+	// one unknown is collected, the transaction is ambiguous and is
+	// reported below.
+	var unknowns []*ast.Posting
+	for i := range txn.Postings {
+		p := &txn.Postings[i]
+		if p.Amount == nil {
+			// Auto-posting (validated single & no cost/price by
+			// validateStructure).
+			unknowns = append(unknowns, p)
+			continue
+		}
+
+		inv := trace.prepareForEdit(p.Account)
+		method := r.booking[p.Account] // zero value = BookingDefault
+		bp, errs := bookOne(inv, p, method, txn.Date, false)
+		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
+			unknowns = append(unknowns, p)
+			continue
+		}
+		r.errs = append(r.errs, errs...)
+		if len(errs) == 0 {
+			booked = append(booked, bp)
+		}
+	}
+
+	// Pass 2: resolve the single unknown, if any.
+	switch {
+	case len(unknowns) > 1:
+		// Ambiguous: too many unknowns for a single residual to pin
+		// down. Emit one diagnostic per unknown so the user sees every
+		// site they need to fix.
+		r.flagAmbiguousUnknowns(unknowns)
+	case len(unknowns) == 1:
+		unknownP := unknowns[0]
+		if residual, ok := r.solveResidual(booked, unknownP); ok {
+			var bp BookedPosting
+			var fillOk bool
+			if unknownP.Amount == nil {
+				bp, fillOk = r.fillAutoPosting(txn, unknownP, residual, trace)
+			} else {
+				bp, fillOk = r.fillDeferredCost(txn, unknownP, residual, trace)
+			}
+			if fillOk {
+				booked = append(booked, bp)
+			}
+		}
+	}
+
+	before, after = trace.diff()
+	return before, after, booked, false
+}
+
+// validateStructure rejects transactions whose auto-posting structure
+// is invalid: an auto-balanced posting (nil Amount) must not carry a
+// Cost or Price spec, and at most one auto-balanced posting may appear.
+// On any violation it appends a diagnostic to r.errs and returns false;
+// the caller must abort before touching account state. Returning early
+// here is what guarantees that a rejected transaction leaves inventory
+// untouched.
+func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
+	seenAuto := false
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount != nil {
@@ -145,159 +217,150 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 				Account: p.Account,
 				Message: "auto-balanced posting must not carry cost or price",
 			})
-			return before, nil, nil, false
+			return false
 		}
-		if autoIdx != -1 {
+		if seenAuto {
 			r.errs = append(r.errs, Error{
 				Code:    CodeMultipleAutoPostings,
 				Span:    p.Span,
 				Account: p.Account,
 				Message: "transaction has more than one auto-balanced posting",
 			})
-			return before, nil, nil, false
+			return false
 		}
-		autoIdx = i
+		seenAuto = true
 	}
-
-	// Pass 1: book explicit postings.
-	for i := range txn.Postings {
-		p := &txn.Postings[i]
-		if p.Amount == nil {
-			continue
-		}
-
-		// Capture the before-state lazily, once per touched account.
-		captureBefore(r.state, before, touched, p.Account)
-
-		// Book the posting.
-		inv := r.ensureInventory(p.Account)
-		method := r.booking[p.Account] // zero value = BookingDefault
-		bp, errs := bookOne(inv, p, method, txn.Date, false)
-		r.errs = append(r.errs, errs...)
-		if len(errs) == 0 {
-			booked = append(booked, bp)
-		}
-	}
-
-	// Pass 2: auto-posting inference.
-	if autoIdx >= 0 {
-		residual, residualErrs := r.computeResidual(txn, autoIdx)
-		if len(residualErrs) > 0 {
-			r.errs = append(r.errs, residualErrs...)
-		} else {
-			p := &txn.Postings[autoIdx]
-			amt := &ast.Amount{Currency: residual.Currency}
-			amt.Number.Set(&residual.Number)
-			p.Amount = amt
-			captureBefore(r.state, before, touched, p.Account)
-			inv := r.ensureInventory(p.Account)
-			method := r.booking[p.Account]
-			bp, errs := bookOne(inv, p, method, txn.Date, true)
-			r.errs = append(r.errs, errs...)
-			if len(errs) == 0 {
-				booked = append(booked, bp)
-			}
-		}
-	}
-
-	// Build the after snapshot. Every touched account is included, even
-	// if its inventory is empty — the contract is that after[acct] is
-	// always non-nil for touched accounts.
-	after = map[ast.Account]*Inventory{}
-	for acct := range touched {
-		if inv := r.state[acct]; inv != nil {
-			after[acct] = inv.Clone()
-		} else {
-			after[acct] = NewInventory()
-		}
-	}
-
-	return before, after, booked, false
+	return true
 }
 
-// captureBefore records the account's current inventory state in the
-// before map the first time the account is touched within a single
-// transaction. Snapshots are deep-copied via [Inventory.Clone] so the
-// visitor may retain them safely after Walk resumes mutating state.
-// Accounts not yet present in state map to a nil *Inventory snapshot;
-// a nil before-value is the signal that the account had never been
-// touched prior to this transaction.
-func captureBefore(
-	state map[ast.Account]*Inventory,
-	before map[ast.Account]*Inventory,
-	touched map[ast.Account]bool,
-	acct ast.Account,
-) {
-	if touched[acct] {
-		return
+// stateTrace records edits to a per-account inventory map within the
+// scope of a single transaction. It pairs the long-lived state map
+// (shared with the owning Reducer, mutated in place by edits) with a
+// before-snapshot map (owned by the trace, populated lazily on first
+// touch of each account) so the two stay consistent by construction.
+//
+// A nil before-value records that the account had no inventory prior
+// to this trace — that nil is the visitor-contract signal for "newly
+// touched account".
+type stateTrace struct {
+	state  map[ast.Account]*Inventory
+	before map[ast.Account]*Inventory
+}
+
+// newStateTrace begins recording edits against state. before-snapshots
+// are scoped to this trace; state is shared with the caller and is
+// mutated in place by [stateTrace.prepareForEdit].
+func newStateTrace(state map[ast.Account]*Inventory) *stateTrace {
+	return &stateTrace{
+		state:  state,
+		before: map[ast.Account]*Inventory{},
 	}
-	touched[acct] = true
-	if inv, ok := state[acct]; ok && inv != nil {
-		before[acct] = inv.Clone()
+}
+
+// prepareForEdit returns the inventory to mutate for acct. On the
+// first call for a given acct in this trace, it deep-clones the
+// account's current inventory into the before-snapshot (or records
+// nil if the account had no inventory yet) and lazily creates an
+// inventory if one did not exist. Subsequent calls return the same
+// inventory pointer without re-snapshotting.
+func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
+	if _, seen := st.before[acct]; seen {
+		return st.state[acct]
+	}
+	inv := st.state[acct]
+	if inv == nil {
+		inv = NewInventory()
+		st.state[acct] = inv
+		st.before[acct] = nil
 	} else {
-		before[acct] = nil
+		st.before[acct] = inv.Clone()
 	}
-}
-
-// ensureInventory returns the inventory for acct, lazily creating and
-// installing one in r.state on first touch.
-func (r *Reducer) ensureInventory(acct ast.Account) *Inventory {
-	if inv, ok := r.state[acct]; ok && inv != nil {
-		return inv
-	}
-	inv := NewInventory()
-	r.state[acct] = inv
 	return inv
 }
 
-// computeResidual sums the signed weights of every explicit posting in
-// txn and returns the amount the auto-posting at autoIdx must absorb.
-//
-// Beancount permits multiple currencies in a single transaction (as in
-// a foreign-currency conversion), but the inferred auto-posting must
-// settle exactly one currency. A residual that is already zero in every
-// currency (or one that has more than one non-zero currency) is
-// rejected with [CodeUnresolvableAutoPosting].
-//
-// The decimal returned by [PostingWeight] is always a fresh
-// allocation, so negating it in place does not corrupt the AST.
-func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount, []Error) {
-	sums := map[string]*apd.Decimal{}
-	order := []string{} // stable reporting order
+// diff returns the (before, after) pair for the visitor callback.
+// The before map is the trace's own — diff transfers ownership to
+// the caller, which is safe because a stateTrace is scoped to a
+// single visitTxn invocation and is discarded immediately after.
+// after is freshly constructed as clones of the current state for
+// every account first touched by this trace.
+func (st *stateTrace) diff() (before, after map[ast.Account]*Inventory) {
+	after = make(map[ast.Account]*Inventory, len(st.before))
+	for acct := range st.before {
+		if inv := st.state[acct]; inv != nil {
+			after[acct] = inv.Clone()
+		} else {
+			// Defensive: prepareForEdit always installs a non-nil
+			// inventory and the booking layer never deletes one,
+			// so this branch should be unreachable in practice. Fall
+			// back to an empty inventory so the visitor contract
+			// (after[acct] non-nil for every touched account) is
+			// preserved even if the invariant ever shifts.
+			after[acct] = NewInventory()
+		}
+	}
+	return st.before, after
+}
 
-	for i := range txn.Postings {
-		if i == autoIdx {
-			continue
-		}
-		p := &txn.Postings[i]
+// flagAmbiguousUnknowns emits one CodeUnresolvableInterpolation per
+// unknown when the transaction has more than one. The wording branches
+// on whether the unknown is the auto-posting (no Amount, so the
+// "amount" is unresolved) or a deferred cost-spec (Amount is set, only
+// the per-unit "cost" is unresolved).
+func (r *Reducer) flagAmbiguousUnknowns(unknowns []*ast.Posting) {
+	for _, p := range unknowns {
+		msg := "cannot interpolate cost: transaction has multiple unknown posting values"
 		if p.Amount == nil {
-			// Should not happen: visitTxn has already rejected
-			// transactions with more than one auto-posting before
-			// reaching computeResidual.
-			continue
+			msg = "cannot interpolate amount: transaction has multiple unknown posting values"
 		}
-		w, cur, err := PostingWeight(p)
+		r.errs = append(r.errs, Error{
+			Code:    CodeUnresolvableInterpolation,
+			Span:    p.Span,
+			Account: p.Account,
+			Message: msg,
+		})
+	}
+}
+
+// solveResidual computes the per-currency net of the already-booked
+// postings and returns the single residual the unknown must absorb,
+// expressed as the [ast.Amount] that — added to the booked weights —
+// makes the transaction balance. Each BookedPosting reflects the
+// resolved cost (e.g. a reduction's matched lot cost), which is what
+// makes this loop correct in the presence of partial cost specs the
+// AST has not yet been written back for.
+//
+// On any failure (internal arithmetic error, zero residual, or residual
+// spanning multiple currencies) a diagnostic is appended to r.errs and
+// ok is false. The zero-residual wording branches on whether the
+// unknown is an auto-posting or a deferred cost-spec.
+func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (*ast.Amount, bool) {
+	sums := map[string]*apd.Decimal{}
+	var order []string
+	for i := range booked {
+		bp := booked[i]
+		w, cur, err := bookedPostingWeight(bp)
 		if err != nil {
-			return ast.Amount{}, []Error{{
+			r.errs = append(r.errs, Error{
 				Code:    CodeInternalError,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "compute residual: posting weight: " + err.Error(),
-			}}
+				Span:    bp.Source.Span,
+				Account: bp.Account,
+				Message: "interpolate: posting weight: " + err.Error(),
+			})
+			return nil, false
 		}
 		if w == nil {
-			// A nil weight with a nil error denotes an auto-posting,
-			// which we already filtered above. Defensive skip.
 			continue
 		}
-		if existing, ok := sums[cur]; ok {
+		if existing, found := sums[cur]; found {
 			if _, err := apd.BaseContext.Add(existing, existing, w); err != nil {
-				return ast.Amount{}, []Error{{
+				r.errs = append(r.errs, Error{
 					Code:    CodeInternalError,
-					Span:    p.Span,
-					Account: p.Account,
-					Message: "compute residual: accumulate weight: " + err.Error(),
-				}}
+					Span:    bp.Source.Span,
+					Account: bp.Account,
+					Message: "interpolate: accumulate weight: " + err.Error(),
+				})
+				return nil, false
 			}
 		} else {
 			sums[cur] = w
@@ -305,7 +368,6 @@ func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount
 		}
 	}
 
-	// Filter out currencies whose residual is exactly zero.
 	nonZero := make([]string, 0, len(order))
 	for _, cur := range order {
 		if !sums[cur].IsZero() {
@@ -313,39 +375,95 @@ func (r *Reducer) computeResidual(txn *ast.Transaction, autoIdx int) (ast.Amount
 		}
 	}
 
-	autoP := &txn.Postings[autoIdx]
-	switch len(nonZero) {
-	case 0:
-		return ast.Amount{}, []Error{{
-			Code:    CodeUnresolvableAutoPosting,
-			Span:    autoP.Span,
-			Account: autoP.Account,
-			Message: "auto-balanced posting has no residual to absorb; every currency already balances",
-		}}
-	case 1:
-		cur := nonZero[0]
-		residual := sums[cur]
-		// Negate in place: PostingWeight returned a fresh allocation, so
-		// this does not disturb any AST field.
-		if _, err := apd.BaseContext.Neg(residual, residual); err != nil {
-			return ast.Amount{}, []Error{{
-				Code:    CodeInternalError,
-				Span:    autoP.Span,
-				Account: autoP.Account,
-				Message: "compute residual: negate: " + err.Error(),
-			}}
+	if len(nonZero) != 1 {
+		var msg string
+		if len(nonZero) == 0 {
+			if unknownP.Amount == nil {
+				msg = "auto-balanced posting has no residual to absorb; every currency already balances"
+			} else {
+				msg = "deferred cost cannot be interpolated: every currency already balances"
+			}
+		} else {
+			msg = fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(nonZero), nonZero)
 		}
-		out := ast.Amount{Currency: cur}
-		out.Number.Set(residual)
-		return out, nil
-	default:
-		return ast.Amount{}, []Error{{
-			Code:    CodeUnresolvableAutoPosting,
-			Span:    autoP.Span,
-			Account: autoP.Account,
-			Message: fmt.Sprintf("auto-balanced posting cannot absorb residual across %d currencies: %v", len(nonZero), nonZero),
-		}}
+		r.errs = append(r.errs, Error{
+			Code:    CodeUnresolvableInterpolation,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: msg,
+		})
+		return nil, false
 	}
+
+	out := &ast.Amount{Currency: nonZero[0]}
+	if _, err := apd.BaseContext.Neg(&out.Number, sums[nonZero[0]]); err != nil {
+		r.errs = append(r.errs, Error{
+			Code:    CodeInternalError,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: "interpolate: negate residual: " + err.Error(),
+		})
+		return nil, false
+	}
+	return out, true
+}
+
+// fillAutoPosting writes the resolved residual into the auto-posting's
+// Amount and books it, using trace.prepareForEdit to record the prior
+// state of the auto-posting's account if this is the first time the
+// transaction has touched it. Errors emitted by bookOne are appended
+// to r.errs; ok is true exactly when the booking succeeded.
+func (r *Reducer) fillAutoPosting(
+	txn *ast.Transaction,
+	auto *ast.Posting,
+	residual *ast.Amount,
+	trace *stateTrace,
+) (BookedPosting, bool) {
+	auto.Amount = residual
+	inv := trace.prepareForEdit(auto.Account)
+	method := r.booking[auto.Account]
+	bp, errs := bookOne(inv, auto, method, txn.Date, true)
+	r.errs = append(r.errs, errs...)
+	return bp, len(errs) == 0
+}
+
+// fillDeferredCost solves for the per-unit cost that absorbs residual
+// across the posting's units, writes it back into deferred.Cost.PerUnit
+// (so ResolveCost and the loader's writeAugmentationCost see the same
+// number), and re-books the posting. A zero unit count or arithmetic
+// failure is reported via r.errs and yields ok=false. The deferred
+// posting's account was already prepared for edit during Pass 1, so
+// the prepareForEdit call here is a fetch.
+func (r *Reducer) fillDeferredCost(
+	txn *ast.Transaction,
+	deferred *ast.Posting,
+	residual *ast.Amount,
+	trace *stateTrace,
+) (BookedPosting, bool) {
+	if deferred.Amount.Number.Sign() == 0 {
+		r.errs = append(r.errs, Error{
+			Code:    CodeUnresolvableInterpolation,
+			Span:    deferred.Span,
+			Account: deferred.Account,
+			Message: "deferred cost cannot be interpolated: posting has zero units",
+		})
+		return BookedPosting{}, false
+	}
+	perUnit := &ast.Amount{Currency: residual.Currency}
+	if _, err := quoContext.Quo(&perUnit.Number, &residual.Number, &deferred.Amount.Number); err != nil {
+		r.errs = append(r.errs, Error{
+			Code:    CodeInternalError,
+			Span:    deferred.Span,
+			Account: deferred.Account,
+			Message: "interpolate: divide residual by units: " + err.Error(),
+		})
+		return BookedPosting{}, false
+	}
+	deferred.Cost.PerUnit = perUnit
+	inv := trace.prepareForEdit(deferred.Account)
+	bp, errs := bookOne(inv, deferred, r.booking[deferred.Account], txn.Date, false)
+	r.errs = append(r.errs, errs...)
+	return bp, len(errs) == 0
 }
 
 // Run walks the ledger without a visitor, retaining only the final

@@ -18,6 +18,19 @@ func specIsEmpty(c *ast.CostSpec) bool {
 	return c == nil || (c.PerUnit == nil && c.Total == nil && c.Date == nil && c.Label == "")
 }
 
+// costNumberMissing reports whether a cost spec has neither a per-unit
+// nor a total cost number, signalling that the user wants a lot tracked
+// but expects the booking layer to fill in the cost from context. A
+// non-nil spec with at least one of PerUnit or Total set is concrete
+// enough for [ResolveCost] to handle on its own and is therefore not
+// "missing" in this sense; a nil spec means no cost was requested at
+// all (cash/no-lot augmentation) and is also not "missing". Date and
+// Label are ignored: both `{}` (lot-tracked, cost TBD) and
+// `{2025-01-01, "label"}` (lot identity stated, cost TBD) qualify.
+func costNumberMissing(c *ast.CostSpec) bool {
+	return c != nil && c.PerUnit == nil && c.Total == nil
+}
+
 // BookedPosting is the result of routing a single [ast.Posting] through
 // an inventory. Augmenting postings carry a Lot; reducing postings carry
 // a list of [ReductionStep] entries; cash / no-cost postings carry

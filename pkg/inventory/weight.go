@@ -28,6 +28,87 @@ func weightFromTotal(units, total *apd.Decimal) (*apd.Decimal, error) {
 	return out, nil
 }
 
+// bookedPostingWeight computes the signed weight a [BookedPosting]
+// contributes to the transaction's residual, along with the currency.
+//
+// Unlike [PostingWeight] which reads the AST's cost spec verbatim,
+// this helper consults the booking outcome so partial cost specs
+// (date-only, `{}`) get their resolved per-lot cost rather than a
+// fallback unit weight. A `@` or `@@` price annotation on the source
+// posting still wins, mirroring upstream beancount's rule that the
+// price defines the weight when present (the cost basis is then a
+// realized-gain concern, not a balance concern):
+//
+//   - p.Price != nil: defer to [PostingWeight], which handles the
+//     per-unit and total-price branches.
+//   - reduction with no price (len(bp.Reductions) > 0): return
+//     sign(bp.Units.Number) * Σ step.Units * step.Lot.Number, in the
+//     lot's cost currency. Correct even when the AST's cost spec is
+//     partial because the matcher already resolved the lot cost.
+//   - augmentation with a resolved lot (bp.Lot != nil) and no price:
+//     return bp.Units.Number * bp.Lot.Number in the lot's cost
+//     currency.
+//   - everything else (cash augmentation, no price, no cost): defer
+//     to [PostingWeight].
+//
+// The returned *apd.Decimal is freshly allocated and does not alias
+// any AST or BookedPosting field.
+func bookedPostingWeight(bp BookedPosting) (*apd.Decimal, string, error) {
+	if bp.Source != nil && bp.Source.Price != nil {
+		return PostingWeight(bp.Source)
+	}
+	switch {
+	case len(bp.Reductions) > 0:
+		// Sum |step.Units| * step.Lot.Number across steps; flip sign
+		// to match the units' sign so the weight cancels correctly in
+		// the residual.
+		out := new(apd.Decimal)
+		currency := bp.Reductions[0].Lot.Currency
+		for i := range bp.Reductions {
+			s := &bp.Reductions[i]
+			if s.Lot.Currency != "" && s.Lot.Currency != currency {
+				return nil, "", fmt.Errorf("booked reduction has mixed cost currencies: %q vs %q", currency, s.Lot.Currency)
+			}
+			part := new(apd.Decimal)
+			lotNum := s.Lot.Number
+			if _, err := apd.BaseContext.Mul(part, &s.Units, &lotNum); err != nil {
+				return nil, "", err
+			}
+			if _, err := apd.BaseContext.Add(out, out, part); err != nil {
+				return nil, "", err
+			}
+		}
+		// step.Units carries a positive magnitude per the reducer
+		// contract; flip the sign of the sum if the source units were
+		// negative.
+		if bp.Units.Number.Negative {
+			if _, err := apd.BaseContext.Neg(out, out); err != nil {
+				return nil, "", err
+			}
+		}
+		// A cash reduction (Lot.Currency == "") has no cost weight;
+		// fall back to the unit weight in the commodity currency.
+		// Cash lots carry a zero Lot.Number, so out has accumulated
+		// to zero by here and Set safely overwrites it.
+		if currency == "" {
+			out.Set(&bp.Units.Number)
+			return out, bp.Units.Currency, nil
+		}
+		return out, currency, nil
+	case bp.Lot != nil:
+		out := new(apd.Decimal)
+		lotNum := bp.Lot.Number
+		if _, err := apd.BaseContext.Mul(out, &bp.Units.Number, &lotNum); err != nil {
+			return nil, "", err
+		}
+		return out, bp.Lot.Currency, nil
+	default:
+		// Cash or price-annotated augmentation: the AST already carries
+		// the right shape for PostingWeight to handle.
+		return PostingWeight(bp.Source)
+	}
+}
+
 // PostingWeight computes the signed weight contributed by a posting to the
 // transaction's currency sums, along with the currency in which that weight
 // is denominated.
