@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "route",
+    srcs = [
+        "doc.go",
+        "route.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/distribute/route",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/format",
+    ],
+)
+
+go_test(
+    name = "route_test",
+    srcs = ["route_test.go"],
+    embed = [":route"],
+    deps = [
+        "//pkg/ast",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)

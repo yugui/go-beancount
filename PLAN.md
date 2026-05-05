@@ -269,6 +269,42 @@ Acceptance is covered by tests in this branch: a deadlock-regression test for th
 
 ---
 
+## Phase 7.5: Directive distribution CLI (`cmd/beanfile`)
+
+**Dependencies:** Phase 1 (CST), Phase 2 (AST), Phase 3 (printer / format).
+Phase 4 (validation) and Phase 6 (plugin system) are deliberately *not*
+required: the CLI uses `pkg/ast.LoadFile` / `LoadReader` directly to get
+include resolution without the validation/plugin pipeline.
+
+`cmd/beanfile` is a stateless offline CLI that reads a directive stream
+(stdin or files) and merges each directive into the appropriate file in a
+multi-file beancount ledger. It bridges directive *producers* (`beanprice`
+today, importers tomorrow) with the multi-file layout, without requiring
+`bean-daemon` to be running.
+
+The supporting libraries live under `pkg/distribute/`:
+
+- `pkg/distribute/route` — directive → destination path resolution, with
+  per-account-tree and per-commodity overrides.
+- `pkg/distribute/dedup` — ledger-wide equivalence index covering both
+  active and commented-out directives.
+- `pkg/distribute/comment` — recognizer and emitter for commented-out
+  directives.
+- `pkg/distribute/merge` — CST round-trip insertion preserving every byte
+  outside the inserted region, atomic write, order-driven binary search for
+  the insertion offset.
+
+A directive is filed by a three-way decision: skip if an equivalent already
+exists at the destination (active or commented-out); write as a
+commented-out marker if an active equivalent exists elsewhere in the
+ledger; otherwise write as a normal active directive.
+
+See [docs/beanfile-design.md](docs/beanfile-design.md) for the full
+specification, architecture, configuration schema, and sub-phase plan
+(7.5a–7.5i).
+
+---
+
 ## Phase 8: Transaction Import Framework (`pkg/importer`)
 
 **Dependencies:** Phase 2 (AST), Phase 6 (plugin system)
@@ -331,7 +367,7 @@ A long-running background process that owns an in-memory ledger and serves API r
 - **Endpoints:**
   - `POST /query` — execute a BQL query against the whole ledger; returns rows as JSON.
   - `GET /prices` — query price history for a commodity pair and date range.
-  - `POST /directives` — append one or more directives to a specified target file within the ledger.
+  - `POST /directives` — append one or more directives to a specified target file within the ledger. Implementation reuses the `pkg/distribute/{route,merge,dedup,comment}` libraries from Phase 7.5 so daemon and CLI behave identically.
   - `DELETE /directives/{id}` — remove a directive by ID (tracked by source file + location).
   - `POST /files` — create a new ledger file and optionally add an `include` reference to it from an existing file.
   - `GET /accounts` — list open accounts with metadata.
@@ -394,6 +430,8 @@ Phase 4:  pkg/validation      (Phase 2)
 Phase 5:  pkg/inventory       (Phase 2, 4)
 Phase 6:  pkg/ext             (no deps)
 Phase 7:  pkg/quote           (Phase 6)
+Phase 7.5: pkg/distribute     (Phase 1, 2, 3)
+           cmd/beanfile       (Phase 7.5)
 Phase 8:  pkg/importer        (Phase 2, 6)
 Phase 9:  pkg/query           (Phase 2, 4, 5)
 Phase 10: cmd/bean-daemon     (Phase 2, 4, 5, 9)

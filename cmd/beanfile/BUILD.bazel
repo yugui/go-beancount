@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "beanfile_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/yugui/go-beancount/cmd/beanfile",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/distribute/dedup",
+        "//pkg/distribute/merge",
+        "//pkg/distribute/route",
+        "//pkg/printer",
+    ],
+)
+
+go_binary(
+    name = "beanfile",
+    embed = [":beanfile_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "beanfile_test",
+    srcs = ["main_test.go"],
+    embed = [":beanfile_lib"],
+)

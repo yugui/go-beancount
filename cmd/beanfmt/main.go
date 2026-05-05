@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
+	"github.com/yugui/go-beancount/internal/atomicfile"
 	"github.com/yugui/go-beancount/pkg/format"
 )
 
@@ -91,7 +91,7 @@ func formatFile(path string, writeInPlace, multiFile, needSeparator bool, w io.W
 	}
 
 	if writeInPlace {
-		return atomicWrite(path, []byte(result))
+		return atomicfile.Write(path, []byte(result))
 	}
 
 	if multiFile && needSeparator {
@@ -102,42 +102,4 @@ func formatFile(path string, writeInPlace, multiFile, needSeparator bool, w io.W
 	}
 	_, err = io.WriteString(w, result)
 	return err
-}
-
-// atomicWrite writes data to path atomically by writing to a temporary file
-// in the same directory and then renaming it.
-func atomicWrite(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	f, err := os.CreateTemp(dir, ".beanfmt-*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpPath := f.Name()
-
-	// Ensure cleanup on failure.
-	success := false
-	defer func() {
-		if !success {
-			os.Remove(tmpPath)
-		}
-	}()
-
-	if _, err := f.Write(data); err != nil {
-		f.Close()
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-
-	// Preserve original file permissions if possible.
-	if info, err := os.Stat(path); err == nil {
-		os.Chmod(tmpPath, info.Mode().Perm())
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		return fmt.Errorf("renaming temp file: %w", err)
-	}
-	success = true
-	return nil
 }

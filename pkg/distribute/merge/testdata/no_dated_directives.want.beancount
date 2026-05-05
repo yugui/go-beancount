@@ -1,0 +1,4 @@
+option "title" "Test Ledger"
+; just a comment
+
+2024-01-15 open Assets:NewAccount
