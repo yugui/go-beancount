@@ -9,7 +9,7 @@
 // reducer needs to mutate, filling auto-posting Amounts, interpolating
 // deferred per-unit costs, and synthesizing a multi-lot reduction's
 // Cost.Total when the user wrote no concrete number — lives in
-// [pkg/inventory.Reducer]. This package is a thin adapter: it forwards
+// [inventory.Reducer]. This package is a thin adapter: it forwards
 // the plugin input's directive iterator to the reducer, returns the
 // booked directive slice as the plugin's replacement contents, and
 // translates inventory errors to [ast.Diagnostic] entries.

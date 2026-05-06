@@ -49,7 +49,7 @@ func (p *Posting) TotalCost() (*Amount, error) {
 		if _, err := apd.BaseContext.Mul(perPart, units, &p.Cost.PerUnit.Number); err != nil {
 			return nil, err
 		}
-		totalPart, err := signedTotal(units, &p.Cost.Total.Number)
+		totalPart, err := signedAbs(units, &p.Cost.Total.Number)
 		if err != nil {
 			return nil, err
 		}
@@ -65,7 +65,7 @@ func (p *Posting) TotalCost() (*Amount, error) {
 		}
 		return &out, nil
 	default:
-		signed, err := signedTotal(units, &p.Cost.Total.Number)
+		signed, err := signedAbs(units, &p.Cost.Total.Number)
 		if err != nil {
 			return nil, err
 		}
@@ -75,13 +75,14 @@ func (p *Posting) TotalCost() (*Amount, error) {
 	}
 }
 
-// signedTotal returns sign(units) * |total| as a freshly allocated
+// signedAbs returns sign(units) * |val| as a freshly allocated
 // decimal. Used by both the Total-only and combined branches of
 // (*Posting).TotalCost so the same exact (division-free) formulation
-// reaches both code paths.
-func signedTotal(units, total *apd.Decimal) (*apd.Decimal, error) {
+// reaches both code paths. The same name and shape live in
+// pkg/inventory for the price-side equivalent.
+func signedAbs(units, val *apd.Decimal) (*apd.Decimal, error) {
 	abs := new(apd.Decimal)
-	if _, err := apd.BaseContext.Abs(abs, total); err != nil {
+	if _, err := apd.BaseContext.Abs(abs, val); err != nil {
 		return nil, err
 	}
 	if !units.Negative {

@@ -55,10 +55,15 @@ func NewReducer(directives iter.Seq2[int, ast.Directive]) *Reducer {
 
 // VisitFunc is called once per [ast.Transaction] during [Reducer.Walk].
 //
-// The txn argument is always the original input pointer, not any clone
-// the reducer may have made for mutation. Callers (notably
-// [Reducer.Inspect]) can therefore identify a transaction by pointer
-// equality against the directives they originally supplied.
+// Pointer contract: txn is always the caller's original input pointer
+// (so [Reducer.Inspect] and other identity-based lookups work), while
+// each [BookedPosting] in booked has its Source field pointing into
+// the reducer's working copy — a clone if the reducer had to mutate
+// any posting, the original otherwise. Reading fields on Source
+// observes any interpolation the reducer performed (auto-posting
+// Amount, deferred PerUnit, multi-lot reduction Total). The two
+// pointer worlds therefore differ when, and only when, the
+// transaction was cloned.
 //
 // The before and after maps contain only the accounts touched by the
 // transaction. An account that was never seen before the transaction
@@ -66,12 +71,6 @@ func NewReducer(directives iter.Seq2[int, ast.Directive]) *Reducer {
 // (possibly empty) deep-copied snapshot. Both maps' *Inventory values
 // are fresh clones the callback may retain beyond the invocation
 // without risk of later mutation by Walk.
-//
-// Each [BookedPosting] in booked has its Source field pointing into the
-// reducer's working copy of the transaction (a clone if the reducer had
-// to mutate any posting; the original otherwise). Reading fields on
-// Source observes any interpolation the reducer performed
-// (auto-posting Amount, deferred PerUnit, multi-lot reduction Total).
 //
 // Returning false terminates iteration early.
 type VisitFunc func(
@@ -213,7 +212,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 		r.errs = append(r.errs, errs...)
 		if len(errs) == 0 {
-			fillMissingCostFromReductions(p, bp.Reductions)
+			r.fillMissingCostFromReductions(p, bp.Reductions)
 			booked = append(booked, bp)
 		}
 	}
@@ -236,7 +235,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 				bp, fillOk = r.fillDeferredCost(txn, unknownP, residual, trace)
 			}
 			if fillOk {
-				fillMissingCostFromReductions(unknownP, bp.Reductions)
+				r.fillMissingCostFromReductions(unknownP, bp.Reductions)
 				booked = append(booked, bp)
 			}
 		}
@@ -263,7 +262,14 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 // from the user's spec. In those cases this function is a no-op; the
 // AST is preserved verbatim, mirroring the augmentation-side policy of
 // not rewriting concrete user numbers.
-func fillMissingCostFromReductions(p *ast.Posting, steps []ReductionStep) {
+//
+// Arithmetic errors on apd.BaseContext are not expected for ledger-
+// realistic numbers, but if one occurs the function records a
+// CodeInternalError diagnostic on the reducer rather than silently
+// leaving the cost spec unwritten — a silent skip would let the
+// validator fall through to the price branch and produce a subtly
+// wrong weight.
+func (r *Reducer) fillMissingCostFromReductions(p *ast.Posting, steps []ReductionStep) {
 	if len(steps) == 0 {
 		return
 	}
@@ -279,14 +285,22 @@ func fillMissingCostFromReductions(p *ast.Posting, steps []ReductionStep) {
 		// contract, so part = step.Units * step.Lot.Number is
 		// positive on a normal long lot with a positive Number.
 		if _, err := apd.BaseContext.Mul(&part, &s.Units, &s.Lot.Number); err != nil {
-			// Arithmetic on apd.BaseContext fails only on
-			// pathological exponents that the parser would never
-			// admit. Bail without writing back rather than corrupt
-			// the AST with a partial sum.
+			r.errs = append(r.errs, Error{
+				Code:    CodeInternalError,
+				Span:    p.Span,
+				Account: p.Account,
+				Message: "synthesize reduction total: multiply step: " + err.Error(),
+			})
 			return
 		}
 		var sum apd.Decimal
 		if _, err := apd.BaseContext.Add(&sum, &total, &part); err != nil {
+			r.errs = append(r.errs, Error{
+				Code:    CodeInternalError,
+				Span:    p.Span,
+				Account: p.Account,
+				Message: "synthesize reduction total: accumulate step: " + err.Error(),
+			})
 			return
 		}
 		total.Set(&sum)

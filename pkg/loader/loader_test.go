@@ -104,13 +104,40 @@ func TestLoadCancellation(t *testing.T) {
 	}
 }
 
-// TestLoad_TotalCostAugmentationBalances pins the precision-preserving
-// behavior of the booking pass for `{{ T CUR }}` augmentations. The
-// posting weights cancel exactly in the user-written form (Σ ±T = 0
-// JPY), and the booking pass must not rewrite the spec into a per-unit
-// form whose value is the non-terminating quotient T/|units|: doing so
-// would round in apd's 34-digit context and the transaction-balance
-// validator would then reject a residual that is mathematically zero.
+// TestLoad_CostAndPriceSaleBalances exercises upstream Beancount's
+// "Trading with Capital Gains" example end-to-end: a posting that
+// carries both a cost and a price annotation must use the cost as
+// its balancing weight, leaving the price to drive the prices
+// database while an explicit Income posting absorbs the realized
+// gain. The transaction balances exactly when our PostingWeight
+// honors that contract.
+func TestLoad_CostAndPriceSaleBalances(t *testing.T) {
+	const src = `1970-01-01 open Assets:ETrade:IVV
+1970-01-01 open Assets:ETrade:Cash
+1970-01-01 open Income:ETrade:CapitalGains
+1970-01-01 open Equity:Opening
+
+2014-01-01 * "buy"
+  Assets:ETrade:IVV    10 IVV {183.07 USD}
+  Equity:Opening
+
+2014-07-11 * "Sold shares of S&P 500"
+  Assets:ETrade:IVV               -10 IVV {183.07 USD} @ 197.90 USD
+  Assets:ETrade:Cash          1979.00 USD
+  Income:ETrade:CapitalGains  -148.30 USD
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Errorf("unexpected error diagnostic: [%s] %s", d.Code, d.Message)
+		}
+	}
+}
+
 // TestLoad_TotalCostAugmentationWithAutoPostingBalances is the
 // minimal regression for the reported bug: a `{{T CUR}}` augmentation
 // paired with an auto-posting that absorbs the cost-side of the
@@ -138,6 +165,13 @@ func TestLoad_TotalCostAugmentationWithAutoPostingBalances(t *testing.T) {
 	}
 }
 
+// TestLoad_TotalCostAugmentationBalances pins the precision-preserving
+// behavior of the booking pass for `{{ T CUR }}` augmentations. The
+// posting weights cancel exactly in the user-written form (Σ ±T = 0
+// JPY), and the booking pass must not rewrite the spec into a per-unit
+// form whose value is the non-terminating quotient T/|units|: doing so
+// would round in apd's 34-digit context and the transaction-balance
+// validator would then reject a residual that is mathematically zero.
 func TestLoad_TotalCostAugmentationBalances(t *testing.T) {
 	const src = `2025-01-01 open Assets:A JPY,STOCK "NONE"
 2025-01-01 open Assets:B JPY,STOCK "STRICT"

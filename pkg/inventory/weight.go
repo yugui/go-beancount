@@ -9,19 +9,33 @@ import (
 // transaction's currency sums, along with the currency in which that weight
 // is denominated.
 //
-// An auto-posting (p.Amount == nil) returns (nil, "", nil); callers that need
-// to infer the missing amount should perform their own balancing.
+// An auto-posting (p.Amount == nil) returns (nil, "", nil); callers that
+// need to infer the missing amount should perform their own balancing.
 //
-// The dispatch is:
+// Precedence (matching upstream Beancount's Balancing Postings rule):
 //
-//   - p.Price != nil: the price annotation defines the weight (per-unit
-//     `@P` -> units * P, total `@@P` -> sign(units) * |P|). A price
-//     wins over any cost spec, mirroring upstream beancount: a sale's
-//     weight is the cash side, not the lot's cost basis.
-//   - otherwise (*Posting).TotalCost handles the cost cases uniformly,
-//     covering `{X CUR}`, `{{T CUR}}`, and `{X # T CUR}` forms. When
-//     TotalCost returns nil (no Cost spec or empty spec), the weight
-//     falls through to the posting's units in their commodity currency.
+//   - p.Cost != nil: the cost spec defines the weight via
+//     [(*ast.Posting).TotalCost], handling `{X CUR}`, `{{T CUR}}`, and
+//     the combined `{X # T CUR}` forms uniformly. When both a cost and
+//     a price annotation are present (e.g.
+//     `-10 IVV {183.07 USD} @ 197.90 USD`), upstream's documented
+//     contract is that **the cost defines the balancing weight** and
+//     the price is used only to insert an entry into the prices
+//     database; the realized gain or loss must be recorded explicitly
+//     by another posting in the same transaction.
+//   - p.Price != nil (and no cost): the price annotation defines the
+//     weight (per-unit `@P` -> units * P, total `@@P` -> sign(units) *
+//     |P|), in the price currency. This is the FX-style conversion
+//     case where the cost basis is not tracked at lot granularity.
+//   - otherwise: the posting carries plain units in their commodity
+//     currency.
+//
+// Booking has already filled the cost spec with a concrete number (or
+// synthesized one — see Reducer's deferred-cost and reduction-Total
+// passes) by the time PostingWeight runs as part of validation, so the
+// "Cost present but TotalCost returns nil" branch is unreachable in
+// practice. As a defensive measure the implementation falls through to
+// Price (and then to plain units) if it ever does happen.
 //
 // The returned *apd.Decimal is freshly allocated and does not alias any
 // AST field, so callers may mutate it in place (e.g. to negate it when
@@ -29,6 +43,15 @@ import (
 func PostingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 	if p.Amount == nil {
 		return nil, "", nil
+	}
+	cost, err := p.TotalCost()
+	if err != nil {
+		return nil, "", err
+	}
+	if cost != nil {
+		out := new(apd.Decimal)
+		out.Set(&cost.Number)
+		return out, cost.Currency, nil
 	}
 	if p.Price != nil {
 		num := p.Amount.Number
@@ -45,15 +68,6 @@ func PostingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 			return nil, "", err
 		}
 		return out, p.Price.Amount.Currency, nil
-	}
-	cost, err := p.TotalCost()
-	if err != nil {
-		return nil, "", err
-	}
-	if cost != nil {
-		out := new(apd.Decimal)
-		out.Set(&cost.Number)
-		return out, cost.Currency, nil
 	}
 	// Plain amount: copy the posting's units so the caller may mutate
 	// without disturbing the AST.

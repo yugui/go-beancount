@@ -222,7 +222,7 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 	ledger := loadInspectionFixture(t)
 	r := inventory.NewReducer(ledger.All())
 
-	sale := txnByNarration(ledger, "Sell ACME lot-2025a with auto cash")
+	sale := txnByNarration(ledger, "Sell ACME lot-2025a")
 	if sale == nil {
 		t.Fatalf("could not find the ACME sale transaction in the fixture")
 	}
@@ -264,7 +264,8 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 	)
 
 	// After: only lot-2025b remains on BrokerA; cash has absorbed the
-	// +600 residual, so the balance is 7950 + 600 = 8550.00 USD.
+	// explicit +600 USD proceeds leg, so the balance is 7950 + 600 =
+	// 8550.00 USD.
 	matchInventory(t, "Inspect After BrokerA",
 		insp.After[ast.Account("Assets:Investments:BrokerA")],
 		[]wantPosition{
@@ -282,12 +283,15 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 	)
 
 	// Booked: one reducing ACME posting with RealizedGain of 100 USD
-	// and one inferred auto Cash posting with +600.00 USD.
-	if len(insp.Booked) != 2 {
-		t.Fatalf("len(Booked) = %d, want 2", len(insp.Booked))
+	// (the cost-basis difference between 100 USD per-unit cost and the
+	// 120 USD per-unit sale price), one explicit Cash posting with
+	// +600.00 USD proceeds, and one inferred auto Income:Gains posting
+	// absorbing the realized gain (-100.00 USD).
+	if len(insp.Booked) != 3 {
+		t.Fatalf("len(Booked) = %d, want 3", len(insp.Booked))
 	}
 
-	var acmeBP, cashBP *inventory.BookedPosting
+	var acmeBP, cashBP, gainsBP *inventory.BookedPosting
 	for i := range insp.Booked {
 		bp := &insp.Booked[i]
 		switch bp.Account {
@@ -295,10 +299,12 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 			acmeBP = bp
 		case "Assets:Cash":
 			cashBP = bp
+		case "Income:Gains":
+			gainsBP = bp
 		}
 	}
-	if acmeBP == nil || cashBP == nil {
-		t.Fatalf("missing booked postings: acme=%v cash=%v", acmeBP, cashBP)
+	if acmeBP == nil || cashBP == nil || gainsBP == nil {
+		t.Fatalf("missing booked postings: acme=%v cash=%v gains=%v", acmeBP, cashBP, gainsBP)
 	}
 
 	// ACME posting: units -5, one reduction of 5 units against lot-2025a
@@ -354,9 +360,9 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 		t.Errorf("step.GainCurrency = %q, want USD", step.GainCurrency)
 	}
 
-	// Cash posting: auto-inferred, +600.00 USD, no lot, no reductions.
-	if !cashBP.InferredAuto {
-		t.Errorf("cashBP.InferredAuto = false, want true")
+	// Cash posting: explicit +600.00 USD proceeds, no lot, no reductions.
+	if cashBP.InferredAuto {
+		t.Errorf("cashBP.InferredAuto = true, want false (cash leg is explicit)")
 	}
 	if cashBP.Units.Currency != "USD" {
 		t.Errorf("cashBP.Units.Currency = %q, want USD", cashBP.Units.Currency)
@@ -370,6 +376,25 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 	}
 	if len(cashBP.Reductions) != 0 {
 		t.Errorf("len(cashBP.Reductions) = %d, want 0", len(cashBP.Reductions))
+	}
+
+	// Income:Gains posting: auto-inferred, absorbs the realized gain
+	// (-100.00 USD), no lot, no reductions.
+	if !gainsBP.InferredAuto {
+		t.Errorf("gainsBP.InferredAuto = false, want true")
+	}
+	if gainsBP.Units.Currency != "USD" {
+		t.Errorf("gainsBP.Units.Currency = %q, want USD", gainsBP.Units.Currency)
+	}
+	wantNeg100 := mustDecimal(t, "-100.00")
+	if gainsBP.Units.Number.Cmp(&wantNeg100) != 0 {
+		t.Errorf("gainsBP.Units.Number = %s, want -100.00", gainsBP.Units.Number.Text('f'))
+	}
+	if gainsBP.Lot != nil {
+		t.Errorf("gainsBP.Lot = %+v, want nil", gainsBP.Lot)
+	}
+	if len(gainsBP.Reductions) != 0 {
+		t.Errorf("len(gainsBP.Reductions) = %d, want 0", len(gainsBP.Reductions))
 	}
 }
 
@@ -487,7 +512,11 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 // TestInventoryIntegration_AutoPostingInference re-inspects the ACME
 // sale (the fixture's only transaction with an auto-balanced posting)
 // and asserts the auto posting's InferredAuto flag plus the inferred
-// amount. This overlaps with the reduction test above but keeps the
+// amount. With cost-and-price postings, upstream Beancount uses cost
+// for the balancing weight and price only for the prices database, so
+// the auto leg lands on Income:Gains and absorbs the realized gain
+// (-100.00 USD), not the cash proceeds (which is recorded explicitly).
+// This overlaps with the reduction test above but keeps the
 // auto-posting contract asserted in isolation.
 func TestInventoryIntegration_AutoPostingInference(t *testing.T) {
 	ledger := loadInspectionFixture(t)
@@ -496,12 +525,12 @@ func TestInventoryIntegration_AutoPostingInference(t *testing.T) {
 	// The ACME sale is the only transaction in the fixture that uses
 	// an auto-balanced posting. Locate it by narration so the test
 	// document itself pins that assumption.
-	sale := txnByNarration(ledger, "Sell ACME lot-2025a with auto cash")
+	sale := txnByNarration(ledger, "Sell ACME lot-2025a")
 	if sale == nil {
 		t.Fatalf("could not find the auto-posting transaction in the fixture")
 	}
-	if len(sale.Postings) != 2 {
-		t.Fatalf("sale has %d postings, want 2", len(sale.Postings))
+	if len(sale.Postings) != 3 {
+		t.Fatalf("sale has %d postings, want 3", len(sale.Postings))
 	}
 
 	insp, errs := r.Inspect(sale)
@@ -524,15 +553,15 @@ func TestInventoryIntegration_AutoPostingInference(t *testing.T) {
 	if autoBP == nil {
 		t.Fatalf("no BookedPosting with InferredAuto=true; booked=%+v", insp.Booked)
 	}
-	if autoBP.Account != "Assets:Cash" {
-		t.Errorf("autoBP.Account = %q, want Assets:Cash", autoBP.Account)
+	if autoBP.Account != "Income:Gains" {
+		t.Errorf("autoBP.Account = %q, want Income:Gains", autoBP.Account)
 	}
 	if autoBP.Units.Currency != "USD" {
 		t.Errorf("autoBP.Units.Currency = %q, want USD", autoBP.Units.Currency)
 	}
-	want600 := mustDecimal(t, "600.00")
-	if autoBP.Units.Number.Cmp(&want600) != 0 {
-		t.Errorf("autoBP.Units.Number = %s, want 600.00", autoBP.Units.Number.Text('f'))
+	wantNeg100 := mustDecimal(t, "-100.00")
+	if autoBP.Units.Number.Cmp(&wantNeg100) != 0 {
+		t.Errorf("autoBP.Units.Number = %s, want -100.00", autoBP.Units.Number.Text('f'))
 	}
 	// The auto-posting should not carry a lot or reductions.
 	if autoBP.Lot != nil {

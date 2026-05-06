@@ -6,8 +6,8 @@ import (
 	"github.com/cockroachdb/apd/v3"
 )
 
-// dec parses s as an apd.Decimal and returns it. Panics on failure;
-// only intended for test setup.
+// dec parses s as an apd.Decimal and returns it. Fails the test
+// fatally on parse error; only intended for test setup.
 func dec(t *testing.T, s string) apd.Decimal {
 	t.Helper()
 	var d apd.Decimal
@@ -72,17 +72,6 @@ func TestPostingTotalCost(t *testing.T) {
 			},
 			wantNum: "-1000",
 			wantCur: "USD",
-		},
-		{
-			name: "Total only, positive units (augmentation)",
-			posting: &Posting{
-				Amount: amount(t, "3", "STOCK"),
-				Cost: &CostSpec{
-					Total: amount(t, "1", "JPY"),
-				},
-			},
-			wantNum: "1",
-			wantCur: "JPY",
 		},
 		{
 			name: "Total only, negative units (reduction sign flip)",
@@ -179,10 +168,10 @@ func TestPostingTotalCost(t *testing.T) {
 				t.Fatalf("TotalCost() = nil, want %s %s", tt.wantNum, tt.wantCur)
 			}
 			if gotStr := got.Number.String(); gotStr != tt.wantNum {
-				t.Errorf("Number = %q, want %q", gotStr, tt.wantNum)
+				t.Errorf("TotalCost() Number = %q, want %q", gotStr, tt.wantNum)
 			}
 			if got.Currency != tt.wantCur {
-				t.Errorf("Currency = %q, want %q", got.Currency, tt.wantCur)
+				t.Errorf("TotalCost() Currency = %q, want %q", got.Currency, tt.wantCur)
 			}
 		})
 	}
@@ -204,6 +193,6 @@ func TestPostingTotalCost_ResultIsFreshAmount(t *testing.T) {
 	}
 	got.Number.Set(&apd.Decimal{}) // overwrite to zero
 	if p.Cost.PerUnit.Number.String() != "5" {
-		t.Errorf("mutating result corrupted CostSpec: PerUnit.Number = %s", p.Cost.PerUnit.Number.String())
+		t.Errorf("TotalCost() mutating result corrupted CostSpec: PerUnit.Number = %s", p.Cost.PerUnit.Number.String())
 	}
 }

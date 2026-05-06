@@ -12,6 +12,7 @@ go_library(
         "//pkg/ast",
         "//pkg/ext/postproc",
         "//pkg/ext/postproc/api",
+        "//pkg/inventory",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )
