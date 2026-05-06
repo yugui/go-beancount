@@ -19,7 +19,6 @@ type Options struct {
 // Default returns Options with sensible defaults.
 func Default() Options {
 	return Options{
-		CommaGrouping:               false,
 		AlignAmounts:                true,
 		AmountColumn:                52,
 		EastAsianAmbiguousWidth:     2,

@@ -385,37 +385,26 @@ func TestFromRaw_EquivalentToParse(t *testing.T) {
 		t.Fatalf("TestFromRaw_EquivalentToParse: FromRaw errs = %v, want none", rawErrs)
 	}
 
-	// Compare field-by-field: both bind the same defaultRegistry, and their
-	// stored maps should agree key-for-key. *apd.Decimal values compare by
-	// reflect.DeepEqual only when their coefficients and exponents match, so
-	// we compare decimals via their string representation.
+	// Both Values must bind the same registry pointer and carry equal value
+	// maps. *apd.Decimal does not compare cleanly with reflect.DeepEqual
+	// across independent allocations, so use a Comparer that normalizes via
+	// the canonical string form. Registry pointer equality is asserted
+	// separately because the registry contains function fields that cmp
+	// cannot recurse into.
 	if fromParse.reg != fromRaw.reg {
 		t.Errorf("TestFromRaw_EquivalentToParse: reg pointers differ")
 	}
-	if len(fromParse.values) != len(fromRaw.values) {
-		t.Fatalf("TestFromRaw_EquivalentToParse: value count: Parse=%d FromRaw=%d", len(fromParse.values), len(fromRaw.values))
-	}
-	for k, pv := range fromParse.values {
-		rv, ok := fromRaw.values[k]
-		if !ok {
-			t.Errorf("TestFromRaw_EquivalentToParse: key %q missing from FromRaw", k)
-			continue
+	decimalCmp := cmp.Comparer(func(a, b *apd.Decimal) bool {
+		switch {
+		case a == nil && b == nil:
+			return true
+		case a == nil || b == nil:
+			return false
+		default:
+			return a.String() == b.String()
 		}
-		// *apd.Decimal doesn't compare cleanly with DeepEqual across
-		// independent allocations, so compare by string form.
-		if pd, isDec := pv.(*apd.Decimal); isDec {
-			rd, ok := rv.(*apd.Decimal)
-			if !ok {
-				t.Errorf("TestFromRaw_EquivalentToParse: key %q: types differ (Parse=%T FromRaw=%T)", k, pv, rv)
-				continue
-			}
-			if pd.String() != rd.String() {
-				t.Errorf("TestFromRaw_EquivalentToParse: key %q: Parse=%s FromRaw=%s", k, pd.String(), rd.String())
-			}
-			continue
-		}
-		if diff := cmp.Diff(pv, rv); diff != "" {
-			t.Errorf("TestFromRaw_EquivalentToParse: key %q mismatch (-Parse +FromRaw):\n%s", k, diff)
-		}
+	})
+	if diff := cmp.Diff(fromParse.values, fromRaw.values, decimalCmp); diff != "" {
+		t.Errorf("TestFromRaw_EquivalentToParse: values mismatch (-Parse +FromRaw):\n%s", diff)
 	}
 }
