@@ -58,19 +58,22 @@ func day(y int, m time.Month, d int) time.Time {
 // for a pad/balance pair on `currency`. expectedAmt is the balance
 // assertion's asserted total; residualAmt is the delta the synthetic
 // transaction must absorb (= expected − actual at the moment of the
-// assertion). The narration mirrors the plugin's exact format so
-// tests can pin both behavior and the human-facing string in a single
-// cmp.Diff.
+// assertion). The narration is formatted via apd.Decimal.Text('f') —
+// the same formatter the plugin uses — so the helper produces the
+// exact string the plugin emits even for fractional amounts.
 func wantSynthTx(p *ast.Pad, expectedAmt, residualAmt int64, currency string) *ast.Transaction {
 	pos := amtInt(residualAmt, currency)
 	neg := amtInt(-residualAmt, currency)
+	var expD, resD apd.Decimal
+	expD.SetInt64(expectedAmt)
+	resD.SetInt64(residualAmt)
 	return &ast.Transaction{
 		Span: p.Span,
 		Date: p.Date,
 		Flag: '*',
 		Narration: fmt.Sprintf(
-			"(Padding inserted for Balance of %d %s for difference %d %s)",
-			expectedAmt, currency, residualAmt, currency,
+			"(Padding inserted for Balance of %s %s for difference %s %s)",
+			expD.Text('f'), currency, resD.Text('f'), currency,
 		),
 		Postings: []ast.Posting{
 			{Account: p.Account, Amount: &pos},
@@ -79,16 +82,19 @@ func wantSynthTx(p *ast.Pad, expectedAmt, residualAmt int64, currency string) *a
 	}
 }
 
+// TestPlugin_EmptyLedger verifies that a request with no directives
+// returns no diagnostics and signals "preserve input verbatim" via a
+// nil Result.Directives.
 func TestPlugin_EmptyLedger(t *testing.T) {
 	res, err := pad.Apply(context.Background(), api.Input{})
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
 	if res.Directives != nil {
-		t.Errorf("Result.Directives = %v, want nil (no change on empty ledger)", res.Directives)
+		t.Errorf("pad.Apply: Result.Directives = %v, want nil (no change on empty ledger)", res.Directives)
 	}
-	if len(res.Diagnostics) != 0 {
-		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -117,10 +123,10 @@ func TestPlugin_NoPads(t *testing.T) {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
 	if res.Directives != nil {
-		t.Errorf("Result.Directives = %v, want nil (no pads means no mutation)", res.Directives)
+		t.Errorf("pad.Apply: Result.Directives = %v, want nil (no pads means no mutation)", res.Directives)
 	}
-	if len(res.Diagnostics) != 0 {
-		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -147,57 +153,12 @@ func TestPlugin_ResolvedPad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 0 {
-		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	if len(res.Directives) != 3 {
-		t.Fatalf("len(Result.Directives) = %d, want 3 (pad + synth txn + balance)", len(res.Directives))
-	}
-	if _, ok := res.Directives[0].(*ast.Pad); !ok {
-		t.Errorf("Result.Directives[0] = %T, want *ast.Pad (original pad retained)", res.Directives[0])
-	}
-	tx, ok := res.Directives[1].(*ast.Transaction)
-	if !ok {
-		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
-	}
-	if !tx.Date.Equal(p.Date) {
-		t.Errorf("synth.Date = %v, want %v (= pad.Date)", tx.Date, p.Date)
-	}
-	if tx.Span != padSpan {
-		t.Errorf("synth.Span = %v, want %v (= pad.Span)", tx.Span, padSpan)
-	}
-	if tx.Flag != '*' {
-		t.Errorf("synth.Flag = %q, want %q", tx.Flag, '*')
-	}
-	if len(tx.Postings) != 2 {
-		t.Fatalf("len(synth.Postings) = %d, want 2", len(tx.Postings))
-	}
-	// First posting: target account with +residual USD.
-	if tx.Postings[0].Account != "Assets:Cash" {
-		t.Errorf("synth.Postings[0].Account = %q, want %q", tx.Postings[0].Account, "Assets:Cash")
-	}
-	if tx.Postings[0].Amount == nil {
-		t.Fatalf("synth.Postings[0].Amount = nil, want explicit amount")
-	}
-	if tx.Postings[0].Amount.Currency != "USD" {
-		t.Errorf("synth.Postings[0].Amount.Currency = %q, want USD", tx.Postings[0].Amount.Currency)
-	}
-	if got := tx.Postings[0].Amount.Number.String(); got != "1000" {
-		t.Errorf("synth.Postings[0].Amount.Number = %q, want %q", got, "1000")
-	}
-	// Second posting: source account with -residual USD.
-	if tx.Postings[1].Account != "Equity:Opening" {
-		t.Errorf("synth.Postings[1].Account = %q, want %q", tx.Postings[1].Account, "Equity:Opening")
-	}
-	if tx.Postings[1].Amount == nil {
-		t.Fatalf("synth.Postings[1].Amount = nil, want explicit amount")
-	}
-	if got := tx.Postings[1].Amount.Number.String(); got != "-1000" {
-		t.Errorf("synth.Postings[1].Amount.Number = %q, want %q", got, "-1000")
-	}
-	// Balance directive must remain in place.
-	if _, ok := res.Directives[2].(*ast.Balance); !ok {
-		t.Errorf("Result.Directives[2] = %T, want *ast.Balance", res.Directives[2])
+	wantDirectives := []ast.Directive{p, wantSynthTx(p, 1000, 1000, "USD"), bal}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -217,24 +178,18 @@ func TestPlugin_UnresolvedPad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != string(validation.CodePadUnresolved) {
-		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodePadUnresolved))
-	}
-	if e.Span != padSpan {
-		t.Errorf("Span = %v, want %v", e.Span, padSpan)
-	}
-	wantMsg := "pad directive for Assets:Cash from Equity:Opening was not followed by a matching balance assertion"
-	if e.Message != wantMsg {
-		t.Errorf("Message = %q, want %q", e.Message, wantMsg)
+	wantDiagnostics := []ast.Diagnostic{{
+		Code:    string(validation.CodePadUnresolved),
+		Span:    padSpan,
+		Message: "pad directive for Assets:Cash from Equity:Opening was not followed by a matching balance assertion",
+	}}
+	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 	// Unresolved pad is left in the output, so Directives must be
 	// nil — there were no successful synthesizations.
 	if res.Directives != nil {
-		t.Errorf("Result.Directives = %v, want nil (no successful pad resolution)", res.Directives)
+		t.Errorf("pad.Apply: Result.Directives = %v, want nil (no successful pad resolution)", res.Directives)
 	}
 }
 
@@ -243,13 +198,13 @@ func TestPlugin_UnresolvedPad(t *testing.T) {
 // the established diagnostic wording.
 func TestPlugin_ConsecutivePadsSameAccount(t *testing.T) {
 	firstSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 5, Column: 1}}
-	pad1 := &ast.Pad{
+	firstPad := &ast.Pad{
 		Span:       firstSpan,
 		Date:       day(2024, 1, 10),
 		Account:    "Assets:Cash",
 		PadAccount: "Equity:Opening",
 	}
-	pad2 := &ast.Pad{
+	secondPad := &ast.Pad{
 		Date:       day(2024, 1, 15),
 		Account:    "Assets:Cash",
 		PadAccount: "Equity:OtherOpening",
@@ -259,43 +214,24 @@ func TestPlugin_ConsecutivePadsSameAccount(t *testing.T) {
 		Account: "Assets:Cash",
 		Amount:  amtInt(500, "USD"),
 	}
-	in := api.Input{Directives: seqOf([]ast.Directive{pad1, pad2, bal})}
+	in := api.Input{Directives: seqOf([]ast.Directive{firstPad, secondPad, bal})}
 	res, err := pad.Apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+	wantDiagnostics := []ast.Diagnostic{{
+		Code:    string(validation.CodePadUnresolved),
+		Span:    firstSpan,
+		Message: "pad directive for Assets:Cash from Equity:Opening was not resolved before another pad",
+	}}
+	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	e := res.Diagnostics[0]
-	if e.Code != string(validation.CodePadUnresolved) {
-		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodePadUnresolved))
-	}
-	if e.Span != firstSpan {
-		t.Errorf("Span = %v, want %v (= first pad)", e.Span, firstSpan)
-	}
-	wantMsg := "pad directive for Assets:Cash from Equity:Opening was not resolved before another pad"
-	if e.Message != wantMsg {
-		t.Errorf("Message = %q, want %q", e.Message, wantMsg)
-	}
-	// pad2 must have been resolved; the output should contain the
-	// dropped pad1 still in place, pad2 itself, the synthesized
-	// transaction immediately after pad2, and the balance directive.
-	if len(res.Directives) != 4 {
-		t.Fatalf("len(Result.Directives) = %d, want 4", len(res.Directives))
-	}
-	if _, ok := res.Directives[0].(*ast.Pad); !ok {
-		t.Errorf("Result.Directives[0] = %T, want *ast.Pad (dropped first pad remains)", res.Directives[0])
-	}
-	if _, ok := res.Directives[1].(*ast.Pad); !ok {
-		t.Errorf("Result.Directives[1] = %T, want *ast.Pad (resolved pad2 retained)", res.Directives[1])
-	}
-	tx, ok := res.Directives[2].(*ast.Transaction)
-	if !ok {
-		t.Fatalf("Result.Directives[2] = %T, want *ast.Transaction (synth for pad2)", res.Directives[2])
-	}
-	if tx.Postings[1].Account != "Equity:OtherOpening" {
-		t.Errorf("synth.Postings[1].Account = %q, want %q", tx.Postings[1].Account, "Equity:OtherOpening")
+	// secondPad was resolved; firstPad remains in place but is
+	// reported as unresolved. The synth follows secondPad immediately.
+	wantDirectives := []ast.Directive{firstPad, secondPad, wantSynthTx(secondPad, 500, 500, "USD"), bal}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -303,59 +239,44 @@ func TestPlugin_ConsecutivePadsSameAccount(t *testing.T) {
 // with its own subsequent balance. Each pad must be resolved
 // independently.
 func TestPlugin_MultiPads(t *testing.T) {
-	pad1 := &ast.Pad{
+	cashPad := &ast.Pad{
 		Date:       day(2024, 1, 15),
 		Account:    "Assets:Cash",
 		PadAccount: "Equity:Opening",
 	}
-	bal1 := &ast.Balance{
+	cashBal := &ast.Balance{
 		Date:    day(2024, 2, 1),
 		Account: "Assets:Cash",
 		Amount:  amtInt(1000, "USD"),
 	}
-	pad2 := &ast.Pad{
+	savingsPad := &ast.Pad{
 		Date:       day(2024, 2, 15),
 		Account:    "Assets:Savings",
 		PadAccount: "Equity:Opening",
 	}
-	bal2 := &ast.Balance{
+	savingsBal := &ast.Balance{
 		Date:    day(2024, 3, 1),
 		Account: "Assets:Savings",
 		Amount:  amtInt(500, "USD"),
 	}
-	in := api.Input{Directives: seqOf([]ast.Directive{pad1, bal1, pad2, bal2})}
+	in := api.Input{Directives: seqOf([]ast.Directive{cashPad, cashBal, savingsPad, savingsBal})}
 	res, err := pad.Apply(context.Background(), in)
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 0 {
-		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	if len(res.Directives) != 6 {
-		t.Fatalf("len(Result.Directives) = %d, want 6 (pad1, synth1, bal1, pad2, synth2, bal2)", len(res.Directives))
+	wantDirectives := []ast.Directive{
+		cashPad,
+		wantSynthTx(cashPad, 1000, 1000, "USD"),
+		cashBal,
+		savingsPad,
+		wantSynthTx(savingsPad, 500, 500, "USD"),
+		savingsBal,
 	}
-	if _, ok := res.Directives[0].(*ast.Pad); !ok {
-		t.Errorf("Result.Directives[0] = %T, want *ast.Pad (pad1 retained)", res.Directives[0])
-	}
-	tx1, ok := res.Directives[1].(*ast.Transaction)
-	if !ok {
-		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
-	}
-	if got := tx1.Postings[0].Amount.Number.String(); got != "1000" {
-		t.Errorf("tx1 target amount = %q, want %q", got, "1000")
-	}
-	if _, ok := res.Directives[3].(*ast.Pad); !ok {
-		t.Errorf("Result.Directives[3] = %T, want *ast.Pad (pad2 retained)", res.Directives[3])
-	}
-	tx2, ok := res.Directives[4].(*ast.Transaction)
-	if !ok {
-		t.Fatalf("Result.Directives[4] = %T, want *ast.Transaction", res.Directives[4])
-	}
-	if got := tx2.Postings[0].Amount.Number.String(); got != "500" {
-		t.Errorf("tx2 target amount = %q, want %q", got, "500")
-	}
-	if tx2.Postings[0].Account != "Assets:Savings" {
-		t.Errorf("tx2.Postings[0].Account = %q, want %q", tx2.Postings[0].Account, "Assets:Savings")
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -391,24 +312,13 @@ func TestPlugin_PadWithPriorTransactions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 0 {
-		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	if len(res.Directives) != 4 {
-		t.Fatalf("len(Result.Directives) = %d, want 4 (pad, synth, txn, bal)", len(res.Directives))
-	}
-	if _, ok := res.Directives[0].(*ast.Pad); !ok {
-		t.Errorf("Result.Directives[0] = %T, want *ast.Pad (original pad retained)", res.Directives[0])
-	}
-	tx, ok := res.Directives[1].(*ast.Transaction)
-	if !ok {
-		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
-	}
-	if got := tx.Postings[0].Amount.Number.String(); got != "100" {
-		t.Errorf("synth target amount = %q, want %q (150 expected - 50 intervening)", got, "100")
-	}
-	if got := tx.Postings[1].Amount.Number.String(); got != "-100" {
-		t.Errorf("synth source amount = %q, want %q", got, "-100")
+	// Assertion at 150 USD with intervening +50 USD ⇒ residual 100.
+	wantDirectives := []ast.Directive{p, wantSynthTx(p, 150, 100, "USD"), txn, bal}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -476,14 +386,16 @@ func TestPlugin_PadNotConsumedByDifferentAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+	wantDiagnostics := []ast.Diagnostic{{
+		Code:    string(validation.CodePadUnresolved),
+		Span:    padSpan,
+		Message: "pad directive for Assets:Cash from Equity:Opening was not followed by a matching balance assertion",
+	}}
+	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	if res.Diagnostics[0].Code != string(validation.CodePadUnresolved) {
-		t.Errorf("Code = %q, want %q", res.Diagnostics[0].Code, string(validation.CodePadUnresolved))
-	}
-	if res.Diagnostics[0].Span != padSpan {
-		t.Errorf("Span = %v, want %v", res.Diagnostics[0].Span, padSpan)
+	if res.Directives != nil {
+		t.Errorf("pad.Apply: Result.Directives = %v, want nil (pad never paired with a matching balance)", res.Directives)
 	}
 }
 
@@ -544,34 +456,21 @@ func TestPlugin_AutoPostingNotBookedReports(t *testing.T) {
 	// Exactly one CodeAutoPostingUnresolved diagnostic for the
 	// nil-Amount posting; no padding-related diagnostics because
 	// the pad resolves against the partial running balance.
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != string(validation.CodeAutoPostingUnresolved) {
-		t.Errorf("pad.Apply Code = %q, want %q", e.Code, string(validation.CodeAutoPostingUnresolved))
-	}
-	if e.Span != postSpan {
-		t.Errorf("pad.Apply Span = %v, want %v (= posting Span)", e.Span, postSpan)
-	}
-	wantMsg := "posting on account \"Income:Salary\" has no amount; booking pass should have resolved it"
-	if e.Message != wantMsg {
-		t.Errorf("pad.Apply Message = %q, want %q", e.Message, wantMsg)
+	wantDiagnostics := []ast.Diagnostic{{
+		Code:    string(validation.CodeAutoPostingUnresolved),
+		Span:    postSpan,
+		Message: `posting on account "Income:Salary" has no amount; booking pass should have resolved it`,
+	}}
+	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 
-	// The synthesized transaction must reflect that the running
-	// balance saw only +50 USD from the explicit posting (no
-	// inference of the missing -50 USD leg). With the assertion
+	// Running balance saw only +50 USD from the explicit posting
+	// (no inference of the missing -50 USD leg). With the assertion
 	// at 150 USD, the residual to inject is 100 USD.
-	if len(res.Directives) != 4 {
-		t.Fatalf("len(Result.Directives) = %d, want 4 (pad, synth, txn, bal)", len(res.Directives))
-	}
-	tx, ok := res.Directives[1].(*ast.Transaction)
-	if !ok {
-		t.Fatalf("Result.Directives[1] = %T, want *ast.Transaction", res.Directives[1])
-	}
-	if got := tx.Postings[0].Amount.Number.String(); got != "100" {
-		t.Errorf("synth target amount = %q, want %q (150 expected - 50 explicit; missing leg is NOT inferred)", got, "100")
+	wantDirectives := []ast.Directive{p, wantSynthTx(p, 150, 100, "USD"), txn, bal}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -595,11 +494,16 @@ func TestPlugin_AutoPostingNoExplicitFallsBackToTxnSpan(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+	wantDiagnostics := []ast.Diagnostic{{
+		Code:    string(validation.CodeAutoPostingUnresolved),
+		Span:    txnSpan,
+		Message: `posting on account "Income:Salary" has no amount; booking pass should have resolved it`,
+	}}
+	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got, expected txn-Span fallback):\n%s", diff)
 	}
-	if res.Diagnostics[0].Span != txnSpan {
-		t.Errorf("pad.Apply Span = %v, want %v (txn fallback)", res.Diagnostics[0].Span, txnSpan)
+	if res.Directives != nil {
+		t.Errorf("pad.Apply: Result.Directives = %v, want nil (no pads ⇒ input preserved verbatim)", res.Directives)
 	}
 }
 
@@ -647,38 +551,17 @@ func TestPlugin_PadTargetWithCostReports(t *testing.T) {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
 
-	// At least one CodePadTargetHasCost diagnostic that names the
-	// target account.
-	var costDiag *ast.Diagnostic
-	for i := range res.Diagnostics {
-		if res.Diagnostics[i].Code == string(validation.CodePadTargetHasCost) {
-			costDiag = &res.Diagnostics[i]
-			break
-		}
+	wantDiagnostics := []ast.Diagnostic{{
+		Code:    string(validation.CodePadTargetHasCost),
+		Span:    postSpan,
+		Message: `cannot pad account "Assets:Stock": holds cost-bearing position`,
+	}}
+	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	if costDiag == nil {
-		t.Fatalf("Result.Diagnostics = %v, want one with Code %q", res.Diagnostics, string(validation.CodePadTargetHasCost))
-	}
-	if costDiag.Span != postSpan {
-		t.Errorf("pad.Apply: CodePadTargetHasCost Span = %v, want %v (= cost posting span)", costDiag.Span, postSpan)
-	}
-
-	// res.Directives may be nil (no synthesis happened) — that's the
-	// success case for this defensive test. If non-nil, count the
-	// *ast.Transaction entries and assert no synthetic padding was
-	// inserted: input has exactly one transaction (the cost-bearing
-	// one), so any synthesis would push the count to 2.
-	if res.Directives == nil {
-		return
-	}
-	got := 0
-	for _, d := range res.Directives {
-		if _, ok := d.(*ast.Transaction); ok {
-			got++
-		}
-	}
-	if got != 1 {
-		t.Errorf("pad.Apply: synthesized %d transactions, want 1 (no padding inserted)", got)
+	// No synthesis: Directives is nil (preserve input verbatim).
+	if res.Directives != nil {
+		t.Errorf("pad.Apply: Result.Directives = %v, want nil (cost-bearing target ⇒ no padding)", res.Directives)
 	}
 }
 
@@ -917,9 +800,13 @@ func TestPlugin_CostBuiltUpThenSoldOut(t *testing.T) {
 	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
 		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	// ACME asserts to zero (buy/sell net to zero) so no ACME synth is
-	// emitted. USD has actual=0 too (buy -500, sell +500) so the
-	// synth fills 100 USD to match the assertion.
+	// Two independent gates would each pass for ACME: the zero-delta
+	// short-circuit fires first because the assertion matches the
+	// running balance (buy +5 / sell −5 = 0), but the cost gate would
+	// also pass — costBalances[ACME] is +5 + (−5) = 0 because the
+	// sell carries Cost too, so the cost-bearing-position check sees
+	// nothing to refuse. USD has actual=0 (buy −500 / sell +500 net
+	// to 0), so the synth fills 100 USD to match the assertion.
 	wantDirectives := []ast.Directive{p, wantSynthTx(p, 100, 100, "USD"), buy, sell, balACME, balUSD}
 	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
 		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
@@ -1005,7 +892,7 @@ func TestPlugin_PadReplacedAfterUseDoesNotEmitUnresolved(t *testing.T) {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
 	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
-		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got, pad1 was used before pad2 replaced it):\n%s", diff)
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got, firstPad was used before secondPad replaced it):\n%s", diff)
 	}
 	// firstPad fills +1000 USD; secondPad sees actual = 1000 and
 	// fills +500 USD to reach the 1500 USD assertion.
@@ -1072,14 +959,16 @@ func TestPlugin_OptionsFromRawParseError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
+	// Span and Message are intentionally not pinned: their exact
+	// shape is owned by options.FromRaw (which formats the wrapped
+	// parse error and points at the option's source location).
+	wantDiagnostics := []ast.Diagnostic{{Code: string(validation.CodeInvalidOption)}}
+	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts,
+		cmpopts.IgnoreFields(ast.Diagnostic{}, "Span", "Message"),
+	); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	e := res.Diagnostics[0]
-	if e.Code != "invalid-option" {
-		t.Errorf("Code = %q, want %q", e.Code, "invalid-option")
-	}
-	if !strings.Contains(e.Message, "inferred_tolerance_multiplier") {
-		t.Errorf("Message = %q, want it to mention the option key", e.Message)
+	if len(res.Diagnostics) > 0 && !strings.Contains(res.Diagnostics[0].Message, "inferred_tolerance_multiplier") {
+		t.Errorf("pad.Apply: Message = %q, want it to mention the option key", res.Diagnostics[0].Message)
 	}
 }
