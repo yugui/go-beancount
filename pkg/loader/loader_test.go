@@ -104,6 +104,34 @@ func TestLoadCancellation(t *testing.T) {
 	}
 }
 
+// TestLoad_TotalCostAugmentationBalances pins the precision-preserving
+// behavior of the booking pass for `{{ T CUR }}` augmentations. The
+// posting weights cancel exactly in the user-written form (Σ ±T = 0
+// JPY), and the booking pass must not rewrite the spec into a per-unit
+// form whose value is the non-terminating quotient T/|units|: doing so
+// would round in apd's 34-digit context and the transaction-balance
+// validator would then reject a residual that is mathematically zero.
+func TestLoad_TotalCostAugmentationBalances(t *testing.T) {
+	const src = `2025-01-01 open Assets:A JPY,STOCK "NONE"
+2025-01-01 open Assets:B JPY,STOCK "STRICT"
+
+2025-01-01 * "txn"
+  Assets:A           -4.1 STOCK {{   4.2 JPY }}
+  Assets:A         -100   STOCK {{ 100 JPY }}
+  Assets:B          104.1 STOCK {{ 104.2 JPY }}
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Errorf("unexpected error diagnostic: [%s] %s", d.Code, d.Message)
+		}
+	}
+}
+
 func TestLoadRawMode(t *testing.T) {
 	// In raw mode the built-in pipeline is skipped, so an unbalanced
 	// transaction must NOT produce a validations diagnostic.

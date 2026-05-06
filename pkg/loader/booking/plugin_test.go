@@ -205,6 +205,71 @@ func TestApply_AugmentationFillsPerUnit(t *testing.T) {
 	}
 }
 
+// TestApply_AugmentationPreservesTotalCostSpec pins the precision-
+// preserving contract of the augmentation writeback for the {{ T CUR }}
+// form: the user's exact total must survive booking, because
+// converting it into a per-unit number (T/|units|) is generally a
+// non-terminating decimal that rounds in apd's 34-digit context and
+// makes the transaction-balance validator's units × per re-derivation
+// miss a true zero residual.
+func TestApply_AugmentationPreservesTotalCostSpec(t *testing.T) {
+	openA := &ast.Open{
+		Date:       day(2025, 1, 1),
+		Account:    "Assets:A",
+		Currencies: []string{"JPY", "STOCK"},
+		Booking:    ast.BookingNone,
+	}
+	openCash := &ast.Open{Date: day(2025, 1, 1), Account: "Assets:Cash"}
+	txn := &ast.Transaction{
+		Date:      day(2025, 1, 1),
+		Flag:      '*',
+		Narration: "buy with total cost",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:A",
+				Amount:  amt("4.1", "STOCK"),
+				Cost: &ast.CostSpec{
+					Total: amt("4.2", "JPY"),
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("-4.2", "JPY")},
+		},
+	}
+
+	in := api.Input{Directives: seqOf([]ast.Directive{openA, openCash, txn})}
+	res, err := booking.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("booking.Apply: %v", err)
+	}
+	if got := errorSeverityCount(res.Diagnostics); got != 0 {
+		for _, d := range res.Diagnostics {
+			t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+		}
+		t.Fatalf("error-severity diagnostics = %d, want 0", got)
+	}
+
+	var bookedTxn *ast.Transaction
+	for _, d := range res.Directives {
+		if tx, ok := d.(*ast.Transaction); ok {
+			bookedTxn = tx
+			break
+		}
+	}
+	if bookedTxn == nil {
+		t.Fatalf("booking.Apply: no transaction found")
+	}
+	cs := bookedTxn.Postings[0].Cost
+	wantCS := &ast.CostSpec{
+		Total: &ast.Amount{Number: dec("4.2"), Currency: "JPY"},
+	}
+	opts := append(cmp.Options{
+		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
+	}, astCmpOpts...)
+	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
+		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestApply_ReductionAggregatesTotal exercises the multi-lot reduction
 // path: two augmentations on the same date are merged into a single
 // inventory position (same lot key), and a date-only reduction draws
