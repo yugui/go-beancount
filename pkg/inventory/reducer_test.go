@@ -4,8 +4,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
+
+// astCmpOpts compares AST values structurally while routing apd.Decimal
+// and time.Time through their own equality semantics (apd has
+// unexported state, time carries monotonic clock data). The same
+// option set is used by the loader/booking tests; duplicating it here
+// avoids a test-only cross-package import.
+var astCmpOpts = cmp.Options{
+	// apd.Decimal is embedded by value (e.g. Amount.Number is a value
+	// field, not a pointer), so cmp invokes the comparer at value
+	// sites; a pointer-receiver form here would not be matched.
+	cmp.Comparer(func(x, y apd.Decimal) bool { return x.Cmp(&y) == 0 }),
+	cmp.Comparer(func(x, y time.Time) bool { return x.Equal(y) }),
+}
 
 // mkLedger builds an ast.Ledger from the given directives using the
 // public Insert/InsertAll API, avoiding any dependence on testdata.
@@ -1455,5 +1470,112 @@ func TestReducerWalk_InterpolationZeroUnits(t *testing.T) {
 	_, errs := r.Walk(nil)
 	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
 		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	}
+}
+
+// TestReducerWalk_DoesNotMutateInput exercises every interpolation
+// path the reducer can take — auto-posting amount fill, deferred
+// per-unit cost fill, and multi-lot reduction Total synthesis from a
+// bare cost spec — in a single Walk and asserts that the caller's
+// directives are byte-for-byte identical afterwards.
+//
+// Snapshotting via deep clone (`*Transaction.Clone`) and diffing with
+// astCmpOpts catches any mutation Walk might leak through, regardless
+// of which Posting field it touches; this is broader than the
+// single-field assertions sprinkled across the other tests.
+func TestReducerWalk_DoesNotMutateInput(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	buy2Date := time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC)
+	cashTxnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	deferredDate := time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+
+	openInv := mkOpen(openDate, "Assets:Investments", ast.BookingFIFO)
+	openCash := mkOpen(openDate, "Assets:Cash", ast.BookingDefault)
+	openOpen := mkOpen(openDate, "Equity:Opening", ast.BookingDefault)
+
+	// Buy 1: seeds the FIFO sale below.
+	buy1 := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:Investments",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "JPY"),
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
+	)
+	// Buy 2: second lot, so the sale below crosses the FIFO boundary.
+	buy2 := mkTxn(buy2Date,
+		&ast.Posting{
+			Account: "Assets:Investments",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "110", "JPY"),
+				Date:    &buy2Date,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1100", "JPY")},
+	)
+	// Pure cash transaction with an auto-balanced posting (Amount
+	// nil) — exercises Reducer.fillAutoPosting on the input clone.
+	cashTxn := mkTxn(cashTxnDate,
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "42.50", "USD")},
+		&ast.Posting{Account: "Equity:Opening"}, // auto
+	)
+	// Augmentation with a deferred per-unit cost (`{}` form): the
+	// reducer infers the per-unit cost from the residual and
+	// historically wrote it back to the AST.
+	deferred := mkTxn(deferredDate,
+		&ast.Posting{
+			Account: "Assets:Investments",
+			Amount:  mkAmountPtr(t, "5", "STOCK"),
+			Cost:    &ast.CostSpec{}, // empty / deferred
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-600", "JPY")},
+	)
+	// Multi-lot reduction with a bare cost spec: the matcher
+	// resolves the lots from inventory; the reducer historically
+	// wrote a synthesized Cost.Total back to the AST.
+	sell := mkTxn(sellDate,
+		&ast.Posting{
+			Account: "Assets:Investments",
+			Amount:  mkAmountPtr(t, "-12", "STOCK"),
+			Cost:    &ast.CostSpec{},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "1230", "JPY")},
+	)
+
+	// Deep-clone every Transaction to capture a frozen snapshot of
+	// the input; Open directives are immutable scalar wrappers and
+	// are safe to share by reference. Comparing the post-Walk
+	// Transactions against these snapshots surfaces any mutation
+	// Walk performed on the caller's AST.
+	type snap struct {
+		txn   *ast.Transaction
+		clone *ast.Transaction
+	}
+	snaps := []snap{
+		{buy1, buy1.Clone()},
+		{buy2, buy2.Clone()},
+		{cashTxn, cashTxn.Clone()},
+		{deferred, deferred.Clone()},
+		{sell, sell.Clone()},
+	}
+
+	ledger := mkLedger(openInv, openCash, openOpen, buy1, buy2, cashTxn, deferred, sell)
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+
+	for _, s := range snaps {
+		if diff := cmp.Diff(s.clone, s.txn, astCmpOpts...); diff != "" {
+			t.Errorf("Reducer.Walk mutated input transaction (date=%s), diff (-want +got):\n%s",
+				s.txn.Date.Format("2006-01-02"), diff)
+		}
 	}
 }
