@@ -18,6 +18,11 @@
 // entries per-account via realization.postings_by_account before
 // walking, while this plugin walks directive-order in a single pass.
 // Both approaches reach the same resolved/unresolved outcome.
+//
+// Importing this package has the side effect of registering Apply in
+// pkg/ext/postproc under the package's import path, so beancount
+// `plugin "github.com/yugui/go-beancount/pkg/validation/pad"`
+// directives can activate it.
 package pad
 
 import (
@@ -53,7 +58,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	var diags []ast.Diagnostic
 	for _, perr := range optErrs {
 		diags = append(diags, ast.Diagnostic{
-			Code:    "invalid-option",
+			Code:    string(validation.CodeInvalidOption),
 			Span:    perr.Span,
 			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
 		})

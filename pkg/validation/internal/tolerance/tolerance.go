@@ -193,6 +193,18 @@ func Infer(postings []ast.Posting, opts *options.Values, residualCurrencies []st
 	return out, nil
 }
 
+// Within reports whether |diff| <= tol. The bool answers the tolerance
+// question; the error is non-nil only when apd.BaseContext.Abs fails on
+// pathological input (e.g. an overflowing exponent), not when the
+// tolerance is exceeded.
+func Within(diff, tol *apd.Decimal) (bool, error) {
+	abs := new(apd.Decimal)
+	if _, err := apd.BaseContext.Abs(abs, diff); err != nil {
+		return false, err
+	}
+	return abs.Cmp(tol) <= 0, nil
+}
+
 // maxDecimal returns the larger of a and b. Both are assumed to be
 // non-negative. A nil value is treated as zero.
 func maxDecimal(a, b *apd.Decimal) *apd.Decimal {
