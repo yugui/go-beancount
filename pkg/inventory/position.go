@@ -13,17 +13,14 @@ type Position struct {
 	Cost  *Cost
 }
 
-// Clone returns a deep copy of p. The Units number is copied value-wise
-// (so mutating the clone's decimal coefficient does not affect the
-// original) and the Cost is deep-copied via [(*Cost).Clone], which is
+// Clone returns a deep copy of p. The Units amount is deep-copied via
+// [(*ast.Amount).Clone] and the Cost via [(*Cost).Clone]; both are
 // nil-safe.
 func (p Position) Clone() Position {
-	out := Position{
-		Units: ast.Amount{Currency: p.Units.Currency},
+	return Position{
+		Units: *p.Units.Clone(),
 		Cost:  p.Cost.Clone(),
 	}
-	out.Units.Number.Set(&p.Units.Number)
-	return out
 }
 
 // Commodity returns the currency of the position's units. It is a
