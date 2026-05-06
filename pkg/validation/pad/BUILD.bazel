@@ -24,5 +24,7 @@ go_test(
         "//pkg/ext/postproc/api",
         "//pkg/validation",
         "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+        "@com_github_google_go_cmp//cmp/cmpopts",
     ],
 )
