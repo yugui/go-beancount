@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
@@ -101,22 +102,17 @@ func TestCurrencyConstraints_DisallowedCurrencyEmits(t *testing.T) {
 			{Account: "Assets:Cash", Amount: &eur, Span: postingSpan},
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	e := errs[0]
-	if e.Code != string(validation.CodeCurrencyNotAllowed) {
-		t.Errorf("Code = %q, want %q", e.Code, validation.CodeCurrencyNotAllowed)
-	}
-	if e.Span != postingSpan {
-		t.Errorf("Span = %#v, want %#v", e.Span, postingSpan)
-	}
 	// Message wording must match upstream beancount's require-open
 	// path verbatim:
 	// fmt.Sprintf("currency %q not allowed for account %q", currency, account).
-	if want := `currency "EUR" not allowed for account "Assets:Cash"`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeCurrencyNotAllowed),
+		Span:     postingSpan,
+		Message:  `currency "EUR" not allowed for account "Assets:Cash"`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -137,12 +133,14 @@ func TestCurrencyConstraints_PostingSpanFallsBackToTxnSpan(t *testing.T) {
 			{Account: "Assets:Cash", Amount: &eur}, // no posting span
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	if errs[0].Span != txnSpan {
-		t.Errorf("Span = %#v, want txn span %#v", errs[0].Span, txnSpan)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeCurrencyNotAllowed),
+		Span:     txnSpan,
+		Message:  `currency "EUR" not allowed for account "Assets:Cash"`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry: posting had zero span; want fallback to txn span (-want +got):\n%s", diff)
 	}
 }
 
@@ -193,19 +191,14 @@ func TestCurrencyConstraints_AutoPostingReports(t *testing.T) {
 			{Account: "Assets:Cash"}, // auto-posting
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("ProcessEntry() got %d diagnostics, want 1; errs = %v", len(errs), errs)
-	}
-	if errs[0].Code != string(validation.CodeAutoPostingUnresolved) {
-		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAutoPostingUnresolved)
-	}
-	if errs[0].Span != txnSpan {
-		t.Errorf("ProcessEntry() Span = %#v, want %#v", errs[0].Span, txnSpan)
-	}
-	const wantMsg = `posting on account "Assets:Cash" has no amount; booking pass should have resolved it`
-	if errs[0].Message != wantMsg {
-		t.Errorf("ProcessEntry() Message = %q, want %q", errs[0].Message, wantMsg)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAutoPostingUnresolved),
+		Span:     txnSpan,
+		Message:  `posting on account "Assets:Cash" has no amount; booking pass should have resolved it`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -270,23 +263,22 @@ func TestCurrencyConstraints_MultiplePostingsMixed(t *testing.T) {
 			{Account: "Assets:USD", Amount: &bad2, Span: sp4}, // disallowed (EUR)
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 2 {
-		t.Fatalf("got %d errors, want 2; errs = %v", len(errs), errs)
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeCurrencyNotAllowed),
+			Span:     sp2,
+			Message:  `currency "GBP" not allowed for account "Assets:EUR"`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeCurrencyNotAllowed),
+			Span:     sp4,
+			Message:  `currency "EUR" not allowed for account "Assets:USD"`,
+			Severity: ast.Error,
+		},
 	}
-	// First error is for Assets:EUR / GBP on sp2.
-	if errs[0].Span != sp2 {
-		t.Errorf("errs[0].Span = %#v, want %#v", errs[0].Span, sp2)
-	}
-	if want := `currency "GBP" not allowed for account "Assets:EUR"`; errs[0].Message != want {
-		t.Errorf("errs[0].Message = %q, want %q", errs[0].Message, want)
-	}
-	// Second error is for Assets:USD / EUR on sp4.
-	if errs[1].Span != sp4 {
-		t.Errorf("errs[1].Span = %#v, want %#v", errs[1].Span, sp4)
-	}
-	if want := `currency "EUR" not allowed for account "Assets:USD"`; errs[1].Message != want {
-		t.Errorf("errs[1].Message = %q, want %q", errs[1].Message, want)
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 

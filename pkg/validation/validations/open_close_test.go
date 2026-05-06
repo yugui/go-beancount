@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
@@ -47,19 +48,14 @@ func TestOpenClose_SingleDuplicateOpen(t *testing.T) {
 		}
 	}
 
-	errs := v.Finish()
-	if len(errs) != 1 {
-		t.Fatalf("Finish(): got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	e := errs[0]
-	if e.Code != string(validation.CodeDuplicateOpen) {
-		t.Errorf("Code = %q, want %q", e.Code, validation.CodeDuplicateOpen)
-	}
-	if e.Span != dupSpan {
-		t.Errorf("Span = %#v, want %#v", e.Span, dupSpan)
-	}
-	if want := `account "Assets:Cash" already opened`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeDuplicateOpen),
+		Span:     dupSpan,
+		Message:  `account "Assets:Cash" already opened`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.Finish()); diff != "" {
+		t.Errorf("Finish mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -83,19 +79,27 @@ func TestOpenClose_MultipleDuplicateOpens(t *testing.T) {
 	v := newOpenClose(accountstate.BuildResult{
 		DuplicateOpens: []*ast.Open{d1, d2, d3},
 	})
-	errs := v.Finish()
-	if len(errs) != 3 {
-		t.Fatalf("Finish(): got %d errors, want 3; errs = %v", len(errs), errs)
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeDuplicateOpen),
+			Span:     d1.Span,
+			Message:  `account "Assets:Cash" already opened`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeDuplicateOpen),
+			Span:     d2.Span,
+			Message:  `account "Assets:Cash" already opened`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeDuplicateOpen),
+			Span:     d3.Span,
+			Message:  `account "Liabilities:CC" already opened`,
+			Severity: ast.Error,
+		},
 	}
-
-	wantAccounts := []ast.Account{"Assets:Cash", "Assets:Cash", "Liabilities:CC"}
-	for i, e := range errs {
-		if e.Code != string(validation.CodeDuplicateOpen) {
-			t.Errorf("errs[%d].Code = %q, want %q", i, e.Code, validation.CodeDuplicateOpen)
-		}
-		want := `account "` + string(wantAccounts[i]) + `" already opened`
-		if e.Message != want {
-			t.Errorf("errs[%d].Message = %q, want %q", i, e.Message, want)
-		}
+	if diff := cmp.Diff(want, v.Finish()); diff != "" {
+		t.Errorf("Finish mismatch (-want +got):\n%s", diff)
 	}
 }

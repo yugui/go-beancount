@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 )
 
 // dec parses s as an apd.Decimal and returns it. Fails the test
@@ -26,22 +27,18 @@ func TestPostingTotalCost(t *testing.T) {
 	tests := []struct {
 		name    string
 		posting *Posting
-		wantNum string
-		wantCur string
-		wantNil bool
+		want    *Amount // nil means TotalCost should return (nil, nil)
 		wantErr bool
 	}{
 		{
 			name:    "auto-posting (Amount nil)",
 			posting: &Posting{},
-			wantNil: true,
 		},
 		{
 			name: "no cost spec",
 			posting: &Posting{
 				Amount: amount(t, "100", "USD"),
 			},
-			wantNil: true,
 		},
 		{
 			name: "empty cost spec",
@@ -49,7 +46,6 @@ func TestPostingTotalCost(t *testing.T) {
 				Amount: amount(t, "100", "USD"),
 				Cost:   &CostSpec{},
 			},
-			wantNil: true,
 		},
 		{
 			name: "PerUnit only, positive units",
@@ -59,8 +55,7 @@ func TestPostingTotalCost(t *testing.T) {
 					PerUnit: amount(t, "100", "USD"),
 				},
 			},
-			wantNum: "1000",
-			wantCur: "USD",
+			want: amount(t, "1000", "USD"),
 		},
 		{
 			name: "PerUnit only, negative units (reduction)",
@@ -70,8 +65,7 @@ func TestPostingTotalCost(t *testing.T) {
 					PerUnit: amount(t, "100", "USD"),
 				},
 			},
-			wantNum: "-1000",
-			wantCur: "USD",
+			want: amount(t, "-1000", "USD"),
 		},
 		{
 			name: "Total only, negative units (reduction sign flip)",
@@ -81,8 +75,7 @@ func TestPostingTotalCost(t *testing.T) {
 					Total: amount(t, "1", "JPY"),
 				},
 			},
-			wantNum: "-1",
-			wantCur: "JPY",
+			want: amount(t, "-1", "JPY"),
 		},
 		{
 			name: "Total only, negative Total magnitude (still uses |Total|)",
@@ -92,8 +85,7 @@ func TestPostingTotalCost(t *testing.T) {
 					Total: amount(t, "-1", "JPY"),
 				},
 			},
-			wantNum: "1",
-			wantCur: "JPY",
+			want: amount(t, "1", "JPY"),
 		},
 		{
 			name: "combined PerUnit and Total, positive units",
@@ -104,8 +96,7 @@ func TestPostingTotalCost(t *testing.T) {
 					Total:   amount(t, "9.95", "USD"),
 				},
 			},
-			wantNum: "5031.15", // 10 * 502.12 + 9.95
-			wantCur: "USD",
+			want: amount(t, "5031.15", "USD"), // 10 * 502.12 + 9.95
 		},
 		{
 			name: "combined PerUnit and Total, negative units",
@@ -117,8 +108,7 @@ func TestPostingTotalCost(t *testing.T) {
 				},
 			},
 			// -10 * 502.12 = -5021.2; sign(-) * |9.95| = -9.95; sum = -5031.15
-			wantNum: "-5031.15",
-			wantCur: "USD",
+			want: amount(t, "-5031.15", "USD"),
 		},
 		{
 			name: "combined currencies disagree",
@@ -141,8 +131,7 @@ func TestPostingTotalCost(t *testing.T) {
 					Total: amount(t, "1", "JPY"),
 				},
 			},
-			wantNum: "1",
-			wantCur: "JPY",
+			want: amount(t, "1", "JPY"),
 		},
 	}
 
@@ -158,20 +147,8 @@ func TestPostingTotalCost(t *testing.T) {
 			if err != nil {
 				t.Fatalf("TotalCost() error: %v", err)
 			}
-			if tt.wantNil {
-				if got != nil {
-					t.Fatalf("TotalCost() = %+v, want nil", got)
-				}
-				return
-			}
-			if got == nil {
-				t.Fatalf("TotalCost() = nil, want %s %s", tt.wantNum, tt.wantCur)
-			}
-			if gotStr := got.Number.String(); gotStr != tt.wantNum {
-				t.Errorf("TotalCost() Number = %q, want %q", gotStr, tt.wantNum)
-			}
-			if got.Currency != tt.wantCur {
-				t.Errorf("TotalCost() Currency = %q, want %q", got.Currency, tt.wantCur)
+			if diff := cmp.Diff(tt.want, got, astCloneCmpOpts); diff != "" {
+				t.Errorf("TotalCost() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

@@ -1,8 +1,9 @@
 package ast
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestAccountRootConstantsAreValid(t *testing.T) {
@@ -148,8 +149,8 @@ func TestAccountParts(t *testing.T) {
 		{"Assets:Cash:JPY", []string{"Assets", "Cash", "JPY"}},
 	}
 	for _, c := range cases {
-		if got := c.in.Parts(); !reflect.DeepEqual(got, c.want) {
-			t.Errorf("%q.Parts() = %#v, want %#v", c.in, got, c.want)
+		if diff := cmp.Diff(c.want, c.in.Parts()); diff != "" {
+			t.Errorf("%q.Parts() mismatch (-want +got):\n%s", c.in, diff)
 		}
 	}
 }

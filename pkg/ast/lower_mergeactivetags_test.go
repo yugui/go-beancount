@@ -1,8 +1,9 @@
 package ast
 
 import (
-	"reflect"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 // mergeActiveTagsDeterminismIters is the iteration count used by the
@@ -32,8 +33,8 @@ func TestMergeActiveTagsSortedOrder(t *testing.T) {
 	}
 	got := mergeActiveTags(nil, active)
 	want := []string{"a", "b", "m", "z"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("mergeActiveTags = %v, want %v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("mergeActiveTags mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -47,8 +48,8 @@ func TestMergeActiveTagsDeterministic(t *testing.T) {
 	first := mergeActiveTags(nil, makeActiveTagsForDeterminismTest())
 	for i := 0; i < mergeActiveTagsDeterminismIters; i++ {
 		got := mergeActiveTags(nil, makeActiveTagsForDeterminismTest())
-		if !reflect.DeepEqual(got, first) {
-			t.Fatalf("iteration %d: mergeActiveTags = %v, want %v (output must be deterministic across calls)", i, got, first)
+		if diff := cmp.Diff(first, got); diff != "" {
+			t.Fatalf("iteration %d: mergeActiveTags output must be deterministic across calls (-want +got):\n%s", i, diff)
 		}
 	}
 }
@@ -67,8 +68,8 @@ func TestMergeActiveTagsPreservesExplicitTagOrder(t *testing.T) {
 	}
 	got := mergeActiveTags(explicit, active)
 	want := []string{"foo", "bar", "a", "m", "z"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("mergeActiveTags = %v, want %v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("mergeActiveTags mismatch (-want +got):\n%s", diff)
 	}
 }
 
