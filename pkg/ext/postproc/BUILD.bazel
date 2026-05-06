@@ -1,6 +1,6 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
-# testhelpers.go is guarded by `//go:build testhelpers`, so ResetForTest
+# export_testonly.go is guarded by `//go:build testhelpers`, so ResetForTest
 # only links into consumers (go_test / go_binary targets) that set
 # `gotags = ["testhelpers"]`. rules_go's build-mode transition
 # propagates the tag to this library transitively, so production builds
@@ -10,8 +10,8 @@ go_library(
     srcs = [
         "apply.go",
         "doc.go",
+        "export_testonly.go",
         "registry.go",
-        "testhelpers.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/ext/postproc",
     visibility = ["//visibility:public"],
