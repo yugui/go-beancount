@@ -18,12 +18,18 @@
 //
 // # Streaming-first design
 //
-// The primary API is Reducer.Walk(visitor): the ledger is replayed once
-// and the visitor is invoked for each transaction with deep-copied
-// before/after snapshots of the accounts that transaction touched.
-// Memory cost is O(1) in the size of the ledger, which lets this package
-// scale to multi-million-directive ledgers without retaining per-txn
-// snapshots.
+// The primary API is Reducer.Walk(visitor): the directives sequence
+// supplied at construction is replayed once and the visitor is invoked
+// for each transaction with deep-copied before/after snapshots of the
+// accounts that transaction touched. Memory cost is O(1) in the size
+// of the input, which lets this package scale to multi-million-
+// directive ledgers without retaining per-txn snapshots.
+//
+// Walk treats its input as immutable. Transactions whose postings the
+// reducer needs to mutate (auto-balanced amount, deferred cost,
+// multi-lot reduction with a bare cost spec) are deep-cloned and the
+// clone, with the mutations applied, appears in Walk's returned
+// directive slice. The caller's directives are never modified.
 //
 // For one-off trouble-shooting — the equivalent of upstream Beancount's
 // `bean-doctor context` command — the Reducer also exposes an

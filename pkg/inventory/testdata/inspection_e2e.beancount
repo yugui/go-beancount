@@ -54,20 +54,29 @@ option "operating_currency" "USD"
 
 ; ----- Reductions -----
 
-; STRICT label-selected sale with a per-unit price annotation. The cash
-; leg is an auto-balanced posting so this transaction also drives the
-; auto-posting inference path. Weight of the reducing posting under the
-; @ price rule is -5 * 120 = -600 USD, so the auto leg should absorb
-; +600.00 USD.
-2025-03-10 * "Sell ACME lot-2025a with auto cash"
+; STRICT label-selected sale with both a cost and a per-unit price
+; annotation. Per upstream Beancount, when a posting carries both a
+; cost and a price the cost defines the balancing weight (here
+; -5 * 100 = -500 USD on the lot's resolved cost basis) and the price
+; is recorded only into the prices database. The cash leg is explicit
+; at the proceeds amount (5 * 120 = 600 USD), so the auto-balanced
+; posting on Income:Gains absorbs the realized gain (-100 USD).
+; This drives the auto-posting inference path with the auto leg on
+; the gains side.
+2025-03-10 * "Sell ACME lot-2025a"
   Assets:Investments:BrokerA       -5 ACME {"lot-2025a"} @ 120 USD
-  Assets:Cash
+  Assets:Cash                  600.00 USD
+  Income:Gains
 
 ; FIFO multi-lot reduction under the empty `{}` matcher form. Consuming
 ; 12 GIZMO against two lots of 10 + 10 forces the reducer to cross the
 ; lot boundary: 10 from the first lot (2025-01-10) and 2 from the second
-; lot (2025-02-15). The explicit cash leg keeps this transaction off the
-; auto-posting path so the two code paths stay cleanly separated.
+; lot (2025-02-15). The matched lots' total cost basis is
+; 10*50 + 2*55 = 610 USD; the price annotation drives proceeds of
+; 720 USD; the realized gain (110 USD) is recorded on Income:Gains.
+; The explicit cash leg keeps this transaction off the auto-posting
+; path so the two code paths stay cleanly separated.
 2025-04-01 * "Sell GIZMO FIFO crossing lot boundary"
   Assets:Investments:BrokerB      -12 GIZMO {} @ 60 USD
   Assets:Cash                  720.00 USD
+  Income:Gains                -110.00 USD

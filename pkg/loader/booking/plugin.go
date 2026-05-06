@@ -1,57 +1,35 @@
-// Package booking implements the loader-level booking pass that
-// resolves incomplete cost specs (date-only, label-only, empty) on
-// reducing postings into concrete CostSpec values before user plugins
-// and the validation pipeline see the AST.
+// Package booking adapts the inventory layer's booking pass to the
+// post-processor plugin interface. The plugin is the Go equivalent of
+// upstream beancount's `booking.book` step: it routes the ledger
+// through the inventory reducer so reductions resolve against existing
+// lots and auto-balanced postings receive their inferred amounts before
+// user plugins, balance assertions, and validations observe the AST.
 //
-// This plugin is the Go equivalent of upstream beancount's
-// `booking.book` step in `loader._load`: it runs the inventory
-// reducer over the ledger, then writes the booked lot information
-// back into each posting's CostSpec so downstream consumers
-// (transaction-balance validation, BQL, the printer) observe a fully
-// resolved AST.
-//
-// Behavior per posting:
-//
-//   - Augmenting postings whose CostSpec lacks a concrete per-unit or
-//     total amount get a synthesized CostSpec.PerUnit from the resolved
-//     lot. Date and Label fields on the original spec are preserved.
-//   - Reducing postings — those whose lot was matched against existing
-//     inventory — get a synthesized CostSpec.Total equal to
-//     Σ |step.Units| × step.Lot.Number across all matched lots. PerUnit
-//     is cleared so the validation layer's weightFromTotal branch
-//     produces the correct cost-currency weight regardless of how many
-//     lots were consumed. Date and Label on the original spec are
-//     preserved as matching constraints.
-//   - Auto-balanced postings (nil Amount) have their Amount filled in
-//     place by the reducer; no CostSpec edits are needed.
-//   - Postings without a CostSpec are left untouched.
-//
-// The plugin is idempotent: re-running it on a ledger that has already
-// been booked produces the same AST and the same diagnostics, because
-// (a) the reducer is deterministic given the same input, and (b) Total
-// aggregation reads from the booked lots, not from the prior CostSpec.
+// The booking work — including cloning transactions whose postings the
+// reducer needs to mutate, filling auto-posting Amounts, interpolating
+// deferred per-unit costs, and synthesizing a multi-lot reduction's
+// Cost.Total when the user wrote no concrete number — lives in
+// [inventory.Reducer]. This package is a thin adapter: it forwards
+// the plugin input's directive iterator to the reducer, returns the
+// booked directive slice as the plugin's replacement contents, and
+// translates inventory errors to [ast.Diagnostic] entries.
 package booking
 
 import (
 	"context"
 	"fmt"
 
-	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/inventory"
 )
 
-// Apply runs the booking pass over the input directives. Transactions
-// the booking pass could mutate — those carrying a CostSpec on any
-// posting or an auto-posting whose Amount the reducer must fill — are
-// deep-cloned so the caller's AST is not disturbed. Transactions that
-// the reducer and the write-back step provably leave alone are passed
-// through by reference, which avoids redundant copying on the common
-// case of cash-flow ledgers. All non-Transaction directives are
-// likewise forwarded by reference.
+// Apply runs the booking pass over the input directives and returns
+// the booked replacement directives plus any inventory-layer
+// diagnostics. The reducer treats the input as immutable and clones
+// transactions it needs to mutate; the caller's AST is not disturbed.
 //
-// Reducer-emitted errors are surfaced as ast.Diagnostic entries on the
+// Reducer-emitted errors surface as [ast.Diagnostic] entries on the
 // returned Result so the load pipeline can continue and surface them
 // alongside other validation findings, mirroring the contract used by
 // the pad and balance plugins.
@@ -63,40 +41,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, nil
 	}
 
-	// Materialize directives, cloning only the Transactions the booking
-	// pass could mutate. See needsBookingClone for the predicate's
-	// rationale.
-	var cloned []ast.Directive
-	for _, d := range in.Directives {
-		if txn, ok := d.(*ast.Transaction); ok {
-			if needsBookingClone(txn) {
-				cloned = append(cloned, txn.Clone())
-			} else {
-				cloned = append(cloned, txn)
-			}
-			continue
-		}
-		cloned = append(cloned, d)
-	}
-
-	// Build a fresh Ledger over the cloned directives. The reducer
-	// walks via Ledger.All(), so a temporary ledger is the simplest
-	// adapter from the plugin's iter.Seq2 input.
-	work := &ast.Ledger{}
-	work.InsertAll(cloned)
-
-	// visit writes booked lot information back into each Transaction's
-	// CostSpecs. The reducer passes BookedPosting.Source as a pointer
-	// directly into the cloned transaction's Postings slice, so we
-	// write through Source without needing to look up by index.
-	visit := func(_ *ast.Transaction, _, _ map[ast.Account]*inventory.Inventory, booked []inventory.BookedPosting) bool {
-		for i := range booked {
-			writeBackCost(&booked[i])
-		}
-		return true
-	}
-
-	errs := inventory.NewReducer(work).Walk(visit)
+	booked, errs := inventory.NewReducer(in.Directives).Walk(nil)
 
 	diags := make([]ast.Diagnostic, 0, len(errs))
 	for _, e := range errs {
@@ -107,121 +52,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		})
 	}
 
-	return api.Result{Directives: cloned, Diagnostics: diags}, nil
-}
-
-// needsBookingClone reports whether txn could be mutated by the booking
-// pass and therefore must be cloned before being handed to the reducer.
-// The reducer fills auto-posting amounts in place, and the cost-spec
-// write-back step targets only postings that already carry a Cost; a
-// transaction with neither marker passes through observationally
-// unchanged, so reusing its pointer is safe.
-func needsBookingClone(txn *ast.Transaction) bool {
-	for _, p := range txn.Postings {
-		if p.Cost != nil || p.Amount == nil {
-			return true
-		}
-	}
-	return false
-}
-
-// writeBackCost folds the booking decision recorded in bp into the AST
-// CostSpec on bp.Source. Postings that were neither augmented nor
-// reduced (e.g. cash, no-cost) are left untouched.
-func writeBackCost(bp *inventory.BookedPosting) {
-	p := bp.Source
-	if p == nil {
-		return
-	}
-	switch {
-	case len(bp.Reductions) > 0:
-		writeReductionCost(p, bp.Reductions)
-	case bp.Lot != nil:
-		writeAugmentationCost(p, bp.Lot)
-	}
-}
-
-// writeAugmentationCost ensures p.Cost reflects the concrete per-unit
-// lot resolved during augmentation. Date and Label on the original
-// spec — which the user wrote and which downstream tooling (printer,
-// BQL filters) treats as authoritative — are preserved.
-func writeAugmentationCost(p *ast.Posting, lot *inventory.Cost) {
-	if p.Cost == nil {
-		// The user wrote no cost spec at all; nothing to augment back
-		// into. The reducer's lot is implicit cash-with-no-cost from
-		// some upstream perspective, but our AST has nowhere to put a
-		// PerUnit without inventing a CostSpec. Leave the AST alone.
-		return
-	}
-	if p.Cost.PerUnit != nil || p.Cost.Total != nil {
-		// The user already wrote a concrete cost number — {X CUR},
-		// {{T CUR}}, or {X # T CUR}. Replacing it with the resolved
-		// per-unit (lot.Number = T/|units| under the {{T CUR}} form)
-		// would silently round when the division is non-terminating
-		// (e.g. 4.2/4.1), and the transaction_balances validator —
-		// which derives weight from whichever spec form is present —
-		// would then miss a true zero residual by the rounding gap.
-		// The user-written numbers are exact by construction, so we
-		// keep them and let PostingWeight take the matching branch.
-		return
-	}
-	// Empty / date-only / label-only spec on a successful augmentation:
-	// the reducer's deferred-cost path (fillDeferredCost) writes
-	// PerUnit before this point, so this synthesis is the defensive
-	// fallback for booking outputs that did not pass through it.
-	num := apd.Decimal{}
-	num.Set(&lot.Number)
-	p.Cost.PerUnit = &ast.Amount{
-		Number:   num,
-		Currency: lot.Currency,
-	}
-}
-
-// writeReductionCost synthesizes p.Cost.Total from the per-step
-// magnitudes returned by the reducer:
-//
-//	total = Σ |step.Units| × step.Lot.Number
-//
-// All steps share the same cost currency by construction (the matcher
-// filtered candidates by currency hint; mixed-currency reductions
-// would have been flagged earlier). PerUnit is cleared so the
-// validation layer's weightFromTotal branch — which returns
-// sign(units) × |total| — produces a cost-currency weight that
-// matches upstream beancount's check_balance regardless of how many
-// lots the reduction consumed.
-func writeReductionCost(p *ast.Posting, steps []inventory.ReductionStep) {
-	if p.Cost == nil || len(steps) == 0 {
-		return
-	}
-	var total apd.Decimal
-	currency := steps[0].Lot.Currency
-	for i := range steps {
-		s := &steps[i]
-		var part apd.Decimal
-		// step.Units is already non-negative magnitude per the reducer
-		// contract, so part = step.Units * step.Lot.Number is positive
-		// (assuming a normal long lot with positive Number).
-		if _, err := apd.BaseContext.Mul(&part, &s.Units, &s.Lot.Number); err != nil {
-			// Arithmetic on apd.BaseContext fails only on
-			// pathological exponents that the parser would never
-			// admit. Bail without writing back rather than corrupt
-			// the AST with a partial sum.
-			return
-		}
-		var sum apd.Decimal
-		if _, err := apd.BaseContext.Add(&sum, &total, &part); err != nil {
-			// Same rationale as the Mul branch above: the partial sum
-			// is local and never reaches p.Cost, so an early return
-			// leaves the AST untouched.
-			return
-		}
-		total.Set(&sum)
-	}
-	p.Cost.Total = &ast.Amount{
-		Number:   total,
-		Currency: currency,
-	}
-	p.Cost.PerUnit = nil
+	return api.Result{Directives: booked, Diagnostics: diags}, nil
 }
 
 // diagnosticCode maps an inventory error code to the diagnostic Code

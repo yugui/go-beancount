@@ -4,8 +4,23 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
+
+// astCmpOpts compares AST values structurally while routing apd.Decimal
+// and time.Time through their own equality semantics (apd has
+// unexported state, time carries monotonic clock data). The same
+// option set is used by the loader/booking tests; duplicating it here
+// avoids a test-only cross-package import.
+var astCmpOpts = cmp.Options{
+	// apd.Decimal is embedded by value (e.g. Amount.Number is a value
+	// field, not a pointer), so cmp invokes the comparer at value
+	// sites; a pointer-receiver form here would not be matched.
+	cmp.Comparer(func(x, y apd.Decimal) bool { return x.Cmp(&y) == 0 }),
+	cmp.Comparer(func(x, y time.Time) bool { return x.Equal(y) }),
+}
 
 // mkLedger builds an ast.Ledger from the given directives using the
 // public Insert/InsertAll API, avoiding any dependence on testdata.
@@ -63,9 +78,9 @@ func TestReducerWalk_BasicTwoPostings(t *testing.T) {
 		txn,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	var visited int
-	errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		visited++
 		if got != txn {
 			t.Errorf("visit: txn pointer mismatch")
@@ -114,9 +129,9 @@ func TestReducerWalk_AutoPostingInference(t *testing.T) {
 		txn,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	var inferredSeen bool
-	errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	booked, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if len(booked) != 2 {
 			t.Fatalf("len(booked) = %d, want 2", len(booked))
 		}
@@ -139,10 +154,18 @@ func TestReducerWalk_AutoPostingInference(t *testing.T) {
 		t.Errorf("no BookedPosting with InferredAuto=true was observed")
 	}
 
-	// The auto-posting should have been mutated to carry the residual.
-	autoPosting := &txn.Postings[1]
+	// The reducer must not have mutated the input transaction; the
+	// auto-posting on the original txn should still have a nil Amount.
+	if txn.Postings[1].Amount != nil {
+		t.Errorf("input auto-posting Amount = %v, want nil (input must be immutable)", txn.Postings[1].Amount)
+	}
+
+	// The booked output's clone of the auto-posting should carry the
+	// inferred residual.
+	bookedTxn := findBookedTxn(t, booked, txnDate)
+	autoPosting := &bookedTxn.Postings[1]
 	if autoPosting.Amount == nil {
-		t.Fatalf("auto-posting Amount is still nil after Walk")
+		t.Fatalf("booked auto-posting Amount is still nil after Walk")
 	}
 	if got := autoPosting.Amount.Currency; got != "USD" {
 		t.Errorf("auto-posting currency = %q, want USD", got)
@@ -151,6 +174,29 @@ func TestReducerWalk_AutoPostingInference(t *testing.T) {
 	if got := autoPosting.Amount.Number; got.Cmp(&want) != 0 {
 		t.Errorf("auto-posting number = %s, want %s", got.Text('f'), want.Text('f'))
 	}
+}
+
+// findBookedTxn returns the single Transaction in booked whose Date
+// matches d, failing the test if zero or multiple match. The helper is
+// used by tests that want to inspect the reducer's clone of a specific
+// transaction without depending on directive ordering.
+func findBookedTxn(t *testing.T, booked []ast.Directive, d time.Time) *ast.Transaction {
+	t.Helper()
+	var hit *ast.Transaction
+	for _, dir := range booked {
+		tx, ok := dir.(*ast.Transaction)
+		if !ok || !tx.Date.Equal(d) {
+			continue
+		}
+		if hit != nil {
+			t.Fatalf("findBookedTxn: multiple Transactions match date %s", d)
+		}
+		hit = tx
+	}
+	if hit == nil {
+		t.Fatalf("findBookedTxn: no Transaction matches date %s", d)
+	}
+	return hit
 }
 
 // TestReducerWalk_AutoPostingWithCostRejected ensures an auto-posting
@@ -175,9 +221,9 @@ func TestReducerWalk_AutoPostingWithCostRejected(t *testing.T) {
 		txn,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	visited := 0
-	errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+	_, errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
 		visited++
 		return true
 	})
@@ -214,9 +260,9 @@ func TestReducerWalk_AutoPostingWithPriceRejected(t *testing.T) {
 		txn,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	visited := 0
-	errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+	_, errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
 		visited++
 		return true
 	})
@@ -251,9 +297,9 @@ func TestReducerWalk_AutoPostingZeroResidual(t *testing.T) {
 		txn,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	var gotBooked []BookedPosting
-	errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		gotBooked = append(gotBooked, booked...)
 		return true
 	})
@@ -291,9 +337,9 @@ func TestReducerWalk_AutoPostingMultiCurrencyResidual(t *testing.T) {
 		txn,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	var gotBooked []BookedPosting
-	errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		gotBooked = append(gotBooked, booked...)
 		return true
 	})
@@ -323,8 +369,8 @@ func TestReducerWalk_MultipleAutoPostings(t *testing.T) {
 		txn,
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Walk(nil)
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
 	if len(errs) != 1 || errs[0].Code != CodeMultipleAutoPostings {
 		t.Fatalf("Walk errs = %v, want [CodeMultipleAutoPostings]", errs)
 	}
@@ -358,10 +404,10 @@ func TestReducerWalk_StatePersistsAcrossTransactions(t *testing.T) {
 		txn2,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	var afterT1 *Inventory
 	call := 0
-	errs := r.Walk(func(txn *ast.Transaction, before, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, errs := r.Walk(func(txn *ast.Transaction, before, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		call++
 		switch call {
 		case 1:
@@ -414,9 +460,9 @@ func TestReducerWalk_VisitorEarlyReturn(t *testing.T) {
 		),
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	calls := 0
-	errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+	_, errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
 		calls++
 		return false // stop after first
 	})
@@ -440,8 +486,8 @@ func TestReducerWalk_OpenSetsBookingMethod(t *testing.T) {
 		mkClose(closeDate, "Assets:Stock"),
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Walk(nil)
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
 	if len(errs) != 0 {
 		t.Fatalf("Walk errs = %v", errs)
 	}
@@ -470,8 +516,8 @@ func TestReducerWalk_BeforeNilForFirstTouch(t *testing.T) {
 		),
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Walk(func(_ *ast.Transaction, before, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(func(_ *ast.Transaction, before, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		v, ok := before["Assets:Cash"]
 		if !ok {
 			t.Errorf("before map missing Assets:Cash entry")
@@ -504,7 +550,7 @@ func TestReducerWalk_ReusableWalk(t *testing.T) {
 	)
 
 	collect := func(r *Reducer) (visits int, firstAfter map[ast.Account]*Inventory) {
-		errs := r.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+		_, errs := r.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 			visits++
 			if firstAfter == nil {
 				firstAfter = after
@@ -517,7 +563,7 @@ func TestReducerWalk_ReusableWalk(t *testing.T) {
 		return visits, firstAfter
 	}
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	v1, a1 := collect(r)
 	v2, a2 := collect(r)
 	if v1 != v2 {
@@ -560,9 +606,9 @@ func TestReducerRun_RetainsFinalState(t *testing.T) {
 	)
 
 	// Collect the walk's final per-account state via Walk for reference.
-	refR := NewReducer(ledger)
+	refR := NewReducer(ledger.All())
 	var refFinal map[ast.Account]*Inventory
-	refErrs := refR.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, refErrs := refR.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		refFinal = after
 		return true
 	})
@@ -570,8 +616,8 @@ func TestReducerRun_RetainsFinalState(t *testing.T) {
 		t.Fatalf("reference Walk errs = %v", refErrs)
 	}
 
-	r := NewReducer(ledger)
-	errs := r.Run()
+	r := NewReducer(ledger.All())
+	_, errs := r.Run()
 	if len(errs) != 0 {
 		t.Fatalf("Run errs = %v", errs)
 	}
@@ -613,8 +659,8 @@ func TestReducerRun_ClonesErrorsSlice(t *testing.T) {
 		),
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Run()
+	r := NewReducer(ledger.All())
+	_, errs := r.Run()
 	if len(errs) != 1 {
 		t.Fatalf("Run errs len = %d, want 1", len(errs))
 	}
@@ -652,8 +698,8 @@ func TestReducerFinal_Untouched(t *testing.T) {
 		),
 	)
 
-	r := NewReducer(ledger)
-	if errs := r.Run(); len(errs) != 0 {
+	r := NewReducer(ledger.All())
+	if _, errs := r.Run(); len(errs) != 0 {
 		t.Fatalf("Run errs = %v", errs)
 	}
 	if got := r.Final("Assets:Unrelated"); got != nil {
@@ -694,7 +740,7 @@ func TestReducerInspect_FirstTransaction(t *testing.T) {
 		txn2,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	insp, errs := r.Inspect(txn1)
 	if len(errs) != 0 {
 		t.Fatalf("Inspect errs = %v", errs)
@@ -763,9 +809,9 @@ func TestReducerInspect_MiddleTransaction(t *testing.T) {
 	// a regular Walk so we can compare them to Inspect's output. Match
 	// visited transactions by pointer identity so this test does not
 	// depend on the visitor call order.
-	refR := NewReducer(ledger)
+	refR := NewReducer(ledger.All())
 	var afterT1, afterT2 map[ast.Account]*Inventory
-	refErrs := refR.Walk(func(got *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, refErrs := refR.Walk(func(got *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		switch got {
 		case txn1:
 			afterT1 = map[ast.Account]*Inventory{}
@@ -784,7 +830,7 @@ func TestReducerInspect_MiddleTransaction(t *testing.T) {
 		t.Fatalf("reference Walk errs = %v", refErrs)
 	}
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	insp, errs := r.Inspect(txn2)
 	if len(errs) != 0 {
 		t.Fatalf("Inspect errs = %v", errs)
@@ -847,7 +893,7 @@ func TestReducerInspect_NotFound(t *testing.T) {
 		&ast.Posting{Account: "Expenses:Food", Amount: otherNeg},
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	insp, errs := r.Inspect(other)
 	if insp != nil {
 		t.Errorf("Inspect(other) = %v, want nil", insp)
@@ -886,7 +932,7 @@ func TestReducerInspect_SnapshotIndependence(t *testing.T) {
 		txn2,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	insp, errs := r.Inspect(txn1)
 	if len(errs) != 0 {
 		t.Fatalf("Inspect errs = %v", errs)
@@ -916,7 +962,7 @@ func TestReducerInspect_SnapshotIndependence(t *testing.T) {
 	bookedLen := len(insp.Booked)
 
 	// Re-walk with a no-op visitor so reducer state advances past txn2.
-	if errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+	if _, errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
 		return true
 	}); len(errs) != 0 {
 		t.Fatalf("post-Inspect Walk errs = %v", errs)
@@ -1020,9 +1066,9 @@ func TestReducerWalk_InterpolatesSingleDeferred_DateLabel(t *testing.T) {
 		xfer,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	var xferBooked []BookedPosting
-	errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == xfer {
 			xferBooked = append([]BookedPosting(nil), booked...)
 		}
@@ -1112,9 +1158,9 @@ func TestReducerWalk_InterpolatesSingleDeferred_EmptyBraces(t *testing.T) {
 		xfer,
 	)
 
-	r := NewReducer(ledger)
+	r := NewReducer(ledger.All())
 	var xferBooked []BookedPosting
-	errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == xfer {
 			xferBooked = append([]BookedPosting(nil), booked...)
 		}
@@ -1179,8 +1225,8 @@ func TestReducerWalk_InterpolationAmbiguousMultipleResidualCurrencies(t *testing
 		txn,
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Walk(nil)
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
 	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
 		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
 	}
@@ -1235,8 +1281,8 @@ func TestReducerWalk_InterpolationAmbiguousMultipleDeferred(t *testing.T) {
 		xfer,
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Walk(nil)
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
 	if len(errs) != 2 {
 		t.Fatalf("Walk errs = %v, want 2 entries (one per deferred posting)", errs)
 	}
@@ -1292,8 +1338,8 @@ func TestReducerWalk_InterpolationAmbiguousDeferredPlusAutoPosting(t *testing.T)
 		xfer,
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Walk(nil)
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
 	if len(errs) != 2 {
 		t.Fatalf("Walk errs = %v, want 2 entries", errs)
 	}
@@ -1350,14 +1396,18 @@ func TestReducerWalk_AutoPostingResidualUsesBookedReductions(t *testing.T) {
 		sell,
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Walk(nil)
+	r := NewReducer(ledger.All())
+	booked, errs := r.Walk(nil)
 	if len(errs) != 0 {
 		t.Fatalf("Walk errs = %v, want none", errs)
 	}
-	auto := &sell.Postings[1]
+	if sell.Postings[1].Amount != nil {
+		t.Errorf("input auto-posting Amount = %v, want nil (input must be immutable)", sell.Postings[1].Amount)
+	}
+	bookedSell := findBookedTxn(t, booked, sellDate)
+	auto := &bookedSell.Postings[1]
 	if auto.Amount == nil {
-		t.Fatalf("Walk: auto-posting Amount is still nil")
+		t.Fatalf("Walk: booked auto-posting Amount is still nil")
 	}
 	if auto.Amount.Currency != "JPY" {
 		t.Errorf("Walk: auto-posting currency = %q, want JPY", auto.Amount.Currency)
@@ -1416,9 +1466,116 @@ func TestReducerWalk_InterpolationZeroUnits(t *testing.T) {
 		xfer,
 	)
 
-	r := NewReducer(ledger)
-	errs := r.Walk(nil)
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
 	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
 		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	}
+}
+
+// TestReducerWalk_DoesNotMutateInput exercises every interpolation
+// path the reducer can take — auto-posting amount fill, deferred
+// per-unit cost fill, and multi-lot reduction Total synthesis from a
+// bare cost spec — in a single Walk and asserts that the caller's
+// directives are byte-for-byte identical afterwards.
+//
+// Snapshotting via deep clone (`*Transaction.Clone`) and diffing with
+// astCmpOpts catches any mutation Walk might leak through, regardless
+// of which Posting field it touches; this is broader than the
+// single-field assertions sprinkled across the other tests.
+func TestReducerWalk_DoesNotMutateInput(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	buy2Date := time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC)
+	cashTxnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	deferredDate := time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+
+	openInv := mkOpen(openDate, "Assets:Investments", ast.BookingFIFO)
+	openCash := mkOpen(openDate, "Assets:Cash", ast.BookingDefault)
+	openOpen := mkOpen(openDate, "Equity:Opening", ast.BookingDefault)
+
+	// Buy 1: seeds the FIFO sale below.
+	buy1 := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:Investments",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "JPY"),
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
+	)
+	// Buy 2: second lot, so the sale below crosses the FIFO boundary.
+	buy2 := mkTxn(buy2Date,
+		&ast.Posting{
+			Account: "Assets:Investments",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "110", "JPY"),
+				Date:    &buy2Date,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1100", "JPY")},
+	)
+	// Pure cash transaction with an auto-balanced posting (Amount
+	// nil) — exercises Reducer.fillAutoPosting on the input clone.
+	cashTxn := mkTxn(cashTxnDate,
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "42.50", "USD")},
+		&ast.Posting{Account: "Equity:Opening"}, // auto
+	)
+	// Augmentation with a deferred per-unit cost (`{}` form): the
+	// reducer infers the per-unit cost from the residual and
+	// historically wrote it back to the AST.
+	deferred := mkTxn(deferredDate,
+		&ast.Posting{
+			Account: "Assets:Investments",
+			Amount:  mkAmountPtr(t, "5", "STOCK"),
+			Cost:    &ast.CostSpec{}, // empty / deferred
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-600", "JPY")},
+	)
+	// Multi-lot reduction with a bare cost spec: the matcher
+	// resolves the lots from inventory; the reducer historically
+	// wrote a synthesized Cost.Total back to the AST.
+	sell := mkTxn(sellDate,
+		&ast.Posting{
+			Account: "Assets:Investments",
+			Amount:  mkAmountPtr(t, "-12", "STOCK"),
+			Cost:    &ast.CostSpec{},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "1230", "JPY")},
+	)
+
+	// Deep-clone every Transaction to capture a frozen snapshot of
+	// the input; Open directives are immutable scalar wrappers and
+	// are safe to share by reference. Comparing the post-Walk
+	// Transactions against these snapshots surfaces any mutation
+	// Walk performed on the caller's AST.
+	type snap struct {
+		txn   *ast.Transaction
+		clone *ast.Transaction
+	}
+	snaps := []snap{
+		{buy1, buy1.Clone()},
+		{buy2, buy2.Clone()},
+		{cashTxn, cashTxn.Clone()},
+		{deferred, deferred.Clone()},
+		{sell, sell.Clone()},
+	}
+
+	ledger := mkLedger(openInv, openCash, openOpen, buy1, buy2, cashTxn, deferred, sell)
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+
+	for _, s := range snaps {
+		if diff := cmp.Diff(s.clone, s.txn, astCmpOpts...); diff != "" {
+			t.Errorf("Reducer.Walk mutated input transaction (date=%s), diff (-want +got):\n%s",
+				s.txn.Date.Format("2006-01-02"), diff)
+		}
 	}
 }

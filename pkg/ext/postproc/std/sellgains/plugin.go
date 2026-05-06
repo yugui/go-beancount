@@ -10,6 +10,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
+	"github.com/yugui/go-beancount/pkg/inventory"
 )
 
 // codeInvalidSellGains is the diagnostic code emitted when the
@@ -124,39 +125,22 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (ast.Diagnostic, 
 	totalProceeds := map[string]*apd.Decimal{}
 
 	for _, p := range atCost {
-		// price × -units, in price currency.
+		// Upstream applies `amount.mul(posting.price, -posting.units.number)`
+		// for both `@` and `@@` price forms in the sellgains check —
+		// the per-unit case is the natural interpretation, and the
+		// total case follows upstream's pragmatic choice (which is
+		// strictly speaking inconsistent with the @@ semantics in
+		// other contexts but matches what the upstream check
+		// actually does). Tests pin this contract.
 		neg := new(apd.Decimal)
 		if _, err := apd.BaseContext.Neg(neg, &p.Amount.Number); err != nil {
 			return ast.Diagnostic{}, false
 		}
 		var contrib apd.Decimal
-		var cur string
-		if p.Price.IsTotal {
-			// "@@ X CUR" — the Price.Amount is already the total. Its
-			// sign is taken from the units sign for the proceeds-side
-			// convention, which means we flip when units flip.
-			//
-			// Upstream's amount.mul(price, -units) for a total-price
-			// annotation isn't strictly correct in beancount semantics,
-			// since the total form is independent of unit count.
-			// However, for sellgains in particular, upstream applies
-			// `amount.mul(posting.price, -posting.units.number)` even
-			// when the price is the total form, so we mirror its
-			// behavior. The same multiplication produces a value with
-			// a magnitude that no longer equals the user-entered total,
-			// but matches whatever upstream produced. Tests pin this.
-			if _, err := apd.BaseContext.Mul(&contrib, &p.Price.Amount.Number, neg); err != nil {
-				return ast.Diagnostic{}, false
-			}
-			cur = p.Price.Amount.Currency
-		} else {
-			// "@ X CUR" — per-unit price.
-			if _, err := apd.BaseContext.Mul(&contrib, &p.Price.Amount.Number, neg); err != nil {
-				return ast.Diagnostic{}, false
-			}
-			cur = p.Price.Amount.Currency
+		if _, err := apd.BaseContext.Mul(&contrib, &p.Price.Amount.Number, neg); err != nil {
+			return ast.Diagnostic{}, false
 		}
-		addInto(totalPrice, cur, &contrib)
+		addInto(totalPrice, p.Price.Amount.Currency, &contrib)
 	}
 
 	// Walk every posting that does NOT carry a Cost annotation. Cost
@@ -172,8 +156,19 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (ast.Diagnostic, 
 		if _, ok := proceedsRoots[p.Account.Root()]; !ok {
 			continue
 		}
-		w, wcur, ok := postingWeight(p)
-		if !ok {
+		w, wcur, err := inventory.PostingWeight(p)
+		if err != nil {
+			// Weight computation hit an arithmetic error. Suppressing
+			// the sellgains check here is the correct response: the
+			// proceeds total would be incomplete and any disagreement
+			// it produced would be misleading. The same numeric issue
+			// will surface through the transaction-balance validator,
+			// which is the diagnostic channel that owns it.
+			return ast.Diagnostic{}, false
+		}
+		if w == nil {
+			// Auto-posting (Amount==nil): not yet booked, so it
+			// contributes nothing observable to the proceeds side.
 			continue
 		}
 		addInto(totalProceeds, wcur, w)
@@ -239,64 +234,6 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (ast.Diagnostic, 
 		Message:  fmt.Sprintf("Invalid price vs. proceeds for %s: %s", t.Date.Format("2006-01-02"), strings.Join(disagree, "; ")),
 		Severity: ast.Error,
 	}, true
-}
-
-// postingWeight returns the posting's weight for proceeds-summing
-// purposes: units × cost-per-unit when a Cost is present, otherwise
-// units × price-per-unit when a Price is present, otherwise the plain
-// Amount. The boolean is false when the posting has no Amount and no
-// derived weight can be computed.
-//
-// In the sellgains check this helper is invoked only on postings
-// without a Cost (cost-bearing postings live on the price side of the
-// equation), so the cost branch is dead code in practice; it is kept
-// here for parity with `convert.get_weight` in case a future caller
-// needs the full mapping.
-func postingWeight(p *ast.Posting) (*apd.Decimal, string, bool) {
-	if p.Amount == nil {
-		return nil, "", false
-	}
-	if p.Cost != nil {
-		switch {
-		case p.Cost.PerUnit != nil:
-			out := new(apd.Decimal)
-			if _, err := apd.BaseContext.Mul(out, &p.Amount.Number, &p.Cost.PerUnit.Number); err != nil {
-				return nil, "", false
-			}
-			return out, p.Cost.PerUnit.Currency, true
-		case p.Cost.Total != nil:
-			// Total cost: the contribution is the total in the cost
-			// currency, signed by the units sign.
-			out := new(apd.Decimal)
-			out.Set(&p.Cost.Total.Number)
-			if p.Amount.Number.Negative {
-				if _, err := apd.BaseContext.Neg(out, out); err != nil {
-					return nil, "", false
-				}
-			}
-			return out, p.Cost.Total.Currency, true
-		}
-		// Empty cost spec: fall through to plain amount.
-	}
-	if p.Price != nil {
-		out := new(apd.Decimal)
-		if p.Price.IsTotal {
-			out.Set(&p.Price.Amount.Number)
-			if p.Amount.Number.Negative {
-				if _, err := apd.BaseContext.Neg(out, out); err != nil {
-					return nil, "", false
-				}
-			}
-		} else {
-			if _, err := apd.BaseContext.Mul(out, &p.Amount.Number, &p.Price.Amount.Number); err != nil {
-				return nil, "", false
-			}
-		}
-		return out, p.Price.Amount.Currency, true
-	}
-	out := new(apd.Decimal)
-	out.Set(&p.Amount.Number)
-	return out, p.Amount.Currency, true
 }
 
 // inferTolerances returns the per-currency tolerance map for the
