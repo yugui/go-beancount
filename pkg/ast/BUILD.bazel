@@ -35,6 +35,8 @@ go_test(
         "ledger_test.go",
         "load_test.go",
         "lower_integration_test.go",
+        "lower_mergeactivetags_test.go",
+        "lower_parsedate_test.go",
         "lower_test.go",
     ],
     data = glob(["testdata/**"]),

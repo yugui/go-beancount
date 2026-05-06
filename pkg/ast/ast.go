@@ -149,15 +149,24 @@ type Amount struct {
 type MetaValueKind int
 
 const (
-	MetaString   MetaValueKind = iota // MetaString indicates a string value.
-	MetaAccount                       // MetaAccount indicates an account name.
-	MetaCurrency                      // MetaCurrency indicates a currency code.
-	MetaDate                          // MetaDate indicates a date value.
-	MetaTag                           // MetaTag indicates a tag value.
-	MetaLink                          // MetaLink indicates a link value.
-	MetaNumber                        // MetaNumber indicates a numeric value.
-	MetaAmount                        // MetaAmount indicates an amount (number + currency).
-	MetaBool                          // MetaBool indicates a boolean value.
+	// MetaString indicates a string value.
+	MetaString MetaValueKind = iota
+	// MetaAccount indicates an account name.
+	MetaAccount
+	// MetaCurrency indicates a currency code.
+	MetaCurrency
+	// MetaDate indicates a date value.
+	MetaDate
+	// MetaTag indicates a tag value.
+	MetaTag
+	// MetaLink indicates a link value.
+	MetaLink
+	// MetaNumber indicates a numeric value.
+	MetaNumber
+	// MetaAmount indicates an amount (number + currency).
+	MetaAmount
+	// MetaBool indicates a boolean value.
+	MetaBool
 )
 
 // MetaValue is a tagged union for metadata values.

@@ -2,7 +2,6 @@ package ast
 
 import (
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -269,12 +268,23 @@ func unquoteString(t *syntax.Token) string {
 }
 
 // parseDate parses a DATE token's Raw value into time.Time.
-// Beancount dates are YYYY-MM-DD or YYYY/MM/DD.
+// Beancount dates are YYYY-MM-DD or YYYY/MM/DD; the two separator
+// styles must not be mixed within a single date. Inputs such as
+// "2024-01/15" are rejected with a descriptive error rather than
+// silently normalized, so user input mistakes surface as diagnostics
+// instead of being papered over.
 func parseDate(t *syntax.Token) (time.Time, error) {
 	s := t.Raw
-	// Normalize separator
-	s = strings.ReplaceAll(s, "/", "-")
-	return time.Parse("2006-01-02", s)
+	hasDash := strings.ContainsRune(s, '-')
+	hasSlash := strings.ContainsRune(s, '/')
+	switch {
+	case hasDash && !hasSlash:
+		return time.Parse("2006-01-02", s)
+	case hasSlash && !hasDash:
+		return time.Parse("2006/01/02", s)
+	default:
+		return time.Time{}, fmt.Errorf("invalid date %q: separators must be all '-' or all '/'", s)
+	}
 }
 
 // lowerMetadata extracts all MetadataLineNode children from a CST node
@@ -386,16 +396,28 @@ func (l *lowerer) handlePushtag(n *syntax.Node) {
 }
 
 // mergeActiveTags appends each tag from active that is not already present
-// in tags, preserving the order in which explicit tags appear and avoiding
-// the duplication that would otherwise arise when an explicit tag also
-// happens to be active. The directive types that surface tags to users
-// (transaction, note, document) all share this contract per upstream
-// beancount semantics.
+// in tags, preserving the order of explicit tags and adding active tags in
+// lexical order. Active-tag ordering is part of the contract: callers
+// (formatter round-trips, golden tests) compare the merged slice for
+// equality, so non-determinism would surface as test flakiness.
 func mergeActiveTags(tags []string, active map[string]struct{}) []string {
+	if len(active) == 0 {
+		return tags
+	}
+	seen := make(map[string]struct{}, len(tags))
+	for _, t := range tags {
+		seen[t] = struct{}{}
+	}
+	pushed := make([]string, 0, len(active))
 	for tag := range active {
-		if !slices.Contains(tags, tag) {
-			tags = append(tags, tag)
+		pushed = append(pushed, tag)
+	}
+	sort.Strings(pushed) // map iteration is randomized; sort for deterministic output
+	for _, tag := range pushed {
+		if _, ok := seen[tag]; ok {
+			continue
 		}
+		tags = append(tags, tag)
 	}
 	return tags
 }
