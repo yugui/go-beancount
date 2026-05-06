@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
@@ -878,8 +877,3 @@ func TestInventoryGet(t *testing.T) {
 		t.Errorf("Get returned aliased decimal; inventory mutated")
 	}
 }
-
-// Compile-time assertion that *apd.Decimal is accessible via the
-// decimalVal helper; silences unused-import complaints when the
-// production decimal type is the only reason for importing apd.
-var _ = (*apd.Decimal)(nil)

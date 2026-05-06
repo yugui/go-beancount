@@ -69,8 +69,11 @@ func NewInventory() *Inventory {
 // the insertion order, after being cloned so the caller retains
 // ownership of the source.
 //
-// Add preserves insertion order: merges never move an entry, and
-// appends always go to the tail.
+// Add preserves insertion order: merges happen in place at the existing
+// slot, and new lots always append at the tail. The one exception is when
+// merging produces a zero-units position; that slot is dropped so the
+// inventory does not accumulate empty placeholders, and entries after it
+// shift up by one.
 func (i *Inventory) Add(p Position) error {
 	commodity := p.Units.Currency
 	for idx := range i.positions {
@@ -481,10 +484,14 @@ func (i *Inventory) Clone() *Inventory {
 // Equal reports whether two inventories are position-for-position
 // equal in insertion order. Two positions are equal when their
 // commodity, units number (by value), and cost lot all match; a cash
-// position and a non-cash position are never equal.
+// position and a non-cash position are never equal. Two nil inventories
+// are equal; a nil inventory is never equal to a non-nil one.
 func (i *Inventory) Equal(o *Inventory) bool {
-	if i == nil || o == nil {
-		return i == nil && o == nil
+	if i == nil {
+		return o == nil
+	}
+	if o == nil {
+		return false
 	}
 	if len(i.positions) != len(o.positions) {
 		return false
