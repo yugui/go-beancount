@@ -2,17 +2,34 @@ package pad_test
 
 import (
 	"context"
+	"fmt"
 	"iter"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/pad"
 )
+
+// astCmpOpts is the standard option set for comparing AST values
+// returned by the plugin. apd.Decimal carries an internal big.Int
+// representation with unexported fields that cmp.Diff cannot inspect
+// by default; time.Time has unexported monotonic-clock state. Both
+// need a custom comparer that defers to the type's own equality
+// semantics. EquateEmpty smooths over the nil-vs-empty-slice
+// distinction that arises naturally when building expected
+// directive lists.
+var astCmpOpts = cmp.Options{
+	cmp.Comparer(func(x, y apd.Decimal) bool { return x.Cmp(&y) == 0 }),
+	cmp.Comparer(func(x, y time.Time) bool { return x.Equal(y) }),
+	cmpopts.EquateEmpty(),
+}
 
 // amtInt constructs an ast.Amount from a small int and currency code.
 func amtInt(n int64, currency string) ast.Amount {
@@ -35,6 +52,31 @@ func seqOf(directives []ast.Directive) iter.Seq2[int, ast.Directive] {
 
 func day(y int, m time.Month, d int) time.Time {
 	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+// wantSynthTx constructs the *ast.Transaction the plugin synthesizes
+// for a pad/balance pair on `currency`. expectedAmt is the balance
+// assertion's asserted total; residualAmt is the delta the synthetic
+// transaction must absorb (= expected − actual at the moment of the
+// assertion). The narration mirrors the plugin's exact format so
+// tests can pin both behavior and the human-facing string in a single
+// cmp.Diff.
+func wantSynthTx(p *ast.Pad, expectedAmt, residualAmt int64, currency string) *ast.Transaction {
+	pos := amtInt(residualAmt, currency)
+	neg := amtInt(-residualAmt, currency)
+	return &ast.Transaction{
+		Span: p.Span,
+		Date: p.Date,
+		Flag: '*',
+		Narration: fmt.Sprintf(
+			"(Padding inserted for Balance of %d %s for difference %d %s)",
+			expectedAmt, currency, residualAmt, currency,
+		),
+		Postings: []ast.Posting{
+			{Account: p.Account, Amount: &pos},
+			{Account: p.PadAccount, Amount: &neg},
+		},
+	}
 }
 
 func TestPlugin_EmptyLedger(t *testing.T) {
@@ -371,8 +413,12 @@ func TestPlugin_PadWithPriorTransactions(t *testing.T) {
 }
 
 // TestPlugin_PadZeroAdjustment verifies that when a prior transaction
-// already brings the account's balance up to the asserted total, the
-// synthesized transaction carries a zero residual.
+// already brings the account's balance up to the asserted total, no
+// synthesized padding transaction is emitted. The pad is still
+// "satisfied" by the matching balance assertion (so no
+// pad-unresolved diagnostic is produced), but emitting a zero-amount
+// padding entry would be noise. This matches upstream beancount,
+// which gates synthesis on `abs(diff) > tolerance`.
 func TestPlugin_PadZeroAdjustment(t *testing.T) {
 	pos := amtInt(1000, "USD")
 	neg := amtInt(-1000, "USD")
@@ -399,21 +445,14 @@ func TestPlugin_PadZeroAdjustment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pad.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 0 {
-		t.Errorf("Result.Diagnostics = %v, want empty", res.Diagnostics)
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
 	}
-	if len(res.Directives) != 4 {
-		t.Fatalf("len(Result.Directives) = %d, want 4 (txn, pad, synth, bal)", len(res.Directives))
-	}
-	if _, ok := res.Directives[1].(*ast.Pad); !ok {
-		t.Errorf("Result.Directives[1] = %T, want *ast.Pad (original pad retained)", res.Directives[1])
-	}
-	tx, ok := res.Directives[2].(*ast.Transaction)
-	if !ok {
-		t.Fatalf("Result.Directives[2] = %T, want *ast.Transaction", res.Directives[2])
-	}
-	if got := tx.Postings[0].Amount.Number.String(); got != "0" {
-		t.Errorf("synth target amount = %q, want %q (prior txn already covers assertion)", got, "0")
+	// No synthesis happened (zero residual), so the runner-convention
+	// "Directives = nil ⇒ preserve input verbatim" applies and the
+	// Pad remains in place untouched.
+	if res.Directives != nil {
+		t.Errorf("pad.Apply: Result.Directives = %v, want nil (no padding needed → input preserved verbatim)", res.Directives)
 	}
 }
 
@@ -640,6 +679,383 @@ func TestPlugin_PadTargetWithCostReports(t *testing.T) {
 	}
 	if got != 1 {
 		t.Errorf("pad.Apply: synthesized %d transactions, want 1 (no padding inserted)", got)
+	}
+}
+
+// TestPlugin_CostInOtherCurrencyDoesNotBlockPadding mirrors the
+// upstream beancount semantics for the user-reported case: a single
+// pad on an account whose inventory holds a cost-bearing position in
+// one currency must still be allowed to fill an unrelated currency
+// on the same account. The cost-bearing currency (STOCK) is asserted
+// at exactly its actual amount (zero residual, no synthesis), and
+// JPY — held without cost — must be padded so the JPY balance
+// assertion passes.
+//
+// This is the regression test for the original report:
+//
+//	2025-01-01 pad Assets:A Equity:Opening-Balances
+//	2025-01-01 * "initial balance"
+//	  Assets:A 100 STOCK { 10 JPY }
+//	  Equity:Opening-Balances -1000 JPY
+//	2025-01-02 balance Assets:A 100 STOCK
+//	2025-01-02 balance Assets:A 3000 JPY
+func TestPlugin_CostInOtherCurrencyDoesNotBlockPadding(t *testing.T) {
+	padSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 4, Column: 1}}
+	p := &ast.Pad{
+		Span:       padSpan,
+		Date:       day(2025, 1, 1),
+		Account:    "Assets:A",
+		PadAccount: "Equity:Opening-Balances",
+	}
+	stockAmt := amtInt(100, "STOCK")
+	cashAmt := amtInt(-1000, "JPY")
+	perUnit := amtInt(10, "JPY")
+	postSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 7, Column: 3}}
+	txn := &ast.Transaction{
+		Date: day(2025, 1, 1),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{
+				Span:    postSpan,
+				Account: "Assets:A",
+				Amount:  &stockAmt,
+				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			},
+			{Account: "Equity:Opening-Balances", Amount: &cashAmt},
+		},
+	}
+	balStock := &ast.Balance{
+		Date:    day(2025, 1, 2),
+		Account: "Assets:A",
+		Amount:  amtInt(100, "STOCK"),
+	}
+	balJPY := &ast.Balance{
+		Date:    day(2025, 1, 2),
+		Account: "Assets:A",
+		Amount:  amtInt(3000, "JPY"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{p, txn, balStock, balJPY})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
+	}
+	// STOCK has zero residual (balance already matches) so no STOCK
+	// synth is emitted. JPY needs +3000 from Equity:Opening-Balances.
+	wantDirectives := []ast.Directive{p, wantSynthTx(p, 3000, 3000, "JPY"), txn, balStock, balJPY}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestPlugin_OnePadCoversMultipleCurrencies verifies that a single
+// pad can synthesize independent padding transactions for two
+// distinct currencies on the same account, neither of which is held
+// at cost. Mirrors upstream beancount's `padded_lots` semantics:
+// `active_pad` persists across balance assertions until a new Pad
+// directive replaces it.
+func TestPlugin_OnePadCoversMultipleCurrencies(t *testing.T) {
+	p := &ast.Pad{
+		Date:       day(2024, 1, 15),
+		Account:    "Assets:Cash",
+		PadAccount: "Equity:Opening",
+	}
+	balUSD := &ast.Balance{
+		Date:    day(2024, 2, 1),
+		Account: "Assets:Cash",
+		Amount:  amtInt(1000, "USD"),
+	}
+	balEUR := &ast.Balance{
+		Date:    day(2024, 2, 2),
+		Account: "Assets:Cash",
+		Amount:  amtInt(500, "EUR"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{p, balUSD, balEUR})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
+	}
+	wantDirectives := []ast.Directive{
+		p,
+		wantSynthTx(p, 1000, 1000, "USD"),
+		wantSynthTx(p, 500, 500, "EUR"),
+		balUSD,
+		balEUR,
+	}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestPlugin_PadCostBlockedOnlyForAffectedCurrency verifies that the
+// pad-target-has-cost diagnostic is emitted only for the currency
+// that is actually held at cost, while padding succeeds for an
+// unrelated currency on the same account.
+func TestPlugin_PadCostBlockedOnlyForAffectedCurrency(t *testing.T) {
+	p := &ast.Pad{
+		Date:       day(2024, 1, 1),
+		Account:    "Assets:Mixed",
+		PadAccount: "Equity:Opening",
+	}
+	stockAmt := amtInt(5, "ACME")
+	cashAmt := amtInt(-500, "USD")
+	perUnit := amtInt(100, "USD")
+	postSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 6, Column: 3}}
+	txn := &ast.Transaction{
+		Date: day(2024, 1, 5),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{
+				Span:    postSpan,
+				Account: "Assets:Mixed",
+				Amount:  &stockAmt,
+				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			},
+			{Account: "Equity:Opening", Amount: &cashAmt},
+		},
+	}
+	// Asks pad to fill 10 ACME — but ACME is held at cost on
+	// Assets:Mixed, so this must error with pad-target-has-cost.
+	balACME := &ast.Balance{
+		Date:    day(2024, 2, 1),
+		Account: "Assets:Mixed",
+		Amount:  amtInt(10, "ACME"),
+	}
+	// Asks pad to fill 250 EUR — EUR has no cost-bearing positions,
+	// so this must succeed.
+	balEUR := &ast.Balance{
+		Date:    day(2024, 2, 2),
+		Account: "Assets:Mixed",
+		Amount:  amtInt(250, "EUR"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{p, txn, balACME, balEUR})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+
+	// Exactly one diagnostic: pad-target-has-cost for the ACME
+	// currency, pointing at the cost-bearing posting.
+	wantDiagnostics := []ast.Diagnostic{{
+		Code:    string(validation.CodePadTargetHasCost),
+		Span:    postSpan,
+		Message: `cannot pad account "Assets:Mixed": holds cost-bearing position`,
+	}}
+	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
+	}
+	// EUR is unaffected by ACME's cost: padding succeeds and the
+	// synth is inserted right after the pad. ACME yields no synth
+	// because the cost gate refuses to invent a lot identity.
+	wantDirectives := []ast.Directive{p, wantSynthTx(p, 250, 250, "EUR"), txn, balACME, balEUR}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestPlugin_CostBuiltUpThenSoldOut verifies that the cost gate
+// reflects the *current* inventory, not "ever held": a position that
+// was bought at cost and then fully closed out before the balance
+// assertion no longer blocks padding for that currency. This matches
+// upstream beancount, which inspects the inventory at the moment of
+// the balance check rather than the historical sequence of postings.
+func TestPlugin_CostBuiltUpThenSoldOut(t *testing.T) {
+	p := &ast.Pad{
+		Date:       day(2024, 1, 1),
+		Account:    "Assets:Trade",
+		PadAccount: "Equity:Opening",
+	}
+	buyAmt := amtInt(5, "ACME")
+	cashOut := amtInt(-500, "USD")
+	perUnit := amtInt(100, "USD")
+	buy := &ast.Transaction{
+		Date: day(2024, 1, 5),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Trade",
+				Amount:  &buyAmt,
+				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			},
+			{Account: "Equity:Opening", Amount: &cashOut},
+		},
+	}
+	sellAmt := amtInt(-5, "ACME")
+	cashIn := amtInt(500, "USD")
+	sell := &ast.Transaction{
+		Date: day(2024, 1, 10),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Trade",
+				Amount:  &sellAmt,
+				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			},
+			{Account: "Equity:Opening", Amount: &cashIn},
+		},
+	}
+	balACME := &ast.Balance{
+		Date:    day(2024, 2, 1),
+		Account: "Assets:Trade",
+		Amount:  amtInt(0, "ACME"),
+	}
+	balUSD := &ast.Balance{
+		Date:    day(2024, 2, 2),
+		Account: "Assets:Trade",
+		Amount:  amtInt(100, "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{p, buy, sell, balACME, balUSD})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
+	}
+	// ACME asserts to zero (buy/sell net to zero) so no ACME synth is
+	// emitted. USD has actual=0 too (buy -500, sell +500) so the
+	// synth fills 100 USD to match the assertion.
+	wantDirectives := []ast.Directive{p, wantSynthTx(p, 100, 100, "USD"), buy, sell, balACME, balUSD}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestPlugin_CostOnUnrelatedAccountDoesNotBlockPad verifies that a
+// cost-bearing posting on an account *other than* the pad's target
+// does not trip the pad-target-has-cost gate. costBalances is keyed
+// by (account, currency), so cost held on Assets:OtherStock is
+// invisible to a pad on Assets:Cash.
+func TestPlugin_CostOnUnrelatedAccountDoesNotBlockPad(t *testing.T) {
+	p := &ast.Pad{
+		Date:       day(2024, 1, 1),
+		Account:    "Assets:Cash",
+		PadAccount: "Equity:Opening",
+	}
+	stockAmt := amtInt(5, "ACME")
+	cashAmt := amtInt(-500, "USD")
+	perUnit := amtInt(100, "USD")
+	// Cost-bearing posting on a different account entirely.
+	txn := &ast.Transaction{
+		Date: day(2024, 1, 5),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:OtherStock",
+				Amount:  &stockAmt,
+				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			},
+			{Account: "Equity:Opening", Amount: &cashAmt},
+		},
+	}
+	bal := &ast.Balance{
+		Date:    day(2024, 2, 1),
+		Account: "Assets:Cash",
+		Amount:  amtInt(1000, "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{p, txn, bal})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
+	}
+	wantDirectives := []ast.Directive{p, wantSynthTx(p, 1000, 1000, "USD"), txn, bal}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestPlugin_PadReplacedAfterUseDoesNotEmitUnresolved verifies that
+// when a pad is paired with at least one balance assertion, a
+// subsequent pad on the same account replaces it without emitting
+// pad-unresolved. This is the per-account analogue of upstream's
+// "active_pad persists until a new Pad replaces it" semantics: the
+// first pad has done its job once any balance has consulted it.
+func TestPlugin_PadReplacedAfterUseDoesNotEmitUnresolved(t *testing.T) {
+	firstPad := &ast.Pad{
+		Date:       day(2024, 1, 1),
+		Account:    "Assets:Cash",
+		PadAccount: "Equity:Opening",
+	}
+	bal1 := &ast.Balance{
+		Date:    day(2024, 2, 1),
+		Account: "Assets:Cash",
+		Amount:  amtInt(1000, "USD"),
+	}
+	secondPad := &ast.Pad{
+		Date:       day(2024, 3, 1),
+		Account:    "Assets:Cash",
+		PadAccount: "Equity:OtherOpening",
+	}
+	bal2 := &ast.Balance{
+		Date:    day(2024, 4, 1),
+		Account: "Assets:Cash",
+		Amount:  amtInt(1500, "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{firstPad, bal1, secondPad, bal2})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got, pad1 was used before pad2 replaced it):\n%s", diff)
+	}
+	// firstPad fills +1000 USD; secondPad sees actual = 1000 and
+	// fills +500 USD to reach the 1500 USD assertion.
+	wantDirectives := []ast.Directive{
+		firstPad,
+		wantSynthTx(firstPad, 1000, 1000, "USD"),
+		bal1,
+		secondPad,
+		wantSynthTx(secondPad, 1500, 500, "USD"),
+		bal2,
+	}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestPlugin_DuplicateBalanceSameCurrencyDoesNotDoubleSynth verifies
+// the paddedCurrencies bookkeeping: once a currency has been padded
+// (or refused) under a given pad, a second balance assertion on the
+// same currency is a no-op. This prevents redundant synthesis and
+// duplicate diagnostics under unusual ledgers that assert the same
+// (account, currency) twice.
+func TestPlugin_DuplicateBalanceSameCurrencyDoesNotDoubleSynth(t *testing.T) {
+	p := &ast.Pad{
+		Date:       day(2024, 1, 1),
+		Account:    "Assets:Cash",
+		PadAccount: "Equity:Opening",
+	}
+	bal1 := &ast.Balance{
+		Date:    day(2024, 2, 1),
+		Account: "Assets:Cash",
+		Amount:  amtInt(1000, "USD"),
+	}
+	bal2 := &ast.Balance{
+		Date:    day(2024, 2, 2),
+		Account: "Assets:Cash",
+		Amount:  amtInt(1000, "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{p, bal1, bal2})}
+	res, err := pad.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("pad.Apply: unexpected error %v", err)
+	}
+	if diff := cmp.Diff([]ast.Diagnostic(nil), res.Diagnostics, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
+	}
+	// Single synth between pad and bal1; bal2 must be a no-op.
+	wantDirectives := []ast.Directive{p, wantSynthTx(p, 1000, 1000, "USD"), bal1, bal2}
+	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
+		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
 	}
 }
 
