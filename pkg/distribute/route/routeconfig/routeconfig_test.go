@@ -1,4 +1,4 @@
-package config
+package routeconfig
 
 import (
 	"os"
@@ -14,12 +14,17 @@ import (
 	"github.com/yugui/go-beancount/pkg/distribute/route"
 )
 
+func ptrInt(n int) *int    { return &n }
+func ptrBool(b bool) *bool { return &b }
+func ptrStrSlice(ss ...string) *[]string {
+	s := make([]string, len(ss))
+	copy(s, ss)
+	return &s
+}
+
 func mustOpen(t *testing.T, account string) *ast.Open {
 	t.Helper()
 	parts := strings.Split(account, ":")
-	if len(parts) < 1 {
-		t.Fatalf("invalid account %q", account)
-	}
 	root := ast.Account(parts[0])
 	a := root.MustSub(parts[1:]...)
 	return &ast.Open{
@@ -88,54 +93,60 @@ commodity = "JPY"
 [routes.price.override.format]
 amount_column = 24
 `
-	cfg, err := Load(writeTOML(t, body))
+	got, err := Load(writeTOML(t, body))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Account.Template != "transactions/{account}/{date}.beancount" {
-		t.Errorf("Account.Template = %q", cfg.Account.Template)
+	want := &route.Config{
+		Routes: route.Routes{
+			Account: route.AccountSection{
+				Template:            "transactions/{account}/{date}.beancount",
+				FilePattern:         "YYYYmm",
+				Order:               "ascending",
+				EquivalenceMetaKeys: ptrStrSlice("import-id"),
+				Format:              route.FormatSection{IndentWidth: ptrInt(4)},
+				Overrides: []route.AccountOverride{
+					{
+						Prefix: "Assets:JP",
+						Format: route.FormatSection{EastAsianAmbiguousWidth: ptrInt(2)},
+					},
+					{
+						Prefix:              "Expenses:Food",
+						Template:            "transactions/expenses-food/{date}.beancount",
+						EquivalenceMetaKeys: ptrStrSlice("receipt-id"),
+					},
+				},
+			},
+			Price: route.PriceSection{
+				Template:            "quotes/{commodity}/{date}.beancount",
+				FilePattern:         "YYYYmm",
+				Order:               "ascending",
+				EquivalenceMetaKeys: ptrStrSlice(),
+				Format:              route.FormatSection{AmountColumn: ptrInt(30)},
+				Overrides: []route.CommodityOverride{
+					{
+						Commodity: "JPY",
+						Format:    route.FormatSection{AmountColumn: ptrInt(24)},
+					},
+				},
+			},
+			Transaction: route.TransactionSection{
+				DefaultStrategy: "first-posting",
+				OverrideMetaKey: "route-account",
+			},
+			Format: route.FormatSection{
+				CommaGrouping:                     ptrBool(false),
+				AlignAmounts:                      ptrBool(true),
+				AmountColumn:                      ptrInt(52),
+				EastAsianAmbiguousWidth:           ptrInt(2),
+				IndentWidth:                       ptrInt(2),
+				BlankLinesBetweenDirectives:       ptrInt(1),
+				InsertBlankLinesBetweenDirectives: ptrBool(false),
+			},
+		},
 	}
-	if got, want := cfg.Account.EquivalenceMetaKeys, []string{"import-id"}; !cmp.Equal(got, want) {
-		t.Errorf("Account.EquivalenceMetaKeys = %v, want %v", got, want)
-	}
-	if got := cfg.Price.EquivalenceMetaKeys; got == nil || len(got) != 0 {
-		t.Errorf("Price.EquivalenceMetaKeys = %v, want empty (non-nil)", got)
-	}
-	if cfg.Transaction.DefaultStrategy != "first-posting" {
-		t.Errorf("Transaction.DefaultStrategy = %q", cfg.Transaction.DefaultStrategy)
-	}
-	if cfg.Transaction.OverrideMetaKey != "route-account" {
-		t.Errorf("Transaction.OverrideMetaKey = %q", cfg.Transaction.OverrideMetaKey)
-	}
-	if cfg.Format.AmountColumn == nil || *cfg.Format.AmountColumn != 52 {
-		t.Errorf("Format.AmountColumn = %v, want *52", cfg.Format.AmountColumn)
-	}
-	if cfg.Account.Format.IndentWidth == nil || *cfg.Account.Format.IndentWidth != 4 {
-		t.Errorf("Account.Format.IndentWidth = %v, want *4", cfg.Account.Format.IndentWidth)
-	}
-	if len(cfg.AccountOverrides) != 2 {
-		t.Fatalf("AccountOverrides len = %d, want 2", len(cfg.AccountOverrides))
-	}
-	if cfg.AccountOverrides[0].Prefix != "Assets:JP" {
-		t.Errorf("override[0].Prefix = %q", cfg.AccountOverrides[0].Prefix)
-	}
-	if w := cfg.AccountOverrides[0].Format.EastAsianAmbiguousWidth; w == nil || *w != 2 {
-		t.Errorf("override[0].Format.EastAsianAmbiguousWidth = %v, want *2", w)
-	}
-	if cfg.AccountOverrides[1].Prefix != "Expenses:Food" {
-		t.Errorf("override[1].Prefix = %q", cfg.AccountOverrides[1].Prefix)
-	}
-	if !cfg.AccountOverrides[1].HasEqMetaKeys {
-		t.Error("override[1].HasEqMetaKeys = false, want true")
-	}
-	if got, want := cfg.AccountOverrides[1].EquivalenceMetaKeys, []string{"receipt-id"}; !cmp.Equal(got, want) {
-		t.Errorf("override[1].EquivalenceMetaKeys = %v, want %v", got, want)
-	}
-	if len(cfg.CommodityOverrides) != 1 {
-		t.Fatalf("CommodityOverrides len = %d, want 1", len(cfg.CommodityOverrides))
-	}
-	if c := cfg.CommodityOverrides[0]; c.Commodity != "JPY" || c.Format.AmountColumn == nil || *c.Format.AmountColumn != 24 {
-		t.Errorf("price override = %+v", c)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Load mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -149,15 +160,16 @@ template = "first/{account}/{date}.beancount"
 prefix = "Assets:JP"
 template = "second/{account}/{date}.beancount"
 `
-	cfg, err := Load(writeTOML(t, body))
+	got, err := Load(writeTOML(t, body))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.AccountOverrides[0].Template != "first/{account}/{date}.beancount" {
-		t.Errorf("first override Template = %q", cfg.AccountOverrides[0].Template)
+	want := []route.AccountOverride{
+		{Prefix: "Assets:JP", Template: "first/{account}/{date}.beancount"},
+		{Prefix: "Assets:JP", Template: "second/{account}/{date}.beancount"},
 	}
-	if cfg.AccountOverrides[1].Template != "second/{account}/{date}.beancount" {
-		t.Errorf("second override Template = %q", cfg.AccountOverrides[1].Template)
+	if diff := cmp.Diff(want, got.Routes.Account.Overrides); diff != "" {
+		t.Errorf("Load() override order mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -174,21 +186,19 @@ equivalence_meta_keys = ["receipt-id"]
 prefix                = "Assets:Silenced"
 equivalence_meta_keys = []
 `
-	cfg, err := Load(writeTOML(t, body))
+	got, err := Load(writeTOML(t, body))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !cfg.AccountOverrides[0].HasEqMetaKeys {
-		t.Error("override[0].HasEqMetaKeys = false")
+	want := route.AccountSection{
+		EquivalenceMetaKeys: ptrStrSlice("import-id"),
+		Overrides: []route.AccountOverride{
+			{Prefix: "Assets:JP", EquivalenceMetaKeys: ptrStrSlice("receipt-id")},
+			{Prefix: "Assets:Silenced", EquivalenceMetaKeys: ptrStrSlice()},
+		},
 	}
-	if got, want := cfg.AccountOverrides[0].EquivalenceMetaKeys, []string{"receipt-id"}; !cmp.Equal(got, want) {
-		t.Errorf("override[0] keys = %v, want %v", got, want)
-	}
-	if !cfg.AccountOverrides[1].HasEqMetaKeys {
-		t.Error("override[1].HasEqMetaKeys = false (explicit empty list should still set Has)")
-	}
-	if got := cfg.AccountOverrides[1].EquivalenceMetaKeys; len(got) != 0 {
-		t.Errorf("override[1] keys = %v, want empty", got)
+	if diff := cmp.Diff(want, got.Routes.Account); diff != "" {
+		t.Errorf("Load() Account section mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -201,20 +211,21 @@ indent_width  = 2
 [routes.account.format]
 indent_width = 4
 `
-	cfg, err := Load(writeTOML(t, body))
+	got, err := Load(writeTOML(t, body))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Format.AmountColumn == nil || *cfg.Format.AmountColumn != 40 {
-		t.Errorf("global AmountColumn = %v", cfg.Format.AmountColumn)
+	want := route.Routes{
+		Account: route.AccountSection{
+			Format: route.FormatSection{IndentWidth: ptrInt(4)},
+		},
+		Format: route.FormatSection{
+			AmountColumn: ptrInt(40),
+			IndentWidth:  ptrInt(2),
+		},
 	}
-	if cfg.Account.Format.IndentWidth == nil || *cfg.Account.Format.IndentWidth != 4 {
-		t.Errorf("Account.Format.IndentWidth = %v", cfg.Account.Format.IndentWidth)
-	}
-	// The account section did NOT set amount_column; that field stays nil
-	// in the loaded value (inheritance happens at Decide time, not at load).
-	if cfg.Account.Format.AmountColumn != nil {
-		t.Errorf("Account.Format.AmountColumn = %v, want nil", cfg.Account.Format.AmountColumn)
+	if diff := cmp.Diff(want, got.Routes); diff != "" {
+		t.Errorf("Load() Routes mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -269,8 +280,8 @@ func TestLoad_AcceptsAllStrategies(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Load(%q): %v", s, err)
 			}
-			if cfg.Transaction.DefaultStrategy != s {
-				t.Errorf("DefaultStrategy = %q, want %q", cfg.Transaction.DefaultStrategy, s)
+			if cfg.Routes.Transaction.DefaultStrategy != s {
+				t.Errorf("DefaultStrategy = %q, want %q", cfg.Routes.Transaction.DefaultStrategy, s)
 			}
 		})
 	}
@@ -332,8 +343,9 @@ template = "japan/{account}/{date}.beancount"
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if dec.Path != "japan/Assets/JP/Cash/202401.beancount" {
-		t.Errorf("Path = %q, want override-driven path", dec.Path)
+	const wantPath = "japan/Assets/JP/Cash/202401.beancount"
+	if dec.Path != wantPath {
+		t.Errorf("Decide(...).Path = %q, want %q", dec.Path, wantPath)
 	}
 	// Format defaults still apply when no format section is configured.
 	resolved := formatopt.Resolve(dec.Format)

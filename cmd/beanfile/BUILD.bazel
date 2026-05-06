@@ -10,7 +10,7 @@ go_library(
         "//pkg/distribute/dedup",
         "//pkg/distribute/merge",
         "//pkg/distribute/route",
-        "//pkg/distribute/route/config",
+        "//pkg/distribute/route/routeconfig",
         "//pkg/printer",
     ],
 )

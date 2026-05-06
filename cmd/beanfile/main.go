@@ -16,12 +16,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/distribute/dedup"
 	"github.com/yugui/go-beancount/pkg/distribute/merge"
 	"github.com/yugui/go-beancount/pkg/distribute/route"
-	routeconfig "github.com/yugui/go-beancount/pkg/distribute/route/config"
+	"github.com/yugui/go-beancount/pkg/distribute/route/routeconfig"
 	"github.com/yugui/go-beancount/pkg/printer"
 )
 
@@ -38,63 +40,40 @@ const defaultConfigFile = "beanfile.toml"
 // behavior switches, and the resolved route.Config (TOML + flag overlay).
 type cfg struct {
 	ledgerAbs   string
-	rootAbs     string
 	passThrough bool
 	quiet       bool
 	route       *route.Config
 }
 
-// parsedFlags bundles the parsed flag values together with set-ness
-// information so parseFlags can overlay only those flags the user
-// explicitly passed onto the TOML-derived config.
-type parsedFlags struct {
-	configPath string
-	ledgerArg  string
-	rootArg    string
-
-	order           string
-	filePattern     string
-	txnStrategy     string
-	overrideMetaKey string
-
-	commaGrouping               bool
-	alignAmounts                bool
-	amountColumn                int
-	eastAsianAmbiguousWidth     int
-	indentWidth                 int
-	blankLinesBetweenDirs       int
-	insertBlankLinesBetweenDirs bool
-
-	set map[string]bool
-}
-
-func newFlagSet(stderr io.Writer) (*flag.FlagSet, *parsedFlags, *cfg) {
-	c := &cfg{}
-	fs := &parsedFlags{set: map[string]bool{}}
-	cmd := flag.NewFlagSet("beanfile", flag.ContinueOnError)
-	cmd.SetOutput(stderr)
-
-	cmd.StringVar(&fs.ledgerArg, "ledger", "", "root ledger file (required)")
-	cmd.StringVar(&fs.configPath, "config", "", "TOML config (default: ./beanfile.toml if present)")
-	cmd.StringVar(&fs.rootArg, "root", "", "destination root directory (default: directory of --ledger)")
-	cmd.BoolVar(&c.passThrough, "pass-through", false, "emit non-routable directives to stdout instead of erroring")
-	cmd.BoolVar(&c.quiet, "quiet", false, "suppress per-file and total stats on stderr")
-
-	cmd.StringVar(&fs.order, "order", "", "ascending | descending | append")
-	cmd.StringVar(&fs.filePattern, "file-pattern", "", "YYYY | YYYYmm | YYYYmmdd")
-	cmd.StringVar(&fs.txnStrategy, "txn-strategy", "", "first-posting | last-posting | first-debit | first-credit")
-	cmd.StringVar(&fs.overrideMetaKey, "override-meta-key", "", "metadata key (default: route-account)")
-
-	cmd.BoolVar(&fs.commaGrouping, "format-comma-grouping", false, "insert thousands separators in numbers")
-	cmd.BoolVar(&fs.alignAmounts, "format-align-amounts", false, "column-align posting amounts")
-	cmd.IntVar(&fs.amountColumn, "format-amount-column", 0, "right-edge column for amounts")
-	cmd.IntVar(&fs.eastAsianAmbiguousWidth, "format-east-asian-ambiguous-width", 0, "EA Ambiguous char width: 1 or 2")
-	cmd.IntVar(&fs.indentWidth, "format-indent-width", 0, "spaces per indent level")
-	cmd.IntVar(&fs.blankLinesBetweenDirs, "format-blank-lines-between-directives", 0, "target blank lines between directives")
-	cmd.BoolVar(&fs.insertBlankLinesBetweenDirs, "format-insert-blank-lines-between-directives", false, "actively insert blank lines between directives")
-
-	cmd.Usage = func() { printUsage(stderr, cmd) }
-	return cmd, fs, c
+// scanConfigPath looks for --config / -config in args and returns the
+// path explicitly set on the command line. The last occurrence wins,
+// matching stdlib flag's behaviour. ok is true only when the flag was
+// found (the empty string itself is a valid explicit path).
+//
+// A pre-scan for --config is needed because flag overlays mutate the
+// route.Config in their callbacks; the loaded config must be in place
+// before flag.Parse runs.
+func scanConfigPath(args []string) (path string, ok bool) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			break
+		}
+		for _, prefix := range []string{"--config=", "-config="} {
+			if strings.HasPrefix(a, prefix) {
+				path = strings.TrimPrefix(a, prefix)
+				ok = true
+			}
+		}
+		if a == "--config" || a == "-config" {
+			if i+1 < len(args) {
+				path = args[i+1]
+				ok = true
+				i++
+			}
+		}
+	}
+	return path, ok
 }
 
 // parseFlags parses args, validates --ledger, resolves --ledger and
@@ -103,129 +82,160 @@ func newFlagSet(stderr io.Writer) (*flag.FlagSet, *parsedFlags, *cfg) {
 // a nil cfg with the intended exit code (2). On -h/--help it returns
 // (nil, nil, 0). On success it returns the populated cfg, the list of
 // positional source paths, and 0.
+//
+// Two-pass parsing: a pre-scan locates --config so the TOML can be loaded
+// before flag.Parse runs; each --order / --file-pattern / --txn-strategy
+// / --override-meta-key / --format-* flag is then a flag.Func or
+// flag.BoolFunc that mutates the loaded route.Config in place. Each
+// flag's effect lives in one place — its callback — so adding a new flag
+// is one block of code, not three sites.
 func parseFlags(args []string, stderr io.Writer) (*cfg, []string, int) {
-	cmd, fs, c := newFlagSet(stderr)
-	if err := cmd.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil, nil, 0
-		}
-		return nil, nil, 2
-	}
-	cmd.Visit(func(f *flag.Flag) { fs.set[f.Name] = true })
+	c := &cfg{}
+	var ledgerArg, rootArg string
 
-	if fs.ledgerArg == "" {
-		fmt.Fprintln(stderr, "beanfile: --ledger is required")
-		return nil, nil, 2
-	}
-	if _, err := os.Stat(fs.ledgerArg); err != nil {
-		fmt.Fprintf(stderr, "beanfile: %v\n", err)
-		return nil, nil, 2
-	}
-	abs, err := filepath.Abs(fs.ledgerArg)
-	if err != nil {
-		fmt.Fprintf(stderr, "beanfile: resolving ledger %q: %v\n", fs.ledgerArg, err)
-		return nil, nil, 2
-	}
-	c.ledgerAbs = abs
+	configPathFromArgs, configExplicit := scanConfigPath(args)
 
-	rootArg := fs.rootArg
-	if rootArg == "" {
-		rootArg = filepath.Dir(fs.ledgerArg)
-	}
-	rootAbs, err := filepath.Abs(rootArg)
-	if err != nil {
-		fmt.Fprintf(stderr, "beanfile: resolving root %q: %v\n", rootArg, err)
-		return nil, nil, 2
-	}
-	c.rootAbs = rootAbs
-
-	rcfg, err := loadRouteConfig(fs)
-	if err != nil {
-		fmt.Fprintf(stderr, "beanfile: %v\n", err)
-		return nil, nil, 2
-	}
-	rcfg.Root = rootAbs
-	c.route = rcfg
-
-	return c, cmd.Args(), 0
-}
-
-// loadRouteConfig resolves the routing config from explicit --config
-// (when set), then ./beanfile.toml (when present), and finally a
-// zero-value Config. CLI --order / --file-pattern / --txn-strategy /
-// --override-meta-key / --format-* flags overlay the result.
-func loadRouteConfig(fs *parsedFlags) (*route.Config, error) {
 	var rcfg *route.Config
-	if fs.set["config"] {
-		loaded, err := routeconfig.Load(fs.configPath)
+	if configExplicit {
+		loaded, err := routeconfig.Load(configPathFromArgs)
 		if err != nil {
-			return nil, err
+			fmt.Fprintf(stderr, "beanfile: %v\n", err)
+			return nil, nil, 2
 		}
 		rcfg = loaded
 	} else {
 		loaded, err := routeconfig.LoadIfExists(defaultConfigFile)
 		if err != nil {
-			return nil, err
+			fmt.Fprintf(stderr, "beanfile: %v\n", err)
+			return nil, nil, 2
 		}
 		rcfg = loaded
 	}
 	if rcfg == nil {
 		rcfg = &route.Config{}
 	}
-	overlayFlags(rcfg, fs)
-	return rcfg, nil
-}
 
-// overlayFlags writes the user's --order / --file-pattern /
-// --txn-strategy / --override-meta-key and --format-* flags onto rcfg.
-// Each flag is applied only when the user actually set it on the
-// command line, leaving inherited values untouched otherwise.
-func overlayFlags(rcfg *route.Config, fs *parsedFlags) {
-	if fs.set["order"] {
-		rcfg.Account.Order = fs.order
-		rcfg.Price.Order = fs.order
-	}
-	if fs.set["file-pattern"] {
-		rcfg.Account.FilePattern = fs.filePattern
-		rcfg.Price.FilePattern = fs.filePattern
-	}
-	if fs.set["txn-strategy"] {
-		rcfg.Transaction.DefaultStrategy = fs.txnStrategy
-	}
-	if fs.set["override-meta-key"] {
-		rcfg.Transaction.OverrideMetaKey = fs.overrideMetaKey
+	cmd := flag.NewFlagSet("beanfile", flag.ContinueOnError)
+	cmd.SetOutput(stderr)
+
+	cmd.StringVar(&ledgerArg, "ledger", "", "root ledger file (required)")
+	cmd.String("config", "", "TOML config (default: ./beanfile.toml if present)")
+	cmd.StringVar(&rootArg, "root", "", "destination root directory (default: directory of --ledger)")
+	cmd.BoolVar(&c.passThrough, "pass-through", false, "emit non-routable directives to stdout instead of erroring")
+	cmd.BoolVar(&c.quiet, "quiet", false, "suppress per-file and total stats on stderr")
+
+	cmd.Func("order", "ascending | descending | append", func(s string) error {
+		rcfg.Routes.Account.Order = s
+		rcfg.Routes.Price.Order = s
+		return nil
+	})
+	cmd.Func("file-pattern", "YYYY | YYYYmm | YYYYmmdd", func(s string) error {
+		rcfg.Routes.Account.FilePattern = s
+		rcfg.Routes.Price.FilePattern = s
+		return nil
+	})
+	cmd.Func("txn-strategy", "first-posting | last-posting | first-debit | first-credit", func(s string) error {
+		rcfg.Routes.Transaction.DefaultStrategy = s
+		return nil
+	})
+	cmd.Func("override-meta-key", "metadata key (default: route-account)", func(s string) error {
+		rcfg.Routes.Transaction.OverrideMetaKey = s
+		return nil
+	})
+
+	cmd.BoolFunc("format-comma-grouping", "insert thousands separators in numbers", func(s string) error {
+		v, err := strconv.ParseBool(s)
+		if err != nil {
+			return err
+		}
+		rcfg.Routes.Format.CommaGrouping = &v
+		return nil
+	})
+	cmd.BoolFunc("format-align-amounts", "column-align posting amounts", func(s string) error {
+		v, err := strconv.ParseBool(s)
+		if err != nil {
+			return err
+		}
+		rcfg.Routes.Format.AlignAmounts = &v
+		return nil
+	})
+	cmd.Func("format-amount-column", "right-edge column for amounts", func(s string) error {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return err
+		}
+		rcfg.Routes.Format.AmountColumn = &n
+		return nil
+	})
+	cmd.Func("format-east-asian-ambiguous-width", "EA Ambiguous char width: 1 or 2", func(s string) error {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return err
+		}
+		rcfg.Routes.Format.EastAsianAmbiguousWidth = &n
+		return nil
+	})
+	cmd.Func("format-indent-width", "spaces per indent level", func(s string) error {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return err
+		}
+		rcfg.Routes.Format.IndentWidth = &n
+		return nil
+	})
+	cmd.Func("format-blank-lines-between-directives", "target blank lines between directives", func(s string) error {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return err
+		}
+		rcfg.Routes.Format.BlankLinesBetweenDirectives = &n
+		return nil
+	})
+	cmd.BoolFunc("format-insert-blank-lines-between-directives", "actively insert blank lines between directives", func(s string) error {
+		v, err := strconv.ParseBool(s)
+		if err != nil {
+			return err
+		}
+		rcfg.Routes.Format.InsertBlankLinesBetweenDirectives = &v
+		return nil
+	})
+
+	cmd.Usage = func() { printUsage(stderr, cmd) }
+	if err := cmd.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, nil, 0
+		}
+		return nil, nil, 2
 	}
 
-	flagFormat := route.FormatSection{}
-	if fs.set["format-comma-grouping"] {
-		v := fs.commaGrouping
-		flagFormat.CommaGrouping = &v
+	if ledgerArg == "" {
+		fmt.Fprintln(stderr, "beanfile: --ledger is required")
+		return nil, nil, 2
 	}
-	if fs.set["format-align-amounts"] {
-		v := fs.alignAmounts
-		flagFormat.AlignAmounts = &v
+	if _, err := os.Stat(ledgerArg); err != nil {
+		fmt.Fprintf(stderr, "beanfile: %v\n", err)
+		return nil, nil, 2
 	}
-	if fs.set["format-amount-column"] {
-		v := fs.amountColumn
-		flagFormat.AmountColumn = &v
+	abs, err := filepath.Abs(ledgerArg)
+	if err != nil {
+		fmt.Fprintf(stderr, "beanfile: resolving ledger %q: %v\n", ledgerArg, err)
+		return nil, nil, 2
 	}
-	if fs.set["format-east-asian-ambiguous-width"] {
-		v := fs.eastAsianAmbiguousWidth
-		flagFormat.EastAsianAmbiguousWidth = &v
+	c.ledgerAbs = abs
+
+	if rootArg == "" {
+		rootArg = filepath.Dir(ledgerArg)
 	}
-	if fs.set["format-indent-width"] {
-		v := fs.indentWidth
-		flagFormat.IndentWidth = &v
+	rootAbs, err := filepath.Abs(rootArg)
+	if err != nil {
+		fmt.Fprintf(stderr, "beanfile: resolving root %q: %v\n", rootArg, err)
+		return nil, nil, 2
 	}
-	if fs.set["format-blank-lines-between-directives"] {
-		v := fs.blankLinesBetweenDirs
-		flagFormat.BlankLinesBetweenDirectives = &v
-	}
-	if fs.set["format-insert-blank-lines-between-directives"] {
-		v := fs.insertBlankLinesBetweenDirs
-		flagFormat.InsertBlankLinesBetweenDirectives = &v
-	}
-	rcfg.Format = route.MergeFormatSections(rcfg.Format, flagFormat)
+
+	rcfg.Root = rootAbs
+	c.route = rcfg
+
+	return c, cmd.Args(), 0
 }
 
 func printUsage(w io.Writer, cmd *flag.FlagSet) {
@@ -251,7 +261,12 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 // each source through the routing/three-way-decision loop, merge the
 // resulting plans into their destinations, and emit stats.
 func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error], stdout, stderr io.Writer) int {
-	index, ledgerDiags, err := dedup.BuildIndex(ctx, c.ledgerAbs, c.rootAbs, dedup.WithOverrideMetaKey(c.route.Transaction.OverrideMetaKey))
+	index, ledgerDiags, err := dedup.BuildIndex(
+		ctx,
+		c.ledgerAbs,
+		c.route.Root,
+		dedup.WithOverrideMetaKey(c.route.Routes.Transaction.OverrideMetaKey),
+	)
 	if err != nil {
 		fmt.Fprintf(stderr, "beanfile: %v\n", err)
 		return 2
@@ -319,8 +334,8 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 				Format:    decision.Format,
 			})
 			spacingByPath[decision.Path] = planSpacing{
-				blankLines:       decision.ResolvedBlankLinesBetweenDirectives,
-				insertBlankLines: decision.ResolvedInsertBlankLinesBetweenDirectives,
+				blankLines:       decision.BlankLinesBetweenDirectives,
+				insertBlankLines: decision.InsertBlankLinesBetweenDirectives,
 			}
 			if commented {
 				commentedByPath[decision.Path]++
@@ -351,7 +366,7 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 		if len(inserts) > 0 {
 			sp := spacingByPath[p]
 			plan := merge.Plan{
-				Path:                              filepath.Join(c.rootAbs, p),
+				Path:                              filepath.Join(c.route.Root, p),
 				Order:                             route.OrderAscending,
 				BlankLinesBetweenDirectives:       sp.blankLines,
 				InsertBlankLinesBetweenDirectives: sp.insertBlankLines,
@@ -382,7 +397,7 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 }
 
 // planSpacing carries the resolved spacing fields for one destination
-// file. The values come from route.Decide via Decision.ResolvedBlank*
+// file. The values come from route.Decide via Decision's BlankLines*
 // fields and feed merge.Plan's spacing knobs unchanged.
 type planSpacing struct {
 	blankLines       int

@@ -7,8 +7,8 @@ import (
 
 // resolvedFormat carries the seven format fields with concrete values
 // after merging the precedence chain (defaults → global → section →
-// override). It is exposed via Decision.Format (as []format.Option) and
-// via Decision's Resolved* spacing fields.
+// override). The five body-level fields feed Decision.Format; the two
+// spacing fields feed Decision's BlankLines* fields directly.
 type resolvedFormat struct {
 	CommaGrouping                     bool
 	AlignAmounts                      bool
@@ -63,11 +63,9 @@ func applyFormatLayer(r *resolvedFormat, layer FormatSection) {
 	}
 }
 
-// options converts r into a fully-formed []format.Option slice covering
-// all seven public fields. The merger silently overrides the two spacing
-// fields with values from Plan, but emitting them here keeps Decision.Format
-// self-describing for any other consumer (e.g. the printer in pass-through
-// or dry-run modes).
+// options converts r into body-level format options. Spacing options
+// live on Decision directly, not in the returned slice — they describe
+// file-level layout, not how a single directive is rendered.
 func (r resolvedFormat) options() []format.Option {
 	return []format.Option{
 		format.WithCommaGrouping(r.CommaGrouping),
@@ -75,45 +73,5 @@ func (r resolvedFormat) options() []format.Option {
 		format.WithAmountColumn(r.AmountColumn),
 		format.WithEastAsianAmbiguousWidth(r.EastAsianAmbiguousWidth),
 		format.WithIndentWidth(r.IndentWidth),
-		format.WithBlankLinesBetweenDirectives(r.BlankLinesBetweenDirectives),
-		format.WithInsertBlankLinesBetweenDirectives(r.InsertBlankLinesBetweenDirectives),
 	}
-}
-
-// MergeFormatSections layers later sections on top of earlier ones in
-// place. It is exported so the CLI can overlay flag-derived values onto
-// a TOML-loaded section without rebuilding the route.Config types.
-func MergeFormatSections(layers ...FormatSection) FormatSection {
-	var out FormatSection
-	for _, layer := range layers {
-		if layer.CommaGrouping != nil {
-			v := *layer.CommaGrouping
-			out.CommaGrouping = &v
-		}
-		if layer.AlignAmounts != nil {
-			v := *layer.AlignAmounts
-			out.AlignAmounts = &v
-		}
-		if layer.AmountColumn != nil {
-			v := *layer.AmountColumn
-			out.AmountColumn = &v
-		}
-		if layer.EastAsianAmbiguousWidth != nil {
-			v := *layer.EastAsianAmbiguousWidth
-			out.EastAsianAmbiguousWidth = &v
-		}
-		if layer.IndentWidth != nil {
-			v := *layer.IndentWidth
-			out.IndentWidth = &v
-		}
-		if layer.BlankLinesBetweenDirectives != nil {
-			v := *layer.BlankLinesBetweenDirectives
-			out.BlankLinesBetweenDirectives = &v
-		}
-		if layer.InsertBlankLinesBetweenDirectives != nil {
-			v := *layer.InsertBlankLinesBetweenDirectives
-			out.InsertBlankLinesBetweenDirectives = &v
-		}
-	}
-	return out
 }

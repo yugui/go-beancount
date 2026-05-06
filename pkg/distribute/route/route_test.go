@@ -16,16 +16,24 @@ import (
 // Path/Order/EqMetaKeys directly.
 var decisionCmp = cmpopts.IgnoreFields(Decision{}, "Format")
 
+// ptrStrSlice returns a pointer to a copy of ss. It mirrors the
+// *[]string shape used by EquivalenceMetaKeys to distinguish "absent"
+// from "explicitly empty".
+func ptrStrSlice(ss ...string) *[]string {
+	s := append([]string(nil), ss...)
+	return &s
+}
+
 // defaultDecision returns a Decision with the resolved spacing fields
 // set to formatopt.Default()'s values, the same defaults Decide returns
 // when no override and no [routes.format] section apply.
 func defaultDecision(path string) Decision {
 	d := formatopt.Default()
 	return Decision{
-		Path:                                path,
-		Order:                               OrderAscending,
-		ResolvedBlankLinesBetweenDirectives: d.BlankLinesBetweenDirectives,
-		ResolvedInsertBlankLinesBetweenDirectives: d.InsertBlankLinesBetweenDirectives,
+		Path:                              path,
+		Order:                             OrderAscending,
+		BlankLinesBetweenDirectives:       d.BlankLinesBetweenDirectives,
+		InsertBlankLinesBetweenDirectives: d.InsertBlankLinesBetweenDirectives,
 	}
 }
 
@@ -190,9 +198,13 @@ func TestDecide_NilConfig(t *testing.T) {
 
 func TestDecide_AccountOverrideLongestPrefixWins(t *testing.T) {
 	cfg := &Config{
-		AccountOverrides: []AccountOverride{
-			{Prefix: "Assets", Template: "broad/{account}/{date}.beancount"},
-			{Prefix: "Assets:JP", Template: "japan/{account}/{date}.beancount"},
+		Routes: Routes{
+			Account: AccountSection{
+				Overrides: []AccountOverride{
+					{Prefix: "Assets", Template: "broad/{account}/{date}.beancount"},
+					{Prefix: "Assets:JP", Template: "japan/{account}/{date}.beancount"},
+				},
+			},
 		},
 	}
 	d := &ast.Open{Date: jan15, Account: ast.Assets.MustSub("JP", "Cash")}
@@ -211,8 +223,12 @@ func TestDecide_AccountOverrideExactMatch(t *testing.T) {
 	// match: this is the "all segments equal" boundary case, distinct
 	// from the strict-subaccount and non-segment-prefix scenarios.
 	cfg := &Config{
-		AccountOverrides: []AccountOverride{
-			{Prefix: "Assets:JP:Cash", Template: "exact/{account}/{date}.beancount"},
+		Routes: Routes{
+			Account: AccountSection{
+				Overrides: []AccountOverride{
+					{Prefix: "Assets:JP:Cash", Template: "exact/{account}/{date}.beancount"},
+				},
+			},
 		},
 	}
 	d := &ast.Open{Date: jan15, Account: ast.Assets.MustSub("JP", "Cash")}
@@ -228,8 +244,12 @@ func TestDecide_AccountOverrideExactMatch(t *testing.T) {
 func TestDecide_AccountOverrideSegmentBoundary(t *testing.T) {
 	// "Assets:JP" must NOT match "Assets:JPN".
 	cfg := &Config{
-		AccountOverrides: []AccountOverride{
-			{Prefix: "Assets:JP", Template: "japan/{account}/{date}.beancount"},
+		Routes: Routes{
+			Account: AccountSection{
+				Overrides: []AccountOverride{
+					{Prefix: "Assets:JP", Template: "japan/{account}/{date}.beancount"},
+				},
+			},
 		},
 	}
 	d := &ast.Open{Date: jan15, Account: ast.Assets.MustSub("JPN")}
@@ -245,9 +265,13 @@ func TestDecide_AccountOverrideSegmentBoundary(t *testing.T) {
 func TestDecide_AccountOverrideTOMLOrderTie(t *testing.T) {
 	// Two overrides at the same depth match; first declared wins.
 	cfg := &Config{
-		AccountOverrides: []AccountOverride{
-			{Prefix: "Assets:JP", Template: "first/{account}/{date}.beancount"},
-			{Prefix: "Assets:JP", Template: "second/{account}/{date}.beancount"},
+		Routes: Routes{
+			Account: AccountSection{
+				Overrides: []AccountOverride{
+					{Prefix: "Assets:JP", Template: "first/{account}/{date}.beancount"},
+					{Prefix: "Assets:JP", Template: "second/{account}/{date}.beancount"},
+				},
+			},
 		},
 	}
 	d := &ast.Open{Date: jan15, Account: ast.Assets.MustSub("JP", "Cash")}
@@ -262,8 +286,12 @@ func TestDecide_AccountOverrideTOMLOrderTie(t *testing.T) {
 
 func TestDecide_CommodityOverride(t *testing.T) {
 	cfg := &Config{
-		CommodityOverrides: []CommodityOverride{
-			{Commodity: "JPY", Template: "yen/{commodity}/{date}.beancount"},
+		Routes: Routes{
+			Price: PriceSection{
+				Overrides: []CommodityOverride{
+					{Commodity: "JPY", Template: "yen/{commodity}/{date}.beancount"},
+				},
+			},
 		},
 	}
 	d := &ast.Price{Date: jan15, Commodity: "JPY"}
@@ -286,7 +314,9 @@ func TestDecide_CommodityOverride(t *testing.T) {
 
 func TestDecide_EquivalenceMetaKeysFromSection(t *testing.T) {
 	cfg := &Config{
-		Account: AccountSection{EquivalenceMetaKeys: []string{"import-id"}},
+		Routes: Routes{
+			Account: AccountSection{EquivalenceMetaKeys: ptrStrSlice("import-id")},
+		},
 	}
 	got, err := Decide(&ast.Open{Date: jan15, Account: ast.Assets}, cfg)
 	if err != nil {
@@ -299,12 +329,15 @@ func TestDecide_EquivalenceMetaKeysFromSection(t *testing.T) {
 
 func TestDecide_EquivalenceMetaKeysOverrideReplaces(t *testing.T) {
 	cfg := &Config{
-		Account: AccountSection{EquivalenceMetaKeys: []string{"import-id"}},
-		AccountOverrides: []AccountOverride{{
-			Prefix:              "Assets:JP",
-			EquivalenceMetaKeys: []string{"receipt-id"},
-			HasEqMetaKeys:       true,
-		}},
+		Routes: Routes{
+			Account: AccountSection{
+				EquivalenceMetaKeys: ptrStrSlice("import-id"),
+				Overrides: []AccountOverride{{
+					Prefix:              "Assets:JP",
+					EquivalenceMetaKeys: ptrStrSlice("receipt-id"),
+				}},
+			},
+		},
 	}
 	got, err := Decide(&ast.Open{Date: jan15, Account: ast.Assets.MustSub("JP", "Cash")}, cfg)
 	if err != nil {
@@ -316,14 +349,17 @@ func TestDecide_EquivalenceMetaKeysOverrideReplaces(t *testing.T) {
 }
 
 func TestDecide_EquivalenceMetaKeysOverrideSilences(t *testing.T) {
-	// HasEqMetaKeys=true with empty slice means "silence inherited keys".
+	// A non-nil but empty override slice silences inherited keys.
 	cfg := &Config{
-		Account: AccountSection{EquivalenceMetaKeys: []string{"import-id"}},
-		AccountOverrides: []AccountOverride{{
-			Prefix:              "Assets:JP",
-			EquivalenceMetaKeys: []string{},
-			HasEqMetaKeys:       true,
-		}},
+		Routes: Routes{
+			Account: AccountSection{
+				EquivalenceMetaKeys: ptrStrSlice("import-id"),
+				Overrides: []AccountOverride{{
+					Prefix:              "Assets:JP",
+					EquivalenceMetaKeys: ptrStrSlice(),
+				}},
+			},
+		},
 	}
 	got, err := Decide(&ast.Open{Date: jan15, Account: ast.Assets.MustSub("JP")}, cfg)
 	if err != nil {
@@ -343,23 +379,23 @@ func TestDecide_FormatPrecedenceFieldWise(t *testing.T) {
 	iSection := 4
 	wOverride := 1
 	cfg := &Config{
-		Format: FormatSection{AmountColumn: &bGlobal},
-		Account: AccountSection{
-			Format: FormatSection{IndentWidth: &iSection},
+		Routes: Routes{
+			Format: FormatSection{AmountColumn: &bGlobal},
+			Account: AccountSection{
+				Format: FormatSection{IndentWidth: &iSection},
+				Overrides: []AccountOverride{{
+					Prefix: "Assets:JP",
+					Format: FormatSection{EastAsianAmbiguousWidth: &wOverride},
+				}},
+			},
 		},
-		AccountOverrides: []AccountOverride{{
-			Prefix: "Assets:JP",
-			Format: FormatSection{EastAsianAmbiguousWidth: &wOverride},
-		}},
 	}
 	got, err := Decide(&ast.Open{Date: jan15, Account: ast.Assets.MustSub("JP", "Cash")}, cfg)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	// We can't introspect format.Option closures directly, but Resolved*
-	// spacing fields confirm the merging logic touched the resolved
-	// struct. Apply the closures to a fresh formatopt.Options to inspect
-	// the body fields.
+	// We can't introspect format.Option closures directly. Apply the
+	// closures to a fresh formatopt.Options to inspect the body fields.
 	resolved := formatopt.Resolve(got.Format)
 	if resolved.AmountColumn != 40 {
 		t.Errorf("AmountColumn = %d, want 40 (global)", resolved.AmountColumn)
@@ -380,26 +416,30 @@ func TestDecide_FormatSpacingFieldsExposed(t *testing.T) {
 	n := 3
 	insert := true
 	cfg := &Config{
-		Format: FormatSection{
-			BlankLinesBetweenDirectives:       &n,
-			InsertBlankLinesBetweenDirectives: &insert,
+		Routes: Routes{
+			Format: FormatSection{
+				BlankLinesBetweenDirectives:       &n,
+				InsertBlankLinesBetweenDirectives: &insert,
+			},
 		},
 	}
 	got, err := Decide(&ast.Open{Date: jan15, Account: ast.Assets}, cfg)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if got.ResolvedBlankLinesBetweenDirectives != 3 {
-		t.Errorf("ResolvedBlankLinesBetweenDirectives = %d, want 3", got.ResolvedBlankLinesBetweenDirectives)
+	if got.BlankLinesBetweenDirectives != 3 {
+		t.Errorf("BlankLinesBetweenDirectives = %d, want 3", got.BlankLinesBetweenDirectives)
 	}
-	if !got.ResolvedInsertBlankLinesBetweenDirectives {
-		t.Error("ResolvedInsertBlankLinesBetweenDirectives = false, want true")
+	if !got.InsertBlankLinesBetweenDirectives {
+		t.Error("InsertBlankLinesBetweenDirectives = false, want true")
 	}
 }
 
 func TestDecide_AccountTemplateInherits(t *testing.T) {
 	cfg := &Config{
-		Account: AccountSection{Template: "section/{account}/{date}.beancount"},
+		Routes: Routes{
+			Account: AccountSection{Template: "section/{account}/{date}.beancount"},
+		},
 	}
 	got, err := Decide(&ast.Open{Date: jan15, Account: ast.Assets.MustSub("Cash")}, cfg)
 	if err != nil {
@@ -412,7 +452,9 @@ func TestDecide_AccountTemplateInherits(t *testing.T) {
 
 func TestDecide_OrderInheritsToOrderKind(t *testing.T) {
 	cfg := &Config{
-		Account: AccountSection{Order: "ascending"},
+		Routes: Routes{
+			Account: AccountSection{Order: "ascending"},
+		},
 	}
 	got, err := Decide(&ast.Open{Date: jan15, Account: ast.Assets}, cfg)
 	if err != nil {
