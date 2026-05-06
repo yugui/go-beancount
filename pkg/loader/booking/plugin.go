@@ -144,10 +144,7 @@ func writeBackCost(bp *inventory.BookedPosting) {
 // writeAugmentationCost ensures p.Cost reflects the concrete per-unit
 // lot resolved during augmentation. Date and Label on the original
 // spec — which the user wrote and which downstream tooling (printer,
-// BQL filters) treats as authoritative — are preserved. Total is
-// cleared because the resolved Cost is canonically stored as a per-
-// unit amount; keeping a stale Total alongside PerUnit would imply the
-// combined "{X # Y CUR}" form which is not what augmentation produces.
+// BQL filters) treats as authoritative — are preserved.
 func writeAugmentationCost(p *ast.Posting, lot *inventory.Cost) {
 	if p.Cost == nil {
 		// The user wrote no cost spec at all; nothing to augment back
@@ -156,13 +153,28 @@ func writeAugmentationCost(p *ast.Posting, lot *inventory.Cost) {
 		// PerUnit without inventing a CostSpec. Leave the AST alone.
 		return
 	}
+	if p.Cost.PerUnit != nil || p.Cost.Total != nil {
+		// The user already wrote a concrete cost number — {X CUR},
+		// {{T CUR}}, or {X # T CUR}. Replacing it with the resolved
+		// per-unit (lot.Number = T/|units| under the {{T CUR}} form)
+		// would silently round when the division is non-terminating
+		// (e.g. 4.2/4.1), and the transaction_balances validator —
+		// which derives weight from whichever spec form is present —
+		// would then miss a true zero residual by the rounding gap.
+		// The user-written numbers are exact by construction, so we
+		// keep them and let PostingWeight take the matching branch.
+		return
+	}
+	// Empty / date-only / label-only spec on a successful augmentation:
+	// the reducer's deferred-cost path (fillDeferredCost) writes
+	// PerUnit before this point, so this synthesis is the defensive
+	// fallback for booking outputs that did not pass through it.
 	num := apd.Decimal{}
 	num.Set(&lot.Number)
 	p.Cost.PerUnit = &ast.Amount{
 		Number:   num,
 		Currency: lot.Currency,
 	}
-	p.Cost.Total = nil
 }
 
 // writeReductionCost synthesizes p.Cost.Total from the per-step
