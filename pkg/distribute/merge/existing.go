@@ -63,7 +63,7 @@ func mergeExistingFile(plan Plan) (Stats, error) {
 		return Stats{Path: plan.Path}, fmt.Errorf("merge: parsing %q: %w", plan.Path, err)
 	}
 	if len(f.Errors) > 0 {
-		return Stats{Path: plan.Path}, fmt.Errorf("merge: parsing %q: %w", plan.Path, &f.Errors[0])
+		return Stats{Path: plan.Path}, fmt.Errorf("merge: parsing %q: %w", plan.Path, f.Errors[0])
 	}
 
 	existing, err := indexDirectives(f, data, plan.Path)

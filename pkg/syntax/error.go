@@ -9,6 +9,6 @@ type Error struct {
 }
 
 // Error returns a human-readable string including the byte offset and message.
-func (e *Error) Error() string {
+func (e Error) Error() string {
 	return fmt.Sprintf("offset %d: %s", e.Pos, e.Msg)
 }

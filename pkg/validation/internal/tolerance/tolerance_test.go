@@ -250,3 +250,36 @@ func TestForBalanceAssertion(t *testing.T) {
 		})
 	}
 }
+
+// TestWithin pins the |diff| <= tol contract documented on Within,
+// including the inclusive boundary on both signs of diff. The error
+// path requires triggering apd.BaseContext.Abs failure on pathological
+// input (e.g. an overflowing exponent) and is omitted here.
+func TestWithin(t *testing.T) {
+	cases := []struct {
+		name string
+		diff string
+		tol  string
+		want bool
+	}{
+		{name: "zero diff, zero tol", diff: "0", tol: "0", want: true},
+		{name: "diff strictly within tol", diff: "0.001", tol: "0.005", want: true},
+		{name: "diff equals tol (positive boundary)", diff: "0.005", tol: "0.005", want: true},
+		{name: "diff equals -tol (negative boundary)", diff: "-0.005", tol: "0.005", want: true},
+		{name: "diff exceeds tol (positive)", diff: "0.01", tol: "0.005", want: false},
+		{name: "diff exceeds tol (negative)", diff: "-0.01", tol: "0.005", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			diff := decimalFromString(t, tc.diff)
+			tol := decimalFromString(t, tc.tol)
+			got, err := tolerance.Within(&diff, &tol)
+			if err != nil {
+				t.Fatalf("Within(%q, %q): unexpected error: %v", tc.diff, tc.tol, err)
+			}
+			if got != tc.want {
+				t.Errorf("Within(%q, %q) = %v, want %v", tc.diff, tc.tol, got, tc.want)
+			}
+		})
+	}
+}

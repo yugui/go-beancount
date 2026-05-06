@@ -59,7 +59,7 @@ func TestScannerRoundTrip(t *testing.T) {
 						if endGot > len(got) {
 							endGot = len(got)
 						}
-						t.Errorf("first diff at byte %d:\n  want: %q\n  got:  %q", i, src[start:end], got[start:endGot])
+						t.Errorf("first diff at byte %d:\n  got:  %q\n  want: %q", i, got[start:endGot], src[start:end])
 						break
 					}
 				}
@@ -88,13 +88,13 @@ func TestScannerTokenSequence(t *testing.T) {
 
 	// Verify we got a reasonable number of tokens
 	if len(kinds) < 20 {
-		t.Errorf("expected at least 20 tokens, got %d", len(kinds))
+		t.Errorf("scan(testdata): got %d tokens, want >= 20", len(kinds))
 	}
 
 	// Verify first few tokens match expected pattern
 	// The file starts with a comment (trivia), then "option" (IDENT)
 	if kinds[0] != IDENT {
-		t.Errorf("first token should be IDENT (option), got %s", kinds[0])
+		t.Errorf("scan(testdata): kinds[0] = %s, want IDENT", kinds[0])
 	}
 }
 
@@ -125,7 +125,7 @@ func TestScannerAllTokenKinds(t *testing.T) {
 	}
 	for _, k := range expected {
 		if !seen[k] {
-			t.Errorf("expected to see token kind %s in all_tokens.beancount", k)
+			t.Errorf("scan(all_tokens.beancount): missing token kind %s", k)
 		}
 	}
 }

@@ -36,9 +36,19 @@ import "github.com/yugui/go-beancount/pkg/ext/postproc/api"
 // ResetForTest is not safe for concurrent use: call it from a single
 // goroutine, and do not launch t.Parallel subtests against a
 // registry in mid-swap. Its lifecycle matches the enclosing test's,
-// not the process's.
+// not the process's. The mutex is held only across each swap, which
+// keeps individual Register/lookup calls atomic; it does NOT prevent
+// a concurrent Register that races the swap from writing into the
+// captured old map and silently re-appearing when the cleanup
+// closure restores it.
 func ResetForTest() func() {
+	registryMu.Lock()
 	old := registry
 	registry = map[string]api.Plugin{}
-	return func() { registry = old }
+	registryMu.Unlock()
+	return func() {
+		registryMu.Lock()
+		registry = old
+		registryMu.Unlock()
+	}
 }

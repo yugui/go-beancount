@@ -23,6 +23,11 @@
 // when that account is itself a parent. The subtree sum is computed
 // on demand at assertion time by scanning buckets with
 // [ast.Account.Covers].
+//
+// Importing this package has the side effect of registering Apply in
+// pkg/ext/postproc under the package's import path, so beancount
+// `plugin "github.com/yugui/go-beancount/pkg/validation/balance"`
+// directives can activate it.
 package balance
 
 import (
@@ -84,15 +89,15 @@ type balanceKey struct {
 }
 
 // parseOptions wraps options.FromRaw and converts any parse failures
-// into ast.Diagnostic values with code "invalid-option". On error the
-// returned *options.Values is still safe to use: FromRaw retains
-// defaults for keys that failed to parse.
+// into ast.Diagnostic values with code [validation.CodeInvalidOption].
+// On error the returned *options.Values is still safe to use: FromRaw
+// retains defaults for keys that failed to parse.
 func parseOptions(raw map[string]string) (*options.Values, []ast.Diagnostic) {
 	opts, optErrs := options.FromRaw(raw)
 	var diags []ast.Diagnostic
 	for _, perr := range optErrs {
 		diags = append(diags, ast.Diagnostic{
-			Code:    "invalid-option",
+			Code:    string(validation.CodeInvalidOption),
 			Span:    perr.Span,
 			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
 		})
@@ -207,7 +212,7 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *op
 		tol = tolerance.ForBalanceAssertion(opts, b.Amount)
 	}
 
-	ok, err := withinTolerance(diff, tol)
+	ok, err := tolerance.Within(diff, tol)
 	if err != nil {
 		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeBalanceMismatch),
@@ -231,13 +236,4 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *op
 		})
 	}
 	return diags
-}
-
-// withinTolerance reports whether |diff| <= tolerance.
-func withinTolerance(diff, tol *apd.Decimal) (bool, error) {
-	abs := new(apd.Decimal)
-	if _, err := apd.BaseContext.Abs(abs, diff); err != nil {
-		return false, err
-	}
-	return abs.Cmp(tol) <= 0, nil
 }

@@ -14,9 +14,18 @@ import (
 // per-account state, and [Reducer.Inspect] for an on-demand single-
 // transaction view.
 //
-// A Reducer is not safe for concurrent use. It is, however, reusable:
-// calling [Reducer.Walk] twice on the same Reducer produces identical
-// results because Walk resets internal state at entry.
+// A Reducer is not safe for concurrent use. It is reusable: calling
+// [Reducer.Walk] twice on the same Reducer produces identical results
+// because Walk resets internal state at entry. Note that Walk does
+// mutate the input ledger in one specific case: when a transaction has
+// an auto-posting (Amount == nil), Walk fills in the resolved residual
+// Amount on that posting in place. The second Walk thus sees the
+// already-resolved auto-posting and arrives at the same booking outcome
+// without re-running residual inference. The filled-in Amount is part
+// of the observable contract — downstream consumers (e.g. the loader's
+// booking pass, validation, the printer, and BQL) read the resolved
+// Amount on auto-postings after Walk returns and depend on it being
+// populated; it is not merely an internal cache.
 type Reducer struct {
 	ledger *ast.Ledger
 	// booking tracks the per-account booking method discovered from an

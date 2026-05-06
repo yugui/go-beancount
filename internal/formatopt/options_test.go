@@ -1,34 +1,29 @@
 package formatopt
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/google/go-cmp/cmp"
+)
 
 func TestDefault(t *testing.T) {
-	d := Default()
-	if d.CommaGrouping {
-		t.Error("CommaGrouping: got true, want false")
+	want := Options{
+		AlignAmounts:                true,
+		AmountColumn:                52,
+		EastAsianAmbiguousWidth:     2,
+		IndentWidth:                 2,
+		BlankLinesBetweenDirectives: 1,
 	}
-	if !d.AlignAmounts {
-		t.Error("AlignAmounts: got false, want true")
-	}
-	if d.AmountColumn != 52 {
-		t.Errorf("AmountColumn: got %d, want 52", d.AmountColumn)
-	}
-	if d.EastAsianAmbiguousWidth != 2 {
-		t.Errorf("EastAsianAmbiguousWidth: got %d, want 2", d.EastAsianAmbiguousWidth)
-	}
-	if d.IndentWidth != 2 {
-		t.Errorf("IndentWidth: got %d, want 2", d.IndentWidth)
-	}
-	if d.BlankLinesBetweenDirectives != 1 {
-		t.Errorf("BlankLinesBetweenDirectives: got %d, want 1", d.BlankLinesBetweenDirectives)
+	if diff := cmp.Diff(want, Default()); diff != "" {
+		t.Errorf("Default() mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestResolveNoOptions(t *testing.T) {
 	got := Resolve(nil)
 	want := Default()
-	if got != want {
-		t.Errorf("Resolve(nil) = %+v, want %+v", got, want)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(nil) mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -38,20 +33,15 @@ func TestResolveWithOverrides(t *testing.T) {
 		func(o *Options) { o.AmountColumn = 80 },
 		func(o *Options) { o.EastAsianAmbiguousWidth = 1 },
 	})
-	if !got.CommaGrouping {
-		t.Error("CommaGrouping: got false, want true")
+	want := Options{
+		CommaGrouping:               true,
+		AlignAmounts:                true,
+		AmountColumn:                80,
+		EastAsianAmbiguousWidth:     1,
+		IndentWidth:                 2,
+		BlankLinesBetweenDirectives: 1,
 	}
-	if got.AmountColumn != 80 {
-		t.Errorf("AmountColumn: got %d, want 80", got.AmountColumn)
-	}
-	if got.EastAsianAmbiguousWidth != 1 {
-		t.Errorf("EastAsianAmbiguousWidth: got %d, want 1", got.EastAsianAmbiguousWidth)
-	}
-	// Unchanged fields should remain at defaults.
-	if !got.AlignAmounts {
-		t.Error("AlignAmounts: got false, want true")
-	}
-	if got.IndentWidth != 2 {
-		t.Errorf("IndentWidth: got %d, want 2", got.IndentWidth)
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(opts) mismatch (-want +got):\n%s", diff)
 	}
 }

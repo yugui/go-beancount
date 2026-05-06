@@ -20,10 +20,10 @@ func TestAddTokenAndAddNode(t *testing.T) {
 		t.Fatalf("got %d children, want 2", len(n.Children))
 	}
 	if n.Children[0].Token == nil {
-		t.Error("first child should be a token")
+		t.Errorf("AddToken: Children[0].Token = nil, want non-nil")
 	}
 	if n.Children[1].Node == nil {
-		t.Error("second child should be a node")
+		t.Errorf("AddNode: Children[1].Node = nil, want non-nil")
 	}
 }
 
@@ -41,8 +41,8 @@ func TestFindToken(t *testing.T) {
 		t.Errorf("FindToken(STRING).Raw = %q, want %q", got.Raw, `"title"`)
 	}
 
-	if n.FindToken(NUMBER) != nil {
-		t.Error("FindToken(NUMBER) should return nil")
+	if got := n.FindToken(NUMBER); got != nil {
+		t.Errorf("FindToken(NUMBER) = %v, want nil", got)
 	}
 }
 
@@ -54,10 +54,10 @@ func TestFindNode(t *testing.T) {
 
 	got := file.FindNode(OptionDirective)
 	if got != opt {
-		t.Error("FindNode did not return the expected node")
+		t.Errorf("FindNode(OptionDirective) = %p, want %p", got, opt)
 	}
-	if file.FindNode(TransactionDirective) != nil {
-		t.Error("FindNode should return nil for missing kind")
+	if got := file.FindNode(TransactionDirective); got != nil {
+		t.Errorf("FindNode(TransactionDirective) = %v, want nil", got)
 	}
 }
 
@@ -126,7 +126,7 @@ func TestTokens_MixedChildren(t *testing.T) {
 		t.Fatalf("Tokens() yielded %d, want 2", len(got))
 	}
 	if got[0] != t1 || got[1] != eof {
-		t.Error("tokens not in expected order")
+		t.Errorf("Tokens() = [%v, %v], want [%v, %v]", got[0], got[1], t1, eof)
 	}
 }
 
@@ -184,7 +184,7 @@ func TestFile_FullText_NilRoot(t *testing.T) {
 }
 
 func TestError_Error(t *testing.T) {
-	e := &Error{Pos: 42, Msg: "unexpected token"}
+	e := Error{Pos: 42, Msg: "unexpected token"}
 	want := "offset 42: unexpected token"
 	if got := e.Error(); got != want {
 		t.Errorf("Error() = %q, want %q", got, want)

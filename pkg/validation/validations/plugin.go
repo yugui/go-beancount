@@ -6,6 +6,11 @@
 // It is the third and final stage of the validation pipeline
 // (pad -> balance -> validations); see the pkg/validation package doc
 // for the recommended wiring.
+//
+// Importing this package has the side effect of registering Apply in
+// pkg/ext/postproc under the package's import path, so beancount
+// `plugin "github.com/yugui/go-beancount/pkg/validation/validations"`
+// directives can activate it.
 package validations
 
 import (
@@ -16,6 +21,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
+	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
 
@@ -49,7 +55,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	var diags []ast.Diagnostic
 	for _, perr := range optErrs {
 		diags = append(diags, ast.Diagnostic{
-			Code:    "invalid-option",
+			Code:    string(validation.CodeInvalidOption),
 			Span:    perr.Span,
 			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
 		})

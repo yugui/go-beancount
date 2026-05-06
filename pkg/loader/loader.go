@@ -42,6 +42,13 @@
 // partially-processed ledger alongside the error so callers can inspect
 // any diagnostics accumulated before the halt.
 //
+// # Context
+//
+// All entry points require a non-nil context, matching the convention of
+// the standard library (see [net/http.NewRequestWithContext]). Pass
+// [context.Background] or [context.TODO] when no cancellation or deadline
+// is needed.
+//
 // Example:
 //
 //	ledger, err := loader.LoadFile(ctx, "main.beancount")
@@ -67,6 +74,15 @@ import (
 	"github.com/yugui/go-beancount/pkg/validation/document"
 	"github.com/yugui/go-beancount/pkg/validation/pad"
 	"github.com/yugui/go-beancount/pkg/validation/validations"
+)
+
+// pluginProcessingModeOption is the beancount option key whose value selects
+// the loader's processing mode. modeRaw selects the upstream "raw" pipeline
+// — only directive-specified plugins, no built-ins. Any other value (or
+// absent) selects the default pipeline.
+const (
+	pluginProcessingModeOption = "plugin_processing_mode"
+	modeRaw                    = "raw"
 )
 
 // preBuiltins are built-in plugins applied before directive-specified plugins
@@ -121,7 +137,7 @@ func LoadFile(ctx context.Context, path string, opts ...Option) (*ast.Ledger, er
 // inspect partial results.
 func runPipeline(ctx context.Context, ledger *ast.Ledger) (*ast.Ledger, error) {
 	rawOpts := options.BuildRaw(ledger)
-	if rawOpts["plugin_processing_mode"] == "raw" {
+	if rawOpts[pluginProcessingModeOption] == modeRaw {
 		return ledger, postproc.Apply(ctx, ledger)
 	}
 	return ledger, applyDefault(ctx, ledger, rawOpts)

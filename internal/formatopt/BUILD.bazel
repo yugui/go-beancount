@@ -20,4 +20,5 @@ go_test(
         "width_test.go",
     ],
     embed = [":formatopt"],
+    deps = ["@com_github_google_go_cmp//cmp"],
 )

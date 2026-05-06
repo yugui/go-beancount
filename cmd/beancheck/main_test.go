@@ -161,7 +161,7 @@ func TestReportWritesAllDiagnostics(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	report(&buf, diags, false)
+	report(&buf, diags, false) // exit code not under test here
 	want := formatDiagnostic(diags[0]) + "\n" +
 		formatDiagnostic(diags[1]) + "\n" +
 		formatDiagnostic(diags[2]) + "\n"
@@ -229,7 +229,7 @@ func TestReportDoesNotMutateCallerSlice(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	report(&buf, diags, false)
+	report(&buf, diags, false) // exit code not under test here
 	if diags[0].Message != "later" || diags[1].Message != "earlier" {
 		t.Errorf("report() mutated caller slice: %+v", diags)
 	}
@@ -256,7 +256,7 @@ func TestReportStableSortPreservesAppendOrder(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	report(&buf, diags, false)
+	report(&buf, diags, false) // exit code not under test here
 	want := "a.beancount:5:2: error: first at L5\n" +
 		"a.beancount:5:2: error: second at L5\n" +
 		"a.beancount:5:2: error: third at L5\n"
@@ -317,7 +317,7 @@ func TestReportSortsEmptyFilenameFirst(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	report(&buf, diags, false)
+	report(&buf, diags, false) // exit code not under test here
 	want := "error: no source [plugin-not-registered]\n" +
 		"a.beancount:1:1: error: in a\n" +
 		"b.beancount:1:1: error: in b\n"
@@ -389,7 +389,7 @@ func TestReportOffsetTiebreaker(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	report(&buf, diags, false)
+	report(&buf, diags, false) // exit code not under test here
 	want := "a.beancount:1:1: error: earlier offset\n" +
 		"a.beancount:1:1: error: later offset\n"
 	if got := buf.String(); got != want {
