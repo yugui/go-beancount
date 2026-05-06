@@ -1,11 +1,11 @@
 package validations
 
 import (
-	"reflect"
-	"sort"
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
@@ -63,19 +63,14 @@ func TestActiveAccounts_Transaction_UnopenedAccount(t *testing.T) {
 		},
 	}
 
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	e := errs[0]
-	if e.Code != string(validation.CodeAccountNotOpen) {
-		t.Errorf("Code = %q, want %q", e.Code, validation.CodeAccountNotOpen)
-	}
-	if e.Span != postingSpan {
-		t.Errorf("Span = %#v, want posting span %#v", e.Span, postingSpan)
-	}
-	if want := `account "Assets:Cash" is not open`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotOpen),
+		Span:     postingSpan,
+		Message:  `account "Assets:Cash" is not open`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -90,12 +85,14 @@ func TestActiveAccounts_Transaction_PostingSpanFallsBackToTxnSpan(t *testing.T) 
 			{Account: "Assets:Cash"}, // zero Span
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	if errs[0].Span != txnSpan {
-		t.Errorf("Span = %#v, want txn span %#v (posting had zero span)", errs[0].Span, txnSpan)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotOpen),
+		Span:     txnSpan,
+		Message:  `account "Assets:Cash" is not open`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry: posting had zero span; want fallback to txn span (-want +got):\n%s", diff)
 	}
 }
 
@@ -105,23 +102,22 @@ func TestActiveAccounts_Transaction_PostingBeforeOpen(t *testing.T) {
 	}, nil)
 	v := newActiveAccounts(state)
 
+	postingSpan := ast.Span{Start: ast.Position{Line: 2}}
 	txn := &ast.Transaction{
 		Date: date(2024, 1, 15),
 		Span: ast.Span{Start: ast.Position{Line: 1}},
 		Postings: []ast.Posting{
-			{Account: "Assets:Cash", Span: ast.Span{Start: ast.Position{Line: 2}}},
+			{Account: "Assets:Cash", Span: postingSpan},
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	e := errs[0]
-	if e.Code != string(validation.CodeAccountNotYetOpen) {
-		t.Errorf("Code = %q, want %q", e.Code, validation.CodeAccountNotYetOpen)
-	}
-	if want := `account "Assets:Cash" is not open on 2024-01-15`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotYetOpen),
+		Span:     postingSpan,
+		Message:  `account "Assets:Cash" is not open on 2024-01-15`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -132,23 +128,22 @@ func TestActiveAccounts_Transaction_PostingAfterClose(t *testing.T) {
 	)
 	v := newActiveAccounts(state)
 
+	postingSpan := ast.Span{Start: ast.Position{Line: 2}}
 	txn := &ast.Transaction{
 		Date: date(2024, 6, 1),
 		Span: ast.Span{Start: ast.Position{Line: 1}},
 		Postings: []ast.Posting{
-			{Account: "Assets:Cash", Span: ast.Span{Start: ast.Position{Line: 2}}},
+			{Account: "Assets:Cash", Span: postingSpan},
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	e := errs[0]
-	if e.Code != string(validation.CodeAccountClosed) {
-		t.Errorf("Code = %q, want %q", e.Code, validation.CodeAccountClosed)
-	}
-	if want := `account "Assets:Cash" is closed on 2024-06-01`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountClosed),
+		Span:     postingSpan,
+		Message:  `account "Assets:Cash" is closed on 2024-06-01`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -160,18 +155,14 @@ func TestActiveAccounts_Balance_UnopenedAccount(t *testing.T) {
 		Account: "Assets:Cash",
 		Span:    span,
 	}
-	errs := v.ProcessEntry(d)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	if errs[0].Code != string(validation.CodeAccountNotOpen) {
-		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAccountNotOpen)
-	}
-	if errs[0].Span != span {
-		t.Errorf("Span = %#v, want %#v", errs[0].Span, span)
-	}
-	if want := `account "Assets:Cash" is not open`; errs[0].Message != want {
-		t.Errorf("Message = %q, want %q", errs[0].Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotOpen),
+		Span:     span,
+		Message:  `account "Assets:Cash" is not open`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(d)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -187,22 +178,22 @@ func TestActiveAccounts_Pad_UnopenedAccounts(t *testing.T) {
 		PadAccount: "Equity:Opening",
 		Span:       span,
 	}
-	errs := v.ProcessEntry(d)
-	if len(errs) != 2 {
-		t.Fatalf("got %d errors, want 2; errs = %v", len(errs), errs)
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeAccountNotOpen),
+			Span:     span,
+			Message:  `account "Assets:Target" is not open`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeAccountNotOpen),
+			Span:     span,
+			Message:  `account "Equity:Opening" is not open`,
+			Severity: ast.Error,
+		},
 	}
-	wantAccts := []string{"Assets:Target", "Equity:Opening"}
-	for i, e := range errs {
-		if e.Code != string(validation.CodeAccountNotOpen) {
-			t.Errorf("errs[%d].Code = %q, want %q", i, e.Code, validation.CodeAccountNotOpen)
-		}
-		want := `account "` + wantAccts[i] + `" is not open`
-		if e.Message != want {
-			t.Errorf("errs[%d].Message = %q, want %q", i, e.Message, want)
-		}
-		if e.Span != span {
-			t.Errorf("errs[%d].Span = %#v, want %#v", i, e.Span, span)
-		}
+	if diff := cmp.Diff(want, v.ProcessEntry(d)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -211,50 +202,59 @@ func TestActiveAccounts_Pad_OnlySourceMissing(t *testing.T) {
 	v := newActiveAccounts(mkState(map[ast.Account]time.Time{
 		"Assets:Target": date(2024, 1, 1),
 	}, nil))
+	span := ast.Span{Start: ast.Position{Line: 1}}
 	d := &ast.Pad{
 		Date:       date(2024, 1, 15),
 		Account:    "Assets:Target",
 		PadAccount: "Equity:Opening",
-		Span:       ast.Span{Start: ast.Position{Line: 1}},
+		Span:       span,
 	}
-	errs := v.ProcessEntry(d)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	if want := `account "Equity:Opening" is not open`; errs[0].Message != want {
-		t.Errorf("Message = %q, want %q", errs[0].Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotOpen),
+		Span:     span,
+		Message:  `account "Equity:Opening" is not open`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(d)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestActiveAccounts_Note_UnopenedAccount(t *testing.T) {
 	v := newActiveAccounts(mkState(nil, nil))
+	span := ast.Span{Start: ast.Position{Line: 3}}
 	d := &ast.Note{
 		Date:    date(2024, 1, 15),
 		Account: "Assets:Cash",
-		Span:    ast.Span{Start: ast.Position{Line: 3}},
+		Span:    span,
 	}
-	errs := v.ProcessEntry(d)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	if errs[0].Code != string(validation.CodeAccountNotOpen) {
-		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAccountNotOpen)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotOpen),
+		Span:     span,
+		Message:  `account "Assets:Cash" is not open`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(d)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestActiveAccounts_Document_UnopenedAccount(t *testing.T) {
 	v := newActiveAccounts(mkState(nil, nil))
+	span := ast.Span{Start: ast.Position{Line: 4}}
 	d := &ast.Document{
 		Date:    date(2024, 1, 15),
 		Account: "Assets:Cash",
-		Span:    ast.Span{Start: ast.Position{Line: 4}},
+		Span:    span,
 	}
-	errs := v.ProcessEntry(d)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	if errs[0].Code != string(validation.CodeAccountNotOpen) {
-		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAccountNotOpen)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotOpen),
+		Span:     span,
+		Message:  `account "Assets:Cash" is not open`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(d)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -402,34 +402,34 @@ func TestActiveAccounts_PadAfterClose_StillRejected(t *testing.T) {
 		},
 	)
 	v := newActiveAccounts(state)
+	span := ast.Span{Start: ast.Position{Line: 1}}
 	d := &ast.Pad{
 		Date:       date(2024, 6, 1),
 		Account:    "Assets:Target",
 		PadAccount: "Equity:Opening",
-		Span:       ast.Span{Start: ast.Position{Line: 1}},
+		Span:       span,
 	}
-	errs := v.ProcessEntry(d)
-	if len(errs) != 2 {
-		t.Fatalf("got %d errors, want 2; errs = %v", len(errs), errs)
+	// Both slots must surface the same close-date diagnostic regardless
+	// of which is checked first; sort by Message so the assertion does
+	// not pin ProcessEntry's current Account-before-PadAccount visit
+	// order.
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeAccountClosed),
+			Span:     span,
+			Message:  `account "Assets:Target" is closed on 2024-06-01`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeAccountClosed),
+			Span:     span,
+			Message:  `account "Equity:Opening" is closed on 2024-06-01`,
+			Severity: ast.Error,
+		},
 	}
-	// ProcessEntry visits Pad.Account before Pad.PadAccount today; sort
-	// the diagnostics so the assertion does not pin that visit order
-	// (both slots must surface the same close-date diagnostic regardless
-	// of which is checked first).
-	gotMsgs := []string{errs[0].Message, errs[1].Message}
-	sort.Strings(gotMsgs)
-	wantMsgs := []string{
-		`account "Assets:Target" is closed on 2024-06-01`,
-		`account "Equity:Opening" is closed on 2024-06-01`,
-	}
-	sort.Strings(wantMsgs)
-	for i, e := range errs {
-		if e.Code != string(validation.CodeAccountClosed) {
-			t.Errorf("errs[%d].Code = %q, want %q", i, e.Code, validation.CodeAccountClosed)
-		}
-	}
-	if !reflect.DeepEqual(gotMsgs, wantMsgs) {
-		t.Errorf("Messages (sorted) = %q, want %q", gotMsgs, wantMsgs)
+	sortDiags := cmpopts.SortSlices(func(a, b ast.Diagnostic) bool { return a.Message < b.Message })
+	if diff := cmp.Diff(want, v.ProcessEntry(d), sortDiags); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -442,20 +442,20 @@ func TestActiveAccounts_NoteBeforeOpen_NotYetOpen(t *testing.T) {
 		"Assets:Cash": date(2024, 2, 1),
 	}, nil)
 	v := newActiveAccounts(state)
+	span := ast.Span{Start: ast.Position{Line: 1}}
 	d := &ast.Note{
 		Date:    date(2024, 1, 15),
 		Account: "Assets:Cash",
-		Span:    ast.Span{Start: ast.Position{Line: 1}},
+		Span:    span,
 	}
-	errs := v.ProcessEntry(d)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	if errs[0].Code != string(validation.CodeAccountNotYetOpen) {
-		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAccountNotYetOpen)
-	}
-	if want := `account "Assets:Cash" is not open on 2024-01-15`; errs[0].Message != want {
-		t.Errorf("Message = %q, want %q", errs[0].Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotYetOpen),
+		Span:     span,
+		Message:  `account "Assets:Cash" is not open on 2024-01-15`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(d)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -467,20 +467,20 @@ func TestActiveAccounts_DocumentBeforeOpen_NotYetOpen(t *testing.T) {
 		"Assets:Cash": date(2024, 2, 1),
 	}, nil)
 	v := newActiveAccounts(state)
+	span := ast.Span{Start: ast.Position{Line: 1}}
 	d := &ast.Document{
 		Date:    date(2024, 1, 15),
 		Account: "Assets:Cash",
-		Span:    ast.Span{Start: ast.Position{Line: 1}},
+		Span:    span,
 	}
-	errs := v.ProcessEntry(d)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	if errs[0].Code != string(validation.CodeAccountNotYetOpen) {
-		t.Errorf("Code = %q, want %q", errs[0].Code, validation.CodeAccountNotYetOpen)
-	}
-	if want := `account "Assets:Cash" is not open on 2024-01-15`; errs[0].Message != want {
-		t.Errorf("Message = %q, want %q", errs[0].Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeAccountNotYetOpen),
+		Span:     span,
+		Message:  `account "Assets:Cash" is not open on 2024-01-15`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(d)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 

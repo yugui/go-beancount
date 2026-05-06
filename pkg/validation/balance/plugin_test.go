@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
@@ -115,19 +116,14 @@ func TestPlugin_BalanceMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != string(validation.CodeBalanceMismatch) {
-		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
-	}
-	if e.Span != balSpan {
-		t.Errorf("Span = %#v, want %#v", e.Span, balSpan)
-	}
-	want := "balance assertion failed: account Assets:Cash: expected 101.00 USD, got 100.00 USD"
-	if e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeBalanceMismatch),
+		Span:     balSpan,
+		Message:  "balance assertion failed: account Assets:Cash: expected 101.00 USD, got 100.00 USD",
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -240,11 +236,14 @@ func TestPlugin_BalanceOnUnopenedAccount_NoError(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Diagnostics) != 1 {
-			t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-		}
-		if got, want := res.Diagnostics[0].Code, string(validation.CodeBalanceMismatch); got != want {
-			t.Errorf("Code = %q, want %q (account-open diagnostics must NOT be emitted)", got, want)
+		want := []ast.Diagnostic{{
+			Code:     string(validation.CodeBalanceMismatch),
+			Span:     bal.Span,
+			Message:  "balance assertion failed: account Assets:Cash: expected 100 USD, got 0 USD",
+			Severity: ast.Error,
+		}}
+		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+			t.Errorf("Result.Diagnostics: account-open diagnostics must NOT be emitted (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -324,29 +323,27 @@ func TestPlugin_AutoPostingNotBookedReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	wantCodes := []string{
-		string(validation.CodeAutoPostingUnresolved),
-		string(validation.CodeBalanceMismatch),
-	}
-	if len(res.Diagnostics) != len(wantCodes) {
-		t.Fatalf("len(Result.Diagnostics) = %d, want %d; diagnostics = %v", len(res.Diagnostics), len(wantCodes), res.Diagnostics)
-	}
-	for i, want := range wantCodes {
-		if res.Diagnostics[i].Code != want {
-			t.Errorf("balance.Apply: Diagnostics[%d].Code = %q, want %q", i, res.Diagnostics[i].Code, want)
-		}
-	}
 	// The unresolved diagnostic falls back to the transaction Span when
-	// the posting Span is zero.
-	if got := res.Diagnostics[0].Span; got != txnSpan {
-		t.Errorf("balance.Apply: Diagnostics[0].Span = %#v, want txn.Span %#v", got, txnSpan)
+	// the posting Span is zero. Inventory was NOT updated for the
+	// nil-Amount posting, so the balance assertion against the
+	// auto-posting's account must see zero rather than the negated
+	// residual.
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeAutoPostingUnresolved),
+			Span:     txnSpan,
+			Message:  `posting on account "Assets:Cash" has no amount; booking pass should have resolved it`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeBalanceMismatch),
+			Span:     bal.Span,
+			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD",
+			Severity: ast.Error,
+		},
 	}
-	// Inventory was NOT updated for the nil-Amount posting, so the
-	// balance assertion against the auto-posting's account must see
-	// zero rather than the negated residual.
-	wantMsg := "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD"
-	if got := res.Diagnostics[1].Message; got != wantMsg {
-		t.Errorf("balance.Apply: Diagnostics[1].Message = %q, want %q", got, wantMsg)
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -390,23 +387,26 @@ func TestPlugin_AutoPostingMultiCurrencyReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	wantCodes := []string{
-		string(validation.CodeAutoPostingUnresolved),
-		string(validation.CodeBalanceMismatch),
-	}
-	if len(res.Diagnostics) != len(wantCodes) {
-		t.Fatalf("len(Result.Diagnostics) = %d, want %d; diagnostics = %v", len(res.Diagnostics), len(wantCodes), res.Diagnostics)
-	}
-	for i, want := range wantCodes {
-		if res.Diagnostics[i].Code != want {
-			t.Errorf("balance.Apply: Diagnostics[%d].Code = %q, want %q", i, res.Diagnostics[i].Code, want)
-		}
-	}
 	// The running balance for (Assets:Cash, USD) must be 0 — the
-	// auto-posting was NOT inferred.
-	wantMsg := "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD"
-	if res.Diagnostics[1].Message != wantMsg {
-		t.Errorf("balance.Apply: Diagnostics[1].Message = %q, want %q", res.Diagnostics[1].Message, wantMsg)
+	// auto-posting was NOT inferred. Span on the unresolved diagnostic
+	// falls back to the transaction span (txn.Span is zero here, so
+	// it stays zero).
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeAutoPostingUnresolved),
+			Span:     txn.Span,
+			Message:  `posting on account "Assets:Cash" has no amount; booking pass should have resolved it`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeBalanceMismatch),
+			Span:     balUSD.Span,
+			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD",
+			Severity: ast.Error,
+		},
+	}
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -450,22 +450,28 @@ func TestPlugin_MultipleAutoPostingsReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	wantCodes := []string{
-		string(validation.CodeAutoPostingUnresolved),
-		string(validation.CodeAutoPostingUnresolved),
-		string(validation.CodeBalanceMismatch),
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeAutoPostingUnresolved),
+			Span:     txn.Span,
+			Message:  `posting on account "Assets:Cash" has no amount; booking pass should have resolved it`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeAutoPostingUnresolved),
+			Span:     txn.Span,
+			Message:  `posting on account "Assets:Savings" has no amount; booking pass should have resolved it`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeBalanceMismatch),
+			Span:     balCashNonZero.Span,
+			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD",
+			Severity: ast.Error,
+		},
 	}
-	if len(res.Diagnostics) != len(wantCodes) {
-		t.Fatalf("len(Result.Diagnostics) = %d, want %d; diagnostics = %v", len(res.Diagnostics), len(wantCodes), res.Diagnostics)
-	}
-	for i, want := range wantCodes {
-		if res.Diagnostics[i].Code != want {
-			t.Errorf("balance.Apply: Diagnostics[%d].Code = %q, want %q", i, res.Diagnostics[i].Code, want)
-		}
-	}
-	wantMsg := "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD"
-	if res.Diagnostics[2].Message != wantMsg {
-		t.Errorf("balance.Apply: Diagnostics[2].Message = %q, want %q", res.Diagnostics[2].Message, wantMsg)
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -620,19 +626,14 @@ func TestPlugin_ToleranceMultiplierZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("balance.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != string(validation.CodeBalanceMismatch) {
-		t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
-	}
-	if e.Span != balSpan {
-		t.Errorf("Span = %#v, want %#v", e.Span, balSpan)
-	}
-	wantMsg := "balance assertion failed: account Assets:Cash: expected 100.00 USD, got 100.004 USD"
-	if e.Message != wantMsg {
-		t.Errorf("Message = %q, want %q", e.Message, wantMsg)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeBalanceMismatch),
+		Span:     balSpan,
+		Message:  "balance assertion failed: account Assets:Cash: expected 100.00 USD, got 100.004 USD",
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -774,19 +775,14 @@ func TestPlugin_BalanceAssertionDoubledFactor(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Diagnostics) != 1 {
-			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (diff 0.0020 exceeds doubled tol 0.001); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-		}
-		e := res.Diagnostics[0]
-		if e.Code != string(validation.CodeBalanceMismatch) {
-			t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
-		}
-		if e.Span != balSpan {
-			t.Errorf("Span = %#v, want %#v", e.Span, balSpan)
-		}
-		wantMsg := "balance assertion failed: account Assets:Position: expected -17.775 LONGCCY, got -17.7770 LONGCCY"
-		if e.Message != wantMsg {
-			t.Errorf("Message = %q, want %q", e.Message, wantMsg)
+		want := []ast.Diagnostic{{
+			Code:     string(validation.CodeBalanceMismatch),
+			Span:     balSpan,
+			Message:  "balance assertion failed: account Assets:Position: expected -17.775 LONGCCY, got -17.7770 LONGCCY",
+			Severity: ast.Error,
+		}}
+		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+			t.Errorf("Result.Diagnostics: diff 0.0020 must exceed doubled tol 0.001 (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -849,19 +845,14 @@ func TestPlugin_ExplicitToleranceZero(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Diagnostics) != 1 {
-			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (tol=0 must reject any non-zero diff); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-		}
-		e := res.Diagnostics[0]
-		if e.Code != string(validation.CodeBalanceMismatch) {
-			t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
-		}
-		if e.Span != balSpan {
-			t.Errorf("Span = %#v, want %#v", e.Span, balSpan)
-		}
-		wantMsg := "balance assertion failed: account Assets:Cash: expected 100.000 USD, got 100.001 USD"
-		if e.Message != wantMsg {
-			t.Errorf("Message = %q, want %q", e.Message, wantMsg)
+		want := []ast.Diagnostic{{
+			Code:     string(validation.CodeBalanceMismatch),
+			Span:     balSpan,
+			Message:  "balance assertion failed: account Assets:Cash: expected 100.000 USD, got 100.001 USD",
+			Severity: ast.Error,
+		}}
+		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+			t.Errorf("Result.Diagnostics: tol=0 must reject any non-zero diff (-want +got):\n%s", diff)
 		}
 	})
 }
@@ -951,19 +942,14 @@ func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("balance.Apply: unexpected error %v", err)
 		}
-		if len(res.Diagnostics) != 1 {
-			t.Fatalf("len(Result.Diagnostics) = %d, want 1 (only EUR assertion should fail); diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-		}
-		e := res.Diagnostics[0]
-		if e.Code != string(validation.CodeBalanceMismatch) {
-			t.Errorf("Code = %q, want %q", e.Code, string(validation.CodeBalanceMismatch))
-		}
-		if e.Span != balSpanEUR {
-			t.Errorf("Span = %#v, want %#v (the EUR assertion, not the USD one)", e.Span, balSpanEUR)
-		}
-		wantMsg := "balance assertion failed: account Assets:Cash: expected 999 EUR, got 50 EUR"
-		if e.Message != wantMsg {
-			t.Errorf("Message = %q, want %q", e.Message, wantMsg)
+		want := []ast.Diagnostic{{
+			Code:     string(validation.CodeBalanceMismatch),
+			Span:     balSpanEUR,
+			Message:  "balance assertion failed: account Assets:Cash: expected 999 EUR, got 50 EUR",
+			Severity: ast.Error,
+		}}
+		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+			t.Errorf("Result.Diagnostics: only EUR assertion should fail; EUR mismatch must not mask USD pass (-want +got):\n%s", diff)
 		}
 	})
 }

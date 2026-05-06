@@ -2,14 +2,28 @@ package inventory_test
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
 )
+
+// invCmpOpts compares inventory.Position values numerically:
+// apd.Decimal has unexported fields, and time.Time carries monotonic
+// state, so each gets a custom Comparer that defers to the type's own
+// equality semantics. EquateEmpty treats a nil inventory snapshot
+// (slices.Collect over an empty iter) as equal to an empty want slice.
+var invCmpOpts = cmp.Options{
+	cmp.Comparer(func(x, y apd.Decimal) bool { return x.Cmp(&y) == 0 }),
+	cmp.Comparer(func(x, y time.Time) bool { return x.Equal(y) }),
+	cmpopts.EquateEmpty(),
+}
 
 // loadInspectionFixture loads testdata/inspection_e2e.beancount via the
 // ast layer directly (no loader pipeline) and fails the test on any
@@ -98,54 +112,26 @@ type wantCost struct {
 // described by want, in order. Mismatches are reported via t.Errorf.
 func matchInventory(t *testing.T, tag string, inv *inventory.Inventory, want []wantPosition) {
 	t.Helper()
-	if inv == nil {
-		if len(want) == 0 {
-			return
-		}
-		t.Errorf("%s: inventory is nil, want %d positions", tag, len(want))
-		return
+	var got []inventory.Position
+	if inv != nil {
+		got = slices.Collect(inv.All())
 	}
-	got := make([]inventory.Position, 0, inv.Len())
-	for p := range inv.All() {
-		got = append(got, p)
+	wantPositions := make([]inventory.Position, len(want))
+	for i, wp := range want {
+		wantPositions[i] = inventory.Position{
+			Units: ast.Amount{Number: mustDecimal(t, wp.Units), Currency: wp.Currency},
+		}
+		if wp.Cost != nil {
+			wantPositions[i].Cost = &inventory.Cost{
+				Number:   mustDecimal(t, wp.Cost.Number),
+				Currency: wp.Cost.Currency,
+				Date:     wp.Cost.Date,
+				Label:    wp.Cost.Label,
+			}
+		}
 	}
-	if len(got) != len(want) {
-		t.Errorf("%s: got %d positions, want %d", tag, len(got), len(want))
-		for i, p := range got {
-			t.Logf("  got[%d]: %s %s cost=%+v", i, p.Units.Number.Text('f'), p.Units.Currency, p.Cost)
-		}
-		return
-	}
-	for i := range want {
-		gp := got[i]
-		wp := want[i]
-		wantNum := mustDecimal(t, wp.Units)
-		if gp.Units.Currency != wp.Currency {
-			t.Errorf("%s[%d]: currency = %q, want %q", tag, i, gp.Units.Currency, wp.Currency)
-		}
-		if gp.Units.Number.Cmp(&wantNum) != 0 {
-			t.Errorf("%s[%d]: units = %s, want %s", tag, i, gp.Units.Number.Text('f'), wantNum.Text('f'))
-		}
-		switch {
-		case wp.Cost == nil && gp.Cost != nil:
-			t.Errorf("%s[%d]: got cost %+v, want cash (nil cost)", tag, i, gp.Cost)
-		case wp.Cost != nil && gp.Cost == nil:
-			t.Errorf("%s[%d]: got cash (nil cost), want cost %+v", tag, i, wp.Cost)
-		case wp.Cost != nil && gp.Cost != nil:
-			wantCostNum := mustDecimal(t, wp.Cost.Number)
-			if gp.Cost.Number.Cmp(&wantCostNum) != 0 {
-				t.Errorf("%s[%d]: cost.Number = %s, want %s", tag, i, gp.Cost.Number.Text('f'), wantCostNum.Text('f'))
-			}
-			if gp.Cost.Currency != wp.Cost.Currency {
-				t.Errorf("%s[%d]: cost.Currency = %q, want %q", tag, i, gp.Cost.Currency, wp.Cost.Currency)
-			}
-			if !gp.Cost.Date.Equal(wp.Cost.Date) {
-				t.Errorf("%s[%d]: cost.Date = %s, want %s", tag, i, gp.Cost.Date, wp.Cost.Date)
-			}
-			if gp.Cost.Label != wp.Cost.Label {
-				t.Errorf("%s[%d]: cost.Label = %q, want %q", tag, i, gp.Cost.Label, wp.Cost.Label)
-			}
-		}
+	if diff := cmp.Diff(wantPositions, got, invCmpOpts); diff != "" {
+		t.Errorf("%s: inventory mismatch (-want +got):\n%s", tag, diff)
 	}
 }
 

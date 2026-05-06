@@ -3,49 +3,62 @@ package format_test
 import (
 	"testing"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/internal/formatopt"
 	"github.com/yugui/go-beancount/pkg/format"
 )
 
 func TestWithCommaGrouping(t *testing.T) {
 	got := formatopt.Resolve([]format.Option{format.WithCommaGrouping(true)})
-	if !got.CommaGrouping {
-		t.Error("expected CommaGrouping to be true")
+	want := formatopt.Default()
+	want.CommaGrouping = true
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(WithCommaGrouping) mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestWithAlignAmounts(t *testing.T) {
 	got := formatopt.Resolve([]format.Option{format.WithAlignAmounts(false)})
-	if got.AlignAmounts {
-		t.Error("expected AlignAmounts to be false")
+	want := formatopt.Default()
+	want.AlignAmounts = false
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(WithAlignAmounts) mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestWithAmountColumn(t *testing.T) {
 	got := formatopt.Resolve([]format.Option{format.WithAmountColumn(80)})
-	if got.AmountColumn != 80 {
-		t.Errorf("expected AmountColumn=80, got %d", got.AmountColumn)
+	want := formatopt.Default()
+	want.AmountColumn = 80
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(WithAmountColumn) mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestWithEastAsianAmbiguousWidth(t *testing.T) {
 	got := formatopt.Resolve([]format.Option{format.WithEastAsianAmbiguousWidth(1)})
-	if got.EastAsianAmbiguousWidth != 1 {
-		t.Errorf("expected EastAsianAmbiguousWidth=1, got %d", got.EastAsianAmbiguousWidth)
+	want := formatopt.Default()
+	want.EastAsianAmbiguousWidth = 1
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(WithEastAsianAmbiguousWidth) mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestWithIndentWidth(t *testing.T) {
 	got := formatopt.Resolve([]format.Option{format.WithIndentWidth(4)})
-	if got.IndentWidth != 4 {
-		t.Errorf("expected IndentWidth=4, got %d", got.IndentWidth)
+	want := formatopt.Default()
+	want.IndentWidth = 4
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(WithIndentWidth) mismatch (-want +got):\n%s", diff)
 	}
 }
 
 func TestWithBlankLinesBetweenDirectives(t *testing.T) {
 	got := formatopt.Resolve([]format.Option{format.WithBlankLinesBetweenDirectives(2)})
-	if got.BlankLinesBetweenDirectives != 2 {
-		t.Errorf("expected BlankLinesBetweenDirectives=2, got %d", got.BlankLinesBetweenDirectives)
+	want := formatopt.Default()
+	want.BlankLinesBetweenDirectives = 2
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(WithBlankLinesBetweenDirectives) mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -56,23 +69,12 @@ func TestComposedOptions(t *testing.T) {
 		format.WithAmountColumn(60),
 		format.WithIndentWidth(4),
 	})
-	if !got.CommaGrouping {
-		t.Error("expected CommaGrouping to be true")
-	}
-	if got.AlignAmounts {
-		t.Error("expected AlignAmounts to be false")
-	}
-	if got.AmountColumn != 60 {
-		t.Errorf("expected AmountColumn=60, got %d", got.AmountColumn)
-	}
-	if got.IndentWidth != 4 {
-		t.Errorf("expected IndentWidth=4, got %d", got.IndentWidth)
-	}
-	// Unchanged fields should keep defaults.
-	if got.EastAsianAmbiguousWidth != 2 {
-		t.Errorf("expected EastAsianAmbiguousWidth=2 (default), got %d", got.EastAsianAmbiguousWidth)
-	}
-	if got.BlankLinesBetweenDirectives != 1 {
-		t.Errorf("expected BlankLinesBetweenDirectives=1 (default), got %d", got.BlankLinesBetweenDirectives)
+	want := formatopt.Default()
+	want.CommaGrouping = true
+	want.AlignAmounts = false
+	want.AmountColumn = 60
+	want.IndentWidth = 4
+	if diff := cmp.Diff(want, got); diff != "" {
+		t.Errorf("Resolve(composed) mismatch (-want +got):\n%s", diff)
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation/validations"
@@ -82,18 +83,14 @@ func TestPlugin_DuplicateOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != "duplicate-open" {
-		t.Errorf("Code = %q, want %q", e.Code, "duplicate-open")
-	}
-	if e.Span != d2.Span {
-		t.Errorf("Span = %#v, want the second Open's span %#v", e.Span, d2.Span)
-	}
-	if want := `account "Assets:Cash" already opened`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     "duplicate-open",
+		Span:     d2.Span,
+		Message:  `account "Assets:Cash" already opened`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -117,18 +114,14 @@ func TestPlugin_ReferenceBeforeOpen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != "account-not-yet-open" {
-		t.Errorf("Code = %q, want %q", e.Code, "account-not-yet-open")
-	}
-	if e.Span != bal.Span {
-		t.Errorf("Span = %#v, want balance span %#v", e.Span, bal.Span)
-	}
-	if want := `account "Assets:Cash" is not open on 2023-12-31`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     "account-not-yet-open",
+		Span:     bal.Span,
+		Message:  `account "Assets:Cash" is not open on 2023-12-31`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -146,11 +139,14 @@ func TestPlugin_ReferenceOnUnopenedAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	if got, want := res.Diagnostics[0].Code, "account-not-open"; got != want {
-		t.Errorf("Code = %q, want %q", got, want)
+	want := []ast.Diagnostic{{
+		Code:     "account-not-open",
+		Span:     bal.Span,
+		Message:  `account "Assets:Cash" is not open`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -220,15 +216,14 @@ func TestPlugin_CurrencyNotAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != "currency-not-allowed" {
-		t.Errorf("Code = %q, want %q", e.Code, "currency-not-allowed")
-	}
-	if want := `currency "EUR" not allowed for account "Assets:Cash"`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     "currency-not-allowed",
+		Span:     txn.Postings[0].Span,
+		Message:  `currency "EUR" not allowed for account "Assets:Cash"`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -261,18 +256,14 @@ func TestPlugin_UnbalancedTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validations.Apply: unexpected error %v", err)
 	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != "unbalanced-transaction" {
-		t.Errorf("Code = %q, want %q", e.Code, "unbalanced-transaction")
-	}
-	if e.Span != txnSpan {
-		t.Errorf("Span = %#v, want %#v", e.Span, txnSpan)
-	}
-	if want := `transaction does not balance: non-zero residual in USD`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     "unbalanced-transaction",
+		Span:     txnSpan,
+		Message:  `transaction does not balance: non-zero residual in USD`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+		t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/validation"
@@ -91,19 +92,14 @@ func TestTransactionBalances_UnbalancedSingleCurrency(t *testing.T) {
 			{Account: "Expenses:Food", Amount: &neg},
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	if len(errs) != 1 {
-		t.Fatalf("got %d errors, want 1; errs = %v", len(errs), errs)
-	}
-	e := errs[0]
-	if e.Code != string(validation.CodeUnbalancedTransaction) {
-		t.Errorf("Code = %q, want %q", e.Code, validation.CodeUnbalancedTransaction)
-	}
-	if e.Span != span {
-		t.Errorf("Span = %#v, want %#v", e.Span, span)
-	}
-	if want := `transaction does not balance: non-zero residual in USD`; e.Message != want {
-		t.Errorf("Message = %q, want %q", e.Message, want)
+	want := []ast.Diagnostic{{
+		Code:     string(validation.CodeUnbalancedTransaction),
+		Span:     span,
+		Message:  `transaction does not balance: non-zero residual in USD`,
+		Severity: ast.Error,
+	}}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -147,29 +143,33 @@ func TestTransactionBalances_AutoPostingNotBookedReports(t *testing.T) {
 			{Account: "Expenses:Misc"},
 		},
 	}
-	errs := v.ProcessEntry(txn)
 	// Both nil-Amount postings are skipped from the balance sum (with a
 	// CodeAutoPostingUnresolved diagnostic each), leaving the +100 USD on
 	// Assets:Cash unbalanced. ProcessEntry then emits
 	// CodeUnbalancedTransaction for the residual, so all three
 	// diagnostics are asserted together to pin both behaviors precisely.
-	wantCodes := []string{
-		string(validation.CodeAutoPostingUnresolved),
-		string(validation.CodeAutoPostingUnresolved),
-		string(validation.CodeUnbalancedTransaction),
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeAutoPostingUnresolved),
+			Span:     txnSpan,
+			Message:  `posting on account "Expenses:Food" has no amount; booking pass should have resolved it`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeAutoPostingUnresolved),
+			Span:     txnSpan,
+			Message:  `posting on account "Expenses:Misc" has no amount; booking pass should have resolved it`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeUnbalancedTransaction),
+			Span:     txnSpan,
+			Message:  `transaction does not balance: non-zero residual in USD`,
+			Severity: ast.Error,
+		},
 	}
-	if len(errs) != len(wantCodes) {
-		t.Fatalf("ProcessEntry() got %d diagnostics, want %d; errs = %v", len(errs), len(wantCodes), errs)
-	}
-	for i, want := range wantCodes {
-		if errs[i].Code != want {
-			t.Errorf("errs[%d].Code = %q, want %q", i, errs[i].Code, want)
-		}
-	}
-	for i := range errs {
-		if errs[i].Span != txnSpan {
-			t.Errorf("ProcessEntry() errs[%d].Span = %#v, want %#v (txn.Span)", i, errs[i].Span, txnSpan)
-		}
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -214,21 +214,23 @@ func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) 
 			{Account: "Expenses:Food"},
 		},
 	}
-	errs := v.ProcessEntry(txn)
-	wantCodes := []string{
-		string(validation.CodeAutoPostingUnresolved),
-		string(validation.CodeUnbalancedTransaction),
+	txnSpan := txn.Span
+	want := []ast.Diagnostic{
+		{
+			Code:     string(validation.CodeAutoPostingUnresolved),
+			Span:     txnSpan,
+			Message:  `posting on account "Expenses:Food" has no amount; booking pass should have resolved it`,
+			Severity: ast.Error,
+		},
+		{
+			Code:     string(validation.CodeUnbalancedTransaction),
+			Span:     txnSpan,
+			Message:  `transaction does not balance: non-zero residual in EUR, USD`,
+			Severity: ast.Error,
+		},
 	}
-	if len(errs) != len(wantCodes) {
-		t.Fatalf("ProcessEntry() got %d diagnostics, want %d; errs = %v", len(errs), len(wantCodes), errs)
-	}
-	for i, want := range wantCodes {
-		if errs[i].Code != want {
-			t.Errorf("errs[%d].Code = %q, want %q", i, errs[i].Code, want)
-		}
-	}
-	if want := `transaction does not balance: non-zero residual in EUR, USD`; errs[1].Message != want {
-		t.Errorf("errs[1].Message = %q, want %q", errs[1].Message, want)
+	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
+		t.Errorf("ProcessEntry mismatch (-want +got):\n%s", diff)
 	}
 }
 
