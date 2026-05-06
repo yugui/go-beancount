@@ -51,8 +51,9 @@ var (
 // entries yields an empty (non-nil) map, which cmp does not treat as
 // equal to a nil map even with cmpopts.EquateEmpty.
 //
-// overrideMetaKey is parameterized so that 7.5g can flow it from
-// Config.TransactionSection.OverrideMetaKey without a signature change.
+// overrideMetaKey names a single metadata key to strip from AST
+// equality (typically the transaction routing override key); the
+// caller flows it from Config.TransactionSection.OverrideMetaKey.
 func equalityOpts(overrideMetaKey string) cmp.Options {
 	return cmp.Options{
 		cmpopts.IgnoreTypes(ast.Span{}),

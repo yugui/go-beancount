@@ -4,11 +4,14 @@ go_library(
     name = "route",
     srcs = [
         "doc.go",
+        "format.go",
+        "override.go",
         "route.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/distribute/route",
     visibility = ["//visibility:public"],
     deps = [
+        "//internal/formatopt",
         "//pkg/ast",
         "//pkg/format",
     ],
@@ -19,7 +22,9 @@ go_test(
     srcs = ["route_test.go"],
     embed = [":route"],
     deps = [
+        "//internal/formatopt",
         "//pkg/ast",
         "@com_github_google_go_cmp//cmp",
+        "@com_github_google_go_cmp//cmp/cmpopts",
     ],
 )

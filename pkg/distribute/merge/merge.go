@@ -50,12 +50,11 @@ type Insert struct {
 	// Prefix is the comment prefix used when Commented is true. The
 	// recommended value is "; ".
 	Prefix string
-	// StripMetaKeys names metadata keys to strip before emit. Reserved
-	// for 7.5g; ignored in 7.5e.
+	// StripMetaKeys names metadata keys to strip before emit.
 	StripMetaKeys []string
-	// Format carries body-level printing options. Spacing options
-	// (BlankLines* fields) included here are silently overridden by the
-	// Plan's spacing fields, matching the schema documented in §4.4.
+	// Format carries body-level printing options (comma_grouping,
+	// align_amounts, amount_column, east_asian_ambiguous_width,
+	// indent_width). File-level spacing is set on Plan.
 	Format []format.Option
 }
 

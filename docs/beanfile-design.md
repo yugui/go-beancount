@@ -235,24 +235,28 @@ Include resolution alone is provided by `pkg/ast.LoadFile` / `LoadReader`
 
 ```go
 type Decision struct {
-    Path          string          // routing destination, relative to Config.Root
-    Order         OrderKind       // ascending | descending | append
-    StripMetaKeys []string        // meta keys removed before printing (route-account)
-    EqMetaKeys    []string        // dedup keys for this destination
-    Format        []format.Option // resolved formatter options
-    PassThrough   bool            // not routable → CLI errors or emits on stdout
+    Path                              string          // routing destination, relative to Config.Root
+    Order                             OrderKind       // ascending | descending | append
+    StripMetaKeys                     []string        // meta keys removed before printing (route-account)
+    EqMetaKeys                        []string        // dedup keys for this destination
+    Format                            []format.Option // body-only formatter options
+    BlankLinesBetweenDirectives       int             // file-level spacing target
+    InsertBlankLinesBetweenDirectives bool            // file-level spacing switch
+    PassThrough                       bool            // not routable → CLI errors or emits on stdout
 }
 
 type OrderKind int // OrderAscending | OrderDescending | OrderAppend
 
 type Config struct {
-    Root               string
-    Account            AccountSection
-    Price              PriceSection
-    Transaction        TransactionSection
-    Format             FormatSection // global format defaults
-    AccountOverrides   []AccountOverride   // longest prefix wins
-    CommodityOverrides []CommodityOverride
+    Root   string // populated by CLI; not part of the TOML schema
+    Routes Routes
+}
+
+type Routes struct {
+    Account     AccountSection
+    Price       PriceSection
+    Transaction TransactionSection
+    Format      FormatSection // global format defaults
 }
 
 type FormatSection struct { // every field optional
@@ -266,19 +270,21 @@ type FormatSection struct { // every field optional
 }
 
 type AccountSection struct {
-    Template            string   // default "transactions/{account}/{date}.beancount"
-    FilePattern         string   // default "YYYYmm"
-    Order               string   // default "ascending"
-    EquivalenceMetaKeys []string
+    Template            string    // default "transactions/{account}/{date}.beancount"
+    FilePattern         string    // default "YYYYmm"
+    Order               string    // default "ascending"
+    EquivalenceMetaKeys *[]string // nil = absent; non-nil = explicitly set (empty silences inheritance)
     Format              FormatSection
+    Overrides           []AccountOverride // longest prefix wins
 }
 
 type PriceSection struct {
-    Template            string   // default "quotes/{commodity}/{date}.beancount"
+    Template            string    // default "quotes/{commodity}/{date}.beancount"
     FilePattern         string
     Order               string
-    EquivalenceMetaKeys []string
+    EquivalenceMetaKeys *[]string
     Format              FormatSection
+    Overrides           []CommodityOverride
 }
 
 type TransactionSection struct {
@@ -292,7 +298,7 @@ type AccountOverride struct {
     FilePattern         string
     Order               string
     TxnStrategy         string
-    EquivalenceMetaKeys []string
+    EquivalenceMetaKeys *[]string
     Format              FormatSection
 }
 
@@ -301,12 +307,24 @@ type CommodityOverride struct {
     Template            string
     FilePattern         string
     Order               string
-    EquivalenceMetaKeys []string
+    EquivalenceMetaKeys *[]string
     Format              FormatSection
 }
 
 func Decide(d ast.Directive, cfg *Config) (Decision, error)
 ```
+
+The `Decision.Format` slice carries body-level options only (comma_grouping,
+align_amounts, amount_column, east_asian_ambiguous_width, indent_width).
+File-level spacing — `blank_lines_between_directives` and
+`insert_blank_lines_between_directives` — is exposed as typed fields on
+`Decision` so the `merge.Plan` builder can read them without resolving
+opaque format closures.
+
+`EquivalenceMetaKeys` is `*[]string` (rather than `[]string`) so callers
+can distinguish "not declared" from "declared as empty". On an override,
+a non-nil empty slice silences inherited keys; a nil pointer falls back
+to the parent scope.
 
 - Account overrides match by **longest account-segment prefix**; ties resolve
   in TOML order. `Assets:JP` matches `Assets:JP:Cash` but not `Assets:JPN`.
@@ -494,8 +512,7 @@ type Insert struct {
     StripMetaKeys []string
     Format        []format.Option  // body-only options: comma_grouping, align_amounts,
                                    // amount_column, east_asian_ambiguous_width, indent_width.
-                                   // Spacing options live on Plan; including them here is a
-                                   // schema violation that the merger ignores.
+                                   // File-level spacing lives on Plan.
 }
 
 type Options struct {
@@ -531,21 +548,19 @@ this allows a cross-posting commented insert to be rendered with a
 different style if a future config requires it.
 
 Because `format.Option` is `func(*formatopt.Options)` — opaque at call
-sites — the merger cannot inspect a slice to filter out spacing-mutating
-closures. Instead, when emitting an insert it does the following:
+sites — the merger composes the two scopes when emitting an insert:
 
 1. Resolve `Insert.Format` against `formatopt.Default()` to get an
-   effective `formatopt.Options` value.
-2. **Overwrite** the two spacing fields on that value with
-   `Plan.BlankLinesBetweenDirectives` and
-   `Plan.InsertBlankLinesBetweenDirectives`.
+   effective `formatopt.Options` value carrying body-level fields.
+2. Overlay the spacing fields with `Plan.BlankLinesBetweenDirectives`
+   and `Plan.InsertBlankLinesBetweenDirectives`.
 3. Use the resulting options for both `printer.Fprint` (which only
    reads the body fields when printing one directive) and for the
    merger's own spacing logic (which reads only the spacing fields).
 
-Any spacing-mutating option that a caller *did* place in `Insert.Format`
-is therefore silently dropped by step 2 — a documented schema violation
-with a defined runtime behaviour rather than undefined behaviour.
+Producers of `Insert.Format` (currently only `route.Decide`) emit a
+body-only slice; the spacing overlay is therefore a no-op composition
+rather than a fix-up of an ill-formed input.
 
 Behaviour:
 
@@ -661,7 +676,12 @@ beanfile [flags] --ledger ROOT.beancount [files...]
 Orchestration:
 
 1. Load the config (explicit `--config` > `./beanfile.toml` > built-in
-   defaults). CLI flags overlay the result.
+   defaults). A pre-scan of `args` locates `--config` so the TOML can be
+   parsed before the FlagSet runs; each `--order` / `--file-pattern` /
+   `--txn-strategy` / `--override-meta-key` / `--format-*` flag is then a
+   `flag.Func` (or `flag.BoolFunc`) callback that mutates the loaded
+   `route.Config` in place. Each flag's effect lives in one place — its
+   callback — so the overlay is implicit in `flag.Parse`.
 2. `dedup.BuildIndex(ctx, --ledger, --root)` builds the active+commented
    index over the entire transitive include closure (using
    `pkg/ast.LoadFile`, which resolves includes without running validation
