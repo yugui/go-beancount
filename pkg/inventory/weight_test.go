@@ -74,3 +74,32 @@ func TestPostingWeight_CombinedCostNegativeUnits(t *testing.T) {
 		t.Errorf("weight = %q, want %q", got, "-5031.15")
 	}
 }
+
+// TestPostingWeight_TotalCostExact pins the regression that motivated
+// unifying the reducer and validation weight paths through TotalCost.
+// `3 STOCK {{1 JPY}}` must contribute exactly 1 JPY to the residual,
+// without rounding through a 1/3 division. The weight's exponent must
+// be 0 (i.e. an integer JPY) so tolerance.Infer does not narrow the
+// JPY tolerance to 10⁻³⁴ and reject a balanced auto-posting.
+func TestPostingWeight_TotalCostExact(t *testing.T) {
+	units := amt(3, "STOCK")
+	total := amt(1, "JPY")
+	p := &ast.Posting{
+		Account: "Assets:A",
+		Amount:  &units,
+		Cost:    &ast.CostSpec{Total: &total},
+	}
+	w, cur, err := PostingWeight(p)
+	if err != nil {
+		t.Fatalf("PostingWeight: unexpected error: %v", err)
+	}
+	if cur != "JPY" {
+		t.Errorf("currency = %q, want %q", cur, "JPY")
+	}
+	if got := w.Text('f'); got != "1" {
+		t.Errorf("weight = %q, want %q", got, "1")
+	}
+	if got := w.Exponent; got != 0 {
+		t.Errorf("weight.Exponent = %d, want 0 (exactness regression)", got)
+	}
+}

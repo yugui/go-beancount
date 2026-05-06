@@ -111,6 +111,33 @@ func TestLoadCancellation(t *testing.T) {
 // form whose value is the non-terminating quotient T/|units|: doing so
 // would round in apd's 34-digit context and the transaction-balance
 // validator would then reject a residual that is mathematically zero.
+// TestLoad_TotalCostAugmentationWithAutoPostingBalances is the
+// minimal regression for the reported bug: a `{{T CUR}}` augmentation
+// paired with an auto-posting that absorbs the cost-side of the
+// transaction must balance even when T/|units| is non-terminating.
+// The reducer's residual computation and the validator's weight
+// computation now share a single divide-free path
+// (PostingWeight via *Posting.TotalCost), so the auto-posting
+// receives an exact JPY residual and tolerance.Infer is not narrowed
+// to 10⁻³⁴ by spurious 34-digit fraction.
+func TestLoad_TotalCostAugmentationWithAutoPostingBalances(t *testing.T) {
+	const src = `1970-01-01 open Assets:A
+1970-01-01 * "txn"
+  Assets:A          3 STOCK {{ 1 JPY }}
+  Assets:A
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Errorf("unexpected error diagnostic: [%s] %s", d.Code, d.Message)
+		}
+	}
+}
+
 func TestLoad_TotalCostAugmentationBalances(t *testing.T) {
 	const src = `2025-01-01 open Assets:A JPY,STOCK "NONE"
 2025-01-01 open Assets:B JPY,STOCK "STRICT"

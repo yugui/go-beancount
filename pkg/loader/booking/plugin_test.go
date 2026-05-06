@@ -373,10 +373,15 @@ func TestApply_ReductionAggregatesTotal(t *testing.T) {
 // whose absolute magnitude equals the sum of all matching lots must
 // succeed even when the matcher resolves to multiple lots, because
 // the booking is unambiguous (every matching lot is consumed in
-// full). The cost-spec write-back must then collapse the per-step
-// cost into a single CostSpec.Total so downstream balance validation
-// sees a concrete weight. Without this rule the reducer would emit
-// an ambiguous-lot-match diagnostic.
+// full). Without this rule the reducer would emit an
+// ambiguous-lot-match diagnostic.
+//
+// When the user wrote a concrete per-unit cost on the reducing
+// posting, every matching lot has that same per-unit cost by
+// construction, so the AST is preserved verbatim: PerUnit stays as
+// the user wrote it and no Total is synthesized. Downstream weight
+// computation reads units * PerUnit, which equals the per-step sum,
+// so transaction balance still checks out without a per-lot rewrite.
 func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 	openA := &ast.Open{
 		Date:       day(2025, 1, 1),
@@ -446,9 +451,10 @@ func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 		t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
 	}
 
-	// The booked transfer's reducing posting must carry a synthesized
-	// Total (sum of |step.Units| × step.Lot.Number = 10*100 + 10*100 =
-	// 2000 JPY) with PerUnit cleared.
+	// The booked transfer's reducing posting must keep the user's
+	// per-unit cost spec verbatim; no Total rewrite is performed
+	// because every matched lot shares that per-unit cost and the
+	// validation layer's PostingWeight reads units * PerUnit directly.
 	var bookedTransfer *ast.Transaction
 	for _, d := range res.Directives {
 		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "transfer" {
@@ -464,7 +470,7 @@ func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 		t.Fatalf("CostSpec on reducing posting is nil")
 	}
 	wantCS := &ast.CostSpec{
-		Total: &ast.Amount{Number: dec("2000"), Currency: "JPY"},
+		PerUnit: &ast.Amount{Number: dec("100"), Currency: "JPY"},
 	}
 	opts := append(cmp.Options{
 		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),

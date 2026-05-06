@@ -16,9 +16,11 @@ import (
 // parse or lowering diagnostics. The bypass is deliberate: these tests
 // exercise the inventory Reducer over the raw AST shape that comes out
 // of parsing, including auto-balanced postings whose Amount is still
-// nil. Going through the full loader pipeline would pre-fill those
-// Amounts (the loader-level booking pass writes them in) and erase
-// the InferredAuto signal the inventory tests assert on.
+// nil. Going through the full loader pipeline would route the input
+// through the booking plugin, which yields a separate booked directives
+// slice with auto-posting Amounts already filled in; the InferredAuto
+// signal these tests assert on lives in the BookedPosting records and
+// is reproducible by feeding the raw ledger straight into the reducer.
 func loadInspectionFixture(t *testing.T) *ast.Ledger {
 	t.Helper()
 	path := filepath.Join("testdata", "inspection_e2e.beancount")
@@ -158,8 +160,8 @@ func date(y int, m time.Month, d int) time.Time {
 func TestInventoryIntegration_RunProducesFinalState(t *testing.T) {
 	ledger := loadInspectionFixture(t)
 
-	r := inventory.NewReducer(ledger)
-	errs := r.Run()
+	r := inventory.NewReducer(ledger.All())
+	_, errs := r.Run()
 	if len(errs) != 0 {
 		for _, e := range errs {
 			t.Logf("reducer error: %s", e)
@@ -218,7 +220,7 @@ func TestInventoryIntegration_RunProducesFinalState(t *testing.T) {
 // view and verifies the realized-gain enrichment.
 func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 	ledger := loadInspectionFixture(t)
-	r := inventory.NewReducer(ledger)
+	r := inventory.NewReducer(ledger.All())
 
 	sale := txnByNarration(ledger, "Sell ACME lot-2025a with auto cash")
 	if sale == nil {
@@ -376,7 +378,7 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 // and that per-step realized gains sum to the expected total.
 func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 	ledger := loadInspectionFixture(t)
-	r := inventory.NewReducer(ledger)
+	r := inventory.NewReducer(ledger.All())
 
 	sale := txnByNarration(ledger, "Sell GIZMO FIFO crossing lot boundary")
 	if sale == nil {
@@ -489,7 +491,7 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 // auto-posting contract asserted in isolation.
 func TestInventoryIntegration_AutoPostingInference(t *testing.T) {
 	ledger := loadInspectionFixture(t)
-	r := inventory.NewReducer(ledger)
+	r := inventory.NewReducer(ledger.All())
 
 	// The ACME sale is the only transaction in the fixture that uses
 	// an auto-balanced posting. Locate it by narration so the test
