@@ -291,3 +291,66 @@ func TestTransactionCloneNil(t *testing.T) {
 		t.Errorf("Transaction.Clone on nil = %v, want nil", got)
 	}
 }
+
+// sampleBalance builds a fully populated *Balance including a non-nil
+// Tolerance so all branches of Clone exercise.
+func sampleBalance() *Balance {
+	tol := cloneTestDecimal("0.01")
+	return &Balance{
+		Span:      Span{Start: Position{Filename: "f.bean", Line: 12}},
+		Date:      time.Date(2024, time.March, 15, 0, 0, 0, 0, time.UTC),
+		Account:   Account("Assets:Cash"),
+		Amount:    Amount{Number: cloneTestDecimal("1000.50"), Currency: "USD"},
+		Tolerance: &tol,
+		Meta:      Metadata{Props: map[string]MetaValue{"k": {Kind: MetaString, String: "v"}}},
+	}
+}
+
+func TestBalanceClone(t *testing.T) {
+	orig := sampleBalance()
+	got := orig.Clone()
+
+	if got == orig {
+		t.Fatalf("Balance.Clone returned same pointer; want fresh allocation")
+	}
+	if got.Tolerance == orig.Tolerance {
+		t.Errorf("Balance.Clone: Tolerance aliases original; want fresh allocation")
+	}
+	if diff := cmp.Diff(orig, got, astCloneCmpOpts); diff != "" {
+		t.Errorf("Balance.Clone result differs from original (-want +got):\n%s", diff)
+	}
+
+	// Mutating the clone's Amount.Number must not affect the original.
+	mutated := cloneTestDecimal("999")
+	got.Amount.Number.Set(&mutated)
+	if orig.Amount.Number.Cmp(&got.Amount.Number) == 0 {
+		t.Errorf("Balance.Clone: mutating clone Amount.Number changed original; want independent buffers")
+	}
+
+	// Mutating the clone's Tolerance must not affect the original.
+	got.Tolerance.Set(&mutated)
+	if orig.Tolerance.Cmp(got.Tolerance) == 0 {
+		t.Errorf("Balance.Clone: mutating clone Tolerance changed original; want independent buffers")
+	}
+}
+
+func TestBalanceCloneNilTolerance(t *testing.T) {
+	orig := &Balance{
+		Date:    time.Date(2024, time.March, 15, 0, 0, 0, 0, time.UTC),
+		Account: Account("Assets:Cash"),
+		Amount:  Amount{Number: cloneTestDecimal("1"), Currency: "USD"},
+	}
+	got := orig.Clone()
+	if got == orig {
+		t.Fatalf("Balance.Clone returned same pointer; want fresh allocation")
+	}
+	if got.Tolerance != nil {
+		t.Errorf("Balance.Clone Tolerance = %v, want nil", got.Tolerance)
+	}
+}
+
+func TestBalanceCloneNil(t *testing.T) {
+	if got := (*Balance)(nil).Clone(); got != nil {
+		t.Errorf("Balance.Clone on nil = %v, want nil", got)
+	}
+}

@@ -1,5 +1,7 @@
 package ast
 
+import "github.com/cockroachdb/apd/v3"
+
 // This file provides Clone methods for AST node types whose nested
 // pointers and apd.Decimal values would otherwise alias the original
 // when copied via plain struct assignment. The deep/shallow boundary
@@ -79,15 +81,33 @@ func (a *Amount) Clone() *Amount {
 	return &out
 }
 
-// Clone returns a deep copy of p. The embedded Amount's Number is
-// copied via apd.Decimal.Set; Span, IsTotal, and Amount.Currency are
-// shared with the receiver. Returns nil if p is nil.
+// Clone returns a deep copy of p. The embedded Amount is deep-cloned
+// via Amount.Clone; Span and IsTotal are shared with the receiver.
+// Returns nil if p is nil.
 func (p *PriceAnnotation) Clone() *PriceAnnotation {
 	if p == nil {
 		return nil
 	}
 	out := *p
-	out.Amount = Amount{Currency: p.Amount.Currency}
-	out.Amount.Number.Set(&p.Amount.Number)
+	out.Amount = *p.Amount.Clone()
+	return &out
+}
+
+// Clone returns a deep copy of b. The Amount is deep-cloned via
+// Amount.Clone; if Tolerance is non-nil, a fresh apd.Decimal is
+// allocated so the clone does not alias the receiver's coefficient
+// buffer. Span, Date, Account, and Meta are shared with the receiver.
+// Returns nil if b is nil.
+func (b *Balance) Clone() *Balance {
+	if b == nil {
+		return nil
+	}
+	out := *b
+	out.Amount = *b.Amount.Clone()
+	if b.Tolerance != nil {
+		t := new(apd.Decimal)
+		t.Set(b.Tolerance)
+		out.Tolerance = t
+	}
 	return &out
 }

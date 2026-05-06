@@ -210,16 +210,10 @@ func bookOne(
 		}}
 	}
 
-	// Build the routed units amount. We clone the decimal so the
-	// BookedPosting does not alias the source posting's coefficient
-	// buffer: later consumers may mutate the record freely.
-	units := ast.Amount{Currency: p.Amount.Currency}
-	units.Number.Set(&p.Amount.Number)
-
 	booked := BookedPosting{
 		Source:       p,
 		Account:      p.Account,
-		Units:        units,
+		Units:        *p.Amount.Clone(),
 		InferredAuto: inferred,
 	}
 
