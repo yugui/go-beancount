@@ -913,6 +913,30 @@ agreed; a later phase may set one.
            cmp.Comparer(func(a, b apd.Decimal) bool {
                return a.Cmp(&b) == 0
            }),
+           // Canonicalize posting order. []ast.Posting appears in the AST
+           // only as Transaction.Postings, so this type-keyed Transformer
+           // makes "same postings, different order" compare equal without
+           // affecting any other slice. The ordering key is built from
+           // every field that participates in equality (flag, account,
+           // amount, cost, price, and per-key posting metadata
+           // including normalized MetaString values), so two
+           // multiset-equal posting lists land on the same canonical
+           // order and cmp walks them pairwise after sort.
+           sortPostings,
+           // Normalize free-text fields before comparison so that the
+           // same transaction emitted by different importers — possibly
+           // with NFC vs NFD accents, full-width vs half-width
+           // characters, or stray Unicode whitespace — still
+           // deduplicates. Scope is intentionally narrow:
+           // Transaction.Narration, Transaction.Payee, Note.Comment,
+           // and MetaValue values whose Kind == MetaString. Everything
+           // else (account paths, currency codes, tag/link names,
+           // metadata keys, file paths, plugin/query/custom names,
+           // option keys/values, MetaValue of other kinds) stays
+           // byte-exact: those strings are identifiers, and silently
+           // collapsing identifier variants would mask routing
+           // mistakes.
+           freeTextCmp,
        }
    }
    ```
@@ -921,13 +945,33 @@ agreed; a later phase may set one.
    `CommentedDirective` wrapper from `pkg/distribute/comment` (§4.3) and
    is unwrapped before the comparison runs.
 
-   No fields beyond the two above are excluded in Phase 7.5. If a future
-   sub-phase finds another field that needs to be ignored, it is added to
-   `equalityOpts` rather than handled at the call site.
+   The free-text normalizer applies `golang.org/x/text/unicode/norm`
+   `NFKC` and then strips every rune for which `unicode.IsSpace`
+   returns true (covers ASCII whitespace plus U+0085, U+00A0, U+1680,
+   U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000). NFKC
+   intentionally folds compatibility variants — full-width "ＡＢＣ"
+   compares equal to "ABC", precomposed "café" compares equal to
+   decomposed "café" — because cross-source dedup is the whole
+   point of the rule.
+
+   AST equality does **not** bridge auto-posting (amount-elided
+   posting) differences. If importer A emits all postings explicitly
+   while importer B emits one posting with no amount and lets
+   beancount auto-balance, the two transactions still compare unequal
+   under rule 1 because their `[]Posting` lists have different shape.
+   Cross-source dedup involving auto-postings should rely on rule 2
+   below — see Open Question #17 for the future option of resolving
+   auto-postings via `pkg/inventory` before comparison.
 
 2. **Metadata equality** — the resolved `EqMetaKeys` for the directive's
    account-tree (transactions) or commodity (prices) yield at least one key
-   present in both directives with equal values.
+   present in both directives with equal values. `MetaString` values use
+   the same NFKC + whitespace-strip normalization as rule 1, so the AST
+   path and the meta-key path agree on what counts as the same human
+   string. Identifier-bearing kinds (`MetaAccount`, `MetaCurrency`,
+   `MetaTag`, `MetaLink`) compare byte-exact, and typed scalars
+   (`MetaDate`, `MetaNumber`, `MetaAmount`, `MetaBool`) compare
+   structurally — neither group is normalized.
 
 ### Scopes
 
@@ -1117,6 +1161,7 @@ implementation begins.
 | 10 | Behaviour of `append` Order against EOF trivia (trailing comments and blank lines). Insert before or after such trivia? "After the last dated directive" and "at EOF" diverge when trivia is present. | 7.5h |
 | 11 | When several inserts collide at the same byte offset and mix `Commented` and active forms, what is the emit order — input order, active-first, commented-first? **Default for 7.5b unless changed**: input order (matches the same-day FIFO promise in §2 / §8). Together with #7 this fully specifies same-offset collision behaviour for 7.5b implementation. | 7.5b |
 | 16 | Round-trip stability of comment prefix variants. The recognizer accepts `;` followed by zero or more whitespace characters (so `;2024-01-15 ...` and `;  2024-01-15 ...` are both valid), but the emitter always uses `"; "`. A re-emit therefore canonicalizes existing prefixes — decide whether that is desired or whether the emitter should preserve the input's prefix when known. | 7.5c |
+| 17 | Auto-posting bridging in cross-source AST equality. Today rule 1 in §7 compares `[]Posting` structurally, so two transactions that differ only in whether one posting is amount-elided (and beancount auto-balances it) compare unequal even though they describe the same event. The 7.5 workaround is rule 2 (`equivalence_meta_keys`) — importers should attach a stable id. A future option is to resolve the auto-posting via `pkg/inventory` on a deep-copied directive before comparison; this needs a decision on how to handle cases where the elided amount cannot be uniquely inferred (multiple commodities, ambiguous cost basis). | future |
 
 ## 13. Implementation workflow
 
