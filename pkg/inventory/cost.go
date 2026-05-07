@@ -54,15 +54,12 @@ func (c *Cost) Clone() *Cost {
 	if c == nil {
 		return nil
 	}
-	out := Cost{
+	return &Cost{
+		Number:   *ast.CloneDecimal(&c.Number),
 		Currency: c.Currency,
 		Date:     c.Date,
 		Label:    c.Label,
 	}
-	// Copy the decimal value rather than aliasing its internal
-	// coefficient buffer.
-	out.Number.Set(&c.Number)
-	return &out
 }
 
 // ResolveCost turns an [ast.CostSpec] on an augmenting posting into a
@@ -158,8 +155,7 @@ func ResolveCost(spec *ast.CostSpec, units ast.Amount, txnDate time.Time) (*Cost
 	default:
 		// Per-unit only: copy verbatim.
 		out.Currency = spec.PerUnit.Currency
-		perNum := spec.PerUnit.Number
-		out.Number.Set(&perNum)
+		out.Number = *ast.CloneDecimal(&spec.PerUnit.Number)
 	}
 
 	return out, nil

@@ -49,9 +49,7 @@ func PostingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 		return nil, "", err
 	}
 	if cost != nil {
-		out := new(apd.Decimal)
-		out.Set(&cost.Number)
-		return out, cost.Currency, nil
+		return ast.CloneDecimal(&cost.Number), cost.Currency, nil
 	}
 	if p.Price != nil {
 		num := p.Amount.Number
@@ -71,9 +69,7 @@ func PostingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 	}
 	// Plain amount: copy the posting's units so the caller may mutate
 	// without disturbing the AST.
-	out := new(apd.Decimal)
-	out.Set(&p.Amount.Number)
-	return out, p.Amount.Currency, nil
+	return ast.CloneDecimal(&p.Amount.Number), p.Amount.Currency, nil
 }
 
 // signedAbs returns sign(units) * |val| as a freshly allocated decimal,

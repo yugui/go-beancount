@@ -83,9 +83,7 @@ func NewCostMatcher(spec *ast.CostSpec, priceCurrency string) CostMatcher {
 	case spec.PerUnit != nil && spec.Total == nil:
 		// Per-unit-only form `{X CUR}`: X is a real selection constraint.
 		m.HasPerUnit = true
-		// Copy the decimal value rather than aliasing its internal
-		// coefficient buffer.
-		m.PerUnit.Set(&spec.PerUnit.Number)
+		m.PerUnit = *ast.CloneDecimal(&spec.PerUnit.Number)
 		m.Currency = spec.PerUnit.Currency
 	case spec.Total != nil:
 		// Combined form `{per # total CUR}` or total-only `{{total CUR}}`:

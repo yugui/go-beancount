@@ -397,8 +397,8 @@ func resolveBalance(
 	//   "(Padding inserted for Balance of %s %s for difference %s %s)"
 	// to keep amount/currency pairing uniform with the rest of the
 	// AST's formatting.
-	targetAmt := ast.Amount{Number: *copyDecimal(delta), Currency: b.Amount.Currency}
-	sourceAmt := ast.Amount{Number: *copyDecimal(neg), Currency: b.Amount.Currency}
+	targetAmt := ast.Amount{Number: *ast.CloneDecimal(delta), Currency: b.Amount.Currency}
+	sourceAmt := ast.Amount{Number: *ast.CloneDecimal(neg), Currency: b.Amount.Currency}
 	synth[pp.index] = append(synth[pp.index], &ast.Transaction{
 		Span: pp.dir.Span,
 		Date: pp.dir.Date,
@@ -433,12 +433,4 @@ func addToBalance(balances map[balanceKey]*apd.Decimal, account ast.Account, cur
 		balances[key] = cur
 	}
 	_, _ = apd.BaseContext.Add(cur, cur, delta)
-}
-
-// copyDecimal returns a freshly allocated copy of x so the synthesized
-// transaction does not alias the plugin's working decimals.
-func copyDecimal(x *apd.Decimal) *apd.Decimal {
-	out := new(apd.Decimal)
-	out.Set(x)
-	return out
 }

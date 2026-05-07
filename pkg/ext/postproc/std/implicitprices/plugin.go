@@ -189,9 +189,7 @@ func buildPrice(tx *ast.Transaction, p *ast.Posting) (*ast.Price, *ast.Diagnosti
 // to signal "skip silently"; arithmetic failures return an *ast.Diagnostic.
 func perUnitNumber(number, units apd.Decimal, isTotal bool, tx *ast.Transaction, source string) (*apd.Decimal, *ast.Diagnostic) {
 	if !isTotal {
-		out := new(apd.Decimal)
-		out.Set(&number)
-		return out, nil
+		return ast.CloneDecimal(&number), nil
 	}
 	if units.Sign() == 0 {
 		return nil, nil
@@ -288,9 +286,7 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.
 		}
 		return out, c.Total.Currency, nil
 	case c.PerUnit != nil:
-		out := new(apd.Decimal)
-		out.Set(&c.PerUnit.Number)
-		return out, c.PerUnit.Currency, nil
+		return ast.CloneDecimal(&c.PerUnit.Number), c.PerUnit.Currency, nil
 	default:
 		// Empty cost spec ({} or {{}}): no concrete number to record.
 		return nil, "", nil
