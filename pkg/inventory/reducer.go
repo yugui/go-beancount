@@ -459,7 +459,7 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 	var order []string
 	for i := range booked {
 		bp := booked[i]
-		w, cur, err := PostingWeight(bp.Source)
+		w, err := PostingWeight(bp.Source)
 		if err != nil {
 			r.errs = append(r.errs, Error{
 				Code:    CodeInternalError,
@@ -472,8 +472,8 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 		if w == nil {
 			continue
 		}
-		if existing, found := sums[cur]; found {
-			if _, err := apd.BaseContext.Add(existing, existing, w); err != nil {
+		if existing, found := sums[w.Currency]; found {
+			if _, err := apd.BaseContext.Add(existing, existing, &w.Number); err != nil {
 				r.errs = append(r.errs, Error{
 					Code:    CodeInternalError,
 					Span:    bp.Source.Span,
@@ -483,8 +483,8 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 				return nil, false
 			}
 		} else {
-			sums[cur] = w
-			order = append(order, cur)
+			sums[w.Currency] = &w.Number
+			order = append(order, w.Currency)
 		}
 	}
 
