@@ -378,7 +378,7 @@ func bookReduce(
 // step.Units, computed with apd.BaseContext (exact Sub/Mul on value-
 // stored decimals). GainCurrency is p.Price.Amount.Currency.
 func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
-	salePricePer := new(apd.Decimal)
+	var salePricePer *apd.Decimal
 	if p.Price.IsTotal {
 		// @@ total: salePricePer = total / |units|.
 		absUnits := new(apd.Decimal)
@@ -395,6 +395,7 @@ func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
 			// Cannot divide by zero. Leave gain fields unset.
 			return nil
 		}
+		salePricePer = new(apd.Decimal)
 		total := p.Price.Amount.Number
 		if _, err := quoContext.Quo(salePricePer, &total, absUnits); err != nil {
 			return []Error{{
@@ -405,8 +406,7 @@ func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
 			}}
 		}
 	} else {
-		per := p.Price.Amount.Number
-		salePricePer.Set(&per)
+		salePricePer = ast.CloneDecimal(&p.Price.Amount.Number)
 	}
 
 	currency := p.Price.Amount.Currency
@@ -415,9 +415,7 @@ func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
 
 		// SalePricePer: per-step copy so later edits on one step do
 		// not alias another step's decimal.
-		sp := new(apd.Decimal)
-		sp.Set(salePricePer)
-		step.SalePricePer = sp
+		step.SalePricePer = ast.CloneDecimal(salePricePer)
 
 		// RealizedGain = (salePricePer - lot.Number) * step.Units.
 		diff := new(apd.Decimal)

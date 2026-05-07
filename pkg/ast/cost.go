@@ -69,9 +69,7 @@ func (p *Posting) TotalCost() (*Amount, error) {
 		if err != nil {
 			return nil, err
 		}
-		out := Amount{Currency: p.Cost.Total.Currency}
-		out.Number.Set(signed)
-		return &out, nil
+		return &Amount{Number: *CloneDecimal(signed), Currency: p.Cost.Total.Currency}, nil
 	}
 }
 

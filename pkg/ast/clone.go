@@ -2,6 +2,15 @@ package ast
 
 import "github.com/cockroachdb/apd/v3"
 
+// CloneDecimal returns a freshly allocated deep copy of x. The returned
+// pointer owns its own storage; the caller may discard or mutate the
+// source after the call.
+func CloneDecimal(x *apd.Decimal) *apd.Decimal {
+	out := new(apd.Decimal)
+	out.Set(x)
+	return out
+}
+
 // This file provides Clone methods for AST node types whose nested
 // pointers and apd.Decimal values would otherwise alias the original
 // when copied via plain struct assignment. The deep/shallow boundary
@@ -70,15 +79,13 @@ func (c *CostSpec) Clone() *CostSpec {
 }
 
 // Clone returns a deep copy of a. The Number decimal is copied via
-// apd.Decimal.Set so the clone owns its coefficient buffer; Currency
+// CloneDecimal so the clone owns its coefficient buffer; Currency
 // is shared with the receiver. Returns nil if a is nil.
 func (a *Amount) Clone() *Amount {
 	if a == nil {
 		return nil
 	}
-	out := Amount{Currency: a.Currency}
-	out.Number.Set(&a.Number)
-	return &out
+	return &Amount{Number: *CloneDecimal(&a.Number), Currency: a.Currency}
 }
 
 // Clone returns a deep copy of p. The embedded Amount is deep-cloned
@@ -105,9 +112,7 @@ func (b *Balance) Clone() *Balance {
 	out := *b
 	out.Amount = *b.Amount.Clone()
 	if b.Tolerance != nil {
-		t := new(apd.Decimal)
-		t.Set(b.Tolerance)
-		out.Tolerance = t
+		out.Tolerance = CloneDecimal(b.Tolerance)
 	}
 	return &out
 }
