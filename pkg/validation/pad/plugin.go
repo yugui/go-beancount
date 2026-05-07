@@ -238,8 +238,7 @@ func applyTransaction(
 			})
 			continue
 		}
-		num := p.Amount.Number
-		addToBalance(balances, p.Account, p.Amount.Currency, &num)
+		addToBalance(balances, p.Account, *p.Amount)
 		// costBalances tracks the running sum of cost-bearing
 		// postings only. A reduction (sell) of a cost-held lot is
 		// expected to also carry a Cost spec — that is the
@@ -250,7 +249,7 @@ func applyTransaction(
 		// this bucket non-zero even after the inventory has been
 		// emptied, which would over-trigger pad-target-has-cost.
 		if p.Cost != nil {
-			addToBalance(costBalances, p.Account, p.Amount.Currency, &num)
+			addToBalance(costBalances, p.Account, *p.Amount)
 			key := balanceKey{Account: p.Account, Currency: p.Amount.Currency}
 			if _, seen := costSpans[key]; !seen {
 				span := p.Span
@@ -381,8 +380,8 @@ func resolveBalance(
 	// Apply the synthesized effect to the running balance so later
 	// pads resolved against subsequent balance assertions see the
 	// correct baseline.
-	addToBalance(balances, pp.dir.Account, b.Amount.Currency, delta)
-	addToBalance(balances, pp.dir.PadAccount, b.Amount.Currency, neg)
+	addToBalance(balances, pp.dir.Account, ast.Amount{Number: *delta, Currency: b.Amount.Currency})
+	addToBalance(balances, pp.dir.PadAccount, ast.Amount{Number: *neg, Currency: b.Amount.Currency})
 
 	// Build the synthesized transaction dated at pad.Date. We use
 	// explicit postings (no auto-posting) so downstream plugins
@@ -417,20 +416,17 @@ func resolveBalance(
 	return nil
 }
 
-// addToBalance mutates balances[(account, currency)] += delta,
+// addToBalance folds delta into balances[(account, delta.Currency)],
 // initializing the bucket on first write. Arithmetic errors are
 // silently absorbed: apd.BaseContext.Add only fails on pathological
 // exponents, and the caller context does not provide a useful place to
 // surface the failure.
-func addToBalance(balances map[balanceKey]*apd.Decimal, account ast.Account, currency string, delta *apd.Decimal) {
-	if delta == nil {
-		return
-	}
-	key := balanceKey{Account: account, Currency: currency}
+func addToBalance(balances map[balanceKey]*apd.Decimal, account ast.Account, delta ast.Amount) {
+	key := balanceKey{Account: account, Currency: delta.Currency}
 	cur, ok := balances[key]
 	if !ok {
 		cur = new(apd.Decimal)
 		balances[key] = cur
 	}
-	_, _ = apd.BaseContext.Add(cur, cur, delta)
+	_, _ = apd.BaseContext.Add(cur, cur, &delta.Number)
 }
