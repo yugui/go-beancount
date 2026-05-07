@@ -77,7 +77,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 		// rather than discarding any preceding CodeAutoPostingUnresolved
 		// diagnostics already collected for this transaction so callers
 		// see the full picture of observable problems.
-		w, cur, err := inventory.PostingWeight(p)
+		w, err := inventory.PostingWeight(p)
 		if err != nil {
 			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeUnbalancedTransaction),
@@ -86,7 +86,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 			})
 			return diags
 		}
-		if err := sums.add(cur, w); err != nil {
+		if err := sums.add(*w); err != nil {
 			diags = append(diags, ast.Diagnostic{
 				Code:    string(validation.CodeUnbalancedTransaction),
 				Span:    txn.Span,
@@ -146,14 +146,14 @@ func (*transactionBalances) Finish() []ast.Diagnostic { return nil }
 // package boundaries for an unexported type.
 type currencySum map[string]*apd.Decimal
 
-// add adds n to the running total for the given currency.
-func (s currencySum) add(currency string, n *apd.Decimal) error {
-	d, ok := s[currency]
+// add folds the given amount into the running per-currency total.
+func (s currencySum) add(a ast.Amount) error {
+	d, ok := s[a.Currency]
 	if !ok {
 		d = new(apd.Decimal)
-		s[currency] = d
+		s[a.Currency] = d
 	}
-	_, err := apd.BaseContext.Add(d, d, n)
+	_, err := apd.BaseContext.Add(d, d, &a.Number)
 	return err
 }
 
