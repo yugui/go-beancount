@@ -13,6 +13,7 @@ go_library(
         "ledger.go",
         "load.go",
         "lower.go",
+        "metadata.go",
         "option.go",
         "order.go",
     ],

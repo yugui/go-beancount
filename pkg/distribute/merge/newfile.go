@@ -9,6 +9,7 @@ import (
 
 	"github.com/yugui/go-beancount/internal/atomicfile"
 	"github.com/yugui/go-beancount/internal/formatopt"
+	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/distribute/comment"
 	"github.com/yugui/go-beancount/pkg/printer"
 )
@@ -53,13 +54,18 @@ func mergeNewFile(plan Plan) (Stats, error) {
 // plan's values (per the §4.4 schema rule), and prints the directive
 // to w. The printer emits a trailing newline. Commented inserts are
 // rendered through comment.Emit with the insert's Prefix.
+//
+// When ins.StripMetaKeys is non-empty the directive is deep-cloned and
+// the listed metadata keys are removed before printing. The original
+// AST is never mutated.
 func printInsert(w *bytes.Buffer, plan Plan, ins Insert) error {
+	d := ast.StripMetaKeys(ins.Directive, ins.StripMetaKeys)
 	if ins.Commented {
 		prefix := ins.Prefix
 		if prefix == "" {
 			prefix = "; "
 		}
-		if err := comment.Emit(w, ins.Directive, prefix); err != nil {
+		if err := comment.Emit(w, d, prefix); err != nil {
 			return fmt.Errorf("merge: printing commented directive: %w", err)
 		}
 		return nil
@@ -67,7 +73,7 @@ func printInsert(w *bytes.Buffer, plan Plan, ins Insert) error {
 	eff := formatopt.Resolve(ins.Format)
 	eff.BlankLinesBetweenDirectives = plan.BlankLinesBetweenDirectives
 	eff.InsertBlankLinesBetweenDirectives = plan.InsertBlankLinesBetweenDirectives
-	if err := printer.Fprint(w, ins.Directive, optsAsClosures(eff)...); err != nil {
+	if err := printer.Fprint(w, d, optsAsClosures(eff)...); err != nil {
 		return fmt.Errorf("merge: printing directive: %w", err)
 	}
 	return nil

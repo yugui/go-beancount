@@ -619,6 +619,39 @@ nonsense = 42
 	}
 }
 
+// TestRun_TransactionRouteAccountStripped verifies the full 7.5g-B pipeline:
+// a Transaction carrying route-account metadata reaches its overridden
+// destination, and the emitted file does not contain route-account.
+func TestRun_TransactionRouteAccountStripped(t *testing.T) {
+	root, ledger := touchLedger(t)
+	// A transaction whose route-account override points to Assets:Savings.
+	// Without stripping, the metadata key would appear in the emitted file.
+	src := `2024-03-15 * "Transfer"
+  route-account: "Assets:Savings"
+  Assets:Savings  100.00 USD
+  Assets:Bank    -100.00 USD
+`
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	// The transaction is routed to the Assets:Savings destination.
+	dest := filepath.Join(root, "transactions/Assets/Savings/202403.beancount")
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading destination %q: %v", dest, err)
+	}
+	if strings.Contains(string(got), "route-account") {
+		t.Errorf("emitted file still contains route-account key:\n%s", string(got))
+	}
+	if !strings.Contains(string(got), "Transfer") {
+		t.Errorf("emitted file missing the transaction narration:\n%s", string(got))
+	}
+	if !strings.Contains(stderr, "written=1") {
+		t.Errorf("stderr = %q, want written=1", stderr)
+	}
+}
+
 func TestRun_DedupCrossPostingCascade(t *testing.T) {
 	openLine := "2024-01-10 open Assets:Bank USD\n"
 	root, ledger := seedLedger(t, map[string]string{

@@ -1,6 +1,7 @@
 package ast
 
 import (
+	"reflect"
 	"testing"
 	"time"
 
@@ -227,6 +228,14 @@ func TestPostingClone(t *testing.T) {
 	if orig.Amount.Number.Cmp(&got.Amount.Number) == 0 {
 		t.Errorf("Posting.Clone: mutating clone Amount changed original; want independent buffers")
 	}
+
+	// Meta must be a fresh map: mutating the clone's Meta must not affect the original.
+	orig2 := samplePosting()
+	got2 := orig2.Clone()
+	got2.Meta.Props["injected"] = MetaValue{Kind: MetaString, String: "yes"}
+	if _, present := orig2.Meta.Props["injected"]; present {
+		t.Errorf("Posting.Clone: mutating clone Meta changed original Meta; want independent maps")
+	}
 }
 
 func TestPostingCloneZeroOptionalFields(t *testing.T) {
@@ -272,6 +281,23 @@ func TestTransactionClone(t *testing.T) {
 	// slice header so the documented contract holds.
 	if len(got.Tags) > 0 && &got.Tags[0] != &orig.Tags[0] {
 		t.Errorf("Transaction.Clone: Tags backing array unexpectedly reallocated; clone is meant to share")
+	}
+
+	// Transaction Meta must be a fresh map: mutating the clone's Meta must
+	// not affect the original.
+	orig2 := sampleTransaction()
+	got2 := orig2.Clone()
+	got2.Meta.Props["injected"] = MetaValue{Kind: MetaString, String: "yes"}
+	if _, present := orig2.Meta.Props["injected"]; present {
+		t.Errorf("Transaction.Clone: mutating clone Meta changed original Meta; want independent maps")
+	}
+
+	// Posting Meta must also be fresh maps.
+	orig3 := sampleTransaction()
+	got3 := orig3.Clone()
+	got3.Postings[0].Meta.Props["posting-injected"] = MetaValue{Kind: MetaString, String: "x"}
+	if _, present := orig3.Postings[0].Meta.Props["posting-injected"]; present {
+		t.Errorf("Transaction.Clone: mutating clone posting Meta changed original posting Meta; want independent maps")
 	}
 }
 
@@ -352,5 +378,230 @@ func TestBalanceCloneNilTolerance(t *testing.T) {
 func TestBalanceCloneNil(t *testing.T) {
 	if got := (*Balance)(nil).Clone(); got != nil {
 		t.Errorf("Balance.Clone on nil = %v, want nil", got)
+	}
+}
+
+// --- Metadata.Without tests ---
+
+func TestMetadataWithout_EmptyKeys(t *testing.T) {
+	m := Metadata{Props: map[string]MetaValue{
+		"k": {Kind: MetaString, String: "v"},
+	}}
+	got := m.Without()
+	// No keys listed: receiver returned unchanged (same map pointer).
+	if got.Props == nil {
+		t.Fatal("Without() with no keys returned nil Props")
+	}
+	// Pointer identity proves no reallocation (allocation-free no-op contract).
+	if reflect.ValueOf(got.Props).Pointer() != reflect.ValueOf(m.Props).Pointer() {
+		t.Errorf("Without() with no keys reallocated Props: got different map pointer, want same map pointer")
+	}
+}
+
+func TestMetadataWithout_NoPresentKey(t *testing.T) {
+	m := Metadata{Props: map[string]MetaValue{
+		"a": {Kind: MetaString, String: "1"},
+	}}
+	got := m.Without("absent")
+	// Key not present: receiver returned unchanged (same map pointer, no allocation).
+	if reflect.ValueOf(got.Props).Pointer() != reflect.ValueOf(m.Props).Pointer() {
+		t.Errorf("Without(absent): reallocated Props; want same map pointer (allocation-free no-op)")
+	}
+}
+
+func TestMetadataWithout_SingleKey(t *testing.T) {
+	m := Metadata{Props: map[string]MetaValue{
+		"keep":  {Kind: MetaString, String: "yes"},
+		"strip": {Kind: MetaString, String: "no"},
+	}}
+	got := m.Without("strip")
+	if _, ok := got.Props["strip"]; ok {
+		t.Errorf("Without(strip): key still present in result")
+	}
+	if v, ok := got.Props["keep"]; !ok || v.String != "yes" {
+		t.Errorf("Without(strip): 'keep' key missing or changed: %v", got.Props)
+	}
+	// Original must be unchanged.
+	if _, ok := m.Props["strip"]; !ok {
+		t.Errorf("Without(strip): original map was mutated — 'strip' key missing")
+	}
+}
+
+func TestMetadataWithout_MultiKey(t *testing.T) {
+	m := Metadata{Props: map[string]MetaValue{
+		"a": {Kind: MetaString, String: "1"},
+		"b": {Kind: MetaString, String: "2"},
+		"c": {Kind: MetaString, String: "3"},
+	}}
+	got := m.Without("a", "b")
+	if _, ok := got.Props["a"]; ok {
+		t.Errorf("Without(a,b): key 'a' still present")
+	}
+	if _, ok := got.Props["b"]; ok {
+		t.Errorf("Without(a,b): key 'b' still present")
+	}
+	if v, ok := got.Props["c"]; !ok || v.String != "3" {
+		t.Errorf("Without(a,b): key 'c' missing or changed: %v", got.Props)
+	}
+	// Original must be unchanged.
+	if len(m.Props) != 3 {
+		t.Errorf("Without(a,b): original Props modified (len=%d)", len(m.Props))
+	}
+}
+
+func TestMetadataWithout_EmptyResult(t *testing.T) {
+	m := Metadata{Props: map[string]MetaValue{
+		"only": {Kind: MetaString, String: "x"},
+	}}
+	got := m.Without("only")
+	if len(got.Props) != 0 {
+		t.Errorf("Without(only): got Props=%v, want empty", got.Props)
+	}
+	// Original must still have the key.
+	if _, ok := m.Props["only"]; !ok {
+		t.Errorf("Without(only): original map was mutated")
+	}
+}
+
+func TestMetadataWithout_NilProps(t *testing.T) {
+	m := Metadata{}
+	got := m.Without("any")
+	if got.Props != nil {
+		t.Errorf("Without on nil Props: want nil result Props, got %v", got.Props)
+	}
+}
+
+// --- StripMetaKeys tests ---
+
+// TestStripMetaKeys_AllMetaBearingKinds verifies that StripMetaKeys removes
+// the target key from each metadata-bearing directive type and does not mutate
+// the original. One table entry per directive kind that the switch covers.
+func TestStripMetaKeys_AllMetaBearingKinds(t *testing.T) {
+	const stripKey = "route-account"
+	const keepKey = "keep-me"
+	date := time.Date(2024, time.March, 15, 0, 0, 0, 0, time.UTC)
+
+	buildMeta := func() Metadata {
+		return Metadata{Props: map[string]MetaValue{
+			stripKey: {Kind: MetaString, String: "val"},
+			keepKey:  {Kind: MetaString, String: "yes"},
+		}}
+	}
+
+	cases := []struct {
+		name      string
+		directive func() Directive
+		getMeta   func(Directive) Metadata
+	}{
+		{
+			name: "Transaction",
+			directive: func() Directive {
+				return &Transaction{Date: date, Flag: '*', Narration: "t", Meta: buildMeta(),
+					Postings: []Posting{{
+						Account: Account("Assets:Cash"),
+						Meta:    buildMeta(),
+					}},
+				}
+			},
+			getMeta: func(d Directive) Metadata { return d.(*Transaction).Meta },
+		},
+		{
+			name:      "Open",
+			directive: func() Directive { return &Open{Date: date, Account: Account("Assets:A"), Meta: buildMeta()} },
+			getMeta:   func(d Directive) Metadata { return d.(*Open).Meta },
+		},
+		{
+			name:      "Close",
+			directive: func() Directive { return &Close{Date: date, Account: Account("Assets:A"), Meta: buildMeta()} },
+			getMeta:   func(d Directive) Metadata { return d.(*Close).Meta },
+		},
+		{
+			name: "Pad",
+			directive: func() Directive {
+				return &Pad{Date: date, Account: Account("Assets:A"), PadAccount: Account("Equity:Opening"), Meta: buildMeta()}
+			},
+			getMeta: func(d Directive) Metadata { return d.(*Pad).Meta },
+		},
+		{
+			name: "Note",
+			directive: func() Directive {
+				return &Note{Date: date, Account: Account("Assets:A"), Comment: "hi", Meta: buildMeta()}
+			},
+			getMeta: func(d Directive) Metadata { return d.(*Note).Meta },
+		},
+		{
+			name: "Document",
+			directive: func() Directive {
+				return &Document{Date: date, Account: Account("Assets:A"), Path: "/p", Meta: buildMeta()}
+			},
+			getMeta: func(d Directive) Metadata { return d.(*Document).Meta },
+		},
+		{
+			name: "Price",
+			directive: func() Directive {
+				return &Price{Date: date, Commodity: "USD", Amount: Amount{Number: cloneTestDecimal("1"), Currency: "EUR"}, Meta: buildMeta()}
+			},
+			getMeta: func(d Directive) Metadata { return d.(*Price).Meta },
+		},
+		{
+			name:      "Event",
+			directive: func() Directive { return &Event{Date: date, Name: "location", Value: "NYC", Meta: buildMeta()} },
+			getMeta:   func(d Directive) Metadata { return d.(*Event).Meta },
+		},
+		{
+			name:      "Query",
+			directive: func() Directive { return &Query{Date: date, Name: "q", BQL: "SELECT *", Meta: buildMeta()} },
+			getMeta:   func(d Directive) Metadata { return d.(*Query).Meta },
+		},
+		{
+			name:      "Custom",
+			directive: func() Directive { return &Custom{Date: date, TypeName: "mytype", Meta: buildMeta()} },
+			getMeta:   func(d Directive) Metadata { return d.(*Custom).Meta },
+		},
+		{
+			name:      "Commodity",
+			directive: func() Directive { return &Commodity{Date: date, Currency: "USD", Meta: buildMeta()} },
+			getMeta:   func(d Directive) Metadata { return d.(*Commodity).Meta },
+		},
+		{
+			name: "Balance",
+			directive: func() Directive {
+				return &Balance{Date: date, Account: Account("Assets:A"), Amount: Amount{Number: cloneTestDecimal("0"), Currency: "USD"}, Meta: buildMeta()}
+			},
+			getMeta: func(d Directive) Metadata { return d.(*Balance).Meta },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			orig := tc.directive()
+
+			result := StripMetaKeys(orig, []string{stripKey})
+
+			// Stripped key must be absent from result.
+			got := tc.getMeta(result)
+			if _, ok := got.Props[stripKey]; ok {
+				t.Errorf("StripMetaKeys(%s): stripped key %q still present in result", tc.name, stripKey)
+			}
+			// Non-stripped key must still be present.
+			if _, ok := got.Props[keepKey]; !ok {
+				t.Errorf("StripMetaKeys(%s): key %q was unexpectedly removed from result", tc.name, keepKey)
+			}
+
+			// Original directive must not have been mutated.
+			origMeta := tc.getMeta(orig)
+			if _, ok := origMeta.Props[stripKey]; !ok {
+				t.Errorf("StripMetaKeys(%s): original directive was mutated — stripped key %q missing", tc.name, stripKey)
+			}
+
+			// For Transaction, also verify posting metadata was stripped.
+			if txn, ok := result.(*Transaction); ok {
+				for i, p := range txn.Postings {
+					if _, ok := p.Meta.Props[stripKey]; ok {
+						t.Errorf("StripMetaKeys(Transaction): stripped key %q still present in posting[%d].Meta", stripKey, i)
+					}
+				}
+			}
+		})
 	}
 }

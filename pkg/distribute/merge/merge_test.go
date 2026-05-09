@@ -706,6 +706,143 @@ func TestMerge_EmptyInsertsNoOp_FileExists(t *testing.T) {
 	}
 }
 
+// --- StripMetaKeys tests (7.5g-B) ---
+
+// buildTxnWithRouteAccount returns a *ast.Transaction that carries a
+// route-account metadata key on the transaction header and one posting.
+func buildTxnWithRouteAccount(t *testing.T) *ast.Transaction {
+	t.Helper()
+	dec := func(s string) apd.Decimal {
+		d, _, err := apd.NewFromString(s)
+		if err != nil {
+			t.Fatalf("apd.NewFromString(%q): %v", s, err)
+		}
+		return *d
+	}
+	return &ast.Transaction{
+		Date:      mustDate(t, "2024-03-15"),
+		Flag:      '*',
+		Narration: "Coffee",
+		Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+			"route-account": {Kind: ast.MetaString, String: "Assets:Cash"},
+			"keep-this":     {Kind: ast.MetaString, String: "yes"},
+		}},
+		Postings: []ast.Posting{
+			{
+				Account: ast.Assets.MustSub("Cash"),
+				Amount:  &ast.Amount{Number: dec("-5.00"), Currency: "USD"},
+				Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+					"route-account": {Kind: ast.MetaBool, Bool: true},
+				}},
+			},
+			{
+				Account: ast.Expenses.MustSub("Food"),
+				Amount:  &ast.Amount{Number: dec("5.00"), Currency: "USD"},
+				Meta:    ast.Metadata{},
+			},
+		},
+	}
+}
+
+// TestMerge_StripsRouteAccountFromTransaction verifies that a Transaction
+// with route-account on the header and a posting is emitted without that key
+// when StripMetaKeys is set on the Insert, and the original AST is unchanged.
+func TestMerge_StripsRouteAccountFromTransaction(t *testing.T) {
+	txn := buildTxnWithRouteAccount(t)
+	plan := defaultPlan([]Insert{
+		{Directive: txn, StripMetaKeys: []string{"route-account"}},
+	})
+	got, _, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	out := string(got)
+	if strings.Contains(out, "route-account") {
+		t.Errorf("output still contains route-account: %s", out)
+	}
+	if !strings.Contains(out, "keep-this") {
+		t.Errorf("output lost keep-this metadata: %s", out)
+	}
+	// Original AST must be unchanged.
+	if _, ok := txn.Meta.Props["route-account"]; !ok {
+		t.Errorf("Merge mutated original transaction Meta: route-account key missing")
+	}
+	if _, ok := txn.Postings[0].Meta.Props["route-account"]; !ok {
+		t.Errorf("Merge mutated original posting[0] Meta: route-account key missing")
+	}
+}
+
+// TestMerge_StripsRouteAccountFromCommentedInsert verifies that a commented
+// insert also strips the metadata key before rendering.
+func TestMerge_StripsRouteAccountFromCommentedInsert(t *testing.T) {
+	txn := buildTxnWithRouteAccount(t)
+	plan := defaultPlan([]Insert{
+		{Directive: txn, Commented: true, Prefix: "; ", StripMetaKeys: []string{"route-account"}},
+	})
+	got, _, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	out := string(got)
+	if strings.Contains(out, "route-account") {
+		t.Errorf("commented output still contains route-account: %s", out)
+	}
+	// Must still be commented.
+	for _, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if line != "" && !strings.HasPrefix(line, ";") {
+			t.Errorf("line not commented-prefixed: %q", line)
+		}
+	}
+	// Original AST must be unchanged.
+	if _, ok := txn.Meta.Props["route-account"]; !ok {
+		t.Errorf("Merge mutated original transaction Meta in commented path")
+	}
+}
+
+// TestMerge_StripsCustomKey verifies the same behaviour with a non-default
+// metadata key name (exercises the key-agnostic path of stripDirectiveMeta).
+func TestMerge_StripsCustomKey(t *testing.T) {
+	d := open(t, "2024-01-15", "Assets:A")
+	d.Meta = ast.Metadata{Props: map[string]ast.MetaValue{
+		"my-custom-key": {Kind: ast.MetaString, String: "val"},
+		"preserve":      {Kind: ast.MetaString, String: "ok"},
+	}}
+	plan := defaultPlan([]Insert{
+		{Directive: d, StripMetaKeys: []string{"my-custom-key"}},
+	})
+	got, _, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	out := string(got)
+	if strings.Contains(out, "my-custom-key") {
+		t.Errorf("output still contains my-custom-key: %s", out)
+	}
+	if !strings.Contains(out, "preserve") {
+		t.Errorf("output lost 'preserve' metadata: %s", out)
+	}
+	// Original AST must be unchanged.
+	if _, ok := d.Meta.Props["my-custom-key"]; !ok {
+		t.Errorf("Merge mutated original directive Meta")
+	}
+}
+
+// TestMerge_NoStripWhenKeysEmpty verifies that when StripMetaKeys is nil
+// the output is byte-identical to the existing golden for a single insert.
+func TestMerge_NoStripWhenKeysEmpty(t *testing.T) {
+	plan := defaultPlan([]Insert{
+		{Directive: open(t, "2024-01-15", "Assets:NewAccount"), StripMetaKeys: nil},
+	})
+	got, _, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	want := readFixture(t, "single_insert.want.beancount")
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output with nil StripMetaKeys differs from golden (-want +got):\n%s", diff)
+	}
+}
+
 // --- Helper unit tests for spacing primitives ---
 
 func TestPaddingFor(t *testing.T) {
