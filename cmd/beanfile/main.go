@@ -280,6 +280,7 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 
 	planByPath := map[string][]merge.Insert{}
 	spacingByPath := map[string]planSpacing{}
+	orderByPath := map[string]route.OrderKind{}
 	writtenByPath := map[string]int{}
 	commentedByPath := map[string]int{}
 	skippedByPath := map[string]int{}
@@ -342,6 +343,7 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 				blankLines:       decision.BlankLinesBetweenDirectives,
 				insertBlankLines: decision.InsertBlankLinesBetweenDirectives,
 			}
+			orderByPath[decision.Path] = decision.Order
 			if commented {
 				commentedByPath[decision.Path]++
 			} else {
@@ -372,7 +374,7 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 			sp := spacingByPath[p]
 			plan := merge.Plan{
 				Path:                              filepath.Join(c.route.Root, p),
-				Order:                             route.OrderAscending,
+				Order:                             orderByPath[p],
 				BlankLinesBetweenDirectives:       sp.blankLines,
 				InsertBlankLinesBetweenDirectives: sp.insertBlankLines,
 				Inserts:                           inserts,

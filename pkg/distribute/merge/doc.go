@@ -36,11 +36,18 @@
 // pre-existing blank lines (X > N is left as-is) - whole-file
 // normalization is the job of a separate beanfmt pass.
 //
-// # Sub-phase scope
+// # Sort orders
 //
-// This package implements the active and commented emit paths from §9
-// rows 7.5b and 7.5e of the beanfile design. Plan.Order other than
-// OrderAscending is rejected with [ErrOrderNotSupported] so callers can
-// [errors.Is] it and route to 7.5h. The Insert.StripMetaKeys field is
-// accepted but not read; it lands in 7.5g.
+// [Plan].Order controls how new directives are positioned relative to
+// existing dated directives:
+//
+//   - [route.OrderAscending]: inserts are placed so that older dates
+//     precede newer dates (oldest-first). This is the default.
+//   - [route.OrderDescending]: inserts are placed so that newer dates
+//     precede older dates (newest-first).
+//   - [route.OrderAppend]: each insert lands unconditionally at the end
+//     of the file (byte offset len(data)), after any trailing trivia.
+//
+// Within a single target offset, multiple inserts from the same [Plan]
+// are emitted in their original input order (stable FIFO).
 package merge

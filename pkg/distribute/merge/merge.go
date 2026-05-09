@@ -21,8 +21,8 @@ type Plan struct {
 	// Path is the destination file. It is created on first write.
 	Path string
 	// Order selects how new directives are positioned relative to
-	// existing dated directives. In sub-phase 7.5b only
-	// route.OrderAscending is supported.
+	// existing dated directives: ascending (oldest-first), descending
+	// (newest-first), or append (unconditionally at end-of-file).
 	Order route.OrderKind
 	// BlankLinesBetweenDirectives is the target N for the spacing rule.
 	BlankLinesBetweenDirectives int
@@ -39,8 +39,10 @@ type Plan struct {
 //
 // When Commented is true the directive is rendered as a commented-out
 // block: each line of the printed directive is prefixed with Prefix
-// (typically "; "). StripMetaKeys is reserved for 7.5g; it is accepted
-// on the type but not read in 7.5e.
+// (typically "; "). When StripMetaKeys is non-empty, the named keys are
+// removed from the directive's metadata (and from every posting's metadata
+// for transactions) on a deep copy taken just before printing; the
+// original AST is never mutated.
 type Insert struct {
 	// Directive is the directive to render and insert.
 	Directive ast.Directive
@@ -78,11 +80,6 @@ type Stats struct {
 	Skipped int
 }
 
-// ErrOrderNotSupported is wrapped in the error Merge returns when
-// Plan.Order is not route.OrderAscending. Descending and append orders
-// land in sub-phase 7.5h; callers can route around it with errors.Is.
-var ErrOrderNotSupported = errors.New("merge: only ascending order is supported")
-
 // tallyInserts splits the insert list into active and commented counts
 // for Stats. Same accounting is used by the new-file and existing-file
 // paths.
@@ -110,10 +107,6 @@ func Merge(plan Plan, _ Options) (Stats, error) {
 		return Stats{Path: plan.Path}, nil
 	}
 
-	if plan.Order != route.OrderAscending {
-		return Stats{Path: plan.Path}, fmt.Errorf("merge: order %s: %w", orderName(plan.Order), ErrOrderNotSupported)
-	}
-
 	_, err := os.Stat(plan.Path)
 	switch {
 	case err == nil:
@@ -122,20 +115,5 @@ func Merge(plan Plan, _ Options) (Stats, error) {
 		return mergeNewFile(plan)
 	default:
 		return Stats{Path: plan.Path}, fmt.Errorf("merge: stat %q: %w", plan.Path, err)
-	}
-}
-
-// orderName returns a human-readable name for an OrderKind, used in
-// error messages.
-func orderName(o route.OrderKind) string {
-	switch o {
-	case route.OrderAscending:
-		return "ascending"
-	case route.OrderDescending:
-		return "descending"
-	case route.OrderAppend:
-		return "append"
-	default:
-		return fmt.Sprintf("OrderKind(%d)", int(o))
 	}
 }

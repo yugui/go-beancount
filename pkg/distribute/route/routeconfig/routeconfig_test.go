@@ -228,17 +228,32 @@ indent_width = 4
 	}
 }
 
-func TestLoad_RejectsUnsupportedOrder(t *testing.T) {
+func TestLoad_AcceptsDescendingAndAppend(t *testing.T) {
+	for _, order := range []string{"ascending", "descending", "append"} {
+		t.Run(order, func(t *testing.T) {
+			body := "[routes.account]\norder = \"" + order + "\"\n"
+			cfg, err := Load(writeTOML(t, body))
+			if err != nil {
+				t.Fatalf("Load(%q): %v", order, err)
+			}
+			if cfg.Routes.Account.Order != order {
+				t.Errorf("Order = %q, want %q", cfg.Routes.Account.Order, order)
+			}
+		})
+	}
+}
+
+func TestLoad_RejectsUnknownOrder(t *testing.T) {
 	body := `
 [routes.account]
-order = "descending"
+order = "asc"
 `
 	_, err := Load(writeTOML(t, body))
 	if err == nil {
-		t.Fatal("Load: got nil error, want unsupported order")
+		t.Fatal("Load: got nil error, want unknown order error")
 	}
-	if !strings.Contains(err.Error(), "descending") {
-		t.Errorf("error = %v, want mention of descending", err)
+	if !strings.Contains(err.Error(), "asc") {
+		t.Errorf("error = %v, want mention of asc", err)
 	}
 }
 

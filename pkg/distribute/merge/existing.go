@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yugui/go-beancount/internal/atomicfile"
+	"github.com/yugui/go-beancount/pkg/distribute/route"
 	"github.com/yugui/go-beancount/pkg/syntax"
 )
 
@@ -74,7 +75,7 @@ func mergeExistingFile(plan Plan) (Stats, error) {
 	inserts := make([]Insert, len(plan.Inserts))
 	copy(inserts, plan.Inserts)
 	sort.SliceStable(inserts, func(i, j int) bool {
-		return inserts[i].Directive.DirDate().Before(inserts[j].Directive.DirDate())
+		return lessByOrder(plan.Order, inserts[i].Directive.DirDate(), inserts[j].Directive.DirDate())
 	})
 
 	// Group inserts by target offset, preserving stable input order
@@ -85,7 +86,7 @@ func mergeExistingFile(plan Plan) (Stats, error) {
 	}
 	var groups []group
 	for _, ins := range inserts {
-		off := targetOffset(existing, ins.Directive.DirDate(), len(data))
+		off := targetOffset(existing, ins.Directive.DirDate(), plan.Order, len(data))
 		if n := len(groups); n > 0 && groups[n-1].offset == off {
 			groups[n-1].inserts = append(groups[n-1].inserts, ins)
 			continue
@@ -199,26 +200,66 @@ func advancePastTerminator(data []byte, off int) int {
 	return len(data)
 }
 
-// targetOffset returns the byte offset at which an insert with the
-// given date should land, per the ascending binary-search rule from
-// §8: the largest i with existing[i].date <= date, then "just after i"
-// (i.e. existing[i].endOff). When no element matches the insertion
-// goes just before the first dated directive (existing[0].startOff);
-// when there are no dated directives at all it goes at end of file.
-func targetOffset(existing []existingDirective, date time.Time, fileLen int) int {
+// lessByOrder reports whether a should sort before b for the given order.
+// For OrderAppend the function always returns false, leaving the pre-sort
+// stable (input order is preserved) — a stable sort with an all-false
+// comparator is a no-op, preserving the original slice order.
+// For OrderDescending newer dates sort first (a > b).
+// For OrderAscending older dates sort first (a < b).
+func lessByOrder(order route.OrderKind, a, b time.Time) bool {
+	switch order {
+	case route.OrderDescending:
+		return b.Before(a)
+	case route.OrderAppend:
+		return false
+	default: // OrderAscending
+		return a.Before(b)
+	}
+}
+
+// targetOffset returns the byte offset at which an insert with the given
+// date should land, according to order.
+//
+// Ascending: largest i with existing[i].date <= date → existing[i].endOff.
+// Boundary (no match) → existing[0].startOff. No dated directives → fileLen.
+//
+// Descending: largest i with existing[i].date >= date (inclusive of equal
+// dates) → existing[i].endOff. Equivalently: first i such that
+// existing[i].date < date; insert before it, which is existing[i-1].endOff
+// for i>0, or existing[0].startOff for i==0. No dated directives → fileLen.
+//
+// Append: unconditionally fileLen (per Open Question #10).
+func targetOffset(existing []existingDirective, date time.Time, order route.OrderKind, fileLen int) int {
+	if order == route.OrderAppend {
+		return fileLen
+	}
 	if len(existing) == 0 {
 		return fileLen
 	}
-	// sort.Search finds the smallest i for which the predicate is
-	// true; we want the largest i with existing[i].date <= date, which
-	// is one less than the smallest i with existing[i].date > date.
-	idx := sort.Search(len(existing), func(i int) bool {
-		return existing[i].date.After(date)
-	})
-	if idx == 0 {
-		return existing[0].startOff
+	switch order {
+	case route.OrderDescending:
+		// Find smallest i where existing[i].date < date (i.e. strictly before).
+		// Insert after existing[i-1] (which has date >= date), or before all
+		// when i==0 (no existing directive has date >= date).
+		idx := sort.Search(len(existing), func(i int) bool {
+			return existing[i].date.Before(date)
+		})
+		if idx == 0 {
+			return existing[0].startOff
+		}
+		return existing[idx-1].endOff
+	default: // OrderAscending
+		// sort.Search finds the smallest i for which the predicate is
+		// true; we want the largest i with existing[i].date <= date, which
+		// is one less than the smallest i with existing[i].date > date.
+		idx := sort.Search(len(existing), func(i int) bool {
+			return existing[i].date.After(date)
+		})
+		if idx == 0 {
+			return existing[0].startOff
+		}
+		return existing[idx-1].endOff
 	}
-	return existing[idx-1].endOff
 }
 
 // leadingPatchText returns the bytes the merger contributes before the

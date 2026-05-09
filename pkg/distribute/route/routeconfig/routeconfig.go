@@ -99,19 +99,17 @@ func validate(cfg *route.Config) error {
 	return nil
 }
 
-// validateOrder currently accepts only "ascending". The empty string
-// means "inherit" and is always accepted.
+// validateOrder accepts "ascending", "descending", and "append". The empty
+// string means "inherit" and is always accepted. Unknown values are rejected.
 func validateOrder(order, where string) error {
 	if order == "" {
 		return nil
 	}
 	switch strings.ToLower(order) {
-	case "ascending":
+	case "ascending", "descending", "append":
 		return nil
-	case "descending", "append":
-		return fmt.Errorf("%s: %q is not yet supported (only \"ascending\")", where, order)
 	default:
-		return fmt.Errorf("%s: %q is not a valid order (must be \"ascending\")", where, order)
+		return fmt.Errorf("%s: %q is not a valid order (must be \"ascending\", \"descending\", or \"append\")", where, order)
 	}
 }
 
