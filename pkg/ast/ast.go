@@ -2,6 +2,7 @@
 package ast
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
@@ -168,6 +169,33 @@ const (
 	// MetaBool indicates a boolean value.
 	MetaBool
 )
+
+// String returns a human-readable name for the MetaValueKind, satisfying
+// the fmt.Stringer interface. Unknown kinds are formatted as "kind(n)".
+func (k MetaValueKind) String() string {
+	switch k {
+	case MetaString:
+		return "string"
+	case MetaAccount:
+		return "account"
+	case MetaCurrency:
+		return "currency"
+	case MetaDate:
+		return "date"
+	case MetaTag:
+		return "tag"
+	case MetaLink:
+		return "link"
+	case MetaNumber:
+		return "number"
+	case MetaAmount:
+		return "amount"
+	case MetaBool:
+		return "bool"
+	default:
+		return fmt.Sprintf("kind(%d)", int(k))
+	}
+}
 
 // MetaValue is a tagged union for metadata values.
 type MetaValue struct {

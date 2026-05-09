@@ -233,6 +233,9 @@ func parseFlags(args []string, stderr io.Writer) (*cfg, []string, int) {
 	}
 
 	rcfg.Root = rootAbs
+	rcfg.Warn = func(format string, args ...any) {
+		fmt.Fprintf(stderr, "beanfile: route: "+format+"\n", args...)
+	}
 	c.route = rcfg
 
 	return c, cmd.Args(), 0
