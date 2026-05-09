@@ -8,9 +8,8 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
-	"golang.org/x/text/unicode/norm"
-
 	"github.com/yugui/go-beancount/pkg/ast"
+	"golang.org/x/text/unicode/norm"
 )
 
 // dec parses a literal decimal for use in Posting/Amount fields.

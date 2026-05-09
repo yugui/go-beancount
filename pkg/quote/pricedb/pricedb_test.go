@@ -7,7 +7,6 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/google/go-cmp/cmp"
-
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/printer"
 	"github.com/yugui/go-beancount/pkg/quote/pricedb"

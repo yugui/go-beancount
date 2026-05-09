@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
-
 	"github.com/yugui/go-beancount/pkg/distribute/route"
 )
 

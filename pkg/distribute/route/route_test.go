@@ -6,7 +6,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-
 	"github.com/yugui/go-beancount/internal/formatopt"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
