@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func touchLedger(t *testing.T) (rootDir, ledgerPath string) {
@@ -213,7 +216,7 @@ func TestRun_InputParseError(t *testing.T) {
 	if stderr == "" {
 		t.Errorf("stderr empty, want diagnostic")
 	}
-	if _, err := os.Stat(filepath.Join(root, "quotes")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, "quotes")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("quotes/ exists under root after parse error: err=%v", err)
 	}
 	entries, err := os.ReadDir(root)
@@ -619,9 +622,10 @@ nonsense = 42
 	}
 }
 
-// TestRun_TransactionRouteAccountStripped verifies the full 7.5g-B pipeline:
-// a Transaction carrying route-account metadata reaches its overridden
-// destination, and the emitted file does not contain route-account.
+// TestRun_TransactionRouteAccountStripped verifies the end-to-end
+// route-account pipeline: a Transaction carrying route-account metadata
+// reaches its overridden destination, and the emitted file does not
+// contain the route-account key.
 func TestRun_TransactionRouteAccountStripped(t *testing.T) {
 	root, ledger := touchLedger(t)
 	// A transaction whose route-account override points to Assets:Savings.
@@ -765,6 +769,369 @@ func TestRun_FilePatternYYYYmmdd(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "quotes/USD/20240307.beancount") {
 		t.Errorf("stderr = %q, want destination path with day in stats", stderr)
+	}
+}
+
+// TestRun_DryRunSinglePrice exercises the dry-run preview format on a
+// single-line directive. The destination file MUST NOT be
+// created; stdout MUST carry the "--- <path> ---" header followed by a
+// "+ "-prefixed render of the directive; stderr MUST still report
+// stats so users can see written/commented/skipped counts.
+func TestRun_DryRunSinglePrice(t *testing.T) {
+	root, ledger := touchLedger(t)
+	src := "2024-01-15 price USD 110 JPY\n"
+	exit, stdout, stderr := runCLI(t, []string{"--ledger", ledger, "--dry-run"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "quotes/USD/202401.beancount")
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("destination created under --dry-run (err=%v)", err)
+	}
+	wantHeader := "--- quotes/USD/202401.beancount ---"
+	if !strings.Contains(stdout, wantHeader) {
+		t.Errorf("stdout = %q, want header %q", stdout, wantHeader)
+	}
+	if !strings.Contains(stdout, "+ 2024-01-15 price USD 110 JPY") {
+		t.Errorf("stdout = %q, want active-prefixed price line", stdout)
+	}
+	if !strings.Contains(stderr, "written=1") {
+		t.Errorf("stderr = %q, want written=1", stderr)
+	}
+}
+
+// TestRun_DryRunMultilineTransaction verifies that every line of a
+// multi-line directive (a Transaction with two postings) is prefixed
+// with "+ " in dry-run output. The original directive header and the
+// indented posting continuation lines must each carry the prefix.
+func TestRun_DryRunMultilineTransaction(t *testing.T) {
+	root, ledger := touchLedger(t)
+	src := `2024-01-12 * "lunch"
+  Assets:Bank   -10.00 USD
+  Assets:Cash    10.00 USD
+`
+	exit, stdout, stderr := runCLI(t, []string{"--ledger", ledger, "--dry-run"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	// No destination file should be created (transactions/ subtree absent).
+	if _, err := os.Stat(filepath.Join(root, "transactions")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("transactions/ subtree created under --dry-run (err=%v)", err)
+	}
+	// Each of the three lines must be prefixed with "+ ".
+	for _, want := range []string{
+		`+ 2024-01-12 * "lunch"`,
+		"+   Assets:Bank",
+		"+   Assets:Cash",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("stdout missing %q:\n%s", want, stdout)
+		}
+	}
+}
+
+// TestRun_DryRunCommentedPrefix verifies that a directive that would
+// land as a commented insert (active equivalent at another path) is
+// rendered with the ";+ " prefix in dry-run mode and that no actual
+// commented marker reaches the existing file.
+func TestRun_DryRunCommentedPrefix(t *testing.T) {
+	openLine := "2024-01-10 open Assets:Bank USD\n"
+	root, ledger := seedLedger(t, map[string]string{
+		"transactions/Assets/Other/202401.beancount": openLine,
+	})
+	exit, stdout, stderr := runCLI(t, []string{"--ledger", ledger, "--dry-run"}, openLine)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	// The bank destination must NOT have been created.
+	dest := filepath.Join(root, "transactions/Assets/Bank/202401.beancount")
+	if _, err := os.Stat(dest); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("destination created under --dry-run (err=%v)", err)
+	}
+	if !strings.Contains(stdout, "--- transactions/Assets/Bank/202401.beancount ---") {
+		t.Errorf("stdout = %q, want bank dest header", stdout)
+	}
+	if !strings.Contains(stdout, ";+ 2024-01-10 open Assets:Bank") {
+		t.Errorf("stdout = %q, want commented-prefixed open line", stdout)
+	}
+	if !strings.Contains(stderr, "commented=1") {
+		t.Errorf("stderr = %q, want commented=1", stderr)
+	}
+}
+
+// TestRun_DryRunSkippedNothingPrinted exercises an input fully shadowed
+// by the existing ledger: no inserts, only skips. The dry-run header
+// must NOT appear (no insertions to preview), but stats still describe
+// the skip.
+func TestRun_DryRunSkippedNothingPrinted(t *testing.T) {
+	priceLine := "2024-01-15 price USD 110 JPY\n"
+	_, ledger := seedLedger(t, map[string]string{
+		"quotes/USD/202401.beancount": priceLine,
+	})
+	exit, stdout, stderr := runCLI(t, []string{"--ledger", ledger, "--dry-run"}, priceLine)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	// Skip-only runs have no insertions, no pass-through directives, and
+	// no other stdout output, so stdout must be empty.
+	if stdout != "" {
+		t.Errorf("stdout = %q, want empty for skip-only run", stdout)
+	}
+	if !strings.Contains(stderr, "total: written=0 commented=0 skipped=1") {
+		t.Errorf("stderr = %q, want skip-only total", stderr)
+	}
+}
+
+// TestRun_DryRunQuietSuppressesStats confirms --dry-run honours --quiet
+// for stats while still emitting the patch preview to stdout.
+func TestRun_DryRunQuietSuppressesStats(t *testing.T) {
+	_, ledger := touchLedger(t)
+	src := "2024-01-15 price USD 110 JPY\n"
+	exit, stdout, stderr := runCLI(t, []string{"--ledger", ledger, "--dry-run", "--quiet"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("stderr = %q, want empty under --quiet", stderr)
+	}
+	if !strings.Contains(stdout, "+ 2024-01-15 price USD 110 JPY") {
+		t.Errorf("stdout = %q, want preview line", stdout)
+	}
+}
+
+// TestRun_DryRunWithPassThrough pins the documented stream contract
+// for the combined --dry-run --pass-through mode: non-routable
+// directives are emitted on stdout in input order during the
+// directive-processing loop, before any "--- <path> ---" preview
+// blocks. Sources are processed sequentially so the two streams never
+// interleave: pass-through output finishes first, dry-run blocks
+// follow.
+func TestRun_DryRunWithPassThrough(t *testing.T) {
+	root, ledger := touchLedger(t)
+	src := `option "title" "x"
+2024-01-15 price USD 110 JPY
+`
+	exit, stdout, stderr := runCLI(t, []string{"--ledger", ledger, "--dry-run", "--pass-through"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(root, "quotes")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("destination created under --dry-run (err=%v)", err)
+	}
+	idxOption := strings.Index(stdout, `option "title" "x"`)
+	idxHeader := strings.Index(stdout, "--- quotes/USD/202401.beancount ---")
+	if idxOption < 0 {
+		t.Fatalf("stdout missing pass-through option:\n%s", stdout)
+	}
+	if idxHeader < 0 {
+		t.Fatalf("stdout missing dry-run header:\n%s", stdout)
+	}
+	if idxOption >= idxHeader {
+		t.Errorf("expected pass-through before dry-run header; option at %d, header at %d:\n%s",
+			idxOption, idxHeader, stdout)
+	}
+	if !strings.Contains(stdout, "+ 2024-01-15 price USD 110 JPY") {
+		t.Errorf("stdout missing dry-run preview line:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "passthrough=1") {
+		t.Errorf("stderr = %q, want passthrough=1", stderr)
+	}
+}
+
+// TestRun_RouteWarningWithPercentByte exercises the route warning
+// path with a '%' byte in the warning's argument data: a transaction
+// whose route-account is wrong-kind triggers a fall-through warning,
+// and the warning's quoted-narration argument contains a literal '%'.
+// The captured stderr must render the literal '%' as text and must
+// not contain a "%!" format-failure marker. The test serves as a
+// sentinel against regressions in the warn-sink wiring (currently
+// pre-formats with fmt.Sprintf so any '%' in arguments stays inert
+// once the resulting string is embedded under a fixed "%s").
+func TestRun_RouteWarningWithPercentByte(t *testing.T) {
+	_, ledger := touchLedger(t)
+	// A transaction that triggers a Rule-1 warning: route-account
+	// metadata is present but its kind is bool, not string. The
+	// transaction's narration carries a literal '%' that shows up in
+	// the warning's quoted label.
+	src := `2024-03-15 * "100% sure"
+  route-account: TRUE
+  Assets:Cash    -5.00 USD
+  Expenses:Food   5.00 USD
+`
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	if !strings.Contains(stderr, "100% sure") {
+		t.Errorf("stderr = %q, want literal %%-bearing narration in warning", stderr)
+	}
+	// A misinterpreted format verb would surface as "%!s(MISSING)"
+	// or similar runtime-format artifact.
+	if strings.Contains(stderr, "%!") {
+		t.Errorf("stderr = %q, contains %%! format-failure marker", stderr)
+	}
+}
+
+// TestRun_DryRunMultiplePathsSorted verifies that when an input lands
+// at multiple destinations, the dry-run blocks come out in
+// lexicographically sorted order so the user gets a stable preview
+// regardless of input order.
+func TestRun_DryRunMultiplePathsSorted(t *testing.T) {
+	_, ledger := touchLedger(t)
+	src := `2024-01-15 price USD 110 JPY
+2024-01-10 open Assets:Bank USD
+2024-01-15 price JPY 0.0066 USD
+`
+	exit, stdout, stderr := runCLI(t, []string{"--ledger", ledger, "--dry-run"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	wants := []string{
+		"--- quotes/JPY/202401.beancount ---",
+		"--- quotes/USD/202401.beancount ---",
+		"--- transactions/Assets/Bank/202401.beancount ---",
+	}
+	idx := -1
+	for _, h := range wants {
+		i := strings.Index(stdout, h)
+		if i < 0 {
+			t.Errorf("stdout missing %q:\n%s", h, stdout)
+			continue
+		}
+		if i <= idx {
+			t.Errorf("headers out of order at %q (idx=%d, prev=%d): %s", h, i, idx, stdout)
+		}
+		idx = i
+	}
+}
+
+// TestRun_MessyExistingFilePreserved is an end-to-end regression for
+// the merger's byte-exact preservation invariant: a destination file
+// pre-seeded with a blank-line-rich, comment-rich layout MUST keep
+// every byte outside the merger's own insertion intact, with the new
+// directive landing in the right place. The expected output is built
+// explicitly so any spacing or ordering regression — collapsed blank
+// lines, lost comment, reordered directive — fails the diff.
+func TestRun_MessyExistingFilePreserved(t *testing.T) {
+	// The seeded file mixes:
+	//   * an undated header comment block
+	//   * a blank-line gap
+	//   * a dated directive
+	//   * a multi-blank-line gap
+	//   * a commented annotation that does NOT shape-match (no date
+	//     after the prefix), so it's treated as plain comment text
+	//   * a second dated directive
+	//   * trailing blank lines
+	const existing = `; --- header notes ---
+;
+; This file is hand-edited by humans.
+
+2024-02-05 balance Assets:Bank 100.00 USD
+
+
+; ad-hoc note about the bank account
+2024-02-25 balance Assets:Bank 200.00 USD
+
+
+`
+	root, ledger := seedLedger(t, map[string]string{
+		"transactions/Assets/Bank/202402.beancount": existing,
+	})
+	dest := filepath.Join(root, "transactions/Assets/Bank/202402.beancount")
+
+	src := "2024-02-15 balance Assets:Bank 150.00 USD\n"
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading destination: %v", err)
+	}
+	// Expected layout: under ascending order the merger places the new
+	// directive at existing[0].endOff — the byte offset immediately
+	// past 2024-02-05's line terminator, BEFORE the trailing blank
+	// gap. With B=false (the default) the merger contributes no
+	// padding on either side: the new directive's own "\n" terminates
+	// it cleanly, and the original "\n\n" gap that followed
+	// 2024-02-05 now follows the new directive instead. Every other
+	// byte (header comments, intra-content blank lines, plain-comment
+	// annotation, trailing blank lines) is preserved exactly.
+	const want = `; --- header notes ---
+;
+; This file is hand-edited by humans.
+
+2024-02-05 balance Assets:Bank 100.00 USD
+2024-02-15 balance Assets:Bank 150.00 USD
+
+
+; ad-hoc note about the bank account
+2024-02-25 balance Assets:Bank 200.00 USD
+
+
+`
+	if diff := cmp.Diff(want, string(got)); diff != "" {
+		t.Errorf("destination not byte-preserved (-want +got):\n%s", diff)
+	}
+}
+
+// TestRun_StatsFormattingAlignment verifies that per-file stats lines
+// align their "written=" columns regardless of path-length variation,
+// and that the "total:" line is on its own.
+func TestRun_StatsFormattingAlignment(t *testing.T) {
+	root, ledger := touchLedger(t)
+	// Two destinations of distinctly different path lengths so we can
+	// see the alignment column in action.
+	src := `2024-01-10 open Assets:Bank USD
+2024-01-15 price USD 110 JPY
+`
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	if _, err := os.Stat(filepath.Join(root, "quotes/USD/202401.beancount")); err != nil {
+		t.Fatalf("price destination missing: %v", err)
+	}
+	// Verify that the per-path lines and the total line are present and
+	// in the expected relative order: per-path lines (sorted), then total.
+	// We classify each line once, recording both the per-path lines'
+	// indices and the total's index so the ordering check needs no second
+	// pass over lines.
+	lines := strings.Split(strings.TrimRight(stderr, "\n"), "\n")
+	var perPath []string
+	var perPathIdx []int
+	totalIdx := -1
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "beanfile: total:"):
+			totalIdx = i
+		case strings.HasPrefix(line, "beanfile: ") && strings.Contains(line, "written="):
+			perPath = append(perPath, line)
+			perPathIdx = append(perPathIdx, i)
+		}
+	}
+	if totalIdx < 0 {
+		t.Fatalf("stderr missing total: line:\n%s", stderr)
+	}
+	if len(perPath) != 2 {
+		t.Errorf("got %d per-path lines, want 2:\n%s", len(perPath), stderr)
+	}
+	// Per-path lines must precede the total line.
+	for i, idx := range perPathIdx {
+		if idx >= totalIdx {
+			t.Errorf("per-path line at index %d (%q) appears at or after total at %d", idx, perPath[i], totalIdx)
+		}
+	}
+	// All per-path "written=" tokens must align in the same column. The
+	// column anchor is the leading "beanfile: " literal plus the padded
+	// "<path>:" field; if alignment regressed the column would jitter.
+	if len(perPath) >= 2 {
+		col := strings.Index(perPath[0], "written=")
+		for _, line := range perPath[1:] {
+			if c := strings.Index(line, "written="); c != col {
+				t.Errorf("written= column not aligned: %d vs %d in %q", c, col, line)
+			}
+		}
 	}
 }
 
