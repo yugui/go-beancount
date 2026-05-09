@@ -318,7 +318,8 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 					}
 					return 2
 				}
-				if err := printer.Fprint(stdout, d); err != nil {
+				stripped := ast.StripMetaKeys(d, decision.StripMetaKeys)
+				if err := printer.Fprint(stdout, stripped); err != nil {
 					fmt.Fprintf(stderr, "beanfile: writing pass-through: %v\n", err)
 					return 1
 				}
@@ -332,9 +333,10 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 			}
 			commented, _ := index.InOtherActive(decision.Path, d, decision.EqMetaKeys)
 			planByPath[decision.Path] = append(planByPath[decision.Path], merge.Insert{
-				Directive: d,
-				Commented: commented,
-				Format:    decision.Format,
+				Directive:     d,
+				Commented:     commented,
+				Format:        decision.Format,
+				StripMetaKeys: decision.StripMetaKeys,
 			})
 			spacingByPath[decision.Path] = planSpacing{
 				blankLines:       decision.BlankLinesBetweenDirectives,

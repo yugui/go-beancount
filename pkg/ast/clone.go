@@ -20,10 +20,11 @@ func CloneDecimal(x *apd.Decimal) *apd.Decimal {
 //     reallocated, and each Posting's Amount, Cost, and Price pointers
 //     are deep-copied (including their nested apd.Decimal values and
 //     CostSpec.Date) so a clone may be mutated freely.
-//   - Tags, Links, and Meta are shared by convention. The codebase
-//     treats these as immutable after construction; no consumer
-//     mutates them in place, so reallocating them on every clone
-//     would be wasteful.
+//   - Tags and Links are shared by convention. The codebase treats these
+//     as append-only after construction; no consumer mutates them in place.
+//   - Meta is deep-cloned: a fresh Metadata.Props map is allocated so
+//     callers that strip routing keys before emit do not alias the
+//     original AST's metadata.
 //   - Span, Date, Flag, Payee, Narration, Account, Currency, Label
 //     are scalars or small value types; they are copied by value.
 //
@@ -32,14 +33,16 @@ func CloneDecimal(x *apd.Decimal) *apd.Decimal {
 // by inventory.Cost.Clone and lets callers chain clones across
 // optional fields without nil checks.
 
-// Clone returns a deep copy of t. The Postings slice is reallocated
-// and each Posting deep-cloned; Tags, Links, Meta and scalar fields
-// are shared with the receiver. Returns nil if t is nil.
+// Clone returns a deep copy of t. The Postings slice is reallocated and
+// each Posting deep-cloned. Meta is deep-cloned (fresh Props map) so the
+// clone may have metadata keys stripped without aliasing the original.
+// Tags and Links are shared with the receiver. Returns nil if t is nil.
 func (t *Transaction) Clone() *Transaction {
 	if t == nil {
 		return nil
 	}
 	out := *t
+	out.Meta = cloneMeta(t.Meta)
 	if t.Postings != nil {
 		out.Postings = make([]Posting, len(t.Postings))
 		for i := range t.Postings {
@@ -49,11 +52,13 @@ func (t *Transaction) Clone() *Transaction {
 	return &out
 }
 
-// Clone returns a deep copy of the posting. Amount, Cost, and Price
-// are deep-cloned via their own Clone methods; Span, Flag, Account,
-// and Meta are shared with the receiver.
+// Clone returns a deep copy of the posting. Amount, Cost, and Price are
+// deep-cloned via their own Clone methods. Meta is deep-cloned (fresh
+// Props map) so the clone may have metadata keys stripped without aliasing
+// the original. Span, Flag, and Account are copied by value.
 func (p Posting) Clone() Posting {
 	out := p
+	out.Meta = cloneMeta(p.Meta)
 	out.Amount = p.Amount.Clone()
 	out.Cost = p.Cost.Clone()
 	out.Price = p.Price.Clone()
@@ -114,5 +119,122 @@ func (b *Balance) Clone() *Balance {
 	if b.Tolerance != nil {
 		out.Tolerance = CloneDecimal(b.Tolerance)
 	}
+	return &out
+}
+
+// cloneMeta returns a fresh Metadata whose Props map is a shallow copy of
+// src.Props. The values themselves (MetaValue structs) are copied by value;
+// the map is a new allocation so mutations do not alias the original.
+func cloneMeta(src Metadata) Metadata {
+	if src.Props == nil {
+		return Metadata{}
+	}
+	out := Metadata{Props: make(map[string]MetaValue, len(src.Props))}
+	for k, v := range src.Props {
+		out.Props[k] = v
+	}
+	return out
+}
+
+// Clone returns a shallow copy of o with scalar and shared fields preserved.
+// Meta is shared by convention. Currencies is also shared: the slice header
+// is copied by value so the clone aliases the same backing array. Returns nil
+// if o is nil.
+func (o *Open) Clone() *Open {
+	if o == nil {
+		return nil
+	}
+	out := *o
+	return &out
+}
+
+// Clone returns a shallow copy of c. Meta is shared by convention.
+// Returns nil if c is nil.
+func (c *Close) Clone() *Close {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	return &out
+}
+
+// Clone returns a shallow copy of p. Meta is shared by convention.
+// Returns nil if p is nil.
+func (p *Pad) Clone() *Pad {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	return &out
+}
+
+// Clone returns a shallow copy of n. Tags, Links, and Meta are shared by
+// convention. Returns nil if n is nil.
+func (n *Note) Clone() *Note {
+	if n == nil {
+		return nil
+	}
+	out := *n
+	return &out
+}
+
+// Clone returns a shallow copy of d. Tags, Links, and Meta are shared by
+// convention. Returns nil if d is nil.
+func (d *Document) Clone() *Document {
+	if d == nil {
+		return nil
+	}
+	out := *d
+	return &out
+}
+
+// Clone returns a shallow copy of p. Amount is copied by value (embedded
+// struct, not pointer). Meta is shared by convention.
+// Returns nil if p is nil.
+func (p *Price) Clone() *Price {
+	if p == nil {
+		return nil
+	}
+	out := *p
+	return &out
+}
+
+// Clone returns a shallow copy of e. Meta is shared by convention.
+// Returns nil if e is nil.
+func (e *Event) Clone() *Event {
+	if e == nil {
+		return nil
+	}
+	out := *e
+	return &out
+}
+
+// Clone returns a shallow copy of q. Meta is shared by convention.
+// Returns nil if q is nil.
+func (q *Query) Clone() *Query {
+	if q == nil {
+		return nil
+	}
+	out := *q
+	return &out
+}
+
+// Clone returns a shallow copy of c. Values and Meta are shared by
+// convention. Returns nil if c is nil.
+func (c *Custom) Clone() *Custom {
+	if c == nil {
+		return nil
+	}
+	out := *c
+	return &out
+}
+
+// Clone returns a shallow copy of c. Meta is shared by convention.
+// Returns nil if c is nil.
+func (c *Commodity) Clone() *Commodity {
+	if c == nil {
+		return nil
+	}
+	out := *c
 	return &out
 }
