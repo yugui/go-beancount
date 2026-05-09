@@ -1,51 +1,23 @@
 // Command beanfile is a stateless offline CLI that reads a beancount
-// directive stream (stdin or one or more positional files) and merges
-// each directive into the appropriate file in a multi-file ledger. It
-// bridges directive producers — beanprice today, importers tomorrow —
-// with the multi-file layout, without requiring bean-daemon to run.
+// directive stream (stdin or one or more positional files) and files
+// each directive into the appropriate file in a multi-file ledger. A
+// ledger-wide equivalence index built from --ledger drives a three-way
+// write/comment/skip decision so re-runs are idempotent and a directive
+// that already lives in another file is recorded as a commented-out
+// marker rather than re-written verbatim.
 //
-// Usage:
+// Run "beanfile --help" for the full flag list. The implementation
+// packages own the behavioral spec:
 //
-//	beanfile [flags] --ledger ROOT.beancount [files...]
-//
-// Required:
-//
-//	--ledger PATH   ledger root file used to walk the include closure
-//	                and build the dedup index (active + commented-out
-//	                directives across the whole ledger)
-//
-// Common flags:
-//
-//	--config PATH                       TOML routing config (default:
-//	                                    ./beanfile.toml if present)
-//	--root PATH                         destination root (default:
-//	                                    directory of --ledger). Also
-//	                                    the base for dedup index path
-//	                                    canonicalization.
-//	--dry-run                           print proposed patches to stdout
-//	                                    instead of writing files
-//	--pass-through                      emit non-routable directives on
-//	                                    stdout instead of erroring out
-//	--quiet                             suppress per-file and total
-//	                                    stats on stderr
-//	--order ascending|descending|append how new directives are positioned
-//	                                    relative to existing dated ones
-//	--file-pattern YYYY|YYYYmm|YYYYmmdd date granularity for {date} in
-//	                                    destination templates
-//	--txn-strategy first-posting|last-posting|first-debit|first-credit
-//	                                    posting selector when no
-//	                                    route-account override is set
-//	--override-meta-key STR             metadata key for transaction
-//	                                    routing overrides (default:
-//	                                    route-account)
-//	--format-*                          override individual format
-//	                                    options resolved from TOML
-//	                                    (comma_grouping, align_amounts,
-//	                                    amount_column,
-//	                                    east_asian_ambiguous_width,
-//	                                    indent_width,
-//	                                    blank_lines_between_directives,
-//	                                    insert_blank_lines_between_directives)
+//   - [github.com/yugui/go-beancount/pkg/distribute/route]:
+//     standard routing convention, transaction routing override,
+//     format inheritance, non-routable directive marking.
+//   - [github.com/yugui/go-beancount/pkg/distribute/dedup]:
+//     equivalence rules and the active+commented index.
+//   - [github.com/yugui/go-beancount/pkg/distribute/merge]:
+//     insertion offsets and spacing.
+//   - [github.com/yugui/go-beancount/pkg/distribute/route/routeconfig]:
+//     TOML schema.
 //
 // # Inputs
 //
@@ -55,104 +27,36 @@
 // where include resolution is required to assemble the dedup index);
 // absolute-path includes still resolve.
 //
-// # Standard routing convention
-//
-// Each directive is filed by its kind:
-//
-//	Open, Close, Balance, Note, Document, Pad, Transaction
-//	    routed by Account →
-//	    transactions/{account}/{date}.beancount
-//	Price
-//	    routed by Commodity →
-//	    quotes/{commodity}/{date}.beancount
-//	Option, Plugin, Include, Event, Query, Custom, Commodity
-//	    not routable; emit error by default, or pass-through to
-//	    stdout under --pass-through
-//
-// {account} expands to slash-separated path segments
-// (Assets:Foo:Bar → Assets/Foo/Bar). {date} formats the directive's
-// date under the configured file pattern. Calendar fields are read
-// directly from the time value to avoid timezone conversion.
-//
-// A Transaction touches multiple accounts, so the routing key is
-// resolved by a four-rule precedence chain:
-//
-//  1. Transaction-level metadata route-account: "Assets:Foo:Bar"
-//     (string) — the value names the destination account verbatim.
-//  2. The first posting whose metadata contains route-account: TRUE
-//     (bool); FALSE is treated as if absent.
-//  3. The configured default_strategy (first-posting, last-posting,
-//     first-debit, or first-credit).
-//  4. Fallback: the first posting's account.
-//
-// The routing-hint key is always stripped from the emitted directive
-// (transaction header and every posting); the input AST is never
-// mutated.
-//
-// # Three-way dedup decision
-//
-// For each input directive D that routes to destination P, the CLI
-// consults the ledger-wide equivalence index built from the --ledger
-// transitive include closure:
-//
-//  1. If P already contains an equivalent directive — active OR
-//     commented-out — D is skipped (counted, not written).
-//  2. Else, if any active equivalent of D exists at any path other
-//     than P, D is written to P as a commented-out marker (the common
-//     "this transaction lives in another file" annotation).
-//  3. Otherwise D is written to P as a normal active directive.
-//
-// Equivalence is OR-combined: AST equality (with Span and the routing
-// override key stripped) wins first; otherwise a metadata-key match
-// against the resolved equivalence_meta_keys list produces a meta
-// match. The index is updated as inserts are accepted within a single
-// run, so duplicates within the input stream itself are skipped.
-//
-// # Merge semantics
-//
-// New destination files are created with parent directories. Existing
-// files round-trip via the CST: every byte not covered by a new
-// insertion is written back unchanged. Insertion offset is chosen by
-// binary search on the existing dated directives under the requested
-// order; the surrounding existing content is never reordered.
-// Same-day, same-destination inserts keep input order. Each
-// destination write is atomic (temp file in the same directory + fsync
-// + rename). Spacing around new directives is governed by
-// blank_lines_between_directives (target N) and
-// insert_blank_lines_between_directives (whether to actively pad);
-// the merger never reduces pre-existing blank lines — whole-file
-// normalization is left to a later beanfmt pass.
-//
 // # Stats
 //
-// On exit, unless --quiet is given, each destination file gets one
-// stderr line "beanfile: <path>: written=N commented=N skipped=N"
-// followed by a single "beanfile: total: written=N commented=N
-// skipped=N passthrough=N" summary. passthrough is global only — by
-// design, non-routable directives have no destination path. Skip-only
-// destinations (paths where no directive was added but at least one
-// matched the index) appear in per-file stats as well.
+// On exit, unless --quiet, each destination gets one stderr line
+// "beanfile: <path>: written=N commented=N skipped=N" followed by a
+// "beanfile: total: written=N commented=N skipped=N passthrough=N"
+// summary. passthrough is global-only since non-routable directives
+// have no destination path. A destination that matched the index but
+// took no insertions still appears in per-file stats.
 //
-// # Pass-through and dry-run
+// # Pass-through
 //
 // Without --pass-through, encountering a non-routable directive in
-// input is a hard error and no destination files are touched.
-// With --pass-through, those directives are written verbatim to stdout
-// in input order across each input source (sources processed in
-// argument order, never interleaved).
+// the input is a hard error and no destination files are touched.
+// With --pass-through, those directives are written verbatim to
+// stdout in input order across each input source (sources processed
+// in argument order, never interleaved).
 //
-// Under --dry-run, the route → dedup pipeline runs as usual, but no
-// files are written: each destination's would-be inserts are emitted
-// to stdout under a "--- <relative path> ---" header, with each line
-// of an insert prefixed by "+ " (active) or ";+ " (commented). Stats
-// still go to stderr unless --quiet.
+// # Dry-run output
+//
+// Under --dry-run, no files are written. Each destination's would-be
+// inserts are emitted to stdout under a "--- <relative path> ---"
+// header, with each line of an insert prefixed by "+ " (active) or
+// ";+ " (commented). Stats still go to stderr unless --quiet.
 //
 // # Out of scope
 //
 // Live services, file watching, locking, multi-file atomic
 // transactions, and auto-injecting include directives into the ledger
-// when new destination files are created are explicitly not provided
-// here; users are expected to use a glob include in their root file.
+// when new destination files are created are not provided here; users
+// are expected to use a glob include in their root file.
 package main
 
 import (
@@ -566,23 +470,19 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 	return 0
 }
 
-// writeDryRunBlock prints the proposed patches for one destination path
-// in the dry-run preview format: a header line "--- <relative path> ---"
-// followed by one prefixed line per output line of each insert. Active
-// inserts use the prefix "+ "; commented inserts use ";+ ". The header
-// path is the same Config.Root-relative key used for stats, so users can
-// correlate stderr stats with stdout previews.
+// writeDryRunBlock prints the proposed patches for one destination
+// path in the dry-run preview format documented at the package level.
+// The header path is the same Config.Root-relative key used for stats,
+// so users can correlate stderr stats with stdout previews.
 //
-// Both active and commented inserts go through printer.Fprint with the
-// insert's body-level Format options applied; comment.Emit is
-// intentionally NOT used here — the ";+ " prefix is the dry-run's own
+// Both active and commented inserts render through printer.Fprint with
+// the insert's body-level Format options applied; comment.Emit is
+// intentionally not used, since the ";+ " prefix is the dry-run's own
 // marker, distinct from the "; " prefix the real merger writes for a
 // commented insert. The preview is therefore not byte-faithful for
 // commented inserts: the resolved Format influences alignment in the
 // preview but not in the actual on-disk commented block (comment.Emit
-// uses default format options). Acceptable trade-off for an MVP
-// preview; future refinement can route commented previews through
-// comment.Emit to match disk byte-for-byte.
+// uses default format options).
 func writeDryRunBlock(w io.Writer, relPath string, inserts []merge.Insert) error {
 	if _, err := fmt.Fprintf(w, "--- %s ---\n", relPath); err != nil {
 		return err

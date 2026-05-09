@@ -28,31 +28,22 @@ var (
 	noteType        = reflect.TypeOf((*ast.Note)(nil)).Elem()
 )
 
-// equalityOpts returns the cmp options that strip cross-cutting fields
-// from AST equality: every Span (so spans from different source files
-// compare equal), the override metadata key (so a directive that
-// gained a route-account hint compares equal to one that did not), and
-// numeric apd.Decimal comparison.
+// equalityOpts returns the cmp options that implement the package
+// doc's AST equality rule: an IgnoreTypes(ast.Span{}) so Spans drop
+// out everywhere they appear, a Metadata Comparer that strips
+// overrideMetaKey, decimalCmp for numeric apd.Decimal comparison,
+// the sortPostings Transformer for posting-order canonicalization,
+// and freeTextCmp for the narrow free-text normalization. overrideMetaKey
+// names the single metadata key whose entry is stripped before
+// comparison (typically the transaction routing-override key).
 //
-// In addition, it canonicalizes posting order — two transactions whose
-// postings differ only in order are equal — and applies NFKC + Unicode
-// whitespace removal to a narrow set of free-text fields
-// (Transaction.Narration, Transaction.Payee, Note.Comment, and
-// MetaValue values of MetaString kind), so that transactions emitted by
-// different importers with cosmetic encoding differences still
-// deduplicate. Identifier-bearing strings (account names, currency
-// codes, tag/link names, metadata keys, file paths, etc.) remain
-// byte-exact.
-//
-// Metadata is compared via a dedicated Comparer rather than the
-// cmpopts.IgnoreMapEntries filter so that {overrideMetaKey: X} and the
-// nil map compare equal: filtering a single-entry map down to zero
-// entries yields an empty (non-nil) map, which cmp does not treat as
-// equal to a nil map even with cmpopts.EquateEmpty.
-//
-// overrideMetaKey names a single metadata key to strip from AST
-// equality (typically the transaction routing override key); the
-// caller flows it from Config.TransactionSection.OverrideMetaKey.
+// Metadata is compared via a dedicated Comparer rather than
+// cmpopts.IgnoreMapEntries because filtering a single-entry map down
+// to zero entries leaves an empty (non-nil) map, which cmp does not
+// treat as equal to a nil map even with cmpopts.EquateEmpty; the
+// Comparer makes {overrideMetaKey: X} and the nil map compare equal.
+// decimalCmp is required because [apd.Decimal]'s underlying big.Int
+// has unexported fields cmp cannot reflect into.
 func equalityOpts(overrideMetaKey string) cmp.Options {
 	return cmp.Options{
 		cmpopts.IgnoreTypes(ast.Span{}),
@@ -65,26 +56,20 @@ func equalityOpts(overrideMetaKey string) cmp.Options {
 	}
 }
 
-// sortPostings reorders []ast.Posting into a canonical order before
-// comparison so that two transactions whose postings differ only in
-// emission order compare equal. The transformer is keyed on
-// []ast.Posting; that slice type appears in the AST only as
-// Transaction.Postings, so the type-wide rule has no other effect.
+// sortPostings reorders []ast.Posting into a canonical order so two
+// transactions whose postings differ only in emission order compare
+// equal. The transformer is keyed on []ast.Posting; that slice type
+// appears in the AST only as Transaction.Postings, so the type-wide
+// rule has no other effect. cmp re-enters the transformer's output,
+// so the Span / Metadata / Decimal / free-text rules continue to
+// apply to each Posting after sorting.
 //
-// cmp re-enters the transformer's output, so the existing Span /
-// Metadata / Decimal / free-text rules continue to apply to each
-// Posting after sorting.
-//
-// The less-fn calls postingKey on each compare rather than
+// The comparator calls postingKey per invocation rather than
 // pre-computing a parallel []string of keys. Real ledgers are
-// dominated by 2-posting transactions, where insertion sort issues a
+// dominated by 2-posting transactions where insertion sort issues a
 // single compare and per-call costs exactly two key constructions —
-// the same number a precompute pass would require, plus one fewer
-// slice allocation. Precomputing only starts to win at 3+ postings
-// (where the comparator is invoked more than n times), and even at
-// n=10 the absolute saving is small relative to the cmp.Equal walk
-// over the rest of the transaction. Per-call keeps the code shorter
-// and matches the typical case best.
+// the same number a precompute pass would do, with one fewer slice
+// allocation.
 var sortPostings = cmp.Transformer("dedup.sortPostings", func(ps []ast.Posting) []ast.Posting {
 	out := append([]ast.Posting(nil), ps...)
 	sort.SliceStable(out, func(i, j int) bool { return postingKey(out[i]) < postingKey(out[j]) })
@@ -218,37 +203,19 @@ func metaValueKey(mv ast.MetaValue) string {
 	return b.String()
 }
 
-// freeTextCmp normalizes a narrow set of free-text string fields
-// (Transaction.Narration, Transaction.Payee, Note.Comment) before
-// comparison: NFKC normalization plus removal of every Unicode
-// whitespace rune. Identifier-bearing strings are left alone.
+// freeTextCmp implements the package doc's free-text normalization
+// rule for Transaction.Narration, Transaction.Payee, and
+// Note.Comment. Free-text MetaValue contents (Kind == MetaString)
+// receive the same treatment via metadataEqual / metaMatch; that
+// path runs through the Metadata Comparer rather than this FilterPath
+// because the per-key walk there already discriminates by
+// MetaValueKind.
 //
-// Free-text MetaValue contents (Kind == MetaString) get the same
-// treatment via metadataEqual / metaMatch; that path runs through the
-// Metadata Comparer rather than this FilterPath because the per-key
-// walk there already discriminates by MetaValueKind.
-//
-// Implementation: cmp.Path is the chain of PathSteps from the
-// comparison root to the value currently being inspected. For a
-// string field on a directive, the chain ends in
-//
-//	... → cmp.Indirect (deref *T) → cmp.StructField{Name: "F"}
-//
-// (or omits the Indirect step when the directive was passed by
-// value). The predicate inspects the last two steps:
-//
-//   - p.Last() is the leaf — the StructField step naming the field.
-//     If it's anything else (slice index, map key, …) we don't
-//     normalize.
-//   - p.Index(-2) is the step that landed on the containing struct;
-//     its Type() is the struct type after any pointer indirection.
-//     We dispatch on that type so the filter only fires inside
-//     ast.Transaction or ast.Note.
-//
-// The len(p) < 2 guard rules out paths shorter than two steps, where
-// a parent step doesn't exist; those would otherwise return an empty
-// step with a nil Type, which would simply fall through the type
-// switch but the explicit check is clearer.
+// The predicate inspects the last two cmp.Path steps: p.Last() must
+// be a [cmp.StructField] (the leaf field) and p.Index(-2) must land
+// on [ast.Transaction] or [ast.Note] (the containing struct after any
+// pointer indirection). The len(p) < 2 guard rules out paths shorter
+// than two steps, where p.Index(-2) would return an empty step.
 var freeTextCmp = cmp.FilterPath(func(p cmp.Path) bool {
 	if len(p) < 2 {
 		return false
@@ -269,12 +236,10 @@ var freeTextCmp = cmp.FilterPath(func(p cmp.Path) bool {
 }))
 
 // normalizeFreeText canonicalizes a human-typed string for
-// cross-source comparison: NFKC folds compatibility variants
-// (full-width vs. half-width, presentation forms, ligatures, etc.)
-// into a single representation, then every Unicode whitespace rune is
-// removed. unicode.IsSpace covers ASCII whitespace plus U+0085,
-// U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, and
-// U+3000 — the standard "Unicode whitespace" set.
+// cross-source comparison. It applies NFKC and then drops every
+// unicode.IsSpace rune (the standard Unicode whitespace set:
+// ASCII whitespace plus U+0085, U+00A0, U+1680, U+2000–U+200A,
+// U+2028, U+2029, U+202F, U+205F, U+3000).
 func normalizeFreeText(s string) string {
 	s = norm.NFKC.String(s)
 	var b strings.Builder
@@ -290,13 +255,9 @@ func normalizeFreeText(s string) string {
 
 // metadataEqual reports whether two Metadata values are equal after
 // stripping the override key. nil and empty maps compare equal.
-// MetaString values are normalized via normalizeFreeText so that
-// cosmetic encoding differences (NFC vs NFD, full-width vs half-width,
-// inserted whitespace) do not block dedup; every other MetaValueKind
-// is compared structurally without normalization, so identifier-shaped
-// content (MetaAccount, MetaCurrency, MetaTag, MetaLink) and typed
-// scalars (MetaDate, MetaNumber, MetaAmount, MetaBool) keep their
-// usual equality semantics.
+// Per-value comparison goes through metaValueEqual, so MetaString
+// values are normalized via normalizeFreeText while every other
+// MetaValueKind is compared structurally.
 func metadataEqual(a, b ast.Metadata, overrideMetaKey string) bool {
 	stripped := func(props map[string]ast.MetaValue) map[string]ast.MetaValue {
 		if overrideMetaKey == "" {
@@ -339,10 +300,10 @@ func metaValueEqual(a, b ast.MetaValue) bool {
 	return cmp.Equal(a, b, decimalCmp)
 }
 
-// equivalent reports whether a and b are equivalent under the design's
-// OR-combined rule. AST equality (with Span and the override key
-// stripped) wins first; otherwise a metadata-key match against any of
-// eqKeys produces MatchMeta. MatchNone otherwise.
+// equivalent reports whether a and b are equivalent under the
+// package doc's OR-combined rule, returning MatchAST when AST
+// equality fires, MatchMeta when only metadata-key equality fires,
+// and MatchNone otherwise.
 func equivalent(a, b ast.Directive, overrideMetaKey string, eqKeys []string) MatchKind {
 	if cmp.Equal(a, b, equalityOpts(overrideMetaKey)...) {
 		return MatchAST
@@ -353,10 +314,10 @@ func equivalent(a, b ast.Directive, overrideMetaKey string, eqKeys []string) Mat
 	return MatchNone
 }
 
-// metaMatch reports whether a and b carry the same value under any key
-// listed in eqKeys. The first match wins. MetaString values go through
-// normalizeFreeText so that the cross-source dedup path agrees with
-// the AST-equality path on what counts as "the same string".
+// metaMatch reports whether a and b carry the same value under any
+// key listed in eqKeys. The first match wins; values are compared
+// via metaValueEqual so that the cross-source path agrees with AST
+// equality on free-text normalization.
 func metaMatch(a, b ast.Directive, eqKeys []string) bool {
 	if len(eqKeys) == 0 {
 		return false

@@ -2,7 +2,10 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "routeconfig",
-    srcs = ["routeconfig.go"],
+    srcs = [
+        "doc.go",
+        "routeconfig.go",
+    ],
     importpath = "github.com/yugui/go-beancount/pkg/distribute/route/routeconfig",
     visibility = ["//visibility:public"],
     deps = [

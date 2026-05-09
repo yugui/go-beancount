@@ -1,10 +1,53 @@
-// Package dedup builds and queries the active+commented equivalence
-// index that the beanfile CLI consults to make the three-way
-// write/comment/skip decision (design §2, §7). BuildIndex walks the
-// ledger via pkg/ast.LoadFile, records every active directive under
-// its destination-relative path key, and re-reads each member file's
-// raw bytes to recover commented-out directives via
-// pkg/distribute/comment.Extract.
+// Package dedup builds and queries an equivalence index over the
+// active and commented-out directives of a beancount ledger so a
+// caller can decide whether a new directive duplicates one that is
+// already filed.
+//
+// Typical usage: build the index once via [BuildIndex] from the
+// caller's ledger root, query each candidate directive with
+// [Index.InDestination] (same path) and [Index.InOtherActive] (other
+// paths), and call [Index.Add] for every directive accepted into the
+// ledger so subsequent queries see it. See [BuildIndex] for the
+// index-construction contract and [Index] for query semantics.
+//
+// # Equivalence
+//
+// Two directives are equivalent under an OR of two rules:
+//
+//   - AST equality, computed via go-cmp with every [ast.Span] value
+//     ignored, the routing-override metadata key stripped from both
+//     sides, [apd.Decimal] compared numerically, posting order
+//     canonicalized, and a narrow set of free-text fields normalized
+//     (NFKC + Unicode whitespace removal). The free-text scope is
+//     intentionally narrow: Transaction.Narration, Transaction.Payee,
+//     Note.Comment, and MetaString-typed metadata values. Identifier-
+//     bearing strings (account names, currency codes, tag/link
+//     names, metadata keys, file paths, plugin/query/custom names)
+//     stay byte-exact, since silently collapsing identifier variants
+//     would mask routing mistakes.
+//   - Metadata-key equality: for each key in eqKeys, both directives
+//     carry that key with equal values. Useful when an upstream
+//     importer already stamps a stable id like "import-id".
+//
+// AST equality does not bridge auto-posting differences: if importer A
+// emits all postings explicitly while importer B leaves one
+// amount-elided for beancount to auto-balance, the two transactions
+// have differently-shaped []Posting lists and compare unequal under
+// AST equality. Metadata-key equality is the cross-source escape
+// hatch — attach a stable id and pass the key in the eqKeys argument
+// to [Index.InDestination] / [Index.InOtherActive].
+//
+// # Scopes
+//
+// The two queries differ in what they look at:
+//
+//	InDestination — active AND commented-out entries at the SAME path
+//	InOtherActive — only active entries at OTHER paths
+//
+// Commented-out entries elsewhere in the ledger never trigger
+// InOtherActive — they are notes, not the canonical record. This
+// keeps a re-run from cascading commented markers across files that
+// have already been marked.
 package dedup
 
 import (
@@ -44,7 +87,7 @@ type Index interface {
 	InDestination(path string, d ast.Directive, eqKeys []string) (matched bool, kind MatchKind)
 	// InOtherActive reports whether any active equivalent of d exists
 	// under a path other than path. Commented-out entries elsewhere are
-	// ignored by this query, per §7.
+	// ignored — they are notes, not the canonical record.
 	InOtherActive(path string, d ast.Directive, eqKeys []string) (matched bool, kind MatchKind)
 	// Add records d under path with the given commented flag so that
 	// subsequent queries see it.
@@ -130,9 +173,9 @@ func (m *memoryIndex) Add(path string, d ast.Directive, commented bool) {
 // ctx.Err() before each new file's read+parse+comment-extract pass.
 //
 // The []ast.Diagnostic return carries every diagnostic produced by
-// the ledger walk; callers are expected to feed it through the
-// CLI's diagnostic policy. The error return is reserved for
-// system-level failures (ctx cancellation, I/O on the root file).
+// the ledger walk; the caller decides whether each is fatal. The
+// error return is reserved for system-level failures (ctx
+// cancellation, I/O on the root file).
 func BuildIndex(ctx context.Context, ledgerRoot, configRoot string, opts ...Option) (Index, []ast.Diagnostic, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err

@@ -1,7 +1,3 @@
-// Package routeconfig loads a beanfile TOML routing configuration into a
-// route.Config. Decoding is strict: unknown keys, unsupported order /
-// file-pattern values, and unsupported transaction strategies are
-// rejected at load time.
 package routeconfig
 
 import (
