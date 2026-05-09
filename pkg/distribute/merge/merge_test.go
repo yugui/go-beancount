@@ -1,7 +1,6 @@
 package merge
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -597,41 +596,176 @@ func TestMerge_NewFile_MixedActiveAndCommented(t *testing.T) {
 	}
 }
 
-func TestMerge_RejectsDescendingOrder(t *testing.T) {
+// --- Descending order tests ---
+
+func TestMerge_DescendingFile(t *testing.T) {
+	in := readFixture(t, "descending_file.in.beancount")
+	want := readFixture(t, "descending_file.want.beancount")
 	plan := Plan{
-		Path:                              filepath.Join(t.TempDir(), "dest.beancount"),
 		Order:                             route.OrderDescending,
 		BlankLinesBetweenDirectives:       1,
 		InsertBlankLinesBetweenDirectives: true,
 		Inserts: []Insert{
-			{Directive: open(t, "2024-01-15", "Assets:A")},
+			{Directive: open(t, "2024-02-15", "Assets:C")},
 		},
 	}
-	_, err := Merge(plan, Options{})
-	if err == nil {
-		t.Fatal("Merge with OrderDescending: got nil error, want ErrOrderNotSupported")
+	got, _, err := runMerge(t, plan, in)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
 	}
-	if !errors.Is(err, ErrOrderNotSupported) {
-		t.Errorf("Merge(Order=Descending) error = %v; want one matching errors.Is(err, ErrOrderNotSupported)", err)
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
 	}
 }
 
-func TestMerge_RejectsAppendOrder(t *testing.T) {
+func TestMerge_DescendingInsertNewest(t *testing.T) {
+	in := readFixture(t, "descending_insert_newest.in.beancount")
+	want := readFixture(t, "descending_insert_newest.want.beancount")
 	plan := Plan{
-		Path:                              filepath.Join(t.TempDir(), "dest.beancount"),
+		Order:                             route.OrderDescending,
+		BlankLinesBetweenDirectives:       1,
+		InsertBlankLinesBetweenDirectives: true,
+		Inserts: []Insert{
+			{Directive: open(t, "2024-04-01", "Assets:Newest")},
+		},
+	}
+	got, _, err := runMerge(t, plan, in)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestMerge_DescendingInsertOldest(t *testing.T) {
+	in := readFixture(t, "descending_insert_oldest.in.beancount")
+	want := readFixture(t, "descending_insert_oldest.want.beancount")
+	plan := Plan{
+		Order:                             route.OrderDescending,
+		BlankLinesBetweenDirectives:       1,
+		InsertBlankLinesBetweenDirectives: true,
+		Inserts: []Insert{
+			// 2023-12-01 is older than all existing entries; in descending order it
+			// should land at the end (after the current oldest).
+			{Directive: open(t, "2023-12-01", "Assets:Oldest")},
+		},
+	}
+	got, _, err := runMerge(t, plan, in)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestMerge_DescendingSameDayFIFO(t *testing.T) {
+	in := readFixture(t, "descending_same_day_fifo.in.beancount")
+	want := readFixture(t, "descending_same_day_fifo.want.beancount")
+	plan := Plan{
+		Order:                             route.OrderDescending,
+		BlankLinesBetweenDirectives:       1,
+		InsertBlankLinesBetweenDirectives: true,
+		Inserts: []Insert{
+			{Directive: open(t, "2024-02-15", "Assets:First")},
+			{Directive: open(t, "2024-02-15", "Assets:Second")},
+		},
+	}
+	got, _, err := runMerge(t, plan, in)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// --- Append order tests ---
+
+func TestMerge_AppendOrder_AfterEOFTrivia(t *testing.T) {
+	in := readFixture(t, "append_after_eof_trivia.in.beancount")
+	want := readFixture(t, "append_after_eof_trivia.want.beancount")
+	plan := Plan{
 		Order:                             route.OrderAppend,
 		BlankLinesBetweenDirectives:       1,
 		InsertBlankLinesBetweenDirectives: true,
 		Inserts: []Insert{
-			{Directive: open(t, "2024-01-15", "Assets:A")},
+			{Directive: open(t, "2024-01-01", "Assets:New")},
 		},
 	}
-	_, err := Merge(plan, Options{})
-	if err == nil {
-		t.Fatal("Merge with OrderAppend: got nil error, want ErrOrderNotSupported")
+	got, _, err := runMerge(t, plan, in)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
 	}
-	if !errors.Is(err, ErrOrderNotSupported) {
-		t.Errorf("Merge(Order=Append) error = %v; want one matching errors.Is(err, ErrOrderNotSupported)", err)
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestMerge_AppendOrder_PreservesInputOrder(t *testing.T) {
+	in := readFixture(t, "append_preserves_input_order.in.beancount")
+	want := readFixture(t, "append_preserves_input_order.want.beancount")
+	plan := Plan{
+		Order:                             route.OrderAppend,
+		BlankLinesBetweenDirectives:       1,
+		InsertBlankLinesBetweenDirectives: true,
+		Inserts: []Insert{
+			// Deliberate reverse chronological order in input: append must not re-sort.
+			{Directive: open(t, "2024-03-01", "Assets:Z")},
+			{Directive: open(t, "2024-01-01", "Assets:A")},
+		},
+	}
+	got, _, err := runMerge(t, plan, in)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestMerge_AppendOrder_NoTrailingNewline(t *testing.T) {
+	in := readFixture(t, "append_no_trailing_newline.in.beancount")
+	want := readFixture(t, "append_no_trailing_newline.want.beancount")
+	plan := Plan{
+		Order:                             route.OrderAppend,
+		BlankLinesBetweenDirectives:       1,
+		InsertBlankLinesBetweenDirectives: true,
+		Inserts: []Insert{
+			{Directive: open(t, "2024-02-01", "Assets:New")},
+		},
+	}
+	got, _, err := runMerge(t, plan, in)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
+	}
+	if got[len(got)-1] != '\n' || got[len(got)-2] == '\n' {
+		t.Errorf("output should end with exactly one newline, got %q", got)
+	}
+}
+
+func TestMerge_AppendOrder_NewFile(t *testing.T) {
+	plan := Plan{
+		Order:                             route.OrderAppend,
+		BlankLinesBetweenDirectives:       1,
+		InsertBlankLinesBetweenDirectives: true,
+		Inserts: []Insert{
+			// Reverse order: append new-file must not re-sort.
+			{Directive: open(t, "2024-03-01", "Assets:Z")},
+			{Directive: open(t, "2024-01-01", "Assets:A")},
+		},
+	}
+	got, _, err := runMerge(t, plan, nil)
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	want := readFixture(t, "append_new_file.want.beancount")
+	if diff := cmp.Diff(string(want), string(got)); diff != "" {
+		t.Errorf("output mismatch (-want +got):\n%s", diff)
 	}
 }
 

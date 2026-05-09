@@ -592,14 +592,14 @@ func TestRun_BadConfigRejectedClearly(t *testing.T) {
 	_, ledger := touchLedger(t)
 	cfgPath := writeConfig(t, `
 [routes.account]
-order = "descending"
+order = "asc"
 `)
 	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--config", cfgPath}, "")
 	if exit != 2 {
 		t.Fatalf("exit = %d, want 2", exit)
 	}
-	if !strings.Contains(stderr, "descending") {
-		t.Errorf("stderr = %q, want descending mention", stderr)
+	if !strings.Contains(stderr, `"asc"`) {
+		t.Errorf("stderr = %q, want quoted \"asc\" mention", stderr)
 	}
 }
 
@@ -646,6 +646,103 @@ func TestRun_TransactionRouteAccountStripped(t *testing.T) {
 	}
 	if !strings.Contains(string(got), "Transfer") {
 		t.Errorf("emitted file missing the transaction narration:\n%s", string(got))
+	}
+	if !strings.Contains(stderr, "written=1") {
+		t.Errorf("stderr = %q, want written=1", stderr)
+	}
+}
+
+// TestRun_OrderAppend verifies that --order=append always places new
+// directives at the end of the destination file, regardless of their dates.
+// The destination is pre-seeded with a 2024-01-15 price so that an incoming
+// 2024-01-01 price (which is chronologically earlier) would be inserted
+// BEFORE the existing directive under ascending order, but must land AFTER it
+// under append order. A regression that hardcoded OrderAscending would place
+// the new directive before the existing one.
+func TestRun_OrderAppend(t *testing.T) {
+	// Pre-seed the destination with a mid-month price.
+	existingLine := "2024-01-15 price USD 115 JPY\n"
+	root, ledger := seedLedger(t, map[string]string{
+		"quotes/USD/202401.beancount": existingLine,
+	})
+
+	// Input: an older-dated price that ascending order would insert before the
+	// existing 2024-01-15 line. Append order must ignore the date and place it
+	// unconditionally at end-of-file.
+	src := "2024-01-01 price USD 100 JPY\n"
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--order=append"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "quotes/USD/202401.beancount")
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading destination %q: %v", dest, err)
+	}
+	// Both directives must be present.
+	if !strings.Contains(string(got), "2024-01-15 price USD 115 JPY") {
+		t.Errorf("dest = %q, want existing 2024-01-15 price directive", string(got))
+	}
+	if !strings.Contains(string(got), "2024-01-01 price USD 100 JPY") {
+		t.Errorf("dest = %q, want new 2024-01-01 price directive", string(got))
+	}
+	// Append order: the new directive (2024-01-01) must appear AFTER the
+	// pre-existing directive (2024-01-15) in the file.
+	// Under ascending order, 2024-01-01 would be inserted before 2024-01-15.
+	idx15 := strings.Index(string(got), "2024-01-15")
+	idx01 := strings.Index(string(got), "2024-01-01")
+	if idx15 < 0 || idx01 < 0 {
+		t.Fatalf("one or both directives missing in output: %q", string(got))
+	}
+	if idx01 <= idx15 {
+		t.Errorf("append order not honoured: 2024-01-01 at byte %d, 2024-01-15 at byte %d; want 01 AFTER 15", idx01, idx15)
+	}
+	if !strings.Contains(stderr, "written=1") {
+		t.Errorf("stderr = %q, want written=1", stderr)
+	}
+}
+
+// TestRun_OrderDescending verifies that --order=descending places newer
+// directives before older ones in an existing destination file. The
+// destination is pre-seeded with a 2024-01-15 price; an incoming 2024-01-20
+// price (newer) must land BEFORE it. A regression that used ascending order
+// would place the newer directive after the existing one.
+func TestRun_OrderDescending(t *testing.T) {
+	// Pre-seed the destination with a mid-month price.
+	existingLine := "2024-01-15 price USD 115 JPY\n"
+	root, ledger := seedLedger(t, map[string]string{
+		"quotes/USD/202401.beancount": existingLine,
+	})
+
+	// Input: a newer-dated price that descending order must insert before the
+	// existing 2024-01-15 line. Under ascending order it would go after.
+	src := "2024-01-20 price USD 120 JPY\n"
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--order=descending"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "quotes/USD/202401.beancount")
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("reading destination %q: %v", dest, err)
+	}
+	// Both directives must be present.
+	if !strings.Contains(string(got), "2024-01-15 price USD 115 JPY") {
+		t.Errorf("dest = %q, want existing 2024-01-15 price directive", string(got))
+	}
+	if !strings.Contains(string(got), "2024-01-20 price USD 120 JPY") {
+		t.Errorf("dest = %q, want new 2024-01-20 price directive", string(got))
+	}
+	// Descending order: the newer directive (2024-01-20) must appear BEFORE
+	// the older one (2024-01-15) in the file.
+	// Under ascending order, 2024-01-20 would be placed after 2024-01-15.
+	idx20 := strings.Index(string(got), "2024-01-20")
+	idx15 := strings.Index(string(got), "2024-01-15")
+	if idx20 < 0 || idx15 < 0 {
+		t.Fatalf("one or both directives missing in output: %q", string(got))
+	}
+	if idx20 >= idx15 {
+		t.Errorf("descending order not honoured: 2024-01-20 at byte %d, 2024-01-15 at byte %d; want 20 BEFORE 15", idx20, idx15)
 	}
 	if !strings.Contains(stderr, "written=1") {
 		t.Errorf("stderr = %q, want written=1", stderr)

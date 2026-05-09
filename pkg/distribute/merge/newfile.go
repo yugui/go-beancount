@@ -14,16 +14,16 @@ import (
 	"github.com/yugui/go-beancount/pkg/printer"
 )
 
-// mergeNewFile creates plan.Path from scratch, sorting the inserts in
-// ascending date order (stable, so same-date inserts retain input
-// order) and emitting them with B/N spacing applied between consecutive
-// directives. The first insert starts at byte 0 with no leading blank
-// lines; the file ends with exactly one newline (printer-supplied).
+// mergeNewFile creates plan.Path from scratch, sorting the inserts according
+// to plan.Order (stable, so same-date inserts retain input order) and
+// emitting them with B/N spacing applied between consecutive directives.
+// The first insert starts at byte 0 with no leading blank lines; the file
+// ends with exactly one newline (printer-supplied).
 func mergeNewFile(plan Plan) (Stats, error) {
 	inserts := make([]Insert, len(plan.Inserts))
 	copy(inserts, plan.Inserts)
 	sort.SliceStable(inserts, func(i, j int) bool {
-		return inserts[i].Directive.DirDate().Before(inserts[j].Directive.DirDate())
+		return lessByOrder(plan.Order, inserts[i].Directive.DirDate(), inserts[j].Directive.DirDate())
 	})
 
 	var buf bytes.Buffer
