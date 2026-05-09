@@ -1,9 +1,12 @@
 package route
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/yugui/go-beancount/internal/formatopt"
@@ -85,6 +88,7 @@ func TestDecide_Transaction(t *testing.T) {
 			t.Fatalf("Decide returned error: %v", err)
 		}
 		want := defaultDecision("transactions/Expenses/Food/202401.beancount")
+		want.StripMetaKeys = []string{defaultOverrideMetaKey}
 		if diff := cmp.Diff(want, got, decisionCmp); diff != "" {
 			t.Errorf("Decision mismatch (-want +got):\n%s", diff)
 		}
@@ -96,6 +100,329 @@ func TestDecide_Transaction(t *testing.T) {
 			t.Fatal("Decide on transaction with no postings: got nil error, want error")
 		}
 	})
+}
+
+// makeAmount returns a pointer to an Amount with the given sign
+// (positive n → debit, negative n → credit; n==0 → zero).
+func makeAmount(n int, cur string) *ast.Amount {
+	var d apd.Decimal
+	if n > 0 {
+		d.SetInt64(int64(n))
+	} else if n < 0 {
+		d.SetInt64(int64(-n))
+		d.Negative = true
+	}
+	return &ast.Amount{Number: d, Currency: cur}
+}
+
+// warnSink captures warnings emitted by cfg.Warn.
+type warnSink struct {
+	msgs []string
+}
+
+func (w *warnSink) fn(format string, args ...any) {
+	w.msgs = append(w.msgs, fmt.Sprintf(format, args...))
+}
+
+func TestDecide_Transaction_Override(t *testing.T) {
+	const key = defaultOverrideMetaKey
+
+	food := ast.Expenses.MustSub("Food")
+	cash := ast.Assets.MustSub("Cash")
+	income := ast.Income.MustSub("Salary")
+
+	// strMeta returns a Metadata with a single MetaString entry.
+	strMeta := func(k, v string) ast.Metadata {
+		return ast.Metadata{Props: map[string]ast.MetaValue{
+			k: {Kind: ast.MetaString, String: v},
+		}}
+	}
+	// boolMeta returns a Metadata with a single MetaBool entry.
+	boolMeta := func(k string, v bool) ast.Metadata {
+		return ast.Metadata{Props: map[string]ast.MetaValue{
+			k: {Kind: ast.MetaBool, Bool: v},
+		}}
+	}
+	// numMeta returns a Metadata with a MetaNumber entry (wrong kind for route-account).
+	numMeta := func(k string) ast.Metadata {
+		return ast.Metadata{Props: map[string]ast.MetaValue{
+			k: {Kind: ast.MetaNumber},
+		}}
+	}
+
+	cases := []struct {
+		name         string
+		txn          *ast.Transaction
+		cfg          *Config
+		wantAccount  ast.Account
+		warnContains []string // substrings each warning must contain
+	}{
+		{
+			name: "TxnLevelStringWins",
+			txn: &ast.Transaction{
+				Date:     jan15,
+				Flag:     '*',
+				Meta:     strMeta(key, "Assets:Cash"),
+				Postings: []ast.Posting{{Account: food}},
+			},
+			wantAccount: cash,
+		},
+		{
+			name: "PostingTRUEWins",
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: food},
+					{Account: cash, Meta: boolMeta(key, true)},
+				},
+			},
+			wantAccount: cash,
+		},
+		{
+			name: "PostingFALSEIgnored",
+			// FALSE on posting[0] does not select it; falls through to fallback.
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: food, Meta: boolMeta(key, false)},
+					{Account: cash},
+				},
+			},
+			wantAccount: food, // rule 4: Postings[0]
+		},
+		{
+			name: "MultipleTRUEFirstWins",
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: food, Meta: boolMeta(key, true)},
+					{Account: cash, Meta: boolMeta(key, true)},
+				},
+			},
+			wantAccount: food,
+		},
+		{
+			name: "Strategy_FirstPosting",
+			txn: &ast.Transaction{
+				Date:     jan15,
+				Flag:     '*',
+				Postings: []ast.Posting{{Account: food}, {Account: cash}},
+			},
+			cfg: &Config{Routes: Routes{Transaction: TransactionSection{
+				DefaultStrategy: "first-posting",
+			}}},
+			wantAccount: food,
+		},
+		{
+			name: "Strategy_LastPosting",
+			txn: &ast.Transaction{
+				Date:     jan15,
+				Flag:     '*',
+				Postings: []ast.Posting{{Account: food}, {Account: cash}},
+			},
+			cfg: &Config{Routes: Routes{Transaction: TransactionSection{
+				DefaultStrategy: "last-posting",
+			}}},
+			wantAccount: cash,
+		},
+		{
+			name: "Strategy_FirstDebit",
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: income, Amount: makeAmount(-100, "USD")},
+					{Account: food, Amount: makeAmount(100, "USD")},
+				},
+			},
+			cfg: &Config{Routes: Routes{Transaction: TransactionSection{
+				DefaultStrategy: "first-debit",
+			}}},
+			wantAccount: food,
+		},
+		{
+			name: "Strategy_FirstCredit",
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: food, Amount: makeAmount(100, "USD")},
+					{Account: income, Amount: makeAmount(-100, "USD")},
+				},
+			},
+			cfg: &Config{Routes: Routes{Transaction: TransactionSection{
+				DefaultStrategy: "first-credit",
+			}}},
+			wantAccount: income,
+		},
+		{
+			name: "Strategy_FirstDebit_SkipsAutoPosting",
+			// Auto-posting (nil Amount) must be skipped; the second posting is the first debit.
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: income, Amount: nil},                  // auto-posting, skipped
+					{Account: food, Amount: makeAmount(100, "USD")}, // debit
+				},
+			},
+			cfg: &Config{Routes: Routes{Transaction: TransactionSection{
+				DefaultStrategy: "first-debit",
+			}}},
+			wantAccount: food,
+		},
+		{
+			name: "Strategy_FirstCredit_SkipsAutoPosting",
+			// Auto-posting (nil Amount) must be skipped; the second posting is the first credit.
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: food, Amount: nil},                       // auto-posting, skipped
+					{Account: income, Amount: makeAmount(-100, "USD")}, // credit
+				},
+			},
+			cfg: &Config{Routes: Routes{Transaction: TransactionSection{
+				DefaultStrategy: "first-credit",
+			}}},
+			wantAccount: income,
+		},
+		{
+			name: "Strategy_FirstDebit_NoMatch_FallsThrough",
+			// All postings are credits (negative); first-debit finds nothing → fallback.
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: income, Amount: makeAmount(-100, "USD")},
+					{Account: food, Amount: makeAmount(-50, "USD")},
+				},
+			},
+			cfg: &Config{Routes: Routes{Transaction: TransactionSection{
+				DefaultStrategy: "first-debit",
+			}}},
+			wantAccount: income, // rule 4: Postings[0]
+		},
+		{
+			name: "MalformedTxnValue_NotString",
+			// txn meta key is MetaNumber instead of MetaString → warn, fall through.
+			txn: &ast.Transaction{
+				Date:     jan15,
+				Flag:     '*',
+				Meta:     numMeta(key),
+				Postings: []ast.Posting{{Account: cash}},
+			},
+			wantAccount:  cash,
+			warnContains: []string{key},
+		},
+		{
+			name: "MalformedTxnValue_InvalidAccount",
+			// txn meta key is MetaString but value fails IsValid.
+			txn: &ast.Transaction{
+				Date:     jan15,
+				Flag:     '*',
+				Meta:     strMeta(key, "not-an-account"),
+				Postings: []ast.Posting{{Account: cash}},
+			},
+			wantAccount:  cash,
+			warnContains: []string{key, "not-an-account"},
+		},
+		{
+			name: "MalformedTxnValue_EmptyString",
+			// txn meta key is MetaString with empty value.
+			txn: &ast.Transaction{
+				Date:     jan15,
+				Flag:     '*',
+				Meta:     strMeta(key, ""),
+				Postings: []ast.Posting{{Account: cash}},
+			},
+			wantAccount:  cash,
+			warnContains: []string{key},
+		},
+		{
+			name: "MalformedPostingValue_WrongKind",
+			// posting meta key is MetaNumber instead of MetaBool → warn, fall through to rule 4.
+			txn: &ast.Transaction{
+				Date: jan15,
+				Flag: '*',
+				Postings: []ast.Posting{
+					{Account: food, Meta: numMeta(key)},
+					{Account: cash},
+				},
+			},
+			wantAccount:  food, // rule 4: Postings[0]
+			warnContains: []string{key},
+		},
+		{
+			name: "StripMetaKeysAlwaysSet",
+			// Custom OverrideMetaKey should appear in StripMetaKeys.
+			txn: &ast.Transaction{
+				Date:     jan15,
+				Flag:     '*',
+				Postings: []ast.Posting{{Account: food}},
+			},
+			cfg: &Config{Routes: Routes{Transaction: TransactionSection{
+				OverrideMetaKey: "my-route",
+			}}},
+			wantAccount: food,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var ws warnSink
+			// Shallow-copy the Config so that assigning Warn does not mutate
+			// the shared tc.cfg pointer, which would bleed across table iterations.
+			var cfgCopy Config
+			if tc.cfg != nil {
+				cfgCopy = *tc.cfg
+			}
+			cfg := &cfgCopy
+			cfg.Warn = ws.fn
+
+			got, err := Decide(tc.txn, cfg)
+			if err != nil {
+				t.Fatalf("Decide returned error: %v", err)
+			}
+
+			// Determine the expected override key.
+			overrideKey := cfg.Routes.Transaction.OverrideMetaKey
+			if overrideKey == "" {
+				overrideKey = defaultOverrideMetaKey
+			}
+
+			// StripMetaKeys must always be set to the override key.
+			if diff := cmp.Diff([]string{overrideKey}, got.StripMetaKeys); diff != "" {
+				t.Errorf("StripMetaKeys mismatch (-want +got):\n%s", diff)
+			}
+
+			// Path must correspond to tc.wantAccount.
+			wantPath := "transactions/" + strings.Join(tc.wantAccount.Parts(), "/") + "/202401.beancount"
+			if got.Path != wantPath {
+				t.Errorf("Path = %q, want %q (account %v)", got.Path, wantPath, tc.wantAccount)
+			}
+
+			// Validate warnings.
+			for _, sub := range tc.warnContains {
+				found := false
+				for _, msg := range ws.msgs {
+					if strings.Contains(msg, sub) {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Errorf("want warning containing %q; warnings: %v", sub, ws.msgs)
+				}
+			}
+			if len(tc.warnContains) == 0 && len(ws.msgs) > 0 {
+				t.Errorf("unexpected warnings: %v", ws.msgs)
+			}
+		})
+	}
 }
 
 func TestDecide_Price(t *testing.T) {

@@ -9,6 +9,11 @@ import (
 	"github.com/yugui/go-beancount/pkg/format"
 )
 
+// defaultOverrideMetaKey is the built-in metadata key used to pick a
+// Transaction's destination account when no explicit OverrideMetaKey is
+// configured.
+const defaultOverrideMetaKey = "route-account"
+
 // OrderKind selects how new directives are positioned relative to
 // existing dated directives in a destination file.
 type OrderKind int
@@ -140,9 +145,14 @@ type Routes struct {
 // schema and is populated by the CLI from --root (or the directory of
 // --ledger). Decide does not consult Root directly; downstream code
 // such as the CLI uses it to resolve each Decision.Path on disk.
+//
+// Warn is an optional sink for non-fatal routing warnings (e.g. malformed
+// override metadata). It is not part of the TOML schema; the CLI populates
+// it with a closure writing to stderr. Nil means silent.
 type Config struct {
-	Root   string `toml:"-"`
-	Routes Routes `toml:"routes"`
+	Root   string                           `toml:"-"`
+	Routes Routes                           `toml:"routes"`
+	Warn   func(format string, args ...any) `toml:"-"`
 }
 
 const (
@@ -178,7 +188,7 @@ func Decide(d ast.Directive, cfg *Config) (Decision, error) {
 		if len(v.Postings) == 0 {
 			return Decision{}, fmt.Errorf("route: transaction on %s has no postings", v.Date.Format("2006-01-02"))
 		}
-		return decideAccount(cfg, v.Postings[0].Account, v.Date), nil
+		return decideTransaction(cfg, v)
 	case *ast.Price:
 		return decidePrice(cfg, v.Commodity, v.Date), nil
 	case *ast.Option, *ast.Plugin, *ast.Include,
@@ -250,6 +260,175 @@ func decidePrice(cfg *Config, commodity string, date time.Time) Decision {
 		BlankLinesBetweenDirectives:       resolved.BlankLinesBetweenDirectives,
 		InsertBlankLinesBetweenDirectives: resolved.InsertBlankLinesBetweenDirectives,
 	}
+}
+
+// transactionLabel returns a short human-readable identifier for txn, used in
+// warning messages. It includes the date and, when present, payee and/or
+// narration.
+func transactionLabel(txn *ast.Transaction) string {
+	date := txn.Date.Format("2006-01-02")
+	if txn.Payee != "" {
+		return fmt.Sprintf("%s %q %q", date, txn.Payee, txn.Narration)
+	}
+	if txn.Narration != "" {
+		return fmt.Sprintf("%s %q", date, txn.Narration)
+	}
+	return date
+}
+
+// decideTransaction resolves the routing decision for a Transaction directive.
+// It applies a four-rule precedence chain to determine the destination account
+// and always sets StripMetaKeys to the override key so downstream emit code
+// can strip the metadata key from output regardless of which rule fired.
+//
+// Rules (highest to lowest priority):
+//  1. Transaction-level MetaString under the override key.
+//  2. First posting carrying MetaBool TRUE under the override key.
+//  3. Configured DefaultStrategy: first-posting, last-posting, first-debit, first-credit.
+//  4. Fallback: Postings[0].Account.
+//
+// Malformed values (wrong Kind, invalid account, empty string) emit a one-line
+// warning via cfg.Warn and fall through to the next rule.
+func decideTransaction(cfg *Config, txn *ast.Transaction) (Decision, error) {
+	overrideKey := cfg.Routes.Transaction.OverrideMetaKey
+	if overrideKey == "" {
+		overrideKey = defaultOverrideMetaKey
+	}
+
+	warn := cfg.Warn
+	if warn == nil {
+		warn = func(string, ...any) {}
+	}
+
+	label := transactionLabel(txn)
+
+	// Rule 1: txn-level MetaString under the override key.
+	account, found := metaRouteAccount(txn.Meta, overrideKey, label, warn)
+
+	// Rule 2: first posting with MetaBool TRUE under the override key.
+	if !found {
+		for _, p := range txn.Postings {
+			if postingHasRouteTrue(p, overrideKey, label, warn) {
+				account = p.Account
+				found = true
+				break
+			}
+		}
+	}
+
+	// Rule 3: configured DefaultStrategy. pickByStrategy returns
+	// ("", false) for an empty or unknown strategy.
+	if !found {
+		account, found = pickByStrategy(cfg.Routes.Transaction.DefaultStrategy, txn.Postings)
+	}
+
+	// Rule 4: fallback to Postings[0].Account (guaranteed non-empty by caller).
+	if !found {
+		account = txn.Postings[0].Account
+	}
+
+	// Build the account decision using the same logic as decideAccount,
+	// matching the override that governs this account.
+	d := decideAccount(cfg, account, txn.Date)
+	// Always strip the override key from the emitted directive so routing
+	// metadata does not appear in the output files.
+	d.StripMetaKeys = []string{overrideKey}
+	return d, nil
+}
+
+// metaRouteAccount extracts and validates an account value from meta under key.
+// If the key is absent, it returns ("", false) silently. If the value is
+// malformed (non-MetaString kind, empty string, or invalid account name), it
+// emits a warning via warn using label to identify the directive and returns
+// ("", false). On success it returns (account, true).
+func metaRouteAccount(
+	meta ast.Metadata,
+	key string,
+	label string,
+	warn func(string, ...any),
+) (account ast.Account, ok bool) {
+	mv, present := meta.Props[key]
+	if !present {
+		return "", false
+	}
+	if mv.Kind != ast.MetaString {
+		warn("transaction %s: metadata key %q has wrong kind (expected string, got %s); falling through",
+			label, key, mv.Kind)
+		return "", false
+	}
+	raw := mv.String
+	if raw == "" {
+		warn("transaction %s: metadata key %q has invalid or empty account value %q; falling through",
+			label, key, raw)
+		return "", false
+	}
+	acct := ast.Account(raw)
+	if !acct.IsValid() {
+		warn("transaction %s: metadata key %q has invalid or empty account value %q; falling through",
+			label, key, raw)
+		return "", false
+	}
+	return acct, true
+}
+
+// postingHasRouteTrue reports whether posting p carries MetaBool TRUE under
+// key. If the key is absent, it returns false silently. If the value has a
+// non-MetaBool kind, it emits a warning via warn (using label to identify the
+// parent transaction) and returns false so the caller falls through to the
+// next rule. FALSE values are returned as false without warning.
+func postingHasRouteTrue(
+	p ast.Posting,
+	key string,
+	label string,
+	warn func(string, ...any),
+) (ok bool) {
+	mv, present := p.Meta.Props[key]
+	if !present {
+		return false
+	}
+	if mv.Kind != ast.MetaBool {
+		warn("transaction %s: posting %s metadata key %q has wrong kind (expected bool, got %s); falling through",
+			label, p.Account, key, mv.Kind)
+		return false
+	}
+	return mv.Bool
+}
+
+// pickByStrategy selects a posting account from postings according to the
+// configured DefaultStrategy. Auto-postings (Amount == nil) are skipped for
+// first-debit and first-credit strategies, which rely on the sign of the
+// amount. Returns (account, true) when a match is found, or ("", false) when
+// the strategy produces no match (e.g. first-debit on an all-credit transaction).
+func pickByStrategy(strategy string, postings []ast.Posting) (ast.Account, bool) {
+	switch strategy {
+	case "first-posting":
+		if len(postings) > 0 {
+			return postings[0].Account, true
+		}
+	case "last-posting":
+		if len(postings) > 0 {
+			return postings[len(postings)-1].Account, true
+		}
+	case "first-debit":
+		for _, p := range postings {
+			if p.Amount == nil {
+				continue // skip auto-postings
+			}
+			if p.Amount.Number.Sign() > 0 {
+				return p.Account, true
+			}
+		}
+	case "first-credit":
+		for _, p := range postings {
+			if p.Amount == nil {
+				continue // skip auto-postings
+			}
+			if p.Amount.Number.Sign() < 0 {
+				return p.Account, true
+			}
+		}
+	}
+	return "", false
 }
 
 // resolveEqKeys implements replacement (not concatenation) inheritance:
