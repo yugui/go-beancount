@@ -749,6 +749,25 @@ func TestRun_OrderDescending(t *testing.T) {
 	}
 }
 
+// TestRun_FilePatternYYYYmmdd verifies that --file-pattern=YYYYmmdd embeds the
+// full calendar date (year, month, day) in the destination path. A Price
+// directive dated 2024-03-07 must land in a path containing "20240307".
+func TestRun_FilePatternYYYYmmdd(t *testing.T) {
+	root, ledger := touchLedger(t)
+	src := "2024-03-07 price USD 150 JPY\n"
+	exit, _, stderr := runCLI(t, []string{"--ledger", ledger, "--file-pattern=YYYYmmdd"}, src)
+	if exit != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%q", exit, stderr)
+	}
+	dest := filepath.Join(root, "quotes/USD/20240307.beancount")
+	if _, err := os.Stat(dest); err != nil {
+		t.Errorf("expected destination %q: %v", dest, err)
+	}
+	if !strings.Contains(stderr, "quotes/USD/20240307.beancount") {
+		t.Errorf("stderr = %q, want destination path with day in stats", stderr)
+	}
+}
+
 func TestRun_DedupCrossPostingCascade(t *testing.T) {
 	openLine := "2024-01-10 open Assets:Bank USD\n"
 	root, ledger := seedLedger(t, map[string]string{
