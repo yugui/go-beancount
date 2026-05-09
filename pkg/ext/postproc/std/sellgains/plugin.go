@@ -140,7 +140,7 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (ast.Diagnostic, 
 		if _, err := apd.BaseContext.Mul(&contrib, &p.Price.Amount.Number, neg); err != nil {
 			return ast.Diagnostic{}, false
 		}
-		addInto(totalPrice, p.Price.Amount.Currency, &contrib)
+		addInto(totalPrice, ast.Amount{Number: contrib, Currency: p.Price.Amount.Currency})
 	}
 
 	// Walk every posting that does NOT carry a Cost annotation. Cost
@@ -156,7 +156,7 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (ast.Diagnostic, 
 		if _, ok := proceedsRoots[p.Account.Root()]; !ok {
 			continue
 		}
-		w, wcur, err := inventory.PostingWeight(p)
+		w, err := inventory.PostingWeight(p)
 		if err != nil {
 			// Weight computation hit an arithmetic error. Suppressing
 			// the sellgains check here is the correct response: the
@@ -171,7 +171,7 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (ast.Diagnostic, 
 			// contributes nothing observable to the proceeds side.
 			continue
 		}
-		addInto(totalProceeds, wcur, w)
+		addInto(totalProceeds, *w)
 	}
 
 	// Compare currency by currency. Allowed disagreement per currency
@@ -286,12 +286,12 @@ func inferTolerances(postings []ast.Posting) map[string]*apd.Decimal {
 	return out
 }
 
-// addInto adds delta to the named-currency entry of m, allocating a
-// fresh apd.Decimal when the entry is missing. Callers retain
+// addInto folds delta into the named-currency entry of m, allocating
+// a fresh apd.Decimal when the entry is missing. Callers retain
 // ownership of delta; the value is copied via Add into the map's
 // independent storage.
-func addInto(m map[string]*apd.Decimal, cur string, delta *apd.Decimal) {
-	cur = strings.TrimSpace(cur)
+func addInto(m map[string]*apd.Decimal, delta ast.Amount) {
+	cur := strings.TrimSpace(delta.Currency)
 	if cur == "" {
 		return
 	}
@@ -304,7 +304,7 @@ func addInto(m map[string]*apd.Decimal, cur string, delta *apd.Decimal) {
 	// runtime error path is reserved for overflow and invalid-operation
 	// conditions, neither of which can occur within ledger-realistic
 	// magnitudes accumulated here.
-	_, _ = apd.BaseContext.Add(cell, cell, delta)
+	_, _ = apd.BaseContext.Add(cell, cell, &delta.Number)
 }
 
 // mustDecimal parses a decimal literal that is statically known to be

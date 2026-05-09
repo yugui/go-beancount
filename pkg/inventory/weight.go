@@ -6,10 +6,9 @@ import (
 )
 
 // PostingWeight computes the signed weight contributed by a posting to the
-// transaction's currency sums, along with the currency in which that weight
-// is denominated.
+// transaction's currency sums.
 //
-// An auto-posting (p.Amount == nil) returns (nil, "", nil); callers that
+// An auto-posting (p.Amount == nil) returns (nil, nil); callers that
 // need to infer the missing amount should perform their own balancing.
 //
 // Precedence (matching upstream Beancount's Balancing Postings rule):
@@ -37,19 +36,20 @@ import (
 // practice. As a defensive measure the implementation falls through to
 // Price (and then to plain units) if it ever does happen.
 //
-// The returned *apd.Decimal is freshly allocated and does not alias any
-// AST field, so callers may mutate it in place (e.g. to negate it when
-// computing an auto-posting residual) without corrupting the source AST.
-func PostingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
+// The returned *ast.Amount is freshly allocated and its Number does
+// not alias any AST field, so callers may mutate it in place (e.g. to
+// negate it when computing an auto-posting residual) without
+// corrupting the source AST.
+func PostingWeight(p *ast.Posting) (*ast.Amount, error) {
 	if p.Amount == nil {
-		return nil, "", nil
+		return nil, nil
 	}
 	cost, err := p.TotalCost()
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if cost != nil {
-		return ast.CloneDecimal(&cost.Number), cost.Currency, nil
+		return &ast.Amount{Number: *ast.CloneDecimal(&cost.Number), Currency: cost.Currency}, nil
 	}
 	if p.Price != nil {
 		num := p.Amount.Number
@@ -57,19 +57,19 @@ func PostingWeight(p *ast.Posting) (*apd.Decimal, string, error) {
 		if p.Price.IsTotal {
 			out, err := signedAbs(&num, &priceNum)
 			if err != nil {
-				return nil, "", err
+				return nil, err
 			}
-			return out, p.Price.Amount.Currency, nil
+			return &ast.Amount{Number: *out, Currency: p.Price.Amount.Currency}, nil
 		}
 		out := new(apd.Decimal)
 		if _, err := apd.BaseContext.Mul(out, &num, &priceNum); err != nil {
-			return nil, "", err
+			return nil, err
 		}
-		return out, p.Price.Amount.Currency, nil
+		return &ast.Amount{Number: *out, Currency: p.Price.Amount.Currency}, nil
 	}
 	// Plain amount: copy the posting's units so the caller may mutate
 	// without disturbing the AST.
-	return ast.CloneDecimal(&p.Amount.Number), p.Amount.Currency, nil
+	return &ast.Amount{Number: *ast.CloneDecimal(&p.Amount.Number), Currency: p.Amount.Currency}, nil
 }
 
 // signedAbs returns sign(units) * |val| as a freshly allocated decimal,

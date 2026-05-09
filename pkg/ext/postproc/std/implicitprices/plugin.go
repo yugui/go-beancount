@@ -165,18 +165,18 @@ func buildPrice(tx *ast.Transaction, p *ast.Posting) (*ast.Price, *ast.Diagnosti
 	// price emission uses cost.number, which the booking layer
 	// derives the same way.
 	if p.Cost != nil {
-		num, cur, err := costPerUnit(p.Cost, p.Amount.Number, tx)
+		amt, err := costPerUnit(p.Cost, p.Amount.Number, tx)
 		if err != nil {
 			return nil, err
 		}
-		if num == nil {
+		if amt == nil {
 			return nil, nil
 		}
 		return &ast.Price{
 			Span:      tx.Span,
 			Date:      tx.Date,
 			Commodity: p.Amount.Currency,
-			Amount:    ast.Amount{Number: *num, Currency: cur},
+			Amount:    *amt,
 		}, nil
 	}
 
@@ -215,11 +215,11 @@ func perUnitNumber(number, units apd.Decimal, isTotal bool, tx *ast.Transaction,
 	return out, nil
 }
 
-// costPerUnit derives the per-unit price number for a posting's Cost
+// costPerUnit derives the per-unit price for a posting's Cost
 // annotation. It accepts all four CostSpec shapes (per-unit only,
-// total only, combined, empty); returns (nil, "", nil) for the empty
+// total only, combined, empty); returns (nil, nil) for the empty
 // case and for postings whose units would force a division by zero.
-func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.Decimal, string, *ast.Diagnostic) {
+func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*ast.Amount, *ast.Diagnostic) {
 	switch {
 	case c.PerUnit != nil && c.Total != nil:
 		// Combined form: per + T/|units|. The AST contract
@@ -229,11 +229,11 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.
 		// unreachable rather than emit a diagnostic the user cannot
 		// act on.
 		if units.Sign() == 0 {
-			return nil, "", nil
+			return nil, nil
 		}
 		absUnits := new(apd.Decimal)
 		if _, err := apd.BaseContext.Abs(absUnits, &units); err != nil {
-			return nil, "", &ast.Diagnostic{
+			return nil, &ast.Diagnostic{
 				Code:     codeImplicitPriceError,
 				Span:     spanForTx(tx),
 				Message:  "abs of units in combined cost: " + err.Error(),
@@ -243,7 +243,7 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.
 		quo := new(apd.Decimal)
 		totalNum := c.Total.Number
 		if _, err := quoContext.Quo(quo, &totalNum, absUnits); err != nil {
-			return nil, "", &ast.Diagnostic{
+			return nil, &ast.Diagnostic{
 				Code:     codeImplicitPriceError,
 				Span:     spanForTx(tx),
 				Message:  "divide total cost by units: " + err.Error(),
@@ -253,21 +253,21 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.
 		out := new(apd.Decimal)
 		perNum := c.PerUnit.Number
 		if _, err := apd.BaseContext.Add(out, &perNum, quo); err != nil {
-			return nil, "", &ast.Diagnostic{
+			return nil, &ast.Diagnostic{
 				Code:     codeImplicitPriceError,
 				Span:     spanForTx(tx),
 				Message:  "add per-unit and residual cost: " + err.Error(),
 				Severity: ast.Error,
 			}
 		}
-		return out, c.PerUnit.Currency, nil
+		return &ast.Amount{Number: *out, Currency: c.PerUnit.Currency}, nil
 	case c.Total != nil:
 		if units.Sign() == 0 {
-			return nil, "", nil
+			return nil, nil
 		}
 		absUnits := new(apd.Decimal)
 		if _, err := apd.BaseContext.Abs(absUnits, &units); err != nil {
-			return nil, "", &ast.Diagnostic{
+			return nil, &ast.Diagnostic{
 				Code:     codeImplicitPriceError,
 				Span:     spanForTx(tx),
 				Message:  "abs of units in total cost: " + err.Error(),
@@ -277,19 +277,19 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*apd.
 		out := new(apd.Decimal)
 		totalNum := c.Total.Number
 		if _, err := quoContext.Quo(out, &totalNum, absUnits); err != nil {
-			return nil, "", &ast.Diagnostic{
+			return nil, &ast.Diagnostic{
 				Code:     codeImplicitPriceError,
 				Span:     spanForTx(tx),
 				Message:  "divide total cost by units: " + err.Error(),
 				Severity: ast.Error,
 			}
 		}
-		return out, c.Total.Currency, nil
+		return &ast.Amount{Number: *out, Currency: c.Total.Currency}, nil
 	case c.PerUnit != nil:
-		return ast.CloneDecimal(&c.PerUnit.Number), c.PerUnit.Currency, nil
+		return &ast.Amount{Number: *ast.CloneDecimal(&c.PerUnit.Number), Currency: c.PerUnit.Currency}, nil
 	default:
 		// Empty cost spec ({} or {{}}): no concrete number to record.
-		return nil, "", nil
+		return nil, nil
 	}
 }
 

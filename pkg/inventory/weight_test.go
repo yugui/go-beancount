@@ -38,14 +38,14 @@ func TestPostingWeight_CombinedCost(t *testing.T) {
 		Amount:  &units,
 		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total},
 	}
-	w, cur, err := PostingWeight(p)
+	w, err := PostingWeight(p)
 	if err != nil {
 		t.Fatalf("PostingWeight: unexpected error: %v", err)
 	}
-	if cur != "USD" {
-		t.Errorf("PostingWeight() currency = %q, want %q", cur, "USD")
+	if w.Currency != "USD" {
+		t.Errorf("PostingWeight() currency = %q, want %q", w.Currency, "USD")
 	}
-	if got := w.Text('f'); got != "5031.15" {
+	if got := w.Number.Text('f'); got != "5031.15" {
 		t.Errorf("PostingWeight() weight = %q, want %q", got, "5031.15")
 	}
 }
@@ -63,14 +63,14 @@ func TestPostingWeight_CombinedCostNegativeUnits(t *testing.T) {
 		Amount:  &units,
 		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total},
 	}
-	w, cur, err := PostingWeight(p)
+	w, err := PostingWeight(p)
 	if err != nil {
 		t.Fatalf("PostingWeight: unexpected error: %v", err)
 	}
-	if cur != "USD" {
-		t.Errorf("PostingWeight() currency = %q, want %q", cur, "USD")
+	if w.Currency != "USD" {
+		t.Errorf("PostingWeight() currency = %q, want %q", w.Currency, "USD")
 	}
-	if got := w.Text('f'); got != "-5031.15" {
+	if got := w.Number.Text('f'); got != "-5031.15" {
 		t.Errorf("PostingWeight() weight = %q, want %q", got, "-5031.15")
 	}
 }
@@ -89,14 +89,14 @@ func TestPostingWeight_TotalCostExact(t *testing.T) {
 		Amount:  &units,
 		Cost:    &ast.CostSpec{Total: &total},
 	}
-	w, cur, err := PostingWeight(p)
+	w, err := PostingWeight(p)
 	if err != nil {
 		t.Fatalf("PostingWeight: unexpected error: %v", err)
 	}
-	if cur != "JPY" {
-		t.Errorf("PostingWeight() currency = %q, want %q", cur, "JPY")
+	if w.Currency != "JPY" {
+		t.Errorf("PostingWeight() currency = %q, want %q", w.Currency, "JPY")
 	}
-	if got := w.Text('f'); got != "1" {
+	if got := w.Number.Text('f'); got != "1" {
 		t.Errorf("PostingWeight() weight = %q, want %q", got, "1")
 	}
 	// The exponent is load-bearing for downstream tolerance.Infer:
@@ -104,7 +104,7 @@ func TestPostingWeight_TotalCostExact(t *testing.T) {
 	// numbers, a weight stored at Exponent -34 (apd's full precision)
 	// would narrow JPY tolerance to ~10⁻³⁴ and reject a balanced
 	// auto-posting. Pinning Exponent == 0 here protects that contract.
-	if got := w.Exponent; got != 0 {
+	if got := w.Number.Exponent; got != 0 {
 		t.Errorf("PostingWeight() weight.Exponent = %d, want 0 (exactness regression for tolerance.Infer)", got)
 	}
 }
@@ -124,14 +124,14 @@ func TestPostingWeight_CostAndPriceUsesCost(t *testing.T) {
 		Cost:    &ast.CostSpec{PerUnit: &cost},
 		Price:   &ast.PriceAnnotation{Amount: price, IsTotal: false},
 	}
-	w, cur, err := PostingWeight(p)
+	w, err := PostingWeight(p)
 	if err != nil {
 		t.Fatalf("PostingWeight: unexpected error: %v", err)
 	}
-	if cur != "USD" {
-		t.Errorf("PostingWeight() currency = %q, want %q", cur, "USD")
+	if w.Currency != "USD" {
+		t.Errorf("PostingWeight() currency = %q, want %q", w.Currency, "USD")
 	}
-	if got := w.Text('f'); got != "-1830.70" {
+	if got := w.Number.Text('f'); got != "-1830.70" {
 		t.Errorf("PostingWeight() weight = %q, want %q (cost wins over price)", got, "-1830.70")
 	}
 }
@@ -149,14 +149,14 @@ func TestPostingWeight_CostAndTotalPriceUsesCost(t *testing.T) {
 		Cost:    &ast.CostSpec{PerUnit: &cost},
 		Price:   &ast.PriceAnnotation{Amount: totalPrice, IsTotal: true},
 	}
-	w, cur, err := PostingWeight(p)
+	w, err := PostingWeight(p)
 	if err != nil {
 		t.Fatalf("PostingWeight: unexpected error: %v", err)
 	}
-	if cur != "USD" {
-		t.Errorf("PostingWeight() currency = %q, want %q", cur, "USD")
+	if w.Currency != "USD" {
+		t.Errorf("PostingWeight() currency = %q, want %q", w.Currency, "USD")
 	}
-	if got := w.Text('f'); got != "-1830.70" {
+	if got := w.Number.Text('f'); got != "-1830.70" {
 		t.Errorf("PostingWeight() weight = %q, want %q (cost wins over @@ price)", got, "-1830.70")
 	}
 }
@@ -173,14 +173,14 @@ func TestPostingWeight_PriceOnlyStillUsesPrice(t *testing.T) {
 		Amount:  &units,
 		Price:   &ast.PriceAnnotation{Amount: price, IsTotal: false},
 	}
-	w, cur, err := PostingWeight(p)
+	w, err := PostingWeight(p)
 	if err != nil {
 		t.Fatalf("PostingWeight: unexpected error: %v", err)
 	}
-	if cur != "EUR" {
-		t.Errorf("PostingWeight() currency = %q, want %q", cur, "EUR")
+	if w.Currency != "EUR" {
+		t.Errorf("PostingWeight() currency = %q, want %q", w.Currency, "EUR")
 	}
-	if got := w.Text('f'); got != "110.0" {
+	if got := w.Number.Text('f'); got != "110.0" {
 		t.Errorf("PostingWeight() weight = %q, want %q", got, "110.0")
 	}
 }
