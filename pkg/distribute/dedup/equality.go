@@ -11,9 +11,8 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"golang.org/x/text/unicode/norm"
-
 	"github.com/yugui/go-beancount/pkg/ast"
+	"golang.org/x/text/unicode/norm"
 )
 
 // decimalCmp equates apd.Decimal values numerically. Its underlying

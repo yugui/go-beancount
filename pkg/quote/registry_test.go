@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-
 	"github.com/yugui/go-beancount/pkg/quote/api"
 )
 

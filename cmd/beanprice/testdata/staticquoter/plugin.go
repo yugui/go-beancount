@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
-
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/goplug"
 	"github.com/yugui/go-beancount/pkg/quote"
