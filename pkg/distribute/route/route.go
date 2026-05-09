@@ -499,10 +499,21 @@ func expandCommodityTemplate(tmpl string, commodity string, date time.Time, patt
 
 // formatDate formats date under pattern. Calendar fields are read
 // directly from the time value to avoid timezone conversion (beancount
-// dates are date-only). Only "YYYYmm" (and "" via defaults) reach Decide
-// today; config-load validates other values out. Hand-built Configs
-// bypassing the loader fall back to YYYYmm here so Decide stays free of
-// error returns.
+// dates are date-only). Supported patterns:
+//   - "YYYY"      → year only (e.g. "2024")
+//   - "YYYYmm"   → year and month (e.g. "202401")
+//   - "YYYYmmdd" → year, month, and day (e.g. "20240115")
+//
+// Empty string defaults to "YYYYmm". Hand-built Configs bypassing the
+// loader fall back to "YYYYmm" for unknown values so Decide stays free
+// of error returns.
 func formatDate(date time.Time, pattern string) string {
-	return fmt.Sprintf("%04d%02d", date.Year(), int(date.Month()))
+	switch pattern {
+	case "YYYY":
+		return fmt.Sprintf("%04d", date.Year())
+	case "YYYYmmdd":
+		return fmt.Sprintf("%04d%02d%02d", date.Year(), int(date.Month()), date.Day())
+	default: // "YYYYmm" and ""
+		return fmt.Sprintf("%04d%02d", date.Year(), int(date.Month()))
+	}
 }

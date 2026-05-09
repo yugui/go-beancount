@@ -257,17 +257,71 @@ order = "asc"
 	}
 }
 
-func TestLoad_RejectsUnsupportedFilePattern(t *testing.T) {
+func TestLoad_AcceptsAllFilePatterns(t *testing.T) {
+	// All three documented patterns must be accepted at every config site:
+	// account section, account override, price section, commodity override.
+	patterns := []string{"YYYY", "YYYYmm", "YYYYmmdd"}
+	for _, p := range patterns {
+		t.Run("account_section/"+p, func(t *testing.T) {
+			body := "[routes.account]\nfile_pattern = \"" + p + "\"\n"
+			cfg, err := Load(writeTOML(t, body))
+			if err != nil {
+				t.Fatalf("Load(%q): %v", p, err)
+			}
+			if cfg.Routes.Account.FilePattern != p {
+				t.Errorf("Account.FilePattern = %q, want %q", cfg.Routes.Account.FilePattern, p)
+			}
+		})
+		t.Run("account_override/"+p, func(t *testing.T) {
+			body := "[[routes.account.override]]\nprefix = \"Assets\"\nfile_pattern = \"" + p + "\"\n"
+			cfg, err := Load(writeTOML(t, body))
+			if err != nil {
+				t.Fatalf("Load(%q): %v", p, err)
+			}
+			if len(cfg.Routes.Account.Overrides) == 0 {
+				t.Fatal("no account overrides loaded")
+			}
+			if cfg.Routes.Account.Overrides[0].FilePattern != p {
+				t.Errorf("AccountOverride.FilePattern = %q, want %q", cfg.Routes.Account.Overrides[0].FilePattern, p)
+			}
+		})
+		t.Run("price_section/"+p, func(t *testing.T) {
+			body := "[routes.price]\nfile_pattern = \"" + p + "\"\n"
+			cfg, err := Load(writeTOML(t, body))
+			if err != nil {
+				t.Fatalf("Load(%q): %v", p, err)
+			}
+			if cfg.Routes.Price.FilePattern != p {
+				t.Errorf("Price.FilePattern = %q, want %q", cfg.Routes.Price.FilePattern, p)
+			}
+		})
+		t.Run("commodity_override/"+p, func(t *testing.T) {
+			body := "[[routes.price.override]]\ncommodity = \"USD\"\nfile_pattern = \"" + p + "\"\n"
+			cfg, err := Load(writeTOML(t, body))
+			if err != nil {
+				t.Fatalf("Load(%q): %v", p, err)
+			}
+			if len(cfg.Routes.Price.Overrides) == 0 {
+				t.Fatal("no commodity overrides loaded")
+			}
+			if cfg.Routes.Price.Overrides[0].FilePattern != p {
+				t.Errorf("CommodityOverride.FilePattern = %q, want %q", cfg.Routes.Price.Overrides[0].FilePattern, p)
+			}
+		})
+	}
+}
+
+func TestLoad_RejectsUnknownFilePattern(t *testing.T) {
 	body := `
 [routes.account]
-file_pattern = "YYYY"
+file_pattern = "MMddYYYY"
 `
 	_, err := Load(writeTOML(t, body))
 	if err == nil {
-		t.Fatal("Load: got nil error, want unsupported file_pattern")
+		t.Fatal("Load: got nil error, want invalid file_pattern error")
 	}
-	if !strings.Contains(err.Error(), "YYYY") {
-		t.Errorf("error = %v, want mention of YYYY", err)
+	if !strings.Contains(err.Error(), "MMddYYYY") {
+		t.Errorf("error = %v, want mention of MMddYYYY", err)
 	}
 }
 

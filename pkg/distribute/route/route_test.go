@@ -477,31 +477,67 @@ func TestDecide_HierarchicalAccountFlattens(t *testing.T) {
 	}
 }
 
-func TestDecide_DateFormatYYYYmm(t *testing.T) {
+func TestDecide_DateFormats(t *testing.T) {
+	// Each row exercises both the account/Open and price/Price paths with
+	// FilePattern set on the relevant section.
 	cases := []struct {
-		name string
-		date time.Time
-		want string // YYYYmm portion
+		name    string
+		pattern string
+		date    time.Time
+		want    string // expected date suffix in the path
 	}{
-		{"January", time.Date(2024, time.January, 15, 0, 0, 0, 0, time.UTC), "202401"},
-		{"December", time.Date(2024, time.December, 31, 0, 0, 0, 0, time.UTC), "202412"},
-		// 2024-01-01 00:00:00 JST is 2023-12-31 15:00:00 UTC. The expected
-		// "202401" verifies that Year/Month are read directly from the
-		// time.Time in its original location, with no implicit UTC
-		// conversion — a regression that called .UTC() would produce
-		// "202312" and fail this case.
-		{"OtherTimezone", time.Date(2024, time.January, 1, 0, 0, 0, 0, time.FixedZone("JST", 9*3600)), "202401"},
+		// YYYY: year only
+		{"YYYY/January", "YYYY", time.Date(2024, time.January, 15, 0, 0, 0, 0, time.UTC), "2024"},
+		{"YYYY/December", "YYYY", time.Date(2024, time.December, 31, 0, 0, 0, 0, time.UTC), "2024"},
+		// 2024-01-01 00:00:00 JST is 2023-12-31 15:00:00 UTC; Year() must
+		// read the local calendar field, not UTC.
+		{"YYYY/OtherTimezone", "YYYY", time.Date(2024, time.January, 1, 0, 0, 0, 0, time.FixedZone("JST", 9*3600)), "2024"},
+
+		// YYYYmm: year + month (explicit)
+		{"YYYYmm/January", "YYYYmm", time.Date(2024, time.January, 15, 0, 0, 0, 0, time.UTC), "202401"},
+		{"YYYYmm/December", "YYYYmm", time.Date(2024, time.December, 31, 0, 0, 0, 0, time.UTC), "202412"},
+		{"YYYYmm/OtherTimezone", "YYYYmm", time.Date(2024, time.January, 1, 0, 0, 0, 0, time.FixedZone("JST", 9*3600)), "202401"},
+
+		// YYYYmm: empty string defaults to YYYYmm
+		{"default/January", "", time.Date(2024, time.January, 15, 0, 0, 0, 0, time.UTC), "202401"},
+		{"default/December", "", time.Date(2024, time.December, 31, 0, 0, 0, 0, time.UTC), "202412"},
+
+		// YYYYmmdd: year + month + day
+		{"YYYYmmdd/January", "YYYYmmdd", time.Date(2024, time.January, 15, 0, 0, 0, 0, time.UTC), "20240115"},
+		{"YYYYmmdd/December", "YYYYmmdd", time.Date(2024, time.December, 31, 0, 0, 0, 0, time.UTC), "20241231"},
+		{"YYYYmmdd/OtherTimezone", "YYYYmmdd", time.Date(2024, time.January, 1, 0, 0, 0, 0, time.FixedZone("JST", 9*3600)), "20240101"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(tc.name+"/account", func(t *testing.T) {
+			cfg := &Config{
+				Routes: Routes{
+					Account: AccountSection{FilePattern: tc.pattern},
+				},
+			}
 			d := &ast.Open{Date: tc.date, Account: ast.Assets}
-			got, err := Decide(d, nil)
+			got, err := Decide(d, cfg)
 			if err != nil {
 				t.Fatalf("Decide returned error: %v", err)
 			}
 			want := "transactions/Assets/" + tc.want + ".beancount"
 			if got.Path != want {
-				t.Errorf("Decide on date %v: Path = %q, want %q", tc.date, got.Path, want)
+				t.Errorf("pattern=%q date=%v: Path = %q, want %q", tc.pattern, tc.date, got.Path, want)
+			}
+		})
+		t.Run(tc.name+"/price", func(t *testing.T) {
+			cfg := &Config{
+				Routes: Routes{
+					Price: PriceSection{FilePattern: tc.pattern},
+				},
+			}
+			d := &ast.Price{Date: tc.date, Commodity: "USD"}
+			got, err := Decide(d, cfg)
+			if err != nil {
+				t.Fatalf("Decide returned error: %v", err)
+			}
+			want := "quotes/USD/" + tc.want + ".beancount"
+			if got.Path != want {
+				t.Errorf("pattern=%q date=%v: Path = %q, want %q", tc.pattern, tc.date, got.Path, want)
 			}
 		})
 	}

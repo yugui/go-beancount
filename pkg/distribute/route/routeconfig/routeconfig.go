@@ -113,16 +113,15 @@ func validateOrder(order, where string) error {
 	}
 }
 
-// validateFilePattern currently accepts only "YYYYmm".
+// validateFilePattern accepts "YYYY", "YYYYmm", and "YYYYmmdd". The empty
+// string means "inherit" and is always accepted. Unknown values are rejected.
 func validateFilePattern(pattern, where string) error {
 	if pattern == "" {
 		return nil
 	}
 	switch pattern {
-	case "YYYYmm":
+	case "YYYY", "YYYYmm", "YYYYmmdd":
 		return nil
-	case "YYYY", "YYYYmmdd":
-		return fmt.Errorf("%s: %q is not yet supported (only \"YYYYmm\")", where, pattern)
 	default:
 		return fmt.Errorf("%s: %q is not a valid file pattern", where, pattern)
 	}
