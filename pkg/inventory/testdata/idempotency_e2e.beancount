@@ -1,0 +1,69 @@
+; idempotency_e2e.beancount — fictional ledger for the Reducer
+; reduce/interpolation idempotency test.
+;
+; All account names and commodity symbols in this file are invented for
+; testing purposes. No real-world brokers, funds, or tickers are
+; referenced. USD is used as a neutral cash currency.
+;
+; The fixture exercises every Pass-2 interpolation/synthesis path the
+; Reducer can take, in a single ledger:
+;
+;   (A) Deferred per-unit cost on an augmenting `{}` posting. Pass 2
+;       solves PerUnit from the residual.
+;   (B) Multi-lot reduction Total synthesis: a `{}` reduction crosses
+;       a lot boundary under FIFO and the Reducer writes back
+;       Cost.Total = Σ |units| × lot.Number.
+;   (C) Auto-balanced posting (nil Amount) inferred from the residual.
+;
+; (B) and (C) coexist on the same transaction so a single sale drives
+; both edits.
+;
+; A trivial cash-only transaction is also included so the test exercises
+; the no-clone path (needsBookingClone == false) alongside the cloned
+; transactions.
+
+option "title" "Reducer Idempotency Fixture"
+option "operating_currency" "USD"
+
+2024-12-01 open Assets:Cash               USD
+2024-12-01 open Assets:Stock              STOCK   "FIFO"
+2024-12-01 open Income:Capital            USD
+2024-12-01 open Expenses:Food             USD
+2024-12-01 open Equity:Opening-Balances
+
+2024-12-31 * "Opening cash balance"
+  Assets:Cash                 1000.00 USD
+  Equity:Opening-Balances    -1000.00 USD
+
+; (A) Deferred cost: the augmenting STOCK posting has a `{}` cost spec
+; with no number. Pass 2 divides the residual (-(-50.00) = 50.00 USD)
+; by the 10-unit Amount to solve PerUnit = 5.00 USD per share.
+2025-01-10 * "Buy STOCK with deferred cost"
+  Assets:Stock                     10 STOCK {}
+  Assets:Cash                  -50.00 USD
+
+; A second lot priced explicitly. Together with the previous buy this
+; sets up a two-lot inventory at differing per-unit costs, which the
+; sale below crosses under FIFO.
+2025-02-15 * "Buy STOCK second lot"
+  Assets:Stock                     10 STOCK {6.00 USD}
+  Assets:Cash                  -60.00 USD
+
+; (B) + (C): selling 15 STOCK under `{}` consumes 10 from the first lot
+; (5.00 USD basis) and 5 from the second lot (6.00 USD basis), for a
+; total cost basis of 10*5 + 5*6 = 80.00 USD. Pass 1 writes that figure
+; back as Cost.Total. The cash leg is explicit at +100.00 USD, so the
+; auto-balanced Income:Capital posting absorbs the realized gain
+; (residual = -20.00 USD).
+2025-03-01 * "Sell STOCK at gain"
+  Assets:Stock                    -15 STOCK {}
+  Assets:Cash                  100.00 USD
+  Income:Capital
+
+; A purely cash transaction with no cost specs and no auto-balanced
+; posting. needsBookingClone returns false here, so the Reducer reuses
+; the input pointer in its output — exercising the non-cloning branch
+; in the same fixture.
+2025-03-15 * "Lunch"
+  Expenses:Food                 12.00 USD
+  Assets:Cash                  -12.00 USD
