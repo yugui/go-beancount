@@ -11,3 +11,8 @@
 2024-03-01 * "東京デパート" "高級食材"
   Expenses:食費                        1234567 JPY
   Assets:銀行:三菱UFJ
+
+2024-04-01 * "Mixed magnitudes"
+  Expenses:Food 1000000 JPY
+  Expenses:Tip 10 JPY
+  Assets:Cash

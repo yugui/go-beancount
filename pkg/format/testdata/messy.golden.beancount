@@ -23,7 +23,7 @@ plugin "beancount.plugins.auto_accounts"
   Assets:Bank:Checking
 
 2024-02-01 * "Big purchase"
-  Expenses:Food                     1234567.89 USD
+  Expenses:Food                       1234567.89 USD
   Assets:Bank:Checking
 
 2024-03-01 * "Detailed"
