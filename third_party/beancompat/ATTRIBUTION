@@ -1,0 +1,35 @@
+Project: beancompat
+Upstream: https://github.com/TJesionowski/beancompat
+Pinned commit: e4f805bdfa6268ac75d664ca5d920513d70b4ec6
+License: MIT
+
+go-beancount consumes only fixtures/parse/*.json and fixtures/check/*.json from
+this archive as black-box compatibility test data; Python tests/, strategies/,
+implementations/, conftest.py, and fixtures/ingest/ (CAP_INGEST) are not used.
+
+The upstream project ships no LICENSE file at the pinned commit, but its
+README.md declares the MIT License. The standard MIT permission notice
+(reproduced below) applies to all upstream content this archive
+redistributes:
+
+MIT License
+
+Copyright (c) TJesionowski and beancompat contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.

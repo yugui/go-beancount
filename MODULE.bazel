@@ -11,3 +11,13 @@ bazel_dep(name = "rules_shell", version = "0.8.0")
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
 use_repo(go_deps, "com_github_burntsushi_toml", "com_github_cockroachdb_apd_v3", "com_github_google_go_cmp", "com_github_mattn_go_runewidth", "org_golang_x_text")
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+http_archive(
+    name = "beancompat",
+    sha256 = "7341482556757659b767d5b04a834c0c4e640c8a153ac64d6fade3499699d607",
+    strip_prefix = "beancompat-e4f805bdfa6268ac75d664ca5d920513d70b4ec6",
+    urls = ["https://github.com/TJesionowski/beancompat/archive/e4f805bdfa6268ac75d664ca5d920513d70b4ec6.tar.gz"],
+    build_file = "//third_party/beancompat:beancompat.BUILD",
+)
