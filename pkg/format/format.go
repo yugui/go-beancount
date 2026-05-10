@@ -188,15 +188,19 @@ func (f *formatter) formatDirective(node *syntax.Node) {
 	case syntax.ErrorNode, syntax.UnrecognizedLineNode:
 		// Pass through unchanged.
 		return
+	}
+
+	// Apply comma grouping before alignment so that the alignment pass
+	// measures the final NUMBER token width.
+	f.formatCommaGrouping(node)
+
+	switch node.Kind {
 	case syntax.TransactionDirective:
 		f.formatTransaction(node)
 	default:
 		// For non-transaction directives, just fix metadata indent.
 		f.formatMetadataLines(node, 1)
 	}
-
-	// Comma grouping applies to all directives.
-	f.formatCommaGrouping(node)
 }
 
 // formatTransaction handles indentation, metadata, and amount alignment for
@@ -414,7 +418,8 @@ func (f *formatter) amountDisplayWidth(amtNode *syntax.Node) int {
 	return w
 }
 
-// formatCommaGrouping adds or removes commas from NUMBER tokens.
+// formatCommaGrouping rewrites NUMBER token text to insert thousand-separator
+// commas when opts.CommaGrouping is true, or strip them otherwise.
 func (f *formatter) formatCommaGrouping(node *syntax.Node) {
 	for tok := range node.Tokens() {
 		if tok.Kind != syntax.NUMBER {

@@ -110,6 +110,25 @@ func TestFormatCommaGroupingStrip(t *testing.T) {
 	}
 }
 
+func TestFormatCommaGroupingAlignment(t *testing.T) {
+	// With -comma, the inserted commas widen the NUMBER token. Alignment
+	// must measure the post-comma width so that currency tokens still end
+	// at AmountColumn (52).
+	//
+	// Posting 1: 2-space indent + "Assets:A" (8) + padding + "1,000,000 JPY" (13) = 52
+	//   -> padding = 29 spaces.
+	// Posting 2: 2-space indent + "Assets:B" (8) + padding + "10 JPY" (6) = 52
+	//   -> padding = 36 spaces.
+	src := "2024-01-15 * \"Test\"\n  Assets:A 1000000 JPY\n  Assets:B 10 JPY\n"
+	want := "2024-01-15 * \"Test\"\n" +
+		"  Assets:A" + strings.Repeat(" ", 29) + "1,000,000 JPY\n" +
+		"  Assets:B" + strings.Repeat(" ", 36) + "10 JPY\n"
+	got := Format(src, WithCommaGrouping(true))
+	if got != want {
+		t.Errorf("Format(%q, WithCommaGrouping(true)):\ngot:\n%q\nwant:\n%q", src, got, want)
+	}
+}
+
 func TestFormatUnicodeAwareAlignment(t *testing.T) {
 	// CJK characters are double-width.
 	src := "2024-01-15 * \"Test\"\n  Expenses:\u98df\u54c1 50.00 USD\n  Assets:Cash\n"
