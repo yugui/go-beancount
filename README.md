@@ -2,7 +2,11 @@
 
 A Go library and toolchain for [Beancount](https://beancount.github.io/) plain-text accounting.
 
-> **Status:** Early development. No stable API yet.
+## Project status
+
+**This project is in early development.** No stable API yet; expect breaking changes without notice.
+
+The component listings below distinguish between **implemented** packages and commands (which exist and build today) and **planned** ones (which are designed in [PLAN.md](PLAN.md) but not yet written). Do not assume that a name appearing in this README corresponds to working code unless it is in an "Implemented" section.
 
 ## Overview
 
@@ -12,28 +16,43 @@ Python compatibility is explicitly out of scope. Custom plugins must be written 
 
 ## Components
 
-### Libraries
+### Implemented packages
 
 | Package | Description |
 |---|---|
 | `pkg/syntax` | Concrete Syntax Tree (CST) parser with error recovery |
 | `pkg/ast` | Abstract Syntax Tree (AST) with include resolution |
 | `pkg/format` | Canonical formatter |
-| `pkg/validation` | Balance checks, account lifecycle, assertions |
-| `pkg/inventory` | Lot-based inventory tracking with FIFO/LIFO/STRICT cost basis |
 | `pkg/printer` | File generation from CST or AST |
-| `pkg/query` | Beancount Query Language (BQL) engine |
-| `pkg/quote` | Plugin-extensible commodity price quoter |
-| `pkg/plugin` | Go plugin and external-process plugin loader |
+| `pkg/inventory` | Lot-based inventory tracking with FIFO/LIFO/STRICT cost basis |
+| `pkg/validation` | Balance checks, account lifecycle, padding, document validation (subpackages: `balance`, `document`, `pad`, `validations`) |
+| `pkg/ext` | Plugin system: Go `.so` loader (`pkg/ext/goplug`) and post-parse / pre-validation runner with bundled std plugins (`pkg/ext/postproc`) |
+| `pkg/loader` | High-level entry point that loads Beancount source through the full pipeline (parse → AST → plugins → validation); mirrors upstream `loader.py`. Exposes `Load`, `LoadReader`, `LoadFile`. |
+| `pkg/quote` | Plugin-extensible commodity price quoter (subpackages: `api`, `meta`, `pricedb`, `sourceutil`, `std/ecb`) |
+| `pkg/distribute` | Stateless directive-distribution library backing `beanfile`: route directives to files (`route`), detect duplicates across active and commented-out entries (`dedup`), recognize/emit commented directives (`comment`), and perform CST-preserving atomic writes (`merge`) |
 
-### Commands
+### Planned packages
+
+| Package | Description |
+|---|---|
+| `pkg/query` | Beancount Query Language (BQL) engine (PLAN.md Phase 9) |
+
+### Implemented commands
 
 | Command | Description |
 |---|---|
 | `beanfmt` | Canonical ledger file formatter |
-| `beancount-lsp` | Language Server Protocol server for editor integration |
-| `bean-daemon` | Background server: in-memory ledger store, BQL queries, HTTP/JSON API |
-| `beansprout` | User-facing CLI: price quoting, transaction importing, and more |
+| `beancheck` | Loads a ledger through the full pipeline (pad, balance, validations, plugins) and reports diagnostics; supports `-strict` |
+| `beanprice` | Commodity price fetcher built on `pkg/quote` |
+| `beanfile` | Stateless directive distributor for multi-file ledgers: reads a directive stream and files each directive into the appropriate destination with a three-way write / comment / skip decision |
+
+### Planned commands
+
+| Command | Description |
+|---|---|
+| `beancount-lsp` | Language Server Protocol server for editor integration (PLAN.md Phase 11) |
+| `bean-daemon` | Background server: in-memory ledger store, BQL queries, HTTP/JSON API (PLAN.md Phase 10) |
+| `beansprout` | User-facing CLI: price quoting, transaction importing, and more (PLAN.md Phase 12) |
 
 ## Building
 
@@ -59,7 +78,7 @@ bazel run //:gazelle -- update-repos -from_file=go.mod
 github.com/yugui/go-beancount
 ```
 
-Requires Go 1.24.2 or later.
+Requires Go 1.25 or later.
 
 ## Roadmap
 
