@@ -125,22 +125,16 @@ func checkTransaction(t *ast.Transaction, trigger *ast.Plugin) (ast.Diagnostic, 
 	totalProceeds := map[string]*apd.Decimal{}
 
 	for _, p := range atCost {
-		// Upstream applies `amount.mul(posting.price, -posting.units.number)`
-		// for both `@` and `@@` price forms in the sellgains check —
-		// the per-unit case is the natural interpretation, and the
-		// total case follows upstream's pragmatic choice (which is
-		// strictly speaking inconsistent with the @@ semantics in
-		// other contexts but matches what the upstream check
-		// actually does). Tests pin this contract.
-		neg := new(apd.Decimal)
-		if _, err := apd.BaseContext.Neg(neg, &p.Amount.Number); err != nil {
+		contrib, err := priceContribution(p)
+		if err != nil {
+			// Arithmetic failure on the price side leaves the totalPrice
+			// map incomplete; suppressing the diagnostic mirrors the
+			// proceeds-side branch below, where a PostingWeight error
+			// also yields silent suppression rather than a misleading
+			// disagreement.
 			return ast.Diagnostic{}, false
 		}
-		var contrib apd.Decimal
-		if _, err := apd.BaseContext.Mul(&contrib, &p.Price.Amount.Number, neg); err != nil {
-			return ast.Diagnostic{}, false
-		}
-		addInto(totalPrice, ast.Amount{Number: contrib, Currency: p.Price.Amount.Currency})
+		addInto(totalPrice, contrib)
 	}
 
 	// Walk every posting that does NOT carry a Cost annotation. Cost
@@ -284,6 +278,53 @@ func inferTolerances(postings []ast.Posting) map[string]*apd.Decimal {
 		out[cur] = final
 	}
 	return out
+}
+
+// priceContribution returns the amount that posting p contributes to
+// the price-side total used by the sellgains check. The contribution is
+// `-units × per-unit-price` in the price-annotation currency.
+//
+// Upstream's parser/grammar normalizes the `@@` total form to a per-unit
+// price (`total / |units|`) before plugins observe the posting, so
+// upstream's `amount.mul(price, -units)` works uniformly for both
+// forms. This port preserves IsTotal on the AST, so the per-unit
+// equivalence is computed here. For IsTotal:
+//
+//	contribution = -units × per_unit
+//	             = -units × (total / |units|)
+//	             = -sign(units) × total
+//
+// The closed form on the right avoids a division (and its rounding) and
+// degenerates to zero for zero-units postings — matching upstream's
+// parser-level fold-to-zero in that pathological case.
+//
+// p must have a non-nil Amount and a non-nil Price; checkTransaction
+// guarantees both for every posting it routes through this function.
+func priceContribution(p *ast.Posting) (ast.Amount, error) {
+	var n apd.Decimal
+	if p.Price.IsTotal {
+		switch p.Amount.Number.Sign() {
+		case 0:
+			// 0 units priced @@: per-unit is undefined; upstream parser
+			// folds it to 0, so this contribution is 0 — leave n at the
+			// zero value.
+		case -1:
+			n.Set(&p.Price.Amount.Number)
+		default:
+			if _, err := apd.BaseContext.Neg(&n, &p.Price.Amount.Number); err != nil {
+				return ast.Amount{}, err
+			}
+		}
+	} else {
+		neg := new(apd.Decimal)
+		if _, err := apd.BaseContext.Neg(neg, &p.Amount.Number); err != nil {
+			return ast.Amount{}, err
+		}
+		if _, err := apd.BaseContext.Mul(&n, &p.Price.Amount.Number, neg); err != nil {
+			return ast.Amount{}, err
+		}
+	}
+	return ast.Amount{Number: n, Currency: p.Price.Amount.Currency}, nil
 }
 
 // addInto folds delta into the named-currency entry of m, allocating

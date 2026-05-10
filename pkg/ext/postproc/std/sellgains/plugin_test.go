@@ -80,6 +80,22 @@ func salePosting(t *testing.T, account, units, unitsCur, costPerUnit, costCur, p
 	}
 }
 
+// saleTotalPosting is the @@-form sibling of salePosting: the price
+// annotation carries the total proceeds rather than per-unit, which the
+// AST flags via PriceAnnotation.IsTotal.
+func saleTotalPosting(t *testing.T, account, units, unitsCur, costPerUnit, costCur, total, totalCur string) ast.Posting {
+	t.Helper()
+	a := amt(t, units, unitsCur)
+	c := amt(t, costPerUnit, costCur)
+	pr := amt(t, total, totalCur)
+	return ast.Posting{
+		Account: ast.Account(account),
+		Amount:  &a,
+		Cost:    &ast.CostSpec{PerUnit: &c},
+		Price:   &ast.PriceAnnotation{Amount: pr, IsTotal: true},
+	}
+}
+
 // plainPosting builds a posting with just an amount, no cost, no price.
 func plainPosting(t *testing.T, account, number, currency string) ast.Posting {
 	t.Helper()
@@ -412,5 +428,99 @@ func TestIncomePostingExcluded(t *testing.T) {
 	}
 	if len(res.Diagnostics) != 0 {
 		t.Errorf("len(res.Diagnostics) = %d, want 0 (Income postings must be excluded); errors = %v", len(res.Diagnostics), res.Diagnostics)
+	}
+}
+
+// TestTotalPriceCleanSale: a sale priced in the @@ (total) form whose
+// non-Income proceeds match the total exactly emits no diagnostic.
+// -2000 COIN at total proceeds 1000 JPY, fee leg 1000 JPY (Expenses),
+// Income leg 200 JPY (excluded). Per-unit equivalent of the price is
+// 1000/2000 = 0.5 JPY, so the price side is -(-2000) × 0.5 = 1000 JPY,
+// matching the Expenses leg byte-for-byte.
+func TestTotalPriceCleanSale(t *testing.T) {
+	tx := txn(2025, 1, 1,
+		plainPosting(t, "Expenses:C", "1000", "JPY"),
+		saleTotalPosting(t, "Assets:A", "-2000", "COIN", "0.6", "JPY", "1000", "JPY"),
+		plainPosting(t, "Income:B", "200", "JPY"),
+	)
+	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
+
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (@@ priced sale balances); errors = %v", len(res.Diagnostics), res.Diagnostics)
+	}
+}
+
+// TestTotalPriceWrongProceeds: the same shape as TestTotalPriceCleanSale
+// but with a wrong cash leg, so the proceeds disagree with the total
+// price beyond tolerance and exactly one diagnostic fires. Pins that
+// the @@ branch is reachable from the diagnostic-emitting path too —
+// not just the no-diagnostic path of the clean sale test.
+func TestTotalPriceWrongProceeds(t *testing.T) {
+	tx := txn(2025, 1, 1,
+		plainPosting(t, "Expenses:C", "900", "JPY"), // wrong: should be 1000
+		saleTotalPosting(t, "Assets:A", "-2000", "COIN", "0.6", "JPY", "1000", "JPY"),
+		plainPosting(t, "Income:B", "300", "JPY"),
+	)
+	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
+
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []ast.Diagnostic{{Code: codeInvalidSellGains, Span: txnSpan}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
+		t.Fatalf("apply errors mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// TestTotalPriceZeroUnits: a 0-units posting priced @@ is degenerate
+// (per-unit price = total / 0 is undefined); upstream's parser folds
+// the per-unit price to 0 in this case, so the price-side contribution
+// must be 0 — yielding no diagnostic when the only other proceeds-root
+// posting is also 0. Pins the `case 0` arm of the @@ switch: a
+// regression that returned ±total here would flag this transaction.
+func TestTotalPriceZeroUnits(t *testing.T) {
+	tx := txn(2025, 3, 1,
+		saleTotalPosting(t, "Assets:A", "0", "COIN", "0.6", "JPY", "1000", "JPY"),
+		plainPosting(t, "Assets:Cash", "0", "JPY"),
+		nilAmountPosting("Income:Gains"),
+	)
+	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
+
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (zero-units @@ contributes 0); errors = %v", len(res.Diagnostics), res.Diagnostics)
+	}
+}
+
+// TestTotalPricePositiveUnits: the @@ branch must produce a negative
+// price-side contribution when units are positive (an unusual but
+// syntactically valid case — e.g. recording a buy via @@). Here a
+// +2000 COIN posting with @@ 1000 JPY contributes -1000 JPY to the
+// price side; the proceeds leg of -1000 JPY balances exactly, so no
+// diagnostic fires. If the @@ branch ignored unit sign and always
+// returned +total, the residual would be 2000 JPY and this test would
+// flag.
+func TestTotalPricePositiveUnits(t *testing.T) {
+	tx := txn(2025, 2, 1,
+		saleTotalPosting(t, "Assets:A", "2000", "COIN", "0.6", "JPY", "1000", "JPY"),
+		plainPosting(t, "Assets:Cash", "-1000", "JPY"),
+		nilAmountPosting("Income:Gains"),
+	)
+	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
+
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (positive-units @@ contributes -total); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
