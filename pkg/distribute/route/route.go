@@ -94,8 +94,10 @@ type PriceSection struct {
 
 // TransactionSection holds the [routes.transaction] config.
 //
-// DefaultStrategy is parsed and validated at config-load time but not
-// yet consumed by Decide.
+// DefaultStrategy selects the posting that names the destination
+// account when neither the transaction-level nor a posting-level
+// override key is set; OverrideMetaKey names the metadata key
+// inspected for those overrides (default DefaultOverrideMetaKey).
 type TransactionSection struct {
 	DefaultStrategy string `toml:"default_strategy"`
 	OverrideMetaKey string `toml:"override_meta_key"`
