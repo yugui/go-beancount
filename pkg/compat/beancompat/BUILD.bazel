@@ -1,0 +1,35 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "beancompat",
+    srcs = [
+        "allowlist.go",
+        "fixture.go",
+        "match.go",
+        "runner.go",
+        "serialize.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/compat/beancompat",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "@rules_go//go/runfiles",
+    ],
+)
+
+go_test(
+    name = "beancompat_test",
+    srcs = [
+        "check_fixtures_test.go",
+        "parse_fixtures_test.go",
+    ],
+    data = [
+        "@beancompat//:check_fixtures",
+        "@beancompat//:parse_fixtures",
+    ],
+    embed = [":beancompat"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/loader",
+    ],
+)
