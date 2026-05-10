@@ -495,6 +495,103 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 	}
 }
 
+// loadIdempotencyFixture loads testdata/idempotency_e2e.beancount via
+// the ast layer directly (no loader pipeline), mirroring
+// loadInspectionFixture's bypass rationale: these tests need to drive
+// the Reducer over the raw AST shape that comes out of parsing,
+// including the auto-balanced posting whose Amount is still nil and
+// the `{}` cost specs that Pass 2 must resolve.
+func loadIdempotencyFixture(t *testing.T) *ast.Ledger {
+	t.Helper()
+	path := filepath.Join("testdata", "idempotency_e2e.beancount")
+	ledger, err := ast.LoadFile(path)
+	if err != nil {
+		t.Fatalf("ast.LoadFile(%q): %v", path, err)
+	}
+	var errs []string
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			errs = append(errs, d.Message)
+		}
+	}
+	if len(errs) != 0 {
+		t.Fatalf("ast.LoadFile(%q): got %d error-severity diagnostics, want 0:\n  %s",
+			path, len(errs), strings.Join(errs, "\n  "))
+	}
+	return ledger
+}
+
+// TestReducerRun_OutputIsFixedPoint asserts that re-running the Reducer
+// over its own output yields the same booked directives, the same
+// per-account final inventory, and no errors. The Reducer's Pass-2
+// rewrites — auto-posting Amount inference, deferred per-unit cost
+// solving, and multi-lot reduction Total synthesis — are designed so
+// that once the AST has been enriched with the inferred values, a
+// second pass routes those postings through the explicit-value path
+// instead of the Pass-2 path and converges on the same numbers. The
+// fixture (testdata/idempotency_e2e.beancount) packs all three
+// rewrites into one ledger so a single round-trip exercises every path.
+//
+// The two snapshots compared:
+//
+//   - Booked directives (Walk's []ast.Directive output) — these are
+//     deep-cloned by Walk before mutation, so equality across runs
+//     means the second pass produced no further mutation.
+//   - Final per-account Inventory (Reducer.Final) — equality across
+//     runs means the second pass routed the same units through the
+//     same lots in the same order.
+//
+// Errors are required to be empty on both runs; an error on either
+// run would invalidate the comparison.
+func TestReducerRun_OutputIsFixedPoint(t *testing.T) {
+	ledger := loadIdempotencyFixture(t)
+
+	r1 := inventory.NewReducer(ledger.All())
+	out1, errs1 := r1.Run()
+	if len(errs1) != 0 {
+		for _, e := range errs1 {
+			t.Logf("1st-run error: %s", e)
+		}
+		t.Fatalf("1st Run: got %d errors, want 0", len(errs1))
+	}
+
+	r2 := inventory.NewReducer(slices.All(out1))
+	out2, errs2 := r2.Run()
+	if len(errs2) != 0 {
+		for _, e := range errs2 {
+			t.Logf("2nd-run error: %s", e)
+		}
+		t.Fatalf("2nd Run: got %d errors, want 0", len(errs2))
+	}
+
+	if diff := cmp.Diff(out1, out2, invCmpOpts); diff != "" {
+		t.Errorf("directives differ between 1st and 2nd Run (-1st +2nd):\n%s", diff)
+	}
+
+	// Compare per-account final inventories. The accounts to check are
+	// taken from the ledger's Open directives, so adding a new account
+	// to the fixture automatically extends the assertion. Positions are
+	// materialized through Inventory.All so cmp.Diff prints the diverging
+	// entries directly when the assertion fails.
+	for _, d := range ledger.All() {
+		op, ok := d.(*ast.Open)
+		if !ok {
+			continue
+		}
+		var pos1, pos2 []inventory.Position
+		if a := r1.Final(op.Account); a != nil {
+			pos1 = slices.Collect(a.All())
+		}
+		if b := r2.Final(op.Account); b != nil {
+			pos2 = slices.Collect(b.All())
+		}
+		if diff := cmp.Diff(pos1, pos2, invCmpOpts); diff != "" {
+			t.Errorf("Final(%s) inventory differs between runs (-1st +2nd):\n%s",
+				op.Account, diff)
+		}
+	}
+}
+
 // TestInventoryIntegration_AutoPostingInference re-inspects the ACME
 // sale (the fixture's only transaction with an auto-balanced posting)
 // and asserts the auto posting's InferredAuto flag plus the inferred
