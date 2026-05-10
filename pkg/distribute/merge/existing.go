@@ -50,9 +50,13 @@ var dateNodeKinds = map[syntax.NodeKind]struct{}{
 	syntax.TransactionDirective: {},
 }
 
-// mergeExistingFile inserts each directive in plan.Inserts into an
-// existing file at plan.Path, preserving every byte not covered by an
-// insertion. See the package doc for the patch-composition model.
+// mergeExistingFile inserts each directive in plan.Inserts into the
+// existing file at plan.Path. The CST is parsed once, every dated
+// directive is indexed, and each insert is placed at the byte offset
+// returned by targetOffset; applyPatches then composes the output by
+// interleaving original-byte slices with rendered insert text. The
+// file is never edited in place — see the package doc for the
+// byte-preservation contract.
 func mergeExistingFile(plan Plan) (Stats, error) {
 	data, err := os.ReadFile(plan.Path)
 	if err != nil {
@@ -228,7 +232,7 @@ func lessByOrder(order route.OrderKind, a, b time.Time) bool {
 // existing[i].date < date; insert before it, which is existing[i-1].endOff
 // for i>0, or existing[0].startOff for i==0. No dated directives → fileLen.
 //
-// Append: unconditionally fileLen (per Open Question #10).
+// Append: unconditionally fileLen.
 func targetOffset(existing []existingDirective, date time.Time, order route.OrderKind, fileLen int) int {
 	if order == route.OrderAppend {
 		return fileLen
@@ -267,7 +271,7 @@ func targetOffset(existing []existingDirective, date time.Time, order route.Orde
 //
 //   - The B/N blank-line padding between the previous existing content
 //     and the new insertion (zero when offset==0, since "file start"
-//     skips leading padding per §4.4).
+//     skips leading padding under the package's spacing rule).
 //   - The single missing terminator when the insertion lands at EOF in
 //     a file that lacks a trailing newline. This is the documented
 //     deliberate exception to the "never edit bytes outside its own

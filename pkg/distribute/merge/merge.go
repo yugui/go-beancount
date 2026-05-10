@@ -67,7 +67,7 @@ type Options struct{}
 // Stats reports what Merge did to the destination file.
 //
 // Skipped is reserved for callers that elect to drop inserts entirely
-// (e.g. the dedup wiring in sub-phase 7.5e); Merge itself never bumps
+// (e.g. a dedup-skip path layered on top); Merge itself never bumps
 // Skipped because every Insert it receives is rendered.
 type Stats struct {
 	// Path is the destination file the stats describe.
@@ -94,11 +94,11 @@ func tallyInserts(inserts []Insert) (written, commented int) {
 	return written, commented
 }
 
-// Merge writes the directives in plan into plan.Path, preserving every
-// byte of surrounding content in an existing destination file (see the
-// package doc for the patch-composition model). When plan.Path does not
-// exist Merge creates it (with parent directories) and emits all
-// inserts in canonical order.
+// Merge writes the directives in plan into plan.Path. When the file
+// already exists, the merger preserves every byte outside its own
+// insertions; when it does not, Merge creates it (with parent
+// directories) and emits all inserts under plan.Order, with stable
+// FIFO for same-date inserts.
 //
 // Empty plan.Inserts is a no-op: Merge returns Stats{Path: plan.Path}
 // and does not touch the file.

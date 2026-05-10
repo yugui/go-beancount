@@ -1,7 +1,3 @@
-// Package routeconfig loads a beanfile TOML routing configuration into a
-// route.Config. Decoding is strict: unknown keys, unsupported order /
-// file-pattern values, and unsupported transaction strategies are
-// rejected at load time.
 package routeconfig
 
 import (
@@ -127,8 +123,8 @@ func validateFilePattern(pattern, where string) error {
 	}
 }
 
-// validateStrategy accepts the four documented values; unset means "use
-// the configured default strategy", which Decide does not yet consume.
+// validateStrategy accepts the four documented values; unset means
+// fall back to the parent scope's strategy.
 func validateStrategy(s, where string) error {
 	if s == "" {
 		return nil

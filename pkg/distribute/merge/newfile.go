@@ -51,9 +51,9 @@ func mergeNewFile(plan Plan) (Stats, error) {
 
 // printInsert resolves the per-insert format options against
 // formatopt.Default(), overrides the two spacing fields with the
-// plan's values (per the §4.4 schema rule), and prints the directive
-// to w. The printer emits a trailing newline. Commented inserts are
-// rendered through comment.Emit with the insert's Prefix.
+// plan's values (file-level spacing belongs to the Plan), and prints
+// the directive to w. The printer emits a trailing newline. Commented
+// inserts are rendered through comment.Emit with the insert's Prefix.
 //
 // When ins.StripMetaKeys is non-empty the directive is deep-cloned and
 // the listed metadata keys are removed before printing. The original

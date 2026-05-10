@@ -299,9 +299,11 @@ exists at the destination (active or commented-out); write as a
 commented-out marker if an active equivalent exists elsewhere in the
 ledger; otherwise write as a normal active directive.
 
-See [docs/beanfile-design.md](docs/beanfile-design.md) for the full
-specification, architecture, configuration schema, and sub-phase plan
-(7.5a–7.5i).
+The full user-facing specification (invocation, routing convention,
+dedup decision, merge semantics, stats) lives in the godoc on
+`cmd/beanfile`; the routing layer, dedup index, comment recognizer,
+merger spacing rules, and TOML schema live in their respective
+package godocs under `pkg/distribute/`.
 
 ---
 

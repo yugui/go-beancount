@@ -1,12 +1,66 @@
-// Command beanfile distributes beancount directives from input sources
-// (stdin or one or more positional files) into a tree of per-account and
-// per-commodity destination files under a chosen root, following the
-// standard convention from the beanfile design doc (§2). Routing rules,
-// account and commodity overrides, and output formatting are configured
-// via a TOML file and overlaid by command-line flags.
+// Command beanfile is a stateless offline CLI that reads a beancount
+// directive stream (stdin or one or more positional files) and files
+// each directive into the appropriate file in a multi-file ledger. A
+// ledger-wide equivalence index built from --ledger drives a three-way
+// write/comment/skip decision so re-runs are idempotent and a directive
+// that already lives in another file is recorded as a commented-out
+// marker rather than re-written verbatim.
+//
+// Run "beanfile --help" for the full flag list. The implementation
+// packages own the behavioral spec:
+//
+//   - [github.com/yugui/go-beancount/pkg/distribute/route]:
+//     standard routing convention, transaction routing override,
+//     format inheritance, non-routable directive marking.
+//   - [github.com/yugui/go-beancount/pkg/distribute/dedup]:
+//     equivalence rules and the active+commented index.
+//   - [github.com/yugui/go-beancount/pkg/distribute/merge]:
+//     insertion offsets and spacing.
+//   - [github.com/yugui/go-beancount/pkg/distribute/route/routeconfig]:
+//     TOML schema.
+//
+// # Inputs
+//
+// Positional files are read in argument order. With no positional args,
+// or with a single "-", input comes from stdin. Relative include
+// directives in the input are rejected (unlike for the ledger root,
+// where include resolution is required to assemble the dedup index);
+// absolute-path includes still resolve.
+//
+// # Stats
+//
+// On exit, unless --quiet, each destination gets one stderr line
+// "beanfile: <path>: written=N commented=N skipped=N" followed by a
+// "beanfile: total: written=N commented=N skipped=N passthrough=N"
+// summary. passthrough is global-only since non-routable directives
+// have no destination path. A destination that matched the index but
+// took no insertions still appears in per-file stats.
+//
+// # Pass-through
+//
+// Without --pass-through, encountering a non-routable directive in
+// the input is a hard error and no destination files are touched.
+// With --pass-through, those directives are written verbatim to
+// stdout in input order across each input source (sources processed
+// in argument order, never interleaved).
+//
+// # Dry-run output
+//
+// Under --dry-run, no files are written. Each destination's would-be
+// inserts are emitted to stdout under a "--- <relative path> ---"
+// header, with each line of an insert prefixed by "+ " (active) or
+// ";+ " (commented). Stats still go to stderr unless --quiet.
+//
+// # Out of scope
+//
+// Live services, file watching, locking, multi-file atomic
+// transactions, and auto-injecting include directives into the ledger
+// when new destination files are created are not provided here; users
+// are expected to use a glob include in their root file.
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -42,6 +96,7 @@ type cfg struct {
 	ledgerAbs   string
 	passThrough bool
 	quiet       bool
+	dryRun      bool
 	route       *route.Config
 }
 
@@ -123,6 +178,7 @@ func parseFlags(args []string, stderr io.Writer) (*cfg, []string, int) {
 	cmd.StringVar(&rootArg, "root", "", "destination root directory (default: directory of --ledger)")
 	cmd.BoolVar(&c.passThrough, "pass-through", false, "emit non-routable directives to stdout instead of erroring")
 	cmd.BoolVar(&c.quiet, "quiet", false, "suppress per-file and total stats on stderr")
+	cmd.BoolVar(&c.dryRun, "dry-run", false, "print proposed patches to stdout instead of writing files")
 
 	cmd.Func("order", "ascending | descending | append", func(s string) error {
 		rcfg.Routes.Account.Order = s
@@ -234,7 +290,10 @@ func parseFlags(args []string, stderr io.Writer) (*cfg, []string, int) {
 
 	rcfg.Root = rootAbs
 	rcfg.Warn = func(format string, args ...any) {
-		fmt.Fprintf(stderr, "beanfile: route: "+format+"\n", args...)
+		// Pre-format the message before embedding it under a fixed
+		// "%s" so that any '%' bytes in the routing warning are not
+		// re-interpreted as format verbs by the outer Fprintf.
+		fmt.Fprintf(stderr, "beanfile: route: %s\n", fmt.Sprintf(format, args...))
 	}
 	c.route = rcfg
 
@@ -371,18 +430,26 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 	for _, p := range paths {
 		inserts := planByPath[p]
 		if len(inserts) > 0 {
-			sp := spacingByPath[p]
-			plan := merge.Plan{
-				Path:                              filepath.Join(c.route.Root, p),
-				Order:                             orderByPath[p],
-				BlankLinesBetweenDirectives:       sp.blankLines,
-				InsertBlankLinesBetweenDirectives: sp.insertBlankLines,
-				Inserts:                           inserts,
-			}
-			if _, err := merge.Merge(plan, merge.Options{}); err != nil {
-				fmt.Fprintf(stderr, "beanfile: merge %s: %v\n", p, err)
-				mergeFailed = true
-				continue
+			if c.dryRun {
+				if err := writeDryRunBlock(stdout, p, inserts); err != nil {
+					fmt.Fprintf(stderr, "beanfile: dry-run %s: %v\n", p, err)
+					mergeFailed = true
+					continue
+				}
+			} else {
+				sp := spacingByPath[p]
+				plan := merge.Plan{
+					Path:                              filepath.Join(c.route.Root, p),
+					Order:                             orderByPath[p],
+					BlankLinesBetweenDirectives:       sp.blankLines,
+					InsertBlankLinesBetweenDirectives: sp.insertBlankLines,
+					Inserts:                           inserts,
+				}
+				if _, err := merge.Merge(plan, merge.Options{}); err != nil {
+					fmt.Fprintf(stderr, "beanfile: merge %s: %v\n", p, err)
+					mergeFailed = true
+					continue
+				}
 			}
 		}
 		stats = append(stats, pathStat{
@@ -401,6 +468,50 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 		return 1
 	}
 	return 0
+}
+
+// writeDryRunBlock prints the proposed patches for one destination
+// path in the dry-run preview format documented at the package level.
+// The header path is the same Config.Root-relative key used for stats,
+// so users can correlate stderr stats with stdout previews.
+//
+// Both active and commented inserts render through printer.Fprint with
+// the insert's body-level Format options applied; comment.Emit is
+// intentionally not used, since the ";+ " prefix is the dry-run's own
+// marker, distinct from the "; " prefix the real merger writes for a
+// commented insert. The preview is therefore not byte-faithful for
+// commented inserts: the resolved Format influences alignment in the
+// preview but not in the actual on-disk commented block (comment.Emit
+// uses default format options).
+func writeDryRunBlock(w io.Writer, relPath string, inserts []merge.Insert) error {
+	if _, err := fmt.Fprintf(w, "--- %s ---\n", relPath); err != nil {
+		return err
+	}
+	for _, ins := range inserts {
+		d := ast.StripMetaKeys(ins.Directive, ins.StripMetaKeys)
+		var buf bytes.Buffer
+		if err := printer.Fprint(&buf, d, ins.Format...); err != nil {
+			return fmt.Errorf("rendering directive: %w", err)
+		}
+		prefix := "+ "
+		if ins.Commented {
+			prefix = ";+ "
+		}
+		body := strings.TrimRight(buf.String(), "\n")
+		if body == "" {
+			// Defensive: every printable directive renders at least
+			// one byte, but guard against strings.Split("", "\n")
+			// emitting a spurious prefix-only line in case printer
+			// behaviour ever changes.
+			continue
+		}
+		for _, line := range strings.Split(body, "\n") {
+			if _, err := fmt.Fprintf(w, "%s%s\n", prefix, line); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // planSpacing carries the resolved spacing fields for one destination

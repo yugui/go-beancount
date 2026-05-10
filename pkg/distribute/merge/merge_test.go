@@ -294,7 +294,7 @@ func TestMerge_Existing_EmptyFile(t *testing.T) {
 	}
 }
 
-// --- Comment / blank-line preservation (the §9 7.5b headline) ---
+// --- Comment / blank-line preservation ---
 
 func TestMerge_Existing_PreservesCommentBlock(t *testing.T) {
 	in := readFixture(t, "preserves_comment_block.in.beancount")
@@ -840,7 +840,7 @@ func TestMerge_EmptyInsertsNoOp_FileExists(t *testing.T) {
 	}
 }
 
-// --- StripMetaKeys tests (7.5g-B) ---
+// --- StripMetaKeys tests ---
 
 // buildTxnWithRouteAccount returns a *ast.Transaction that carries a
 // route-account metadata key on the transaction header and one posting.

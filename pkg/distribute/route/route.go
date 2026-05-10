@@ -94,8 +94,10 @@ type PriceSection struct {
 
 // TransactionSection holds the [routes.transaction] config.
 //
-// DefaultStrategy is parsed and validated at config-load time but not
-// yet consumed by Decide.
+// DefaultStrategy selects the posting that names the destination
+// account when neither the transaction-level nor a posting-level
+// override key is set; OverrideMetaKey names the metadata key
+// inspected for those overrides (default DefaultOverrideMetaKey).
 type TransactionSection struct {
 	DefaultStrategy string `toml:"default_strategy"`
 	OverrideMetaKey string `toml:"override_meta_key"`
@@ -142,13 +144,13 @@ type Routes struct {
 // Config and treats it as the zero value.
 //
 // Root is the destination root directory; it is not part of the TOML
-// schema and is populated by the CLI from --root (or the directory of
-// --ledger). Decide does not consult Root directly; downstream code
-// such as the CLI uses it to resolve each Decision.Path on disk.
+// schema and is populated by the caller. Decide does not consult Root
+// directly — callers use it to resolve each Decision.Path on disk.
 //
-// Warn is an optional sink for non-fatal routing warnings (e.g. malformed
-// override metadata). It is not part of the TOML schema; the CLI populates
-// it with a closure writing to stderr. Nil means silent.
+// Warn is an optional sink for non-fatal routing warnings (e.g.
+// malformed override metadata). It is not part of the TOML schema;
+// the caller installs a closure if it wants to surface these. Nil
+// means silent.
 type Config struct {
 	Root   string                           `toml:"-"`
 	Routes Routes                           `toml:"routes"`

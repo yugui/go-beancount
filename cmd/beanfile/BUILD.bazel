@@ -25,4 +25,5 @@ go_test(
     name = "beanfile_test",
     srcs = ["main_test.go"],
     embed = [":beanfile_lib"],
+    deps = ["@com_github_google_go_cmp//cmp"],
 )
