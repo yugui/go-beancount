@@ -13,6 +13,8 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
         "@rules_go//go/runfiles",
     ],
 )
@@ -21,6 +23,7 @@ go_test(
     name = "beancompat_test",
     srcs = [
         "check_fixtures_test.go",
+        "match_test.go",
         "parse_fixtures_test.go",
     ],
     data = [
