@@ -1,3 +1,5 @@
+//go:build beancompat_fixtures
+
 package beancompat
 
 import (

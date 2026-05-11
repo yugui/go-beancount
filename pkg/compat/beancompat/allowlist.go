@@ -1,3 +1,5 @@
+//go:build beancompat_fixtures
+
 package beancompat
 
 // enabledParseFixtures gates which parse-tier fixtures actually execute.

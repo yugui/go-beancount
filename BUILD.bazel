@@ -1,9 +1,14 @@
 load("@gazelle//:def.bzl", "gazelle")
 
 # gazelle:prefix github.com/yugui/go-beancount
-# Let gazelle see files guarded by `//go:build testhelpers` — notably
-# pkg/ext/goplug/goplug_test.go, whose test binary needs the tag
-# so it can call postproc.ResetForTest. Without this directive gazelle
-# would skip the file and delete the go_test target on every run.
-# gazelle:build_tags testhelpers
+# Let gazelle see files guarded by additional build tags:
+#   testhelpers          — pkg/ext/goplug/goplug_test.go uses it so the
+#                          test binary can call postproc.ResetForTest.
+#   beancompat_fixtures  — pkg/compat/beancompat/{parse,check}_fixtures_test.go
+#                          use it so the upstream fixture suite runs only
+#                          under bazel test (where Bazel runfiles are
+#                          available), not under plain `go test`.
+# Without this directive gazelle would skip those files and delete the
+# corresponding go_test targets on every run.
+# gazelle:build_tags testhelpers,beancompat_fixtures
 gazelle(name = "gazelle")

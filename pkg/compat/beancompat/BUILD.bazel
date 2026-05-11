@@ -31,6 +31,7 @@ go_test(
         "@beancompat//:parse_fixtures",
     ],
     embed = [":beancompat"],
+    gotags = ["beancompat_fixtures"],
     deps = [
         "//pkg/ast",
         "//pkg/loader",

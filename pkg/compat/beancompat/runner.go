@@ -1,3 +1,5 @@
+//go:build beancompat_fixtures
+
 package beancompat
 
 import (
@@ -20,8 +22,9 @@ const adapterName = "go-beancount"
 // fixture directory (tier is "parse" or "check"). The upstream archive is
 // fetched as the @beancompat repo, so the apparent runfile path is
 // "beancompat/fixtures/<tier>"; rules_go's runfiles library maps that to
-// the canonical bzlmod path. A resolution failure is fatal — the tests
-// cannot run without the fixtures.
+// the canonical bzlmod path. A resolution failure is fatal — a fixture
+// the test files were built to load but cannot find at runtime indicates
+// a build-graph defect, not a behavioral divergence to tolerate.
 func fixturesDir(t *testing.T, tier string) string {
 	t.Helper()
 	dir, err := runfiles.Rlocation("beancompat/fixtures/" + tier)
