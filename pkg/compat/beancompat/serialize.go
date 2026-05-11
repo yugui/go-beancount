@@ -154,7 +154,16 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Note:
-		return placeholderDirective("note", v.Date, v.Meta), nil
+		data, err := noteDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "note",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Document:
 		return placeholderDirective("document", v.Date, v.Meta), nil
 	case *ast.Event:
@@ -443,6 +452,31 @@ func padDataPayload(p *ast.Pad) (json.RawMessage, error) {
 	}{
 		Account:       string(p.Account),
 		SourceAccount: string(p.PadAccount),
+	}
+	return json.Marshal(payload)
+}
+
+// noteDataPayload renders the data payload of a note directive per the
+// schema (upstream _parse_helper.py:185-187):
+//
+//	{"account": string, "comment": string}
+//
+// The schema deliberately emits only account and comment. AST also carries
+// Tags and Links on Note (see pkg/ast/directives.go:170-178), but the
+// canonical beancompat shape does not include them — this is upstream's
+// intentional design, not a Go-side oversight. Do not add tags/links keys
+// here without first checking _parse_helper.py: containment over a fixture
+// asserting only {account, comment} would still pass with extras, but the
+// shape would diverge from upstream and confuse cross-implementation
+// comparisons. The TestSerializeNote/tags_and_links_excluded subtest
+// enforces this contract.
+func noteDataPayload(n *ast.Note) (json.RawMessage, error) {
+	payload := struct {
+		Account string `json:"account"`
+		Comment string `json:"comment"`
+	}{
+		Account: string(n.Account),
+		Comment: n.Comment,
 	}
 	return json.Marshal(payload)
 }

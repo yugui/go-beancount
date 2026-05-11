@@ -988,3 +988,98 @@ func TestSerializePad(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializeNote covers noteDataPayload across the dimensions a note
+// directive can vary along: the {account, comment} data payload, the
+// load-bearing schema-omission contract for Tags and Links, and Meta
+// integration. The schema assigns note exactly two data fields per upstream
+// _parse_helper.py:185-187; the AST additionally carries Tags and Links
+// (see pkg/ast/directives.go:170-178), which the canonical shape
+// deliberately drops.
+//
+// The tags_and_links_excluded subtest is the load-bearing assertion that
+// proves the schema-omission contract: it populates Tags and Links on the
+// AST and asserts the JSON output STILL contains only {account, comment}.
+// A regression that "helpfully" added tags/links keys would surface here,
+// not in any future fixture (containment tolerates extras, so a fixture
+// alone could not catch this).
+func TestSerializeNote(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		// No tags, links, or metadata; verifies the canonical note envelope
+		// and the {account, comment} data shape from upstream
+		// _parse_helper.py:185-187.
+		note := &ast.Note{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Cash",
+			Comment: "reconciled by hand",
+		}
+		assertSerializeMatches(t, ledgerOf(t, note), `{
+			"errors": [],
+			"directives": [{
+				"type": "note",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Cash",
+					"comment": "reconciled by hand"
+				}
+			}]
+		}`)
+	})
+
+	t.Run("tags_and_links_excluded", func(t *testing.T) {
+		// Populate Tags and Links on the AST and assert the JSON output
+		// contains ONLY {account, comment} — no "tags" or "links" keys.
+		// Beancompat fixtures follow upstream _parse_helper.py:185-187
+		// verbatim, which intentionally omits these fields. A regression
+		// that emitted them would not be caught by any fixture (containment
+		// tolerates extra keys), so this subtest is the only place the
+		// schema-omission contract is enforced.
+		note := &ast.Note{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Cash",
+			Comment: "reconciled by hand",
+			Tags:    []string{"trip-2024", "audit"},
+			Links:   []string{"invoice-2024-001"},
+		}
+		assertSerializeMatches(t, ledgerOf(t, note), `{
+			"errors": [],
+			"directives": [{
+				"type": "note",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Cash",
+					"comment": "reconciled by hand"
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// One MetaValue confirms the note envelope routes Meta through
+		// serializeMeta. TestSerializeMeta exhaustively covers per-Kind
+		// behavior; a single string value here is sufficient to assert
+		// the wiring without duplicating that coverage.
+		note := &ast.Note{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Cash",
+			Comment: "reconciled by hand",
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"reviewer": {Kind: ast.MetaString, String: "alice"},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, note), `{
+			"errors": [],
+			"directives": [{
+				"type": "note",
+				"date": "2024-01-01",
+				"meta": {"reviewer": "alice"},
+				"data": {
+					"account": "Assets:Cash",
+					"comment": "reconciled by hand"
+				}
+			}]
+		}`)
+	})
+}
