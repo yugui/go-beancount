@@ -20,16 +20,22 @@ If feedback is non-empty, your task is to address it for the same slice — not 
 
 ## Implementation workflow (first invocation)
 
-1. Read the plan. If a path was provided, open the file; otherwise read the inline text. Locate your assigned slice (or treat the whole task as the slice when no step identifier was given). Internalize the functional requirements, modules, verification, and quality requirements that apply to your slice. **If the slice's section contains a `### Detailed Design` subsection, treat it as the agreed design contract — implement to that.**
+1. Read the plan. If a path was provided, open the file; otherwise read the inline text. Locate your assigned slice (or treat the whole task as the slice when no step identifier was given). Internalize the functional requirements, modules, verification, and quality requirements that apply to your slice. **If the slice's section contains a `### Detailed Design` subsection, distinguish its two layers:**
+   - **Contract** (public API shape, error semantics, anything other steps depend on): implement to it exactly. Deviation needs a Fatal Blocker or explicit Mid-implementation adjustment with reasoning.
+   - **Suggested Internals** (module-internal abstractions, decomposition hints): treat as a starting point, not a contract. You may adopt, modify, or replace them. Record what you did and why in `Local design notes`.
 2. Read the relevant source files. Understand the existing module's conventions before changing it.
-3. Implement the change. Touch only what the step requires; resist the urge to refactor adjacent code.
+3. Implement the change. **Scope discipline**:
+   - **Out of scope**: refactoring files or functions you do not need to touch for this step.
+   - **In scope (and expected of you)**: small obvious improvements to the code you are already modifying — clearer naming for symbols you introduce or rename, removing duplication you create or aggravate, fixing a small design smell within the function or struct you are editing. If a one-screen-local cleanup makes the diff better, do it.
+   - When in doubt, prefer leaving an adjacent untouched smell alone and noting it in `Local design notes`.
 4. **Bazel hygiene** (this project uses Bazel + Gazelle):
    - If you added/removed/renamed any `.go` file or changed imports, run `bazel run //:gazelle` to regenerate `BUILD.bazel` files.
    - If you changed `go.mod`, run `bazel run //:gazelle -- update-repos -from_file=go.mod`.
 5. Build: `bazel build //...` must succeed.
 6. Test: `bazel test //...` must succeed.
 7. Test adequacy self-check (see below). Add tests if coverage is insufficient.
-8. Report to the orchestrator. Do not commit yet — commit happens after review converges (see Commit policy).
+8. **Self-simplify pass.** Before reporting, re-read your own diff (`git diff HEAD`) with fresh eyes and apply the `simplify` skill's lens to it: duplication you introduced, dead branches, names that no longer fit, overly defensive checks, abstractions that don't pull their weight in the local context. Fix what you find; this is part of "done", not optional polish. Bound it to the changed lines and their immediate neighbors (same function / same struct) — do not expand into adjacent untouched code.
+9. Report to the orchestrator. Do not commit yet — commit happens after review converges (see Commit policy).
 
 ## Autonomy and escalation
 
@@ -61,11 +67,11 @@ For each feedback item, classify it explicitly into one of:
 - **延期 (Defer)**: do not fix now, but explicitly track. Provide:
   - Reason this step is the wrong place for the fix (e.g. out of scope, deferred to a later step that already covers it)
   - How/where it will be addressed (cite the plan step or propose a follow-up)
-- **却下 (Reject)**: disagree with the feedback. Provide:
-  - Concrete rationale (citing project conventions, plan requirements, or technical correctness)
-  - Acknowledgement that the orchestrator will surface this to the user for final adjudication
+- **却下 (Reject)** — **authority depends on severity**:
+  - **Medium / Low**: you may reject on your own authority. Provide concrete rationale (citing project conventions, plan requirements, or technical correctness). Report under `Feedback Disposition / 却下`.
+  - **High / Critical**: you **may not** finalize a rejection on your own. Instead, populate a `## Disputed Findings` section (see Reporting format) with the reviewer's claim, the relevant code excerpt or location, and your concrete rationale for why the finding is wrong. Do **not** count these in `Feedback Disposition / 却下`; do not apply any "fix" for them. The orchestrator will arbitrate (read the code, accept one side, or escalate to the user) and may come back to you with a directive. Treat this as "your strongest objection on the record" — be specific and citable, but do not edit code to enforce your view.
 
-Then implement the 対応 items only, re-run Bazel build and tests, and report all three buckets back to the orchestrator. **You may not silently omit any feedback item.** If you forget to classify one, the orchestrator's stuck-detection will catch it on the next round, but it is your responsibility to avoid that.
+Then implement the 対応 items only, re-run Bazel build and tests, and report all four buckets (対応 / 延期 / 却下 / Disputed) back to the orchestrator. **You may not silently omit any feedback item.** If you forget to classify one, the orchestrator's stuck-detection will catch it on the next round, but it is your responsibility to avoid that.
 
 ## Reporting format
 
@@ -93,7 +99,14 @@ End each invocation with a structured report:
 ## Feedback Disposition (fix cycles only)
 - 対応: <list>
 - 延期: <list with reason and tracking>
-- 却下: <list with rationale>
+- 却下: <list with rationale — Medium/Low only>
+
+## Disputed Findings (fix cycles only; High/Critical you would have rejected)
+- [<source>] <one-line summary>
+  Location: <file>:<line> or `pkg.Symbol`
+  Reviewer's claim: <verbatim or close paraphrase>
+  Your rationale: <concrete, citable>
+  Code excerpt or pointer: <so the orchestrator can read it without re-running the diff>
 ```
 
 ## Commit policy (per project CLAUDE.md)
