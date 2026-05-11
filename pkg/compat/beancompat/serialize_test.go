@@ -1240,3 +1240,69 @@ func TestSerializeEvent(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializeQuery covers queryDataPayload across the dimensions a query
+// directive can vary along: the {name, query_string} data payload and Meta
+// integration. The schema assigns query exactly two data fields per upstream
+// _parse_helper.py:194-196; one of them (query_string) is renamed from the
+// AST field BQL.
+//
+// The bare subtest's wantJSON literal pins down the load-bearing schema
+// rule: the JSON key is "query_string" (NOT "bql", which matches the AST
+// field name) — locking down the AST BQL → JSON query_string rename
+// described in queryDataPayload's doc comment. Distinct values for Name
+// ("monthly_cash") and BQL ("SELECT account FROM ...") are deliberately
+// chosen so a regression that swapped the field-to-key mapping (e.g.
+// emitted {name: "SELECT account FROM ...", query_string: "monthly_cash"})
+// would surface as a diff on both keys rather than aliasing into a passing
+// test on identical strings.
+func TestSerializeQuery(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		// Distinct Name and BQL so the rename and the field-to-key mapping
+		// are both observable in the diff on regression.
+		query := &ast.Query{
+			Date: mustDate(t, "2024-01-01"),
+			Name: "monthly_cash",
+			BQL:  "SELECT account FROM CLOSE ON 2024-01-01",
+		}
+		assertSerializeMatches(t, ledgerOf(t, query), `{
+			"errors": [],
+			"directives": [{
+				"type": "query",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"name": "monthly_cash",
+					"query_string": "SELECT account FROM CLOSE ON 2024-01-01"
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// One MetaValue confirms the query envelope routes Meta through
+		// serializeMeta. TestSerializeMeta exhaustively covers per-Kind
+		// behavior; a single string value here is sufficient to assert
+		// the wiring without duplicating that coverage.
+		query := &ast.Query{
+			Date: mustDate(t, "2024-01-01"),
+			Name: "monthly_cash",
+			BQL:  "SELECT account FROM CLOSE ON 2024-01-01",
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"author": {Kind: ast.MetaString, String: "alice"},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, query), `{
+			"errors": [],
+			"directives": [{
+				"type": "query",
+				"date": "2024-01-01",
+				"meta": {"author": "alice"},
+				"data": {
+					"name": "monthly_cash",
+					"query_string": "SELECT account FROM CLOSE ON 2024-01-01"
+				}
+			}]
+		}`)
+	})
+}

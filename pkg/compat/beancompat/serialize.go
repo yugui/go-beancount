@@ -187,7 +187,16 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Query:
-		return placeholderDirective("query", v.Date, v.Meta), nil
+		data, err := queryDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "query",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Price:
 		data, err := priceDataPayload(v)
 		if err != nil {
@@ -561,6 +570,36 @@ func eventDataPayload(e *ast.Event) (json.RawMessage, error) {
 	}{
 		Type:        e.Name,
 		Description: e.Value,
+	}
+	return json.Marshal(payload)
+}
+
+// queryDataPayload renders the data payload of a query directive per the
+// schema (upstream _parse_helper.py:194-196):
+//
+//	{"name": string, "query_string": string}
+//
+// One load-bearing AST → JSON rename governs this mapping; getting it
+// backwards would silently break containment against every query fixture:
+//
+//   - AST [ast.Query.BQL] → JSON "query_string" — upstream beancount names
+//     the stored BQL text "query_string" in its serialized form, and
+//     beancompat fixtures follow upstream naming verbatim. The AST field
+//     was named after the source-level concept (Beancount Query Language);
+//     the JSON key spells out the role in the serialized record. The
+//     TestSerializeQuery/bare subtest pins this rename down with distinct
+//     Name and BQL strings so a regression that swapped the field-to-key
+//     mapping (or that emitted a "bql" key) would surface here before any
+//     fixture is enabled.
+//
+// Name passes through unchanged: AST [ast.Query.Name] → JSON "name".
+func queryDataPayload(q *ast.Query) (json.RawMessage, error) {
+	payload := struct {
+		Name        string `json:"name"`
+		QueryString string `json:"query_string"`
+	}{
+		Name:        q.Name,
+		QueryString: q.BQL,
 	}
 	return json.Marshal(payload)
 }
