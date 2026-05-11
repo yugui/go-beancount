@@ -922,3 +922,69 @@ func TestSerializeCommodity(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializePad covers padDataPayload across the dimensions a pad
+// directive can vary along: the (account, source_account) pair and Meta
+// integration. The schema assigns pad exactly two data fields, both
+// required, so the bare subtest is sufficient for the data payload itself;
+// the metadata subtest pins down that the pad envelope routes Meta through
+// serializeMeta the same way the other directive envelopes do. Both
+// subtests use distinct accounts for Account vs PadAccount so a regression
+// that swapped the two fields would surface as a diff on both keys rather
+// than aliasing into a passing test.
+//
+// Critically, the bare subtest's wantJSON literal asserts the JSON key is
+// "source_account" — not "pad_account" — locking down the AST → JSON
+// rename described in padDataPayload's doc comment. Beancompat fixtures
+// follow upstream beancount's naming verbatim, so a regression that
+// emitted "pad_account" would silently break containment against every
+// pad fixture; this assertion catches that regression at the bridge layer
+// before any fixture is enabled.
+func TestSerializePad(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		pad := &ast.Pad{
+			Date:       mustDate(t, "2024-01-01"),
+			Account:    "Assets:Cash",
+			PadAccount: "Equity:Opening-Balances",
+		}
+		assertSerializeMatches(t, ledgerOf(t, pad), `{
+			"errors": [],
+			"directives": [{
+				"type": "pad",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Cash",
+					"source_account": "Equity:Opening-Balances"
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// One MetaValue confirms the pad envelope routes Meta through
+		// serializeMeta. TestSerializeMeta exhaustively covers per-Kind
+		// behavior; a single string value here is sufficient to assert
+		// the wiring without duplicating that coverage.
+		pad := &ast.Pad{
+			Date:       mustDate(t, "2024-01-01"),
+			Account:    "Assets:Cash",
+			PadAccount: "Equity:Opening-Balances",
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"reason": {Kind: ast.MetaString, String: "initial seeding"},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, pad), `{
+			"errors": [],
+			"directives": [{
+				"type": "pad",
+				"date": "2024-01-01",
+				"meta": {"reason": "initial seeding"},
+				"data": {
+					"account": "Assets:Cash",
+					"source_account": "Equity:Opening-Balances"
+				}
+			}]
+		}`)
+	})
+}

@@ -143,7 +143,16 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Pad:
-		return placeholderDirective("pad", v.Date, v.Meta), nil
+		data, err := padDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "pad",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Note:
 		return placeholderDirective("note", v.Date, v.Meta), nil
 	case *ast.Document:
@@ -411,6 +420,29 @@ func balanceDataPayload(b *ast.Balance) (json.RawMessage, error) {
 		},
 		Tolerance:  tolerance,
 		DiffAmount: nil,
+	}
+	return json.Marshal(payload)
+}
+
+// padDataPayload renders the data payload of a pad directive per the
+// schema (upstream _parse_helper.py:180-182):
+//
+//	{"account": string, "source_account": string}
+//
+// The JSON key "source_account" intentionally does not match the AST field
+// name PadAccount: upstream beancount names the funding account
+// "source_account" in its serialized form, and beancompat fixtures follow
+// upstream naming verbatim. The rename is load-bearing — emitting
+// "pad_account" would silently break containment against every pad
+// fixture — so flag it here for any future reader who might mistake the
+// mapping for a typo.
+func padDataPayload(p *ast.Pad) (json.RawMessage, error) {
+	payload := struct {
+		Account       string `json:"account"`
+		SourceAccount string `json:"source_account"`
+	}{
+		Account:       string(p.Account),
+		SourceAccount: string(p.PadAccount),
 	}
 	return json.Marshal(payload)
 }
