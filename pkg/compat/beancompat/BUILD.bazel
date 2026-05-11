@@ -25,6 +25,7 @@ go_test(
         "check_fixtures_test.go",
         "match_test.go",
         "parse_fixtures_test.go",
+        "serialize_test.go",
     ],
     data = [
         "@beancompat//:check_fixtures",
@@ -35,5 +36,6 @@ go_test(
     deps = [
         "//pkg/ast",
         "//pkg/loader",
+        "@com_github_google_go_cmp//cmp",
     ],
 )

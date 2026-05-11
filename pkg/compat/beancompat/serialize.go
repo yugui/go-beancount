@@ -42,6 +42,8 @@ func SerializeParsed(ledger *ast.Ledger) (Result, error) {
 // check-tier fixture that is mistakenly added to the allowlist fails
 // loudly rather than masquerading as a pass.
 func SerializeChecked(ledger *ast.Ledger) (Result, error) {
+	// TODO(beancompat): check-tier (cost discriminator "cost" 切替、booking 後
+	// amount、posting interpolation) は未実装。Plan C で対応。
 	return Result{}, errors.New("beancompat: SerializeChecked not yet implemented")
 }
 
@@ -60,6 +62,9 @@ func serialize(ledger *ast.Ledger) (Result, error) {
 		Errors:     []string{},
 		Directives: make([]Directive, 0, ledger.Len()),
 	}
+	// Result.Options is intentionally left unset (nil) here. AST 側の options
+	// 保持メカニズム整備後、別計画 (Plan A) で options 直列化を導入する。それまで
+	// options を要求する fixture (display_precision_by_currency 等) は不一致になる。
 	for _, diag := range ledger.Diagnostics {
 		if diag.Severity == ast.Error {
 			out.Errors = append(out.Errors, diag.Message)
@@ -323,10 +328,13 @@ func postingPayload(p *ast.Posting) postingData {
 	return postingData{
 		Account: string(p.Account),
 		Units:   units,
-		Cost:    json.RawMessage("null"),
-		Price:   json.RawMessage("null"),
-		Flag:    flagPtr(p.Flag),
-		Meta:    serializeMeta(p.Meta),
+		// TODO(beancompat): Plan D — __missing__ sentinel emission unsupported.
+		// AST nil → JSON null at parse tier; the matcher tolerates this via
+		// containment.
+		Cost:  json.RawMessage("null"),
+		Price: json.RawMessage("null"),
+		Flag:  flagPtr(p.Flag),
+		Meta:  serializeMeta(p.Meta),
 	}
 }
 
