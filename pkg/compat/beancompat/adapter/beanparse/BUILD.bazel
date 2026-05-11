@@ -1,0 +1,32 @@
+# gazelle:ignore
+
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "beanparse_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/compat/beancompat/adapter/beanparse",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/compat/beancompat",
+    ],
+)
+
+go_binary(
+    name = "beanparse",
+    embed = [":beanparse_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "beanparse_test",
+    srcs = ["main_test.go"],
+    embed = [":beanparse_lib"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/compat/beancompat",
+        "@com_github_google_go_cmp//cmp",
+        "@com_github_google_go_cmp//cmp/cmpopts",
+    ],
+)

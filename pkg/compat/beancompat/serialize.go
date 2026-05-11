@@ -1,6 +1,7 @@
 package beancompat
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -336,13 +337,18 @@ func marshalSortedObject(keys []string, values map[string]any) (json.RawMessage,
 		if i > 0 {
 			buf.WriteByte(',')
 		}
+		// Keys are always Go identifiers or beancount keywords — no HTML
+		// special characters — so json.Marshal is fine here.
 		kb, err := json.Marshal(k)
 		if err != nil {
 			return nil, err
 		}
 		_, _ = buf.Write(kb)
 		buf.WriteByte(':')
-		vb, err := json.Marshal(v)
+		// Values may be user-supplied strings (e.g. metadata values) that
+		// legitimately contain '<', '>', or '&'. Use marshalNoEscape so they
+		// reach the output verbatim rather than as \uXXXX sequences.
+		vb, err := marshalNoEscape(v)
 		if err != nil {
 			return nil, err
 		}
@@ -350,6 +356,25 @@ func marshalSortedObject(keys []string, values map[string]any) (json.RawMessage,
 	}
 	buf.WriteByte('}')
 	return json.RawMessage(buf.String()), nil
+}
+
+// marshalNoEscape encodes v as JSON with HTML escaping disabled. The standard
+// json.Marshal always escapes '<', '>', and '&' to \uXXXX sequences, which
+// corrupts string fields (narrations, comments, etc.) that legitimately contain
+// those characters. All payload helpers use this function instead of json.Marshal
+// so that literal characters pass through to the final output unmodified.
+// The trailing newline that json.Encoder appends is trimmed before returning.
+func marshalNoEscape(v any) (json.RawMessage, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	// json.Encoder.Encode always appends exactly one newline; strip it so
+	// the raw message embeds cleanly inside the outer JSON object.
+	b := bytes.TrimSuffix(buf.Bytes(), []byte("\n"))
+	return json.RawMessage(b), nil
 }
 
 // openDataPayload renders the data payload of an open directive per the schema:
@@ -384,7 +409,7 @@ func openDataPayload(o *ast.Open) (json.RawMessage, error) {
 		Currencies: currencies,
 		Booking:    bookingJSON(o.Booking),
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // bookingJSON returns the JSON representation of a BookingMethod: nil
@@ -409,7 +434,7 @@ func closeDataPayload(c *ast.Close) (json.RawMessage, error) {
 	}{
 		Account: string(c.Account),
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // commodityDataPayload renders the data payload of a commodity directive
@@ -422,7 +447,7 @@ func commodityDataPayload(c *ast.Commodity) (json.RawMessage, error) {
 	}{
 		Currency: c.Currency,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // balanceDataPayload renders the data payload of a balance directive per
@@ -465,7 +490,7 @@ func balanceDataPayload(b *ast.Balance) (json.RawMessage, error) {
 		Tolerance:  tolerance,
 		DiffAmount: nil,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // padDataPayload renders the data payload of a pad directive per the
@@ -488,7 +513,7 @@ func padDataPayload(p *ast.Pad) (json.RawMessage, error) {
 		Account:       string(p.Account),
 		SourceAccount: string(p.PadAccount),
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // noteDataPayload renders the data payload of a note directive per the
@@ -513,7 +538,7 @@ func noteDataPayload(n *ast.Note) (json.RawMessage, error) {
 		Account: string(n.Account),
 		Comment: n.Comment,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // documentDataPayload renders the data payload of a document directive per
@@ -549,7 +574,7 @@ func documentDataPayload(d *ast.Document) (json.RawMessage, error) {
 		Account:  string(d.Account),
 		Filename: d.Path,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // eventDataPayload renders the data payload of an event directive per the
@@ -579,7 +604,7 @@ func eventDataPayload(e *ast.Event) (json.RawMessage, error) {
 		Type:        e.Name,
 		Description: e.Value,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // queryDataPayload renders the data payload of a query directive per the
@@ -609,7 +634,7 @@ func queryDataPayload(q *ast.Query) (json.RawMessage, error) {
 		Name:        q.Name,
 		QueryString: q.BQL,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // amountData mirrors the {number, currency} shape beancompat assigns to
@@ -675,7 +700,7 @@ func transactionDataPayload(t *ast.Transaction) (json.RawMessage, error) {
 		Links:     links,
 		Postings:  postings,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // postingData mirrors beancompat's per-posting envelope. Cost and Price
@@ -781,7 +806,7 @@ func priceAnnotationPayload(p *ast.PriceAnnotation) (json.RawMessage, error) {
 		Number:   p.Amount.Number.String(),
 		Currency: p.Amount.Currency,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // serializeCostHolder dispatches over the [ast.CostHolder] sealed
@@ -939,7 +964,7 @@ func priceDataPayload(p *ast.Price) (json.RawMessage, error) {
 			Currency: p.Amount.Currency,
 		},
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // customDataPayload renders the data payload of a custom directive per
@@ -990,7 +1015,7 @@ func customDataPayload(c *ast.Custom) (json.RawMessage, error) {
 		Type:   c.TypeName,
 		Values: values,
 	}
-	return json.Marshal(payload)
+	return marshalNoEscape(payload)
 }
 
 // stringifyMetaValue maps one MetaValue to its Python-str() canonical
