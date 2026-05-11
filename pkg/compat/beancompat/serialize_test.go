@@ -1176,3 +1176,67 @@ func TestSerializeDocument(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializeEvent covers eventDataPayload across the dimensions an event
+// directive can vary along: the {type, description} data payload and Meta
+// integration. The schema assigns event exactly two data fields per upstream
+// _parse_helper.py:191-193, both of which are renamed from the AST.
+//
+// The bare subtest's wantJSON literal pins down two load-bearing schema
+// rules at once: the JSON keys are "type" and "description" (NOT "name" and
+// "value", which match the AST field names) — locking down the AST →
+// JSON dual rename described in eventDataPayload's doc comment. Distinct
+// values for Name ("location") and Value ("Tokyo") are deliberately chosen
+// so a regression that swapped the field-to-key mapping (e.g. emitted
+// {type: "Tokyo", description: "location"}) would surface as a diff on both
+// keys rather than aliasing into a passing test on identical strings.
+func TestSerializeEvent(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		// Distinct Name and Value so the dual rename and the field-to-key
+		// mapping are both observable in the diff on regression.
+		event := &ast.Event{
+			Date:  mustDate(t, "2024-01-01"),
+			Name:  "location",
+			Value: "Tokyo",
+		}
+		assertSerializeMatches(t, ledgerOf(t, event), `{
+			"errors": [],
+			"directives": [{
+				"type": "event",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"type": "location",
+					"description": "Tokyo"
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// One MetaValue confirms the event envelope routes Meta through
+		// serializeMeta. TestSerializeMeta exhaustively covers per-Kind
+		// behavior; a single string value here is sufficient to assert
+		// the wiring without duplicating that coverage.
+		event := &ast.Event{
+			Date:  mustDate(t, "2024-01-01"),
+			Name:  "location",
+			Value: "Tokyo",
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"source": {Kind: ast.MetaString, String: "calendar"},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, event), `{
+			"errors": [],
+			"directives": [{
+				"type": "event",
+				"date": "2024-01-01",
+				"meta": {"source": "calendar"},
+				"data": {
+					"type": "location",
+					"description": "Tokyo"
+				}
+			}]
+		}`)
+	})
+}

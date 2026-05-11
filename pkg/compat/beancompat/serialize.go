@@ -176,7 +176,16 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Event:
-		return placeholderDirective("event", v.Date, v.Meta), nil
+		data, err := eventDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "event",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Query:
 		return placeholderDirective("query", v.Date, v.Meta), nil
 	case *ast.Price:
@@ -522,6 +531,36 @@ func documentDataPayload(d *ast.Document) (json.RawMessage, error) {
 	}{
 		Account:  string(d.Account),
 		Filename: d.Path,
+	}
+	return json.Marshal(payload)
+}
+
+// eventDataPayload renders the data payload of an event directive per the
+// schema (upstream _parse_helper.py:191-193):
+//
+//	{"type": string, "description": string}
+//
+// Two load-bearing AST → JSON renames govern this mapping; both differ from
+// the AST field names, and getting either backwards would silently break
+// containment against every event fixture:
+//
+//  1. AST [ast.Event.Name] → JSON "type" — upstream beancount names the
+//     event category "type" in its serialized form (e.g. "location"), and
+//     beancompat fixtures follow upstream naming verbatim. AST Name was
+//     chosen to match the source-level keyword; the JSON key is a
+//     deliberately different word.
+//  2. AST [ast.Event.Value] → JSON "description" — upstream similarly names
+//     the event payload "description" (e.g. "Tokyo"). The TestSerializeEvent
+//     subtests pin both renames down with distinct Name and Value strings so
+//     a regression that swapped the field-to-key mapping (or that emitted
+//     "name"/"value" keys) would surface here before any fixture is enabled.
+func eventDataPayload(e *ast.Event) (json.RawMessage, error) {
+	payload := struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+	}{
+		Type:        e.Name,
+		Description: e.Value,
 	}
 	return json.Marshal(payload)
 }
