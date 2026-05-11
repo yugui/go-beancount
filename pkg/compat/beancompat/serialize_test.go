@@ -501,3 +501,192 @@ func TestSerializeMeta(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializeOpen exercises openData across the dimensions of the open
+// directive's data shape: the currencies array (single / empty / multi
+// preserving source order), the booking enum (every non-default keyword
+// plus the default-emits-null contract), and the meta integration with
+// serializeMeta. The open_single fixture only covers one combination of
+// these dimensions; this test pins down the rest so a regression in any
+// individual axis surfaces here rather than waiting on a future fixture
+// to incidentally re-cover it.
+//
+// Each subtest constructs exactly one Open directive with a fixed date so
+// the JSON literal stays focused on the axis under test. The booking
+// subtests deliberately fix Currencies to ["USD"] and the currency
+// subtests deliberately leave Booking as the zero value, so a single
+// failure points unambiguously to the axis it was testing.
+func TestSerializeOpen(t *testing.T) {
+	t.Run("single_currency", func(t *testing.T) {
+		// Mirrors the open_single fixture's canonical shape; serves as
+		// the baseline that all other open subtests vary against.
+		open := &ast.Open{
+			Date:       mustDate(t, "2024-01-01"),
+			Account:    "Assets:Bank",
+			Currencies: []string{"USD"},
+		}
+		assertSerializeMatches(t, ledgerOf(t, open), `{
+			"errors": [],
+			"directives": [{
+				"type": "open",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Bank",
+					"currencies": ["USD"],
+					"booking": null
+				}
+			}]
+		}`)
+	})
+
+	t.Run("no_currency", func(t *testing.T) {
+		// Pin the nil-Currencies case to JSON [] (not null, not omitted).
+		// The serializer substitutes an empty non-nil slice; this subtest
+		// guards that substitution against a regression that lets the
+		// nil leak through as JSON null and breaks containment over the
+		// schema-required array shape.
+		open := &ast.Open{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Bank",
+		}
+		assertSerializeMatches(t, ledgerOf(t, open), `{
+			"errors": [],
+			"directives": [{
+				"type": "open",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Bank",
+					"currencies": [],
+					"booking": null
+				}
+			}]
+		}`)
+	})
+
+	t.Run("multi_currency_preserves_order", func(t *testing.T) {
+		// Source order (USD, JPY, EUR) is deliberately not alphabetical
+		// so an accidental sort would surface as a diff. The serializer's
+		// contract — preserve source order, do not reorder — is the
+		// forward-compatible choice for fixtures that distinguish
+		// currency lists by position (e.g. a primary-vs-secondary
+		// convention encoded in source order).
+		open := &ast.Open{
+			Date:       mustDate(t, "2024-01-01"),
+			Account:    "Assets:Bank",
+			Currencies: []string{"USD", "JPY", "EUR"},
+		}
+		assertSerializeMatches(t, ledgerOf(t, open), `{
+			"errors": [],
+			"directives": [{
+				"type": "open",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Bank",
+					"currencies": ["USD", "JPY", "EUR"],
+					"booking": null
+				}
+			}]
+		}`)
+	})
+
+	// Each named BookingMethod renders as its uppercase keyword; the
+	// table form makes adding new methods (e.g. AVERAGE_ONLY) trivial.
+	for _, tc := range []struct {
+		name    string
+		booking ast.BookingMethod
+		want    string // JSON value for the "booking" field
+	}{
+		{"booking_strict", ast.BookingStrict, `"STRICT"`},
+		{"booking_fifo", ast.BookingFIFO, `"FIFO"`},
+		{"booking_lifo", ast.BookingLIFO, `"LIFO"`},
+		{"booking_none", ast.BookingNone, `"NONE"`},
+		{"booking_average", ast.BookingAverage, `"AVERAGE"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			open := &ast.Open{
+				Date:       mustDate(t, "2024-01-01"),
+				Account:    "Assets:Bank",
+				Currencies: []string{"USD"},
+				Booking:    tc.booking,
+			}
+			wantJSON := fmt.Sprintf(`{
+				"errors": [],
+				"directives": [{
+					"type": "open",
+					"date": "2024-01-01",
+					"meta": {},
+					"data": {
+						"account": "Assets:Bank",
+						"currencies": ["USD"],
+						"booking": %s
+					}
+				}]
+			}`, tc.want)
+			assertSerializeMatches(t, ledgerOf(t, open), wantJSON)
+		})
+	}
+
+	t.Run("booking_default_emits_null", func(t *testing.T) {
+		// BookingDefault is the zero value; the schema requires JSON
+		// null (not the string "DEFAULT") so adapters can distinguish
+		// "no booking keyword present" from any explicit keyword. This
+		// is the case the open_single fixture exercises, replicated here
+		// to lock the contract against a regression that would silently
+		// emit "DEFAULT" or an empty string.
+		open := &ast.Open{
+			Date:       mustDate(t, "2024-01-01"),
+			Account:    "Assets:Bank",
+			Currencies: []string{"USD"},
+			Booking:    ast.BookingDefault,
+		}
+		assertSerializeMatches(t, ledgerOf(t, open), `{
+			"errors": [],
+			"directives": [{
+				"type": "open",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Bank",
+					"currencies": ["USD"],
+					"booking": null
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// One string and one number meta value confirms the Open
+		// envelope routes Meta through serializeMeta (which itself is
+		// exhaustively tested in TestSerializeMeta). Two kinds rather
+		// than one ensures the integration handles a multi-key payload
+		// rather than incidentally working on a single-entry map.
+		open := &ast.Open{
+			Date:       mustDate(t, "2024-01-01"),
+			Account:    "Assets:Bank",
+			Currencies: []string{"USD"},
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"description": {Kind: ast.MetaString, String: "primary checking"},
+				"limit":       {Kind: ast.MetaNumber, Number: mustDecimal(t, "5000.00")},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, open), `{
+			"errors": [],
+			"directives": [{
+				"type": "open",
+				"date": "2024-01-01",
+				"meta": {
+					"description": "primary checking",
+					"limit": "5000.00"
+				},
+				"data": {
+					"account": "Assets:Bank",
+					"currencies": ["USD"],
+					"booking": null
+				}
+			}]
+		}`)
+	})
+}
