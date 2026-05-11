@@ -162,6 +162,183 @@ independently committable.
 - No system-Python fallback. If the interpreter cannot be downloaded, the
   build must fail loudly.
 
+### Detailed Design
+
+#### Contract
+
+The following are locked at design time; Steps 4, 5, and 6 will reference these
+values directly.
+
+- **`rules_python` version:** `1.7.0` — promoted from transitive to direct
+  `bazel_dep` in `MODULE.bazel`. (Matches the version already pinned by
+  `MODULE.bazel.lock`; avoids gratuitous MODULE-graph churn.)
+- **Python interpreter version:** `3.12` (registered via the `python` module
+  extension's `python.toolchain(python_version = "3.12", is_default = True)`).
+  The exact patch level is whatever `rules_python` 1.7.0 ships for 3.12 — not
+  pinned at the patch level by the Contract.
+- **Pip hub repo label:** `@gobeancount_pip` (NOT `@pip` — explicit name avoids
+  collisions with any future `bazel_dep` that creates its own default `pip`
+  hub, and namespaces the deps to this project).
+- **Wheel set exposed by the hub (Contract-level):**
+  - `@gobeancount_pip//pyyaml` (label form; this is the canonical form Steps
+    4/5/6 will use in `deps`).
+  - `@gobeancount_pip//pytest`.
+  - Other transitives (e.g. `iniconfig`, `pluggy`, `packaging`) MAY appear in
+    the hub but are not Contract-level — downstream code must not name them.
+- **`requirements.in` location:** `third_party/python/requirements.in`. Content
+  pins only direct deps with floors:
+  - `pyyaml>=6.0,<7`
+  - `pytest>=8.0,<9`
+- **Lockfile location:** `third_party/python/requirements_lock.txt`
+  (single-platform; CI is Linux-only per `.github/workflows/ci.yml`).
+- **Files added/modified:**
+  - `MODULE.bazel` (add direct `bazel_dep`, `use_extension` for `python` and
+    `pip`, `python.toolchain`, `pip.parse`, `use_repo` for the hub).
+  - `MODULE.bazel.lock` (regenerated).
+  - `third_party/python/requirements.in` (new).
+  - `third_party/python/requirements_lock.txt` (new, checked in).
+  - `third_party/python/BUILD.bazel` (new, may be empty or `exports_files`).
+- **Failure mode:** `bazel build @gobeancount_pip//pyyaml` and
+  `@gobeancount_pip//pytest` must succeed offline after a single initial
+  fetch. No system-Python fallback: `python.toolchain` must register the
+  hermetic interpreter as the only matching toolchain so that Bazel errors
+  out loudly rather than silently using `/usr/bin/python3` if the hermetic
+  fetch fails.
+- **Visibility:** hub-repo targets are public by `rules_python` default; do
+  not constrain. Downstream BUILD files in
+  `//pkg/compat/beancompat/adapter/...` and
+  `//pkg/compat/beancompat/tests/...` will reference them by full label.
+- **Non-Contract (explicitly out of scope for this Step):** `hypothesis`,
+  `beancount` reference package, any test-only deps beyond `pytest`. Adding
+  `hypothesis` is deferred to whichever future step enables a test_*.py file
+  that imports it.
+
+#### Suggested Internals
+
+The implementer may adopt, modify, or replace any of the following.
+
+- **Extension call shape.** Suggested:
+  ```
+  python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+  python.toolchain(python_version = "3.12", is_default = True)
+
+  pip = use_extension("@rules_python//python/extensions:pip.bzl", "pip")
+  pip.parse(
+      hub_name = "gobeancount_pip",
+      python_version = "3.12",
+      requirements_lock = "//third_party/python:requirements_lock.txt",
+  )
+  use_repo(pip, "gobeancount_pip")
+  ```
+  Alternative: the newer `pip.parse(experimental_index_url=...)` flow with
+  per-platform locks. Reject for now (single-platform CI).
+- **Where to put `requirements.in` / lockfile.** Suggested:
+  `third_party/python/` (mirrors `third_party/beancompat/`, signals
+  toolchain-level not adapter-level). Alternative: repo root
+  (`/requirements.in`, `/requirements_lock.txt`) — rejected as repo-root
+  clutter. Alternative: `pkg/compat/beancompat/requirements*.txt` — rejected
+  because the deps are toolchain-level (the toolchain is used by the whole
+  project, even if today only beancompat consumes it).
+- **Lockfile generation.** Suggested: use `rules_python`'s built-in
+  `compile_pip_requirements` target — declare in
+  `third_party/python/BUILD.bazel`:
+  ```
+  load("@rules_python//python:pip.bzl", "compile_pip_requirements")
+  compile_pip_requirements(
+      name = "requirements",
+      src = "requirements.in",
+      requirements_txt = "requirements_lock.txt",
+  )
+  ```
+  so `bazel run //third_party/python:requirements.update` regenerates the
+  lock hermetically. Alternative: run `pip-compile` outside Bazel — rejected
+  (non-hermetic, requires devs to have pip-tools installed). Alternative:
+  hand-edit the lockfile — rejected (transitive resolution is non-trivial).
+- **Single- vs multi-platform lock.** Single-platform (Linux) is sufficient:
+  CI is `ubuntu-latest` only, and macOS dev usage is not a stated requirement.
+  Implementer may upgrade to multi-platform later by switching to
+  `requirements_<os>_<arch>.txt` files if macOS dev support becomes a need.
+- **`hypothesis`.** NOT added. Step 6 only enables `test_fixtures.py`, which
+  does not import Hypothesis. Adding it speculatively violates YAGNI and
+  inflates the wheel set. Defer to the step that enables a Hypothesis-using
+  test file.
+- **`is_default = True` on the toolchain.** Suggested true (avoids needing
+  `--@rules_python//python/config_settings:python_version` flags on every
+  test invocation). Alternative: omit and pass the flag — rejected as
+  per-invocation friction.
+
+#### Alternatives discussed
+
+- **rules_python version: 1.7.0 vs latest stable vs 0.33.x LTS.**
+  - 1.7.0 (recommended): already resolved in `MODULE.bazel.lock`, so no
+    extra MODULE-graph churn; current modern API.
+  - "latest stable" floating: poor reproducibility; Bazel bzlmod expects
+    a pinned `version =` string regardless. Rejected.
+  - 0.33.x or earlier: predates the unified `pip` extension; would force a
+    legacy `pip.parse_python_versions` shape. Rejected — uses older API.
+- **Python interpreter version: 3.12 vs 3.11 vs 3.13.**
+  - 3.12 (recommended): matches the plan's explicit decision; broad wheel
+    availability for both `pyyaml` and `pytest`; LTS-ish in the rules_python
+    toolchain set.
+  - 3.11: more conservative but plan already specifies 3.12 and no concrete
+    reason to downgrade.
+  - 3.13: newer; rules_python 1.7.0 supports it but wheel availability for
+    less-common deps (relevant if Hypothesis is added later) is marginally
+    worse. Defer.
+- **Lockfile management: bazel-driven `compile_pip_requirements` vs external
+  `pip-compile` vs manual.**
+  - bazel-driven (recommended): hermetic, no host tool requirement,
+    rules_python idiomatic.
+  - External `pip-compile`: requires every dev to install pip-tools; CI
+    diff-check on the lock becomes a "did you install the right pip-tools
+    version?" question. Rejected.
+  - Manual: transitive resolution is fragile. Rejected.
+- **Hub repo naming: `pip` vs `gobeancount_pip` vs `pypi`.**
+  - `gobeancount_pip` (recommended): collision-safe, namespaced, signals
+    project ownership.
+  - `pip`: default; risks collision if a future `bazel_dep` also calls
+    `pip.parse` with the default hub_name (rules_python's own pypi__*
+    repos already exist in the lock).
+  - `pypi`: also fine but less conventional than the `*_pip` suffix used by
+    several open-source bzlmod projects.
+- **Lockfile scope: single-platform Linux vs multi-platform.**
+  - Single-platform (recommended): CI is Linux-only; `pyyaml` and `pytest`
+    are pure-Python on the relevant tags so the wheel set is small and
+    portable enough for local macOS dev to work opportunistically without
+    being a CI commitment.
+  - Multi-platform: extra lockfile maintenance with no CI value today.
+
+#### Recommendation
+
+Promote `rules_python` to a direct `bazel_dep` at version **1.7.0** (the
+version already pinned transitively in `MODULE.bazel.lock`), register a
+hermetic CPython **3.12** toolchain as the default, and use `pip.parse` to
+materialize a hub named **`@gobeancount_pip`** from a checked-in
+single-platform lockfile at `third_party/python/requirements_lock.txt`
+(source `third_party/python/requirements.in` pinning `pyyaml` and `pytest`
+only). Wire `compile_pip_requirements` so `bazel run
+//third_party/python:requirements.update` regenerates the lock hermetically.
+
+Rationale, by consequence:
+
+1. Pinning rules_python at the lock-resolved 1.7.0 minimizes MODULE-graph
+   churn — no other bazel_dep needs re-resolving, and the lockfile delta is
+   confined to the new direct-use entries.
+2. A project-namespaced hub (`@gobeancount_pip`) is collision-safe against
+   future toolchain additions, costs nothing today, and Steps 4/5/6 reference
+   the hub by exact label anyway — there is no "cleaner default" gain from
+   using bare `@pip`.
+3. Locating the lock under `third_party/python/` matches the existing
+   `third_party/beancompat/` layout convention and signals correctly that
+   these are toolchain inputs, not adapter sources.
+4. Deferring `hypothesis` (and any other test-only deps) until a future step
+   actually imports them keeps the wheel set tight; the framework's
+   extensibility claim is satisfied by the locking machinery, not by
+   pre-locking unused deps.
+5. `is_default = True` on the toolchain removes per-invocation flag friction
+   for downstream `py_test` rules, which is the dominant usage pattern in
+   Steps 4–6.
+
 ---
 
 ### Step 3 — Expose beancompat's Python sources as Bazel filegroups
