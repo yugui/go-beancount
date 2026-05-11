@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -177,12 +179,97 @@ func formatDate(t time.Time) string {
 	return t.Format(isoDate)
 }
 
-// serializeMeta encodes a directive's user-defined metadata as a JSON
-// object. Per-key MetaValue encoding is not yet implemented; the stub
-// always emits an empty object so fixtures that assert "meta": {} via
-// containment are satisfied without the field appearing absent.
-func serializeMeta(_ ast.Metadata) json.RawMessage {
-	return json.RawMessage("{}")
+// serializeMeta encodes a directive's (or posting's) user-defined metadata
+// as a JSON object, mirroring upstream beancount's _parse_helper.serialize_meta.
+// It filters keys with the "__" prefix (parser-internal bookkeeping the
+// canonical fixture shape never asserts), silently skips MetaAmount values
+// to match upstream's primitives-only emission policy, and sorts the
+// remaining keys alphabetically so byte-level output is deterministic
+// regardless of Go's randomized map iteration.
+func serializeMeta(m ast.Metadata) json.RawMessage {
+	if len(m.Props) == 0 {
+		return json.RawMessage("{}")
+	}
+	// Populate the emission-key list and value map in a single pass so a
+	// key only appears in `keys` when it has a corresponding entry in
+	// `out`. Filtered ("__"-prefixed) and skipped (MetaAmount, unknown
+	// kinds) keys never enter either collection.
+	keys := make([]string, 0, len(m.Props))
+	out := make(map[string]any, len(m.Props))
+	for k, v := range m.Props {
+		if strings.HasPrefix(k, "__") {
+			continue
+		}
+		switch v.Kind {
+		case ast.MetaString, ast.MetaAccount, ast.MetaCurrency, ast.MetaTag, ast.MetaLink:
+			out[k] = v.String
+		case ast.MetaDate:
+			out[k] = v.Date.Format(isoDate)
+		case ast.MetaNumber:
+			// Emit as a JSON string so source-side precision (e.g.
+			// "1.5600" with trailing zeros) survives — a JSON number
+			// token would normalize.
+			out[k] = v.Number.String()
+		case ast.MetaBool:
+			out[k] = v.Bool
+		default:
+			// MetaAmount and any future kind: skip silently. Continue
+			// without appending k so the emission-key list stays
+			// consistent with the value map.
+			continue
+		}
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return json.RawMessage("{}")
+	}
+	sort.Strings(keys)
+	// Marshal in caller-controlled key order. Go's encoding/json happens
+	// to sort map[string]any keys today, but pinning the contract at this
+	// layer avoids silent regressions if that stdlib detail ever changes.
+	b, err := marshalSortedObject(keys, out)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return b
+}
+
+// marshalSortedObject emits a JSON object whose keys appear in the given
+// order. Callers must ensure every key in keys has a corresponding entry
+// in values; a missing key is treated as a programmer error and surfaces
+// as an explicit error rather than being silently skipped, which would
+// hide a serializer bug. Go's encoding/json happens to sort map[string]any
+// keys today, but explicitly emitting in caller-controlled order pins the
+// contract at this layer rather than relying on a library implementation
+// detail.
+//
+// strings.Builder.Write is documented to never return an error, so the
+// (int, error) returns are intentionally discarded with blank assignments.
+func marshalSortedObject(keys []string, values map[string]any) (json.RawMessage, error) {
+	var buf strings.Builder
+	buf.WriteByte('{')
+	for i, k := range keys {
+		v, ok := values[k]
+		if !ok {
+			return nil, fmt.Errorf("beancompat: marshalSortedObject: key %q missing from values map", k)
+		}
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		kb, err := json.Marshal(k)
+		if err != nil {
+			return nil, err
+		}
+		_, _ = buf.Write(kb)
+		buf.WriteByte(':')
+		vb, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		_, _ = buf.Write(vb)
+	}
+	buf.WriteByte('}')
+	return json.RawMessage(buf.String()), nil
 }
 
 // openDataPayload renders the data payload of an open directive per the schema:
