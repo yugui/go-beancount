@@ -1889,6 +1889,437 @@ func TestSerializeTransaction(t *testing.T) {
 			txnPriceWantJSON(`{"number": "1.10000", "currency": "USD"}`),
 		)
 	})
+
+	// ---------------------------------------------------------------------
+	// Envelope subtests (Step 15 of the Phase 1.5 plan).
+	//
+	// These pin down the directive-level fields of transactionDataPayload
+	// (flag, payee, narration, tags, links, postings list) as separate axes
+	// so a future bridge change cannot silently regress one of them under
+	// cover of the others. The transaction_balanced fixture exercises one
+	// envelope shape (payee + narration + 2 postings, no tags/links/cost/
+	// price); the per-axis subtests below break that down so each schema
+	// rule has its own failing case.
+	//
+	// Unlike the cost_spec / price subtests above, these construct the
+	// *ast.Transaction inline rather than through a fixed helper because
+	// the envelope tests need to vary multiple Transaction fields at once
+	// (flag, payee, tags, links, postings count); a per-axis helper would
+	// have to thread every axis as a parameter and would obscure what each
+	// subtest is actually asserting.
+	t.Run("minimal", func(t *testing.T) {
+		// Bare transaction: flag + narration + one posting, no payee, no
+		// tags, no links. Pins (1) the empty-but-present array contract
+		// for tags and links — they MUST be JSON [] not null and not
+		// omitted; (2) the null-payee contract — empty AST Payee MUST emit
+		// JSON null via stringOrNil; (3) that the single-posting shape
+		// round-trips with units, cost: null, price: null, flag: null,
+		// meta: {} all present.
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-15"),
+			Flag:      '*',
+			Narration: "lunch",
+			Postings: []ast.Posting{
+				{
+					Account: "Expenses:Food",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "12.00"),
+						Currency: "USD",
+					},
+				},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, txn), `{
+			"errors": [],
+			"directives": [{
+				"type": "transaction",
+				"date": "2024-01-15",
+				"meta": {},
+				"data": {
+					"flag": "*",
+					"payee": null,
+					"narration": "lunch",
+					"tags": [],
+					"links": [],
+					"postings": [{
+						"account": "Expenses:Food",
+						"units": {"number": "12.00", "currency": "USD"},
+						"cost": null,
+						"price": null,
+						"flag": null,
+						"meta": {}
+					}]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_payee", func(t *testing.T) {
+		// Same as minimal but with a non-empty Payee. Pins the non-nil
+		// branch of stringOrNil: a real payee string MUST round-trip
+		// verbatim into JSON. Distinct from minimal because a regression
+		// that always nilled Payee (or always emitted "") would diff here.
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-15"),
+			Flag:      '*',
+			Payee:     "Grocery Store",
+			Narration: "lunch",
+			Postings: []ast.Posting{
+				{
+					Account: "Expenses:Food",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "12.00"),
+						Currency: "USD",
+					},
+				},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, txn), `{
+			"errors": [],
+			"directives": [{
+				"type": "transaction",
+				"date": "2024-01-15",
+				"meta": {},
+				"data": {
+					"flag": "*",
+					"payee": "Grocery Store",
+					"narration": "lunch",
+					"tags": [],
+					"links": [],
+					"postings": [{
+						"account": "Expenses:Food",
+						"units": {"number": "12.00", "currency": "USD"},
+						"cost": null,
+						"price": null,
+						"flag": null,
+						"meta": {}
+					}]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_tags_and_links", func(t *testing.T) {
+		// Tags and Links populated. Pins that Transaction-level tags and
+		// links ARE part of the schema (per upstream
+		// _parse_helper.py:162-163), in deliberate contrast to Note and
+		// Document where Tags/Links are intentionally omitted from the
+		// data payload. A regression that started filtering them out at
+		// the transaction level (or vice versa) would diff here.
+		// Multi-element Tags array also pins source order is preserved
+		// (no incidental sorting).
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-15"),
+			Flag:      '*',
+			Narration: "lunch",
+			Tags:      []string{"trip-2024", "audit"},
+			Links:     []string{"invoice-2024-001"},
+			Postings: []ast.Posting{
+				{
+					Account: "Expenses:Food",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "12.00"),
+						Currency: "USD",
+					},
+				},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, txn), `{
+			"errors": [],
+			"directives": [{
+				"type": "transaction",
+				"date": "2024-01-15",
+				"meta": {},
+				"data": {
+					"flag": "*",
+					"payee": null,
+					"narration": "lunch",
+					"tags": ["trip-2024", "audit"],
+					"links": ["invoice-2024-001"],
+					"postings": [{
+						"account": "Expenses:Food",
+						"units": {"number": "12.00", "currency": "USD"},
+						"cost": null,
+						"price": null,
+						"flag": null,
+						"meta": {}
+					}]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("multi_posting_balanced", func(t *testing.T) {
+		// Two postings (the canonical balanced-transaction shape). Pins
+		// that the postings array preserves AST source order: the
+		// Expenses:Food leg comes first, the Assets:Cash leg second,
+		// because that is the order they appear in t.Postings. A
+		// regression that sorted postings (e.g. by account name) would
+		// reorder these and diff here.
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-15"),
+			Flag:      '*',
+			Narration: "lunch",
+			Postings: []ast.Posting{
+				{
+					Account: "Expenses:Food",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "100.00"),
+						Currency: "USD",
+					},
+				},
+				{
+					Account: "Assets:Cash",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "-100.00"),
+						Currency: "USD",
+					},
+				},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, txn), `{
+			"errors": [],
+			"directives": [{
+				"type": "transaction",
+				"date": "2024-01-15",
+				"meta": {},
+				"data": {
+					"flag": "*",
+					"payee": null,
+					"narration": "lunch",
+					"tags": [],
+					"links": [],
+					"postings": [
+						{
+							"account": "Expenses:Food",
+							"units": {"number": "100.00", "currency": "USD"},
+							"cost": null,
+							"price": null,
+							"flag": null,
+							"meta": {}
+						},
+						{
+							"account": "Assets:Cash",
+							"units": {"number": "-100.00", "currency": "USD"},
+							"cost": null,
+							"price": null,
+							"flag": null,
+							"meta": {}
+						}
+					]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("elided_posting_amount", func(t *testing.T) {
+		// One posting with Amount=nil (the auto-balanced posting case the
+		// parser emits for a posting without an explicit amount). Pins
+		// that postingPayload's nil-Amount branch produces "units": null
+		// (the *amountData pointer marshals as JSON null). The
+		// missing_sentinel fixture upstream tolerates either key omission
+		// or explicit null on the actual side; our serializer emits
+		// explicit null, and this subtest pins that contract so a future
+		// switch to an empty {number: "", currency: ""} object (or to key
+		// omission via omitempty) would surface here.
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-15"),
+			Flag:      '*',
+			Narration: "auto-balanced",
+			Postings: []ast.Posting{
+				{
+					Account: "Assets:Cash",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "100.00"),
+						Currency: "USD",
+					},
+				},
+				{
+					Account: "Expenses:Food",
+					Amount:  nil,
+				},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, txn), `{
+			"errors": [],
+			"directives": [{
+				"type": "transaction",
+				"date": "2024-01-15",
+				"meta": {},
+				"data": {
+					"flag": "*",
+					"payee": null,
+					"narration": "auto-balanced",
+					"tags": [],
+					"links": [],
+					"postings": [
+						{
+							"account": "Assets:Cash",
+							"units": {"number": "100.00", "currency": "USD"},
+							"cost": null,
+							"price": null,
+							"flag": null,
+							"meta": {}
+						},
+						{
+							"account": "Expenses:Food",
+							"units": null,
+							"cost": null,
+							"price": null,
+							"flag": null,
+							"meta": {}
+						}
+					]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("flag_bang", func(t *testing.T) {
+		// Flag '!' (the alternative to '*'). Pins that flagString passes
+		// the byte through verbatim rather than hard-coding "*". A
+		// regression that always emitted "*" — easy to introduce when
+		// special-casing the cleared-transaction path — would diff here.
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-15"),
+			Flag:      '!',
+			Narration: "needs review",
+			Postings: []ast.Posting{
+				{
+					Account: "Expenses:Food",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "12.00"),
+						Currency: "USD",
+					},
+				},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, txn), `{
+			"errors": [],
+			"directives": [{
+				"type": "transaction",
+				"date": "2024-01-15",
+				"meta": {},
+				"data": {
+					"flag": "!",
+					"payee": null,
+					"narration": "needs review",
+					"tags": [],
+					"links": [],
+					"postings": [{
+						"account": "Expenses:Food",
+						"units": {"number": "12.00", "currency": "USD"},
+						"cost": null,
+						"price": null,
+						"flag": null,
+						"meta": {}
+					}]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("posting_with_flag", func(t *testing.T) {
+		// Per-posting Flag set to '*'. The transaction-level flag and the
+		// posting-level flag are independent in beancount's grammar
+		// (postings can carry their own flag to override the transaction
+		// flag for booking purposes). This subtest pins that distinction:
+		// the transaction's flag goes through flagString (always present)
+		// and the posting's flag goes through flagPtr (nil when zero,
+		// pointer-to-string otherwise). A regression that conflated the
+		// two — e.g. always emitting null at the posting level, or
+		// inheriting the transaction flag onto every posting — would diff
+		// here.
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-15"),
+			Flag:      '!',
+			Narration: "mixed flags",
+			Postings: []ast.Posting{
+				{
+					Flag:    '*',
+					Account: "Expenses:Food",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "12.00"),
+						Currency: "USD",
+					},
+				},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, txn), `{
+			"errors": [],
+			"directives": [{
+				"type": "transaction",
+				"date": "2024-01-15",
+				"meta": {},
+				"data": {
+					"flag": "!",
+					"payee": null,
+					"narration": "mixed flags",
+					"tags": [],
+					"links": [],
+					"postings": [{
+						"account": "Expenses:Food",
+						"units": {"number": "12.00", "currency": "USD"},
+						"cost": null,
+						"price": null,
+						"flag": "*",
+						"meta": {}
+					}]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("empty_payee_emits_null", func(t *testing.T) {
+		// Payee="" must emit JSON null, not the empty string. The AST's
+		// empty-string sentinel for "absent payee" is collapsed by
+		// stringOrNil into a nil *string. Beancount's syntax cannot
+		// produce a literal empty-string payee distinct from an absent
+		// one, so the collapse is information-preserving for parser-
+		// emitted directives. This subtest is the explicit assertion of
+		// that contract — a regression that started emitting "payee": ""
+		// would diff here even though the with_payee subtest passes
+		// (with_payee uses a non-empty string and so cannot catch the
+		// empty case).
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-15"),
+			Flag:      '*',
+			Payee:     "",
+			Narration: "lunch",
+			Postings: []ast.Posting{
+				{
+					Account: "Expenses:Food",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "12.00"),
+						Currency: "USD",
+					},
+				},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, txn), `{
+			"errors": [],
+			"directives": [{
+				"type": "transaction",
+				"date": "2024-01-15",
+				"meta": {},
+				"data": {
+					"flag": "*",
+					"payee": null,
+					"narration": "lunch",
+					"tags": [],
+					"links": [],
+					"postings": [{
+						"account": "Expenses:Food",
+						"units": {"number": "12.00", "currency": "USD"},
+						"cost": null,
+						"price": null,
+						"flag": null,
+						"meta": {}
+					}]
+				}
+			}]
+		}`)
+	})
 }
 
 // txnWithPrice constructs a minimal *ast.Transaction whose only purpose is
