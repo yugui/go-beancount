@@ -692,6 +692,11 @@ type postingData struct {
 // tier (Plan C) will instead emit "kind": "cost" with booked values; the
 // discriminator is what keeps the two tiers shape-distinct on a single
 // JSON channel.
+//
+// Price mirrors Cost's nil/non-nil split: a nil Price emits JSON null so
+// the schema-required key is always present, and a non-nil PriceAnnotation
+// is delegated to priceAnnotationPayload, which emits the {number, currency}
+// shape upstream's serialize_amount produces.
 func postingPayload(p *ast.Posting) (postingData, error) {
 	var units *amountData
 	if p.Amount != nil {
@@ -708,14 +713,59 @@ func postingPayload(p *ast.Posting) (postingData, error) {
 		}
 		cost = c
 	}
+	price := json.RawMessage("null")
+	if p.Price != nil {
+		pp, err := priceAnnotationPayload(p.Price)
+		if err != nil {
+			return postingData{}, err
+		}
+		price = pp
+	}
 	return postingData{
 		Account: string(p.Account),
 		Units:   units,
 		Cost:    cost,
-		Price:   json.RawMessage("null"),
+		Price:   price,
 		Flag:    flagPtr(p.Flag),
 		Meta:    serializeMeta(p.Meta),
 	}, nil
+}
+
+// priceAnnotationPayload renders a PriceAnnotation into the parse-tier
+// posting "price" slot per upstream beancount's _parse_helper.py
+// (line 170: `"price": serialize_amount(p.price)`). The shape is exactly
+// the same {number, currency} object serialize_amount produces for any
+// other Amount in the schema:
+//
+//	{"number": "decimal_string", "currency": "USD"}
+//
+// Number is sourced from Amount.Number.String() so the apd.Decimal's
+// source-side precision (e.g. "1.10000" with trailing zeros) survives —
+// matchDecimal compares the Exponent and a normalized form would diverge.
+//
+// Known information loss — IsTotal is intentionally NOT emitted:
+// the AST distinguishes per-unit (`@`) from total (`@@`) price syntax via
+// PriceAnnotation.IsTotal, but upstream beancount's parser stores the
+// price as a plain Amount and its serialize_amount call drops the
+// distinction. The canonical JSON cannot tell `@` from `@@`. Mirroring
+// upstream is the only choice that keeps cross-implementation parity;
+// emitting an extra "total" key (or any other discriminator) would
+// surface as an extra field in every cross-implementation diff and make
+// parity reads noisier without preserving any information beancompat
+// fixtures currently assert. If a future fixture or use case requires
+// IsTotal preservation, a Plan A-style extension (e.g., emit a
+// non-standard "total" key under a documented opt-in) would be the
+// correct path; do not silently start emitting it here.
+//
+// The price_total_isfalse_lossy subtest in TestSerializeTransaction pins
+// this loss down as a deliberate contract rather than an oversight: the
+// IsTotal=true case must round-trip to the same JSON as IsTotal=false.
+func priceAnnotationPayload(p *ast.PriceAnnotation) (json.RawMessage, error) {
+	payload := amountData{
+		Number:   p.Amount.Number.String(),
+		Currency: p.Amount.Currency,
+	}
+	return json.Marshal(payload)
 }
 
 // costSpecPayload renders a CostSpec into the parse-tier

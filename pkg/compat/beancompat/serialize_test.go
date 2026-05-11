@@ -1812,4 +1812,142 @@ func TestSerializeTransaction(t *testing.T) {
 		txn := txnWithCost(t, nil)
 		assertSerializeMatches(t, ledgerOf(t, txn), txnCostWantJSON(`null`))
 	})
+
+	t.Run("price_per_unit", func(t *testing.T) {
+		// Per-unit `@` price: PriceAnnotation with IsTotal=false. The
+		// emitted "price" object must be the {number, currency} shape
+		// upstream's serialize_amount(p.price) produces — a regression
+		// that wrapped it in a discriminated envelope (e.g.
+		// "kind": "price") would diff here.
+		txn := txnWithPrice(t, &ast.PriceAnnotation{
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "1.10"),
+				Currency: "USD",
+			},
+			IsTotal: false,
+		})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnPriceWantJSON(`{"number": "1.10", "currency": "USD"}`),
+		)
+	})
+
+	t.Run("price_total_istotal_dropped", func(t *testing.T) {
+		// Total `@@` price: PriceAnnotation with IsTotal=true. The
+		// emitted JSON MUST be byte-equivalent to the IsTotal=false case
+		// (same number, same currency, no extra discriminator). This
+		// subtest is the load-bearing assertion that IsTotal is
+		// intentionally dropped — see priceAnnotationPayload's doc
+		// comment. A regression that started emitting a "total" key (or
+		// silently swapped to a per-unit normalization) would surface
+		// here. Upstream beancount's parser similarly normalizes `@@`
+		// internally; the JSON cannot distinguish `@` from `@@`.
+		txn := txnWithPrice(t, &ast.PriceAnnotation{
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "1.10"),
+				Currency: "USD",
+			},
+			IsTotal: true,
+		})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnPriceWantJSON(`{"number": "1.10", "currency": "USD"}`),
+		)
+	})
+
+	t.Run("posting_no_price", func(t *testing.T) {
+		// p.Price == nil baseline: posting "price" key MUST be JSON null
+		// (not omitted, not an empty {number, currency} object). The
+		// schema requires the key to always be present at the posting
+		// level, so the price object only appears when the AST actually
+		// carries a PriceAnnotation. This subtest guards the conditional
+		// in postingPayload against a regression that always called
+		// priceAnnotationPayload on a nil Price (which would NPE on the
+		// embedded Amount access).
+		txn := txnWithPrice(t, nil)
+		assertSerializeMatches(t, ledgerOf(t, txn), txnPriceWantJSON(`null`))
+	})
+
+	t.Run("decimal_precision_preserved_in_price", func(t *testing.T) {
+		// Trailing-zero rate: the apd.Decimal's source-side Exponent
+		// must survive serialization so "1.10000" stays "1.10000". A
+		// regression that routed Number through %f, %g, .Float64(),
+		// or any normalization path would silently strip the trailing
+		// zeros and diff here. Same precision-preservation contract
+		// matchDecimal enforces on the comparison side.
+		txn := txnWithPrice(t, &ast.PriceAnnotation{
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "1.10000"),
+				Currency: "USD",
+			},
+		})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnPriceWantJSON(`{"number": "1.10000", "currency": "USD"}`),
+		)
+	})
+}
+
+// txnWithPrice constructs a minimal *ast.Transaction whose only purpose is
+// to carry one Posting with a PriceAnnotation attached through
+// SerializeParsed. It mirrors txnWithCost's shape so the price-focused
+// subtests' wantJSON literals only differ in the "price" slot — keeping
+// each per-subtest JSON literal focused on what is actually under test
+// (the price encoding) rather than padding every literal with directive
+// boilerplate. Kept separate from txnWithCost rather than unified because
+// the two helpers exercise opposite sides of the (cost, price) envelope:
+// folding them together would require every subtest to thread a
+// "which slot are you testing?" parameter, which adds noise without
+// removing duplication.
+func txnWithPrice(t *testing.T, price *ast.PriceAnnotation) *ast.Transaction {
+	t.Helper()
+	return &ast.Transaction{
+		Date:      mustDate(t, "2024-01-15"),
+		Flag:      '*',
+		Narration: "buy lot",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Investments",
+				Amount: &ast.Amount{
+					Number:   mustDecimal(t, "10"),
+					Currency: "HOOL",
+				},
+				Price: price,
+			},
+		},
+	}
+}
+
+// txnPriceWantJSON formats the canonical Transaction envelope around a
+// price JSON fragment. The data payload is fixed (matches txnWithPrice)
+// so each subtest only needs to specify the expected price body, which is
+// the quantity actually under test. The "cost" slot is hard-coded to null
+// because txnWithPrice attaches no CostSpec.
+func txnPriceWantJSON(priceJSON string) string {
+	return fmt.Sprintf(`{
+		"errors": [],
+		"directives": [{
+			"type": "transaction",
+			"date": "2024-01-15",
+			"meta": {},
+			"data": {
+				"flag": "*",
+				"payee": null,
+				"narration": "buy lot",
+				"tags": [],
+				"links": [],
+				"postings": [{
+					"account": "Assets:Investments",
+					"units": {"number": "10", "currency": "HOOL"},
+					"cost": null,
+					"price": %s,
+					"flag": null,
+					"meta": {}
+				}]
+			}
+		}]
+	}`, priceJSON)
 }
