@@ -690,3 +690,58 @@ func TestSerializeOpen(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializeClose covers closeDataPayload across the dimensions the
+// close directive can vary along: the account field and meta integration.
+// The schema assigns close exactly one data field (account), so a single
+// bare-account subtest is sufficient for the data payload itself; the
+// metadata subtest pins down that the close envelope routes Meta through
+// serializeMeta the same way Open does (TestSerializeMeta exhaustively
+// covers serializeMeta's per-Kind behavior, so one or two MetaValue
+// entries here is enough to assert the wiring).
+func TestSerializeClose(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		// No metadata; verifies the canonical close envelope and the
+		// {account} data shape from upstream _parse_helper.py:156-157.
+		closeDir := &ast.Close{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:OldChecking",
+		}
+		assertSerializeMatches(t, ledgerOf(t, closeDir), `{
+			"errors": [],
+			"directives": [{
+				"type": "close",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {"account": "Assets:OldChecking"}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// Two MetaValue entries spanning two Kinds confirm the close
+		// envelope passes Meta through serializeMeta verbatim. A
+		// single-entry map could incidentally pass even if the wiring
+		// were broken on multi-key payloads.
+		closeDir := &ast.Close{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:OldChecking",
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"reason": {Kind: ast.MetaString, String: "closed for redesign"},
+				"ticket": {Kind: ast.MetaNumber, Number: mustDecimal(t, "42")},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, closeDir), `{
+			"errors": [],
+			"directives": [{
+				"type": "close",
+				"date": "2024-01-01",
+				"meta": {
+					"reason": "closed for redesign",
+					"ticket": "42"
+				},
+				"data": {"account": "Assets:OldChecking"}
+			}]
+		}`)
+	})
+}

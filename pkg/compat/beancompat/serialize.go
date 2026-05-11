@@ -110,7 +110,16 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Close:
-		return placeholderDirective("close", v.Date, v.Meta), nil
+		data, err := closeDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "close",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Commodity:
 		return placeholderDirective("commodity", v.Date, v.Meta), nil
 	case *ast.Balance:
@@ -318,6 +327,18 @@ func bookingJSON(m ast.BookingMethod) *string {
 	}
 	s := m.String()
 	return &s
+}
+
+// closeDataPayload renders the data payload of a close directive per the
+// schema: {"account": string}. Per upstream beancount's _parse_helper.py
+// (lines 156-157), close carries no fields beyond the account being closed.
+func closeDataPayload(c *ast.Close) (json.RawMessage, error) {
+	payload := struct {
+		Account string `json:"account"`
+	}{
+		Account: string(c.Account),
+	}
+	return json.Marshal(payload)
 }
 
 // amountData mirrors the {number, currency} shape beancompat assigns to
