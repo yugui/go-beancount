@@ -165,7 +165,16 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Document:
-		return placeholderDirective("document", v.Date, v.Meta), nil
+		data, err := documentDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "document",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Event:
 		return placeholderDirective("event", v.Date, v.Meta), nil
 	case *ast.Query:
@@ -477,6 +486,42 @@ func noteDataPayload(n *ast.Note) (json.RawMessage, error) {
 	}{
 		Account: string(n.Account),
 		Comment: n.Comment,
+	}
+	return json.Marshal(payload)
+}
+
+// documentDataPayload renders the data payload of a document directive per
+// the schema (upstream _parse_helper.py:188-190):
+//
+//	{"account": string, "filename": string}
+//
+// Two load-bearing schema rules govern this mapping:
+//
+//  1. The JSON key "filename" intentionally does not match the AST field
+//     name Path: upstream beancount names the document path "filename" in
+//     its serialized form, and beancompat fixtures follow upstream naming
+//     verbatim. The rename is load-bearing — emitting "path" would
+//     silently break containment against every document fixture — so
+//     flag it here for any future reader who might mistake the mapping
+//     for a typo. (Same pattern as Pad's PadAccount → source_account.)
+//
+//  2. AST also carries Tags and Links on Document (see
+//     pkg/ast/directives.go:185-199), but the canonical beancompat shape
+//     does not include them — this is upstream's intentional design,
+//     mirroring the same omission applied to Note. Do not add tags/links
+//     keys here without first checking _parse_helper.py: containment over
+//     a fixture asserting only {account, filename} would still pass with
+//     extras, but the shape would diverge from upstream and confuse
+//     cross-implementation comparisons. The
+//     TestSerializeDocument/tags_and_links_excluded subtest enforces
+//     this contract.
+func documentDataPayload(d *ast.Document) (json.RawMessage, error) {
+	payload := struct {
+		Account  string `json:"account"`
+		Filename string `json:"filename"`
+	}{
+		Account:  string(d.Account),
+		Filename: d.Path,
 	}
 	return json.Marshal(payload)
 }

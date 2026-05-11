@@ -1083,3 +1083,96 @@ func TestSerializeNote(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializeDocument covers documentDataPayload across the dimensions a
+// document directive can vary along: the {account, filename} data payload,
+// the load-bearing schema-omission contract for Tags and Links, and Meta
+// integration. The schema assigns document exactly two data fields per
+// upstream _parse_helper.py:188-190; the AST additionally carries Tags and
+// Links (see pkg/ast/directives.go:185-199), which the canonical shape
+// deliberately drops (mirroring the same omission applied to Note).
+//
+// The bare subtest's wantJSON literal pins down two load-bearing schema
+// rules at once: the JSON key is "filename" (not "path") — locking down
+// the AST Path → JSON filename rename described in documentDataPayload's
+// doc comment, the same pattern as Pad's PadAccount → source_account —
+// and the absence of any "tags" or "links" keys.
+//
+// The tags_and_links_excluded subtest is the load-bearing assertion that
+// proves the schema-omission contract: it populates Tags and Links on the
+// AST and asserts the JSON output STILL contains only {account, filename}.
+// A regression that "helpfully" added tags/links keys would surface here,
+// not in any future fixture (containment tolerates extras, so a fixture
+// alone could not catch this).
+func TestSerializeDocument(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		// Pins the Path → filename rename and baseline envelope shape.
+		doc := &ast.Document{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Receipts",
+			Path:    "/path/to/receipt.pdf",
+		}
+		assertSerializeMatches(t, ledgerOf(t, doc), `{
+			"errors": [],
+			"directives": [{
+				"type": "document",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Receipts",
+					"filename": "/path/to/receipt.pdf"
+				}
+			}]
+		}`)
+	})
+
+	t.Run("tags_and_links_excluded", func(t *testing.T) {
+		// Populates AST Tags+Links; asserts they don't leak into JSON.
+		doc := &ast.Document{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Receipts",
+			Path:    "/path/to/receipt.pdf",
+			Tags:    []string{"trip-2024", "audit"},
+			Links:   []string{"invoice-2024-001"},
+		}
+		assertSerializeMatches(t, ledgerOf(t, doc), `{
+			"errors": [],
+			"directives": [{
+				"type": "document",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Receipts",
+					"filename": "/path/to/receipt.pdf"
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// One MetaValue confirms the document envelope routes Meta through
+		// serializeMeta. TestSerializeMeta exhaustively covers per-Kind
+		// behavior; a single string value here is sufficient to assert
+		// the wiring without duplicating that coverage.
+		doc := &ast.Document{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Receipts",
+			Path:    "/path/to/receipt.pdf",
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"source": {Kind: ast.MetaString, String: "scanner"},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, doc), `{
+			"errors": [],
+			"directives": [{
+				"type": "document",
+				"date": "2024-01-01",
+				"meta": {"source": "scanner"},
+				"data": {
+					"account": "Assets:Receipts",
+					"filename": "/path/to/receipt.pdf"
+				}
+			}]
+		}`)
+	})
+}
