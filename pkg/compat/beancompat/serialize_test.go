@@ -1490,3 +1490,122 @@ func TestSerializeCustom(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializePrice covers priceDataPayload across the dimensions a price
+// directive can vary along: the base/quote currency-pair orientation, the
+// source-side decimal precision contract on the rate, and Meta integration.
+// The schema assigns price exactly two data fields per upstream
+// _parse_helper.py:197-199: a top-level "currency" carrying the BASE
+// commodity and an embedded "amount" object carrying the QUOTE currency
+// alongside the rate.
+//
+// The bare subtest's wantJSON literal pins down the load-bearing schema
+// rule: the JSON top-level "currency" key carries the AST Commodity field
+// (the BASE) and "amount.currency" carries the embedded Amount.Currency
+// (the QUOTE). Distinct values for Commodity ("EUR") and Amount.Currency
+// ("USD") are deliberately chosen so a regression that swapped the two
+// (e.g. emitted {currency: "USD", amount: {currency: "EUR"}}) would surface
+// as a diff on both keys rather than aliasing into a passing test on
+// identical strings. This base-vs-quote orientation is load-bearing
+// because beancount price semantics are directional — "1 EUR = 1.10 USD"
+// and "1 USD = 1.10 EUR" describe different markets — and a regression
+// would silently invert every downstream price lookup.
+//
+// The TestParseFixtures/price fixture exercises one currency-pair shape;
+// the per-axis subtests below anchor base-vs-quote orientation, decimal
+// precision preservation, and meta integration as separate concerns so a
+// future bridge change can't silently regress one axis.
+func TestSerializePrice(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		// Distinct base (EUR) and quote (USD) so the field-to-key mapping
+		// is observable in the diff on regression. Mirrors the canonical
+		// "1 EUR is worth 1.10 USD" shape from _parse_helper.py:197-199.
+		price := &ast.Price{
+			Date:      mustDate(t, "2024-01-01"),
+			Commodity: "EUR",
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "1.10"),
+				Currency: "USD",
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, price), `{
+			"errors": [],
+			"directives": [{
+				"type": "price",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"currency": "EUR",
+					"amount": {"number": "1.10", "currency": "USD"}
+				}
+			}]
+		}`)
+	})
+
+	t.Run("decimal_precision_preserved", func(t *testing.T) {
+		// "1.10000" exercises trailing-zero precision preservation on the
+		// rate: apd.Decimal.String() retains the source Exponent, and the
+		// serializer must emit the value as a JSON string so the trailing
+		// zeros survive (a JSON number token would normalize them away).
+		// This matches the matchDecimal precision contract from Phase 1 —
+		// a regression that routed the rate through .Text('f', N) or
+		// float64 would drop the trailing zeros and surface as a diff
+		// here.
+		price := &ast.Price{
+			Date:      mustDate(t, "2024-01-01"),
+			Commodity: "EUR",
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "1.10000"),
+				Currency: "USD",
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, price), `{
+			"errors": [],
+			"directives": [{
+				"type": "price",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"currency": "EUR",
+					"amount": {"number": "1.10000", "currency": "USD"}
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// Two MetaValue entries spanning two Kinds confirm the price
+		// envelope passes Meta through serializeMeta verbatim.
+		// TestSerializeMeta exhaustively covers per-Kind behavior; a
+		// multi-key payload here is sufficient to assert the wiring
+		// without duplicating that coverage, and a single-entry map could
+		// incidentally pass even if multi-key wiring were broken.
+		price := &ast.Price{
+			Date:      mustDate(t, "2024-01-01"),
+			Commodity: "EUR",
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "1.10"),
+				Currency: "USD",
+			},
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"source":     {Kind: ast.MetaString, String: "ECB"},
+				"confidence": {Kind: ast.MetaNumber, Number: mustDecimal(t, "0.95")},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, price), `{
+			"errors": [],
+			"directives": [{
+				"type": "price",
+				"date": "2024-01-01",
+				"meta": {
+					"confidence": "0.95",
+					"source": "ECB"
+				},
+				"data": {
+					"currency": "EUR",
+					"amount": {"number": "1.10", "currency": "USD"}
+				}
+			}]
+		}`)
+	})
+}
