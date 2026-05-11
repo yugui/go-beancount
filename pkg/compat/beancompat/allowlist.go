@@ -9,7 +9,9 @@ package beancompat
 // even when go-beancount's serializer cannot yet produce a matching
 // Result for it.
 var enabledParseFixtures = map[string]string{
-	"open_single": "verified 2026-05-11",
+	"open_single":          "verified 2026-05-11",
+	"price":                "verified 2026-05-11",
+	"transaction_balanced": "verified 2026-05-11",
 }
 
 // enabledCheckFixtures gates which check-tier fixtures actually execute,

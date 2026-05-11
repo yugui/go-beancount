@@ -119,9 +119,27 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 	case *ast.Query:
 		return placeholderDirective("query", v.Date, v.Meta), nil
 	case *ast.Price:
-		return placeholderDirective("price", v.Date, v.Meta), nil
+		data, err := priceDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "price",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Transaction:
-		return placeholderDirective("transaction", v.Date, v.Meta), nil
+		data, err := transactionDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "transaction",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Custom:
 		return placeholderDirective("custom", v.Date, v.Meta), nil
 	case *ast.Option, *ast.Plugin, *ast.Include:
@@ -207,5 +225,165 @@ func bookingJSON(m ast.BookingMethod) *string {
 		return nil
 	}
 	s := m.String()
+	return &s
+}
+
+// amountData mirrors the {number, currency} shape beancompat assigns to
+// posting units, transaction amounts, and prices. Number is a string so
+// that the source-side precision (e.g. "50.00" with two trailing zeros)
+// survives JSON round-trip; routing it through apd.Decimal.String()
+// preserves the original Exponent, which matchDecimal compares.
+type amountData struct {
+	Number   string `json:"number"`
+	Currency string `json:"currency"`
+}
+
+// transactionDataPayload renders the data payload of a transaction
+// directive per the schema:
+//
+//	{
+//	  "flag": string,        // single-char flag, "*" or "!"
+//	  "payee": string|null,  // null when no payee
+//	  "narration": string,   // possibly empty
+//	  "tags": [string...],   // [] not null when none
+//	  "links": [string...],  // [] not null when none
+//	  "postings": [postingData...]
+//	}
+//
+// Payee uses *string so that "no payee specified" emits JSON null, which
+// is how beancompat distinguishes an absent payee from an empty-string
+// payee. The AST stores Payee as a bare string with empty == absent;
+// since beancount's syntax forbids a literal empty-string payee without
+// a quoted form, mapping ""→nil is correct for parser-emitted
+// transactions.
+//
+// Tags and Links are forced to non-nil empty slices so JSON renders "[]"
+// rather than "null"; the fixture always supplies a concrete array.
+func transactionDataPayload(t *ast.Transaction) (json.RawMessage, error) {
+	postings := make([]postingData, 0, len(t.Postings))
+	for i := range t.Postings {
+		postings = append(postings, postingPayload(&t.Postings[i]))
+	}
+	tags := t.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	links := t.Links
+	if links == nil {
+		links = []string{}
+	}
+	payload := struct {
+		Flag      string        `json:"flag"`
+		Payee     *string       `json:"payee"`
+		Narration string        `json:"narration"`
+		Tags      []string      `json:"tags"`
+		Links     []string      `json:"links"`
+		Postings  []postingData `json:"postings"`
+	}{
+		Flag:      flagString(t.Flag),
+		Payee:     stringOrNil(t.Payee),
+		Narration: t.Narration,
+		Tags:      tags,
+		Links:     links,
+		Postings:  postings,
+	}
+	return json.Marshal(payload)
+}
+
+// postingData mirrors beancompat's per-posting envelope. Cost and Price
+// are intentionally typed as json.RawMessage placeholders rendered as
+// JSON null: the parse tier does not synthesize cost or price values
+// (that work belongs to the check tier's cost-spec interpolation), but
+// the keys must still appear so containment over a fixture asserting
+// "cost": null / "price": null is satisfied. Flag uses *string so the
+// zero-rune ("no posting flag") emits JSON null rather than an empty
+// string.
+type postingData struct {
+	Account string          `json:"account"`
+	Units   *amountData     `json:"units"`
+	Cost    json.RawMessage `json:"cost"`
+	Price   json.RawMessage `json:"price"`
+	Flag    *string         `json:"flag"`
+	Meta    json.RawMessage `json:"meta"`
+}
+
+// postingPayload renders one Posting into the postingData envelope. The
+// Amount→units conversion uses apd.Decimal.String() so the source-side
+// precision survives — fmt.Sprintf("%s", ...) or .Text('f', N) would
+// silently normalize trailing zeros and break matchDecimal's precision
+// check.
+func postingPayload(p *ast.Posting) postingData {
+	var units *amountData
+	if p.Amount != nil {
+		units = &amountData{
+			Number:   p.Amount.Number.String(),
+			Currency: p.Amount.Currency,
+		}
+	}
+	return postingData{
+		Account: string(p.Account),
+		Units:   units,
+		Cost:    json.RawMessage("null"),
+		Price:   json.RawMessage("null"),
+		Flag:    flagPtr(p.Flag),
+		Meta:    serializeMeta(p.Meta),
+	}
+}
+
+// priceDataPayload renders the data payload of a price directive per the
+// schema:
+//
+//	{"currency": string, "amount": {"number": string, "currency": string}}
+//
+// The base commodity lives in Price.Commodity in the AST but is named
+// "currency" in the fixture schema; the quote currency lives inside the
+// embedded Amount. apd.Decimal.String() preserves the source-side
+// precision of the rate (e.g. "1.10" stays "1.10").
+func priceDataPayload(p *ast.Price) (json.RawMessage, error) {
+	payload := struct {
+		Currency string     `json:"currency"`
+		Amount   amountData `json:"amount"`
+	}{
+		Currency: p.Commodity,
+		Amount: amountData{
+			Number:   p.Amount.Number.String(),
+			Currency: p.Amount.Currency,
+		},
+	}
+	return json.Marshal(payload)
+}
+
+// flagString renders a transaction-level flag byte as a single-character
+// string. The AST guarantees Transaction.Flag is non-zero for
+// parser-emitted transactions (either '*' or '!'), so the zero-byte case
+// is treated as a programmer-detectable defect and falls through to an
+// empty string rather than a JSON null.
+func flagString(f byte) string {
+	if f == 0 {
+		return ""
+	}
+	return string([]byte{f})
+}
+
+// flagPtr renders a posting-level flag byte: zero → nil (JSON null), any
+// other byte → pointer to its single-character string. Posting flags are
+// genuinely optional in beancount's grammar, which is why this variant
+// returns a pointer rather than a bare string.
+func flagPtr(f byte) *string {
+	if f == 0 {
+		return nil
+	}
+	s := string([]byte{f})
+	return &s
+}
+
+// stringOrNil maps the AST's empty-string "absent" sentinel to a nil
+// *string so json.Marshal emits JSON null. Beancount's syntax cannot
+// produce a literal empty-string payee distinct from an absent one, so
+// the collapse is information-preserving for parser-emitted directives.
+func stringOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
 	return &s
 }
