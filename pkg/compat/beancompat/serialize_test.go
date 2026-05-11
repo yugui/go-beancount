@@ -1609,3 +1609,207 @@ func TestSerializePrice(t *testing.T) {
 		}`)
 	})
 }
+
+// txnWithCost constructs a minimal *ast.Transaction whose only purpose is to
+// carry one Posting with a CostSpec attached through SerializeParsed.
+// Date, Flag, Narration, and the posting's Account / Amount are fixed across
+// subtests so each subtest's wantJSON only has to vary the cost object —
+// keeping the per-subtest JSON literal focused on what is actually under test
+// (the cost_spec encoding) rather than padding every literal with directive
+// boilerplate.
+func txnWithCost(t *testing.T, cost *ast.CostSpec) *ast.Transaction {
+	t.Helper()
+	return &ast.Transaction{
+		Date:      mustDate(t, "2024-01-15"),
+		Flag:      '*',
+		Narration: "buy lot",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Investments",
+				Amount: &ast.Amount{
+					Number:   mustDecimal(t, "10"),
+					Currency: "HOOL",
+				},
+				Cost: cost,
+			},
+		},
+	}
+}
+
+// txnCostWantJSON formats the canonical Transaction envelope around a cost
+// JSON fragment. The data payload is fixed (matches txnWithCost) so each
+// subtest only needs to specify the expected cost body, which is the quantity
+// actually under test.
+func txnCostWantJSON(costJSON string) string {
+	return fmt.Sprintf(`{
+		"errors": [],
+		"directives": [{
+			"type": "transaction",
+			"date": "2024-01-15",
+			"meta": {},
+			"data": {
+				"flag": "*",
+				"payee": null,
+				"narration": "buy lot",
+				"tags": [],
+				"links": [],
+				"postings": [{
+					"account": "Assets:Investments",
+					"units": {"number": "10", "currency": "HOOL"},
+					"cost": %s,
+					"price": null,
+					"flag": null,
+					"meta": {}
+				}]
+			}
+		}]
+	}`, costJSON)
+}
+
+// TestSerializeTransaction exercises transactionDataPayload across the
+// dimensions a transaction can vary along. This step (Step 13 of the
+// Phase 1.5 plan) covers the cost_spec discriminator on Posting.Cost and the
+// nil-Cost baseline; later steps add price-annotation and other
+// transaction-level subtests (payee, tags, links, multi-posting, elided
+// amounts).
+//
+// The cost_spec subtests pin down the load-bearing schema rule that optional
+// sub-fields are OMITTED (not emitted as JSON null) when the AST has no
+// value, mirroring upstream beancount's _parse_helper.serialize_cost
+// insertion-conditional pattern. Containment matching tolerates extras on
+// the actual side, but emitting an explicit null where upstream omits the
+// key would surface as a type mismatch in any cross-implementation
+// diagnostic dump and make parity reads noisier.
+func TestSerializeTransaction(t *testing.T) {
+	t.Run("cost_spec_per_unit", func(t *testing.T) {
+		// {X CUR}: PerUnit-only cost. Asserts that number_per is emitted,
+		// number_total is OMITTED (not null), and currency is sourced from
+		// PerUnit.Currency.
+		txn := txnWithCost(t, &ast.CostSpec{
+			PerUnit: &ast.Amount{
+				Number:   mustDecimal(t, "150.00"),
+				Currency: "USD",
+			},
+		})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnCostWantJSON(`{"kind": "cost_spec", "currency": "USD", "number_per": "150.00"}`),
+		)
+	})
+
+	t.Run("cost_spec_total", func(t *testing.T) {
+		// {{X CUR}}: Total-only cost. Asserts that number_total is emitted,
+		// number_per is OMITTED, and currency falls back to Total.Currency.
+		// Distinct from cost_spec_per_unit: the Total branch of the
+		// PerUnit-or-Total currency selection must be exercised, and a
+		// regression that always read PerUnit.Currency would NPE here.
+		txn := txnWithCost(t, &ast.CostSpec{
+			Total: &ast.Amount{
+				Number:   mustDecimal(t, "1500.00"),
+				Currency: "USD",
+			},
+		})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnCostWantJSON(`{"kind": "cost_spec", "currency": "USD", "number_total": "1500.00"}`),
+		)
+	})
+
+	t.Run("cost_spec_combined", func(t *testing.T) {
+		// {X # Y CUR}: combined per-unit + total form. Both number_per and
+		// number_total must be emitted. Currency must come from PerUnit
+		// (not Total) per the documented sourcing precedence in
+		// costSpecPayload's doc comment. We use deliberately mismatched
+		// currencies — which a real parser would have rejected — so the
+		// JSON output unambiguously pins down which AST field the
+		// serializer reads from. A regression that swapped to Total's
+		// currency would diff on this key.
+		txn := txnWithCost(t, &ast.CostSpec{
+			PerUnit: &ast.Amount{
+				Number:   mustDecimal(t, "150.00"),
+				Currency: "USD",
+			},
+			Total: &ast.Amount{
+				Number:   mustDecimal(t, "9.95"),
+				Currency: "EUR",
+			},
+		})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnCostWantJSON(`{"kind": "cost_spec", "currency": "USD", "number_per": "150.00", "number_total": "9.95"}`),
+		)
+	})
+
+	t.Run("cost_spec_empty", func(t *testing.T) {
+		// {}: all sub-fields absent. Output must be exactly
+		// {"kind": "cost_spec"} — no currency, number_per, number_total,
+		// date, or label keys. Reachable from valid input via the bare
+		// {} cost-spec syntax.
+		txn := txnWithCost(t, &ast.CostSpec{})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnCostWantJSON(`{"kind": "cost_spec"}`),
+		)
+	})
+
+	t.Run("cost_spec_with_date_and_label", func(t *testing.T) {
+		// {X CUR, YYYY-MM-DD, "label"}: pins down the date and label
+		// emission paths. Date is formatted as ISO YYYY-MM-DD (distinct
+		// from the directive Date so a regression that aliased the two
+		// would surface), and the label passes through verbatim.
+		acquired := mustDate(t, "2023-06-15")
+		txn := txnWithCost(t, &ast.CostSpec{
+			PerUnit: &ast.Amount{
+				Number:   mustDecimal(t, "150.00"),
+				Currency: "USD",
+			},
+			Date:  &acquired,
+			Label: "tax-lot-A",
+		})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnCostWantJSON(`{"kind": "cost_spec", "currency": "USD", "number_per": "150.00", "date": "2023-06-15", "label": "tax-lot-A"}`),
+		)
+	})
+
+	t.Run("cost_spec_empty_label_omitted", func(t *testing.T) {
+		// Label="" must NOT emit a "label" key. The empty-string sentinel
+		// is the AST's "absent label" representation, and the
+		// insertion-conditional schema rule maps it to key omission rather
+		// than an empty-string value. Containment tolerates a real absent
+		// key on the EXPECTED side, but emitting "label": "" on the
+		// ACTUAL side would surface as a value mismatch against any
+		// fixture that intentionally omits the label field.
+		txn := txnWithCost(t, &ast.CostSpec{
+			PerUnit: &ast.Amount{
+				Number:   mustDecimal(t, "150.00"),
+				Currency: "USD",
+			},
+			Label: "",
+		})
+		assertSerializeMatches(
+			t,
+			ledgerOf(t, txn),
+			txnCostWantJSON(`{"kind": "cost_spec", "currency": "USD", "number_per": "150.00"}`),
+		)
+	})
+
+	t.Run("posting_no_cost", func(t *testing.T) {
+		// p.Cost == nil baseline: posting "cost" key MUST be JSON null
+		// (not omitted, not a "kind: cost_spec" envelope with all sub-
+		// fields absent). The schema requires the key to always be present
+		// at the posting level, so the discriminated cost_spec only
+		// appears when the AST actually carries a CostSpec. This subtest
+		// guards the conditional in postingPayload against a regression
+		// that always called costSpecPayload on a nil Cost (which would
+		// NPE) or that emitted an empty cost_spec envelope where the
+		// fixture asserts null.
+		txn := txnWithCost(t, nil)
+		assertSerializeMatches(t, ledgerOf(t, txn), txnCostWantJSON(`null`))
+	})
+}

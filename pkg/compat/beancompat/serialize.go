@@ -630,7 +630,11 @@ type amountData struct {
 func transactionDataPayload(t *ast.Transaction) (json.RawMessage, error) {
 	postings := make([]postingData, 0, len(t.Postings))
 	for i := range t.Postings {
-		postings = append(postings, postingPayload(&t.Postings[i]))
+		p, err := postingPayload(&t.Postings[i])
+		if err != nil {
+			return nil, err
+		}
+		postings = append(postings, p)
 	}
 	tags := t.Tags
 	if tags == nil {
@@ -680,7 +684,15 @@ type postingData struct {
 // precision survives — fmt.Sprintf("%s", ...) or .Text('f', N) would
 // silently normalize trailing zeros and break matchDecimal's precision
 // check.
-func postingPayload(p *ast.Posting) postingData {
+//
+// Cost is rendered as JSON null when the AST has no CostSpec attached
+// (parser-emitted postings without a {...}/{{...}} clause); a non-nil
+// CostSpec is delegated to costSpecPayload, which emits the discriminated
+// "kind": "cost_spec" object the parse-tier schema requires. The check
+// tier (Plan C) will instead emit "kind": "cost" with booked values; the
+// discriminator is what keeps the two tiers shape-distinct on a single
+// JSON channel.
+func postingPayload(p *ast.Posting) (postingData, error) {
 	var units *amountData
 	if p.Amount != nil {
 		units = &amountData{
@@ -688,17 +700,96 @@ func postingPayload(p *ast.Posting) postingData {
 			Currency: p.Amount.Currency,
 		}
 	}
+	cost := json.RawMessage("null")
+	if p.Cost != nil {
+		c, err := costSpecPayload(p.Cost)
+		if err != nil {
+			return postingData{}, err
+		}
+		cost = c
+	}
 	return postingData{
 		Account: string(p.Account),
 		Units:   units,
-		// TODO(beancompat): Plan D — __missing__ sentinel emission unsupported.
-		// AST nil → JSON null at parse tier; the matcher tolerates this via
-		// containment.
-		Cost:  json.RawMessage("null"),
-		Price: json.RawMessage("null"),
-		Flag:  flagPtr(p.Flag),
-		Meta:  serializeMeta(p.Meta),
+		Cost:    cost,
+		Price:   json.RawMessage("null"),
+		Flag:    flagPtr(p.Flag),
+		Meta:    serializeMeta(p.Meta),
+	}, nil
+}
+
+// costSpecPayload renders a CostSpec into the parse-tier
+// "kind": "cost_spec" envelope per upstream beancount's
+// _parse_helper.serialize_cost (lines 100-138):
+//
+//	{
+//	  "kind":         "cost_spec",
+//	  "number_per":   "decimal_string",  // present iff PerUnit != nil
+//	  "number_total": "decimal_string",  // present iff Total != nil
+//	  "currency":     "USD",              // present iff PerUnit or Total carries one
+//	  "date":         "YYYY-MM-DD",       // present iff Date != nil
+//	  "label":        "string"            // present iff Label != ""
+//	}
+//
+// Optional sub-fields are OMITTED (not emitted as JSON null) when the AST
+// has no value, mirroring upstream's "if x is not None: result[k] = x"
+// insertion-conditional pattern. Containment matching tolerates extras on
+// the actual side, but emitting an explicit null where upstream omits the
+// key would surface as a type mismatch in the diagnostic dump and make
+// cross-implementation parity reads noisier.
+//
+// The "merge" key Python emits for explicit user-merge syntax is never
+// produced here: the AST has no Merge field (the syntax is unsupported at
+// parse time today), and emitting "merge": false when upstream would have
+// omitted the key is again a divergence we choose not to introduce.
+//
+// Currency is sourced from PerUnit.Currency when present, falling back to
+// Total.Currency. The combined "{X # Y CUR}" form has the parser enforce
+// matched currencies on PerUnit and Total, so the choice between the two
+// sources is information-equivalent in well-formed input; we do not
+// re-validate here.
+//
+// Output keys are emitted in alphabetical order (via marshalSortedObject)
+// for byte-stable diagnostics across Go's randomized map iteration; the
+// semantic comparison helper in tests is order-insensitive but the stable
+// byte form keeps printed JSON consistent across runs.
+//
+// TODO(beancompat): Plan D — __missing__ sentinel emission unsupported.
+// AST records "absent sub-field" as a nil pointer / empty string; the
+// JSON form omits the key. Containment tolerates a real "__missing__"
+// sentinel on the EXPECTED side, but we never produce one on the ACTUAL
+// side. A future Plan D would surface, e.g., user-written {USD} (only a
+// currency) as an explicit {"__missing__": true} on number_per rather
+// than relying on key omission, distinguishing "user said the field is
+// missing" from "user wrote no cost spec at all".
+func costSpecPayload(c *ast.CostSpec) (json.RawMessage, error) {
+	keys := make([]string, 0, 6)
+	values := make(map[string]any, 6)
+	add := func(k string, v any) {
+		keys = append(keys, k)
+		values[k] = v
 	}
+	add("kind", "cost_spec")
+	if c.PerUnit != nil {
+		add("number_per", c.PerUnit.Number.String())
+	}
+	if c.Total != nil {
+		add("number_total", c.Total.Number.String())
+	}
+	switch {
+	case c.PerUnit != nil:
+		add("currency", c.PerUnit.Currency)
+	case c.Total != nil:
+		add("currency", c.Total.Currency)
+	}
+	if c.Date != nil {
+		add("date", c.Date.Format(isoDate))
+	}
+	if c.Label != "" {
+		add("label", c.Label)
+	}
+	sort.Strings(keys)
+	return marshalSortedObject(keys, values)
 }
 
 // priceDataPayload renders the data payload of a price directive per the
