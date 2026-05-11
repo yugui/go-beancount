@@ -2382,3 +2382,199 @@ func txnPriceWantJSON(priceJSON string) string {
 		}]
 	}`, priceJSON)
 }
+
+// TestSerializeLedger exercises the Ledger-to-Result envelope behavior
+// in serialize.go that is not specific to any one directive type:
+// diagnostic-severity filtering into Errors, header-directive (option,
+// plugin, include) skipping, canonical directive ordering as exposed by
+// Ledger.All(), the empty-ledger shape, and the explicit nil-ledger guard
+// in SerializeParsed. Per-directive shape concerns are covered by the
+// TestSerialize<Type> functions; this test pins down the surrounding
+// envelope so a regression in the framing logic surfaces here rather than
+// being detected only indirectly through fixture failures.
+func TestSerializeLedger(t *testing.T) {
+	t.Run("empty_ledger", func(t *testing.T) {
+		// Empty ledger must produce the canonical envelope with both
+		// arrays present and empty (not null), so containment matchers
+		// that distinguish "[]" from "null" do not see a spurious type
+		// mismatch. TestSerializeInfra_EmptyLedger covers the same case
+		// from the perspective of validating the test helpers themselves;
+		// this subtest keeps the envelope axis self-contained inside
+		// TestSerializeLedger so future changes to the empty-ledger
+		// contract are reviewed alongside the rest of the envelope rules.
+		assertSerializeMatches(t, ledgerOf(t), `{"errors": [], "directives": []}`)
+	})
+
+	t.Run("error_severity_in_errors", func(t *testing.T) {
+		// A Diagnostic with Severity=Error must appear in Result.Errors
+		// verbatim. ledgerOf does not surface diagnostics, so the
+		// Diagnostics field is set inline; the directives slot stays empty
+		// to keep this subtest focused on the errors axis only.
+		ledger := &ast.Ledger{
+			Diagnostics: []ast.Diagnostic{
+				{Message: "balance assertion failed", Severity: ast.Error},
+			},
+		}
+		assertSerializeMatches(t, ledger, `{
+			"errors": ["balance assertion failed"],
+			"directives": []
+		}`)
+	})
+
+	t.Run("warning_severity_excluded", func(t *testing.T) {
+		// Diagnostics with Severity=Warning are intentionally excluded
+		// from Result.Errors; beancompat reserves "errors" for fatal
+		// reports across implementations, and surfacing warnings would
+		// manufacture spurious divergences. The expected envelope is
+		// indistinguishable from a ledger with no diagnostics at all.
+		ledger := &ast.Ledger{
+			Diagnostics: []ast.Diagnostic{
+				{Message: "unused option foo", Severity: ast.Warning},
+			},
+		}
+		assertSerializeMatches(t, ledger, `{
+			"errors": [],
+			"directives": []
+		}`)
+	})
+
+	t.Run("mixed_severities", func(t *testing.T) {
+		// With one Error and one Warning, Result.Errors must contain
+		// only the Error message. A regression that emitted both would
+		// surface here as an extra entry; one that emitted neither would
+		// surface as a missing entry. Two distinct Diagnostics let the
+		// filter exercise its predicate on every input, not just the
+		// single-element case.
+		ledger := &ast.Ledger{
+			Diagnostics: []ast.Diagnostic{
+				{Message: "fatal: bad reference", Severity: ast.Error},
+				{Message: "advisory: deprecated keyword", Severity: ast.Warning},
+			},
+		}
+		assertSerializeMatches(t, ledger, `{
+			"errors": ["fatal: bad reference"],
+			"directives": []
+		}`)
+	})
+
+	t.Run("header_directives_filtered", func(t *testing.T) {
+		// All three header directive types (option, plugin, include) carry
+		// no date and must NOT appear in Result.Directives; the
+		// dir.Type == "" guard in serialize() drops them. Including all
+		// three plus an Open guards against a future regression that
+		// special-cased the filter on directive type rather than relying
+		// on the kind-agnostic empty-Type sentinel. The Open is included
+		// to confirm the filter does not also drop dated body directives
+		// — a regression that bailed out of the loop on the first header
+		// would also drop the Open.
+		open := &ast.Open{
+			Date:       mustDate(t, "2024-01-01"),
+			Account:    "Assets:Cash",
+			Currencies: []string{"USD"},
+		}
+		opt := &ast.Option{Key: "title", Value: "My Ledger"}
+		plugin := &ast.Plugin{Name: "beancount.plugins.auto"}
+		include := &ast.Include{Path: "./other.beancount"}
+		assertSerializeMatches(t, ledgerOf(t, open, opt, plugin, include), `{
+			"errors": [],
+			"directives": [{
+				"type": "open",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Cash",
+					"currencies": ["USD"],
+					"booking": null
+				}
+			}]
+		}`)
+	})
+
+	t.Run("directive_ordering_preserved", func(t *testing.T) {
+		// Distinct dates choose a deterministic canonical order regardless
+		// of DirectiveKind tiebreakers: Open(2024-01-01) <
+		// Transaction(2024-01-02) < Close(2024-01-03). Insertion order is
+		// deliberately scrambled (Close, Open, Transaction) to prove the
+		// serializer iterates Ledger.All() — which respects canonical
+		// ordering — rather than insertion order. A regression that
+		// accidentally iterated a separately-recorded source order would
+		// surface here as an out-of-date sequence.
+		open := &ast.Open{
+			Date:       mustDate(t, "2024-01-01"),
+			Account:    "Assets:Cash",
+			Currencies: []string{"USD"},
+		}
+		txn := &ast.Transaction{
+			Date:      mustDate(t, "2024-01-02"),
+			Flag:      '*',
+			Narration: "midday",
+			Postings: []ast.Posting{
+				{
+					Account: "Assets:Cash",
+					Amount: &ast.Amount{
+						Number:   mustDecimal(t, "10.00"),
+						Currency: "USD",
+					},
+				},
+			},
+		}
+		closeDir := &ast.Close{
+			Date:    mustDate(t, "2024-01-03"),
+			Account: "Assets:Cash",
+		}
+		assertSerializeMatches(t, ledgerOf(t, closeDir, open, txn), `{
+			"errors": [],
+			"directives": [
+				{
+					"type": "open",
+					"date": "2024-01-01",
+					"meta": {},
+					"data": {
+						"account": "Assets:Cash",
+						"currencies": ["USD"],
+						"booking": null
+					}
+				},
+				{
+					"type": "transaction",
+					"date": "2024-01-02",
+					"meta": {},
+					"data": {
+						"flag": "*",
+						"payee": null,
+						"narration": "midday",
+						"tags": [],
+						"links": [],
+						"postings": [{
+							"account": "Assets:Cash",
+							"units": {"number": "10.00", "currency": "USD"},
+							"cost": null,
+							"price": null,
+							"flag": null,
+							"meta": {}
+						}]
+					}
+				},
+				{
+					"type": "close",
+					"date": "2024-01-03",
+					"meta": {},
+					"data": {"account": "Assets:Cash"}
+				}
+			]
+		}`)
+	})
+
+	t.Run("nil_ledger_returns_error", func(t *testing.T) {
+		// SerializeParsed has an explicit nil-guard so callers that hand
+		// it a zero *ast.Ledger get an actionable error instead of a nil
+		// dereference inside the serializer. The exact error message is
+		// an implementation detail; this test only pins the contract that
+		// SOME error is returned. assertSerializeMatches would itself
+		// fatal on the SerializeParsed call here, so this subtest invokes
+		// SerializeParsed directly.
+		if _, err := SerializeParsed(nil); err == nil {
+			t.Errorf("SerializeParsed(nil) error = nil, want non-nil")
+		}
+	})
+}
