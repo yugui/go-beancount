@@ -50,10 +50,9 @@ func SerializeChecked(ledger *ast.Ledger) (Result, error) {
 }
 
 // serialize lowers a parsed ledger into the beancompat Result shape.
-// Directive types other than open emit placeholder Data (JSON null) so
-// future fixtures surface clear MissingKey diagnostics when promoted to
-// the allowlist, identifying exactly which directive case still needs a
-// real payload.
+// All body-directive types have real payload serializers; header
+// directives (option, plugin, include) are dropped here because they do
+// not appear in beancompat's directive stream.
 func serialize(ledger *ast.Ledger) (Result, error) {
 	out := Result{
 		// Initialize Errors as a non-nil empty slice so the JSON form is
@@ -90,12 +89,10 @@ func serialize(ledger *ast.Ledger) (Result, error) {
 }
 
 // serializeDirective dispatches on the directive's concrete Go type and
-// returns the beancompat envelope (type/date/meta/data). Directive types
-// whose data payload is not yet implemented produce an envelope with
-// data set to JSON null; containment matching against a fixture that
-// requires payload keys will then emit a precise MissingKey diagnostic,
-// which is the correct signal that the corresponding case needs to be
-// filled in.
+// returns the beancompat envelope (type/date/meta/data). The switch is
+// exhaustive over body-directive types; header directives (option,
+// plugin, include) return a zero-value envelope which the caller skips
+// via the dir.Type == "" guard.
 func serializeDirective(d ast.Directive) (Directive, error) {
 	switch v := d.(type) {
 	case *ast.Open:
@@ -220,27 +217,22 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Custom:
-		return placeholderDirective("custom", v.Date, v.Meta), nil
+		data, err := customDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "custom",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Option, *ast.Plugin, *ast.Include:
 		// Header directives are intentionally dropped; see the caller's
 		// dir.Type == "" guard.
 		return Directive{}, nil
 	default:
 		return Directive{}, fmt.Errorf("beancompat: unsupported directive type %T", d)
-	}
-}
-
-// placeholderDirective builds an envelope for a directive whose data
-// payload is not yet implemented. Data is JSON null, so a fixture that
-// requires payload keys for this type will produce a clear MissingKey
-// diagnostic identifying exactly which directive case still needs a
-// real payload.
-func placeholderDirective(typ string, date time.Time, meta ast.Metadata) Directive {
-	return Directive{
-		Type: typ,
-		Date: formatDate(date),
-		Meta: serializeMeta(meta),
-		Data: json.RawMessage("null"),
 	}
 }
 
@@ -730,6 +722,83 @@ func priceDataPayload(p *ast.Price) (json.RawMessage, error) {
 		},
 	}
 	return json.Marshal(payload)
+}
+
+// customDataPayload renders the data payload of a custom directive per
+// the schema (upstream _parse_helper.py:200-208):
+//
+//	{"type": string, "values": [string...]}
+//
+// Two load-bearing AST → JSON design points govern this mapping; both
+// follow upstream beancount's serialized form, and getting either wrong
+// would silently break containment against every custom fixture:
+//
+//  1. AST [ast.Custom.TypeName] → JSON "type" — upstream beancount names
+//     the user-defined directive category "type" in its serialized form
+//     (e.g. "budget"). The AST field was named TypeName because "Type"
+//     would collide with Go's reserved-word-adjacent conventions; the
+//     JSON key spells it as upstream does.
+//
+//  2. AST [ast.Custom.Values] ([]MetaValue) → JSON []string. Each
+//     MetaValue is **stringified** per Python's str(v.value) semantics
+//     so cross-implementation parity holds:
+//
+//     - MetaString, MetaAccount, MetaCurrency, MetaTag, MetaLink:
+//     the String field passes through verbatim.
+//     - MetaDate: ISO YYYY-MM-DD form.
+//     - MetaNumber: apd.Decimal.String() (preserves source precision).
+//     - MetaBool: "True" / "False" (CAPITALIZED — matches Python's
+//     str(True)/str(False) output, NOT Go's lowercase "true"/"false").
+//     This is a parity contract, not a stylistic choice; lowercasing
+//     it would diverge from every Python-derived fixture.
+//     - MetaAmount: "{number} {currency}" (e.g. "100.00 USD") —
+//     matches Python beancount Amount.__str__.
+//
+// If Values is nil or empty, the JSON output is "values": [] (a concrete
+// empty array, never null and never omitted), matching Python's [] default.
+func customDataPayload(c *ast.Custom) (json.RawMessage, error) {
+	values := make([]string, 0, len(c.Values))
+	for _, v := range c.Values {
+		s, err := stringifyMetaValue(v)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, s)
+	}
+	payload := struct {
+		Type   string   `json:"type"`
+		Values []string `json:"values"`
+	}{
+		Type:   c.TypeName,
+		Values: values,
+	}
+	return json.Marshal(payload)
+}
+
+// stringifyMetaValue maps one MetaValue to its Python-str() canonical
+// string form per the table in customDataPayload's doc comment. The bool
+// case capitalizes "True"/"False" deliberately to match Python's
+// str(bool) output; emitting Go's default "true"/"false" would diverge
+// from upstream and break every custom fixture that asserts a bool value.
+func stringifyMetaValue(v ast.MetaValue) (string, error) {
+	switch v.Kind {
+	case ast.MetaString, ast.MetaAccount, ast.MetaCurrency, ast.MetaTag, ast.MetaLink:
+		return v.String, nil
+	case ast.MetaDate:
+		return v.Date.Format(isoDate), nil
+	case ast.MetaNumber:
+		return v.Number.String(), nil
+	case ast.MetaBool:
+		// Capitalized to match Python str(True)/str(False) — see doc.
+		if v.Bool {
+			return "True", nil
+		}
+		return "False", nil
+	case ast.MetaAmount:
+		return fmt.Sprintf("%s %s", v.Amount.Number.String(), v.Amount.Currency), nil
+	default:
+		return "", fmt.Errorf("beancompat: stringifyMetaValue: unsupported MetaValueKind %v", v.Kind)
+	}
 }
 
 // flagString renders a transaction-level flag byte as a single-character

@@ -1306,3 +1306,187 @@ func TestSerializeQuery(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializeCustom covers customDataPayload across the dimensions a
+// custom directive can vary along: the {type, values} data payload, the
+// per-MetaValueKind stringification matrix, the empty-Values default, and
+// Meta integration. The schema assigns custom exactly two data fields per
+// upstream _parse_helper.py:200-208; the load-bearing complexity lives in
+// the values list, which beancount Python serializes via str(v.value) for
+// each MetaValue and which Go must replicate verbatim for cross-
+// implementation parity.
+//
+// The bool_capitalization subtest is the load-bearing assertion that
+// proves the Python-parity rule: Go's default str(bool) renders "true"/
+// "false" but Python renders "True"/"False". Beancompat fixtures originate
+// from Python beancount and assert the capitalized form; lowercasing
+// would break containment against every fixture that carries a custom
+// bool value. This subtest is the only place that contract is enforced
+// at the bridge layer before any fixture exercises it.
+func TestSerializeCustom(t *testing.T) {
+	t.Run("bare_empty_values", func(t *testing.T) {
+		// Nil Values must serialize as "values": [] (a concrete empty
+		// array, never null and never omitted) per Python's [] default.
+		// The schema requires the key to always be present, and a
+		// regression that emitted null would surface as a type mismatch
+		// in the diagnostic JSON dump even though containment itself
+		// might tolerate it.
+		custom := &ast.Custom{
+			Date:     mustDate(t, "2024-01-01"),
+			TypeName: "budget",
+		}
+		assertSerializeMatches(t, ledgerOf(t, custom), `{
+			"errors": [],
+			"directives": [{
+				"type": "custom",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"type": "budget",
+					"values": []
+				}
+			}]
+		}`)
+	})
+
+	t.Run("mixed_value_kinds", func(t *testing.T) {
+		// Four MetaValue kinds in a single Values list assert the
+		// stringification matrix routes each kind through the correct
+		// arm of stringifyMetaValue. The order of the values is the
+		// AST source order — beancount preserves Custom value order
+		// (the Python list is positional) and so must the Go side.
+		custom := &ast.Custom{
+			Date:     mustDate(t, "2024-01-01"),
+			TypeName: "budget",
+			Values: []ast.MetaValue{
+				{Kind: ast.MetaString, String: "Income"},
+				{Kind: ast.MetaNumber, Number: mustDecimal(t, "1000.00")},
+				{Kind: ast.MetaCurrency, String: "USD"},
+				{Kind: ast.MetaBool, Bool: true},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, custom), `{
+			"errors": [],
+			"directives": [{
+				"type": "custom",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"type": "budget",
+					"values": ["Income", "1000.00", "USD", "True"]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("bool_capitalization", func(t *testing.T) {
+		// Pin the Python-parity rule: str(True)/str(False) emit
+		// "True"/"False" (capitalized), not Go's default "true"/"false".
+		// Both polarities in one list rule out a regression that
+		// happened to capitalize only one branch of the if.
+		custom := &ast.Custom{
+			Date:     mustDate(t, "2024-01-01"),
+			TypeName: "flags",
+			Values: []ast.MetaValue{
+				{Kind: ast.MetaBool, Bool: true},
+				{Kind: ast.MetaBool, Bool: false},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, custom), `{
+			"errors": [],
+			"directives": [{
+				"type": "custom",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"type": "flags",
+					"values": ["True", "False"]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("date_value", func(t *testing.T) {
+		// MetaDate uses the v.Date.Format(isoDate) code path, which is
+		// distinct from the v.String passthrough used by other kinds.
+		// A regression in this arm would not be caught by any other
+		// Custom subtest because no other subtest constructs a MetaDate.
+		custom := &ast.Custom{
+			Date:     mustDate(t, "2024-01-01"),
+			TypeName: "anniversary",
+			Values: []ast.MetaValue{
+				{Kind: ast.MetaDate, Date: mustDate(t, "2024-06-15")},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, custom), `{
+			"errors": [],
+			"directives": [{
+				"type": "custom",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"type": "anniversary",
+					"values": ["2024-06-15"]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("amount_value", func(t *testing.T) {
+		// MetaAmount stringifies as "{number} {currency}" matching
+		// Python beancount Amount.__str__. The number routes through
+		// apd.Decimal.String() so source-side precision (e.g. "50.00"
+		// trailing zeros) survives.
+		custom := &ast.Custom{
+			Date:     mustDate(t, "2024-01-01"),
+			TypeName: "limit",
+			Values: []ast.MetaValue{
+				{Kind: ast.MetaAmount, Amount: ast.Amount{
+					Number:   mustDecimal(t, "50.00"),
+					Currency: "EUR",
+				}},
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, custom), `{
+			"errors": [],
+			"directives": [{
+				"type": "custom",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"type": "limit",
+					"values": ["50.00 EUR"]
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// One MetaValue confirms the custom envelope routes Meta through
+		// serializeMeta. TestSerializeMeta exhaustively covers per-Kind
+		// behavior; a single string value here is sufficient to assert
+		// the wiring without duplicating that coverage.
+		custom := &ast.Custom{
+			Date:     mustDate(t, "2024-01-01"),
+			TypeName: "budget",
+			Values: []ast.MetaValue{
+				{Kind: ast.MetaString, String: "Income"},
+			},
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"author": {Kind: ast.MetaString, String: "alice"},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, custom), `{
+			"errors": [],
+			"directives": [{
+				"type": "custom",
+				"date": "2024-01-01",
+				"meta": {"author": "alice"},
+				"data": {
+					"type": "budget",
+					"values": ["Income"]
+				}
+			}]
+		}`)
+	})
+}
