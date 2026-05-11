@@ -1,0 +1,61 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+# gazelle:go_test file
+
+go_library(
+    name = "beancompat",
+    srcs = [
+        "allowlist.go",
+        "fixture.go",
+        "match.go",
+        "runner.go",
+        "serialize.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/compat/beancompat",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+        "@rules_go//go/runfiles",
+    ],
+)
+
+go_test(
+    name = "check_fixtures_test",
+    size = "medium",  # keep
+    srcs = ["check_fixtures_test.go"],
+    data = ["@beancompat//:check_fixtures"],  # keep
+    embed = [":beancompat"],
+    gotags = ["beancompat_fixtures"],  # keep
+    deps = ["//pkg/loader"],
+)
+
+go_test(
+    name = "match_test",
+    size = "small",  # keep
+    srcs = ["match_test.go"],
+    embed = [":beancompat"],
+)
+
+go_test(
+    name = "parse_fixtures_test",
+    size = "medium",  # keep
+    srcs = ["parse_fixtures_test.go"],
+    data = ["@beancompat//:parse_fixtures"],  # keep
+    embed = [":beancompat"],
+    gotags = ["beancompat_fixtures"],  # keep
+    deps = ["//pkg/ast"],
+)
+
+go_test(
+    name = "serialize_test",
+    size = "small",  # keep
+    srcs = ["serialize_test.go"],
+    embed = [":beancompat"],
+    deps = [
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)
