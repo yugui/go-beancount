@@ -18,9 +18,14 @@ The `orchestration` skill (or any caller) invokes you in one of two scopes. The 
   Step <N>: <title>
   Mode: detailed-design
   ```
-  Produce only the detailed design for that step (API shape, modules touched, key abstractions, error semantics, alternatives, recommendation). Output two parts in this order:
+  Produce only the detailed design for that step. Output two parts in this order:
   1. **Summary** — one paragraph the orchestrator keeps in its working context.
-  2. **Detailed Design** — a verbatim markdown block the orchestrator will append to the plan file as the step's `### Detailed Design` subsection. Inside this block, include: API shape, modules / files touched, key abstractions, error semantics (where relevant), alternatives discussed (with tradeoffs), recommendation + rationale.
+  2. **Detailed Design** — a verbatim markdown block the orchestrator will append to the plan file as the step's `### Detailed Design` subsection. **Structure it in two explicit layers**:
+     - **`#### Contract`** — anything the implementer must hit exactly: public API shape (signatures, exported types), error semantics, behaviors observable to other steps or external callers, cross-step coupling points. Keep this layer minimal — every line here removes implementer freedom, so include only what genuinely needs to be locked at design time.
+     - **`#### Suggested Internals`** — module-internal abstractions, private decomposition, helper structures, in-package data flow. Frame these as **suggestions with at least one alternative** where the choice is non-trivial. State explicitly that the implementer may adopt, modify, or replace them based on what they discover while coding; the design phase does not have enough information to lock internals.
+     - Below the two layers, include: **Alternatives discussed** (cross-cutting decisions affecting the Contract), **Recommendation + rationale**.
+
+  The implementer (generator) is bound to the Contract layer and free within the Suggested Internals layer. Designing this distinction well is your central job at this scope — over-locking internals demonstrably degrades implementation quality, so err toward leaving internals in the suggestion layer unless they leak through the Contract.
 
   When invoked at this scope, ignore the **Required output format** below — it applies only to full-plan scope.
 
