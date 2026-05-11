@@ -121,7 +121,16 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Commodity:
-		return placeholderDirective("commodity", v.Date, v.Meta), nil
+		data, err := commodityDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "commodity",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Balance:
 		return placeholderDirective("balance", v.Date, v.Meta), nil
 	case *ast.Pad:
@@ -337,6 +346,19 @@ func closeDataPayload(c *ast.Close) (json.RawMessage, error) {
 		Account string `json:"account"`
 	}{
 		Account: string(c.Account),
+	}
+	return json.Marshal(payload)
+}
+
+// commodityDataPayload renders the data payload of a commodity directive
+// per the schema: {"currency": string}. Per upstream beancount's
+// _parse_helper.py (lines 183-184), commodity carries no fields beyond
+// the currency it declares.
+func commodityDataPayload(c *ast.Commodity) (json.RawMessage, error) {
+	payload := struct {
+		Currency string `json:"currency"`
+	}{
+		Currency: c.Currency,
 	}
 	return json.Marshal(payload)
 }

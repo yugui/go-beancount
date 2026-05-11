@@ -745,3 +745,46 @@ func TestSerializeClose(t *testing.T) {
 		}`)
 	})
 }
+
+// TestSerializeCommodity covers the two dimensions commodity varies along:
+// the single-field {currency} data payload and Meta integration through the
+// commodity envelope. The "name" meta key in with_metadata mirrors a
+// representative real-world shape rather than a synthetic one.
+func TestSerializeCommodity(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		// No metadata; verifies the canonical commodity envelope and the
+		// {currency} data shape from upstream _parse_helper.py:183-184.
+		commodity := &ast.Commodity{
+			Date:     mustDate(t, "2024-01-01"),
+			Currency: "USD",
+		}
+		assertSerializeMatches(t, ledgerOf(t, commodity), `{
+			"errors": [],
+			"directives": [{
+				"type": "commodity",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {"currency": "USD"}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		commodity := &ast.Commodity{
+			Date:     mustDate(t, "2024-01-01"),
+			Currency: "USD",
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"name": {Kind: ast.MetaString, String: "US Dollar"},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, commodity), `{
+			"errors": [],
+			"directives": [{
+				"type": "commodity",
+				"date": "2024-01-01",
+				"meta": {"name": "US Dollar"},
+				"data": {"currency": "USD"}
+			}]
+		}`)
+	})
+}
