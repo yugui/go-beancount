@@ -1,5 +1,7 @@
 load("@rules_go//go:def.bzl", "go_library", "go_test")
 
+# gazelle:go_test file
+
 go_library(
     name = "beancompat",
     srcs = [
@@ -20,22 +22,39 @@ go_library(
 )
 
 go_test(
-    name = "beancompat_test",
-    srcs = [
-        "check_fixtures_test.go",
-        "match_test.go",
-        "parse_fixtures_test.go",
-        "serialize_test.go",
-    ],
-    data = [
-        "@beancompat//:check_fixtures",
-        "@beancompat//:parse_fixtures",
-    ],
+    name = "check_fixtures_test",
+    size = "medium",  # keep
+    srcs = ["check_fixtures_test.go"],
+    data = ["@beancompat//:check_fixtures"],  # keep
     embed = [":beancompat"],
-    gotags = ["beancompat_fixtures"],
+    gotags = ["beancompat_fixtures"],  # keep
+    deps = ["//pkg/loader"],
+)
+
+go_test(
+    name = "match_test",
+    size = "small",  # keep
+    srcs = ["match_test.go"],
+    embed = [":beancompat"],
+)
+
+go_test(
+    name = "parse_fixtures_test",
+    size = "medium",  # keep
+    srcs = ["parse_fixtures_test.go"],
+    data = ["@beancompat//:parse_fixtures"],  # keep
+    embed = [":beancompat"],
+    gotags = ["beancompat_fixtures"],  # keep
+    deps = ["//pkg/ast"],
+)
+
+go_test(
+    name = "serialize_test",
+    size = "small",  # keep
+    srcs = ["serialize_test.go"],
+    embed = [":beancompat"],
     deps = [
         "//pkg/ast",
-        "//pkg/loader",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_google_go_cmp//cmp",
     ],
