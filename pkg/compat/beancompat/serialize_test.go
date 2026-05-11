@@ -746,6 +746,140 @@ func TestSerializeClose(t *testing.T) {
 	})
 }
 
+// TestSerializeBalance covers balanceDataPayload across the dimensions a
+// balance directive can vary along: presence/absence of tolerance,
+// source-side decimal precision preservation, and Meta integration. The
+// diff_amount slot is always JSON null at the parse tier (the AST has no
+// corresponding field; the slot exists for check-tier shape compatibility),
+// and every subtest asserts that null explicitly so a future regression
+// that elided the key, emitted an empty object, or accidentally populated
+// it would surface here.
+func TestSerializeBalance(t *testing.T) {
+	t.Run("bare_no_tolerance", func(t *testing.T) {
+		// Tolerance=nil is the common case: a balance assertion without
+		// the "~ N" suffix. The serializer must emit JSON null for the
+		// tolerance key (not omit it, not emit an empty string).
+		balance := &ast.Balance{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Cash",
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "100.00"),
+				Currency: "USD",
+			},
+		}
+		assertSerializeMatches(t, ledgerOf(t, balance), `{
+			"errors": [],
+			"directives": [{
+				"type": "balance",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Cash",
+					"amount": {"number": "100.00", "currency": "USD"},
+					"tolerance": null,
+					"diff_amount": null
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_tolerance", func(t *testing.T) {
+		// Non-nil Tolerance emits the apd.Decimal.String() form. Using a
+		// realistic "0.01" tolerance value mirrors how beancount source
+		// syntax expresses tolerance, and the JSON representation is a
+		// string (not a number) so source precision survives.
+		tol := mustDecimal(t, "0.01")
+		balance := &ast.Balance{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Cash",
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "100.00"),
+				Currency: "USD",
+			},
+			Tolerance: &tol,
+		}
+		assertSerializeMatches(t, ledgerOf(t, balance), `{
+			"errors": [],
+			"directives": [{
+				"type": "balance",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Cash",
+					"amount": {"number": "100.00", "currency": "USD"},
+					"tolerance": "0.01",
+					"diff_amount": null
+				}
+			}]
+		}`)
+	})
+
+	t.Run("decimal_precision_preserved", func(t *testing.T) {
+		// "0.005" tolerance and "100.000" amount both carry trailing
+		// significand that apd.Decimal.Exponent encodes; the matchDecimal
+		// precision contract from Phase 1 requires this round-trip to
+		// preserve those digits. A regression that routed either value
+		// through a normalizing path (e.g. .Text('f', N) or float64) would
+		// drop the trailing zeros and surface as a diff here.
+		tol := mustDecimal(t, "0.005")
+		balance := &ast.Balance{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Cash",
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "100.000"),
+				Currency: "USD",
+			},
+			Tolerance: &tol,
+		}
+		assertSerializeMatches(t, ledgerOf(t, balance), `{
+			"errors": [],
+			"directives": [{
+				"type": "balance",
+				"date": "2024-01-01",
+				"meta": {},
+				"data": {
+					"account": "Assets:Cash",
+					"amount": {"number": "100.000", "currency": "USD"},
+					"tolerance": "0.005",
+					"diff_amount": null
+				}
+			}]
+		}`)
+	})
+
+	t.Run("with_metadata", func(t *testing.T) {
+		// One MetaValue confirms the balance envelope routes Meta through
+		// serializeMeta. TestSerializeMeta exhaustively covers per-Kind
+		// behavior; a single string value here is sufficient to assert
+		// the wiring without duplicating that coverage.
+		balance := &ast.Balance{
+			Date:    mustDate(t, "2024-01-01"),
+			Account: "Assets:Cash",
+			Amount: ast.Amount{
+				Number:   mustDecimal(t, "100.00"),
+				Currency: "USD",
+			},
+			Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+				"source": {Kind: ast.MetaString, String: "bank statement"},
+			}},
+		}
+		assertSerializeMatches(t, ledgerOf(t, balance), `{
+			"errors": [],
+			"directives": [{
+				"type": "balance",
+				"date": "2024-01-01",
+				"meta": {"source": "bank statement"},
+				"data": {
+					"account": "Assets:Cash",
+					"amount": {"number": "100.00", "currency": "USD"},
+					"tolerance": null,
+					"diff_amount": null
+				}
+			}]
+		}`)
+	})
+}
+
 // TestSerializeCommodity covers the two dimensions commodity varies along:
 // the single-field {currency} data payload and Meta integration through the
 // commodity envelope. The "name" meta key in with_metadata mirrors a

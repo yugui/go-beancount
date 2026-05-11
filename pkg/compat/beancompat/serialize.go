@@ -132,7 +132,16 @@ func serializeDirective(d ast.Directive) (Directive, error) {
 			Data: data,
 		}, nil
 	case *ast.Balance:
-		return placeholderDirective("balance", v.Date, v.Meta), nil
+		data, err := balanceDataPayload(v)
+		if err != nil {
+			return Directive{}, err
+		}
+		return Directive{
+			Type: "balance",
+			Date: formatDate(v.Date),
+			Meta: serializeMeta(v.Meta),
+			Data: data,
+		}, nil
 	case *ast.Pad:
 		return placeholderDirective("pad", v.Date, v.Meta), nil
 	case *ast.Note:
@@ -359,6 +368,49 @@ func commodityDataPayload(c *ast.Commodity) (json.RawMessage, error) {
 		Currency string `json:"currency"`
 	}{
 		Currency: c.Currency,
+	}
+	return json.Marshal(payload)
+}
+
+// balanceDataPayload renders the data payload of a balance directive per
+// the schema (upstream _parse_helper.py:175-179):
+//
+//	{
+//	  "account":     string,
+//	  "amount":      {"number": string, "currency": string},
+//	  "tolerance":   string | null,
+//	  "diff_amount": null
+//	}
+//
+// Tolerance is emitted as the apd.Decimal.String() of the source value when
+// AST holds a non-nil pointer, preserving source-side precision (e.g.
+// "0.005" stays "0.005"); nil tolerance becomes JSON null.
+//
+// diff_amount is always JSON null at the parse tier. The schema includes
+// the key so the check tier (which computes booking diffs after asserting
+// balances) can populate it without changing shape; the AST has no
+// DiffAmount field at parse time, so there is nothing to emit. This is
+// intentional, not a bug — the slot exists to keep parse and check tiers
+// shape-compatible.
+func balanceDataPayload(b *ast.Balance) (json.RawMessage, error) {
+	var tolerance *string
+	if b.Tolerance != nil {
+		s := b.Tolerance.String()
+		tolerance = &s
+	}
+	payload := struct {
+		Account    string     `json:"account"`
+		Amount     amountData `json:"amount"`
+		Tolerance  *string    `json:"tolerance"`
+		DiffAmount *string    `json:"diff_amount"`
+	}{
+		Account: string(b.Account),
+		Amount: amountData{
+			Number:   b.Amount.Number.String(),
+			Currency: b.Amount.Currency,
+		},
+		Tolerance:  tolerance,
+		DiffAmount: nil,
 	}
 	return json.Marshal(payload)
 }
