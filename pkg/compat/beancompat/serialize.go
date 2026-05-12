@@ -38,15 +38,30 @@ func SerializeParsed(ledger *ast.Ledger) (Result, error) {
 }
 
 // SerializeChecked lowers a check-tier ledger (post plugin pipeline) into
-// the beancompat Result JSON shape. The full check-tier surface (cost
-// booking, posting interpolation, display precision) is not yet
-// implemented; this entry point returns an informative error so any
-// check-tier fixture that is mistakenly added to the allowlist fails
-// loudly rather than masquerading as a pass.
+// the beancompat Result JSON shape. The check-tier output differs from
+// the parse-tier in that booked postings carry an [*ast.Cost] (rendered
+// as "kind": "cost" by serializeCostHolder) where the parse tier carries
+// an [*ast.CostSpec] (rendered as "kind": "cost_spec"); the dispatch on
+// concrete type means the same serialize() function services both
+// tiers. Postings interpolation, display-precision options, and other
+// check-tier-only payloads not yet implemented in the booking pipeline
+// will surface as missing keys in the output and fail matching at the
+// fixture site rather than here.
+//
+// Known divergence: the reducer's terminal pass installs *ast.Cost only
+// for augmenting postings and single-lot reductions (see
+// [pkg/inventory.Reducer] finalizeBookedCost). Multi-lot reductions
+// retain their parse-tier *ast.CostSpec, so the check-tier output of
+// such postings is "kind": "cost_spec". Upstream beancount expands a
+// multi-lot reduction into multiple postings each carrying a kind:cost
+// Cost; matching that contract requires posting expansion at the
+// reducer layer and is tracked as future work in
+// docs/plans/cost-holder-interface.md.
 func SerializeChecked(ledger *ast.Ledger) (Result, error) {
-	// TODO(beancompat): check-tier (the "cost" discriminator switch, post-booking
-	// amounts, and posting interpolation) is unimplemented. Plan C covers this.
-	return Result{}, errors.New("beancompat: SerializeChecked not yet implemented")
+	if ledger == nil {
+		return Result{}, errors.New("beancompat: SerializeChecked: nil ledger")
+	}
+	return serialize(ledger)
 }
 
 // serialize lowers a parsed ledger into the beancompat Result shape.
@@ -708,17 +723,7 @@ func postingPayload(p *ast.Posting) (postingData, error) {
 	}
 	cost := json.RawMessage("null")
 	if p.Cost != nil {
-		// The serializer's *ast.Cost branch is not yet wired up:
-		// the loader only emits *ast.CostSpec into Posting.Cost
-		// today, and the unified cost-holder serialization is
-		// scheduled for the next slice. Until then, reject any
-		// other concrete type loudly rather than silently emitting
-		// a malformed payload.
-		spec, ok := p.Cost.(*ast.CostSpec)
-		if !ok {
-			return postingData{}, fmt.Errorf("beancompat serializer: unsupported cost holder type %T", p.Cost)
-		}
-		c, err := costSpecPayload(spec)
+		c, err := serializeCostHolder(p.Cost)
 		if err != nil {
 			return postingData{}, err
 		}
@@ -777,6 +782,67 @@ func priceAnnotationPayload(p *ast.PriceAnnotation) (json.RawMessage, error) {
 		Currency: p.Amount.Currency,
 	}
 	return json.Marshal(payload)
+}
+
+// serializeCostHolder dispatches over the [ast.CostHolder] sealed
+// union. *[ast.CostSpec] is the parse-tier shape and renders as the
+// discriminated "kind": "cost_spec" envelope; *[ast.Cost] is the
+// booked, fully-resolved shape and renders as "kind": "cost". The
+// shared discriminator is what keeps the two tiers shape-distinct on
+// a single JSON channel — a parse-tier consumer can match on
+// kind=="cost_spec" and a check-tier consumer on kind=="cost"
+// without further introspection.
+func serializeCostHolder(c ast.CostHolder) (json.RawMessage, error) {
+	switch v := c.(type) {
+	case *ast.CostSpec:
+		return costSpecPayload(v)
+	case *ast.Cost:
+		return costPayload(v)
+	default:
+		return nil, fmt.Errorf("beancompat serializer: unsupported cost holder type %T", c)
+	}
+}
+
+// costPayload renders a booked [*ast.Cost] into the check-tier
+// "kind": "cost" envelope:
+//
+//	{
+//	  "kind":     "cost",
+//	  "number":   "decimal_string",
+//	  "currency": "USD",
+//	  "date":     "YYYY-MM-DD",
+//	  "label":    "string"            // present iff Label != ""
+//	}
+//
+// number / currency / date are always emitted: a booked Cost has them
+// by construction (ResolveCost guarantees all three, and the reducer's
+// terminal pass installs only fully-resolved Costs onto the AST). The
+// function trusts that precondition — a directly-constructed zero
+// [*ast.Cost] would surface as a "0001-01-01" date here rather than
+// be rejected. label is OMITTED when empty, mirroring the same
+// insertion-conditional convention costSpecPayload uses for its
+// optional sub-fields.
+//
+// The retained PerUnit / Total amounts on [ast.Cost] carry surcharge-
+// form provenance for the printer; they do not appear here because the
+// check-tier schema represents cost as a single resolved number, not
+// the original syntactic form.
+func costPayload(c *ast.Cost) (json.RawMessage, error) {
+	keys := make([]string, 0, 5)
+	values := make(map[string]any, 5)
+	add := func(k string, v any) {
+		keys = append(keys, k)
+		values[k] = v
+	}
+	add("kind", "cost")
+	add("number", c.Number.String())
+	add("currency", c.Currency)
+	add("date", c.Date.Format(isoDate))
+	if c.Label != "" {
+		add("label", c.Label)
+	}
+	sort.Strings(keys)
+	return marshalSortedObject(keys, values)
 }
 
 // costSpecPayload renders a CostSpec into the parse-tier

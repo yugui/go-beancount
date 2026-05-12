@@ -286,3 +286,23 @@ Each slice is independently reviewable and leaves the tree green.
   debugging tools. Currently deferred (YAGNI); the surcharge-form
   preservation via parallel `PerUnit`/`Total` fields removes the
   immediate need.
+
+## Future work surfaced by Slice 4
+
+- **Multi-lot reduction posting expansion.** Upstream beancount expands a
+  reducing posting that matches multiple lots into one posting per
+  matched lot, each carrying a `kind:cost` Cost. Slice 3's terminal
+  pass leaves such postings as a single `*ast.CostSpec` (with a
+  synthesized `Total` from `fillMissingCostFromReductions`), so the
+  serializer renders them as `kind:cost_spec`. Any check-tier fixture
+  whose source exercises a multi-lot reduction will diverge from
+  upstream until the reducer is taught to expand. The collapse-when-
+  all-lots-equal optimization noted on
+  `(*Reducer).finalizeBookedCost` is a partial mitigation, not a
+  replacement for the expansion.
+- **Display-precision and other check-tier options.** `SerializeChecked`
+  currently shares its body with `SerializeParsed`; the only tier-
+  specific divergence so far is the cost-discriminator switch handled
+  inside `serializeCostHolder`. Fixtures that assert on display
+  precision will need a dedicated path once the AST gains an
+  options-retention mechanism (tracked separately as "Plan A").

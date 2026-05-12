@@ -2576,5 +2576,68 @@ func TestSerializeLedger(t *testing.T) {
 		if _, err := SerializeParsed(nil); err == nil {
 			t.Errorf("SerializeParsed(nil) error = nil, want non-nil")
 		}
+		// SerializeChecked has the same nil-guard contract — both
+		// entry points should reject a zero *ast.Ledger before
+		// touching internal serializer state.
+		if _, err := SerializeChecked(nil); err == nil {
+			t.Errorf("SerializeChecked(nil) error = nil, want non-nil")
+		}
 	})
+}
+
+// TestCostPayload pins the check-tier "kind":"cost" envelope shape
+// emitted for a booked *ast.Cost. The transaction_with_cost fixture
+// covers the happy path end-to-end through the loader; this focused
+// test exercises the schema directly so a regression that affects
+// only the optional Label branch or a derived-from-total Number is
+// caught even when the fixture file is stale or unavailable.
+func TestCostPayload(t *testing.T) {
+	date := mustDate(t, "2024-01-15")
+	cases := []struct {
+		name string
+		in   *ast.Cost
+		want string
+	}{
+		{
+			name: "per-unit only, no label",
+			in: &ast.Cost{
+				Number:   mustDecimal(t, "150.00"),
+				Currency: "USD",
+				Date:     date,
+			},
+			want: `{"kind":"cost","number":"150.00","currency":"USD","date":"2024-01-15"}`,
+		},
+		{
+			name: "per-unit with label",
+			in: &ast.Cost{
+				Number:   mustDecimal(t, "100.00"),
+				Currency: "USD",
+				Date:     date,
+				Label:    "lot-A",
+			},
+			want: `{"kind":"cost","number":"100.00","currency":"USD","date":"2024-01-15","label":"lot-A"}`,
+		},
+		{
+			name: "derived-from-total preserves Number precision",
+			in: &ast.Cost{
+				// 4.2 / 4.1 at decimal128 precision; .String() preserves the exponent.
+				Number:   mustDecimal(t, "1.024390243902439024390243902439024"),
+				Currency: "JPY",
+				Date:     date,
+				Total:    &ast.Amount{Number: mustDecimal(t, "4.2"), Currency: "JPY"},
+			},
+			want: `{"kind":"cost","number":"1.024390243902439024390243902439024","currency":"JPY","date":"2024-01-15"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := costPayload(tc.in)
+			if err != nil {
+				t.Fatalf("costPayload: %v", err)
+			}
+			if diff := cmp.Diff(json.RawMessage(tc.want), got, cmpJSONRawMessage); diff != "" {
+				t.Errorf("costPayload mismatch (-want +got):\n%s", diff)
+			}
+		})
+	}
 }
