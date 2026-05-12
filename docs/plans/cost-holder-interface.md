@@ -65,40 +65,80 @@ Move `inventory.Cost` → `ast.Cost`. Rationale:
 - `inventory` keeps using the type via re-import; the algorithmic code
   (matcher, inventory, reducer) is unchanged.
 
+### Type: `ast.Cost` (booked counterpart of `CostSpec`)
+
+`ast.Cost` carries both the canonical resolved per-unit number (for
+inventory matching/equality) and the original per-unit / surcharge form
+the user wrote (for print-fidelity round-trip). Surcharge form
+`{X CUR, # CUR}` therefore survives booking:
+
+```go
+type Cost struct {
+    Number   apd.Decimal  // canonical per-unit, always set (inventory match/eq)
+    Currency string       // always set after booking
+    Date     time.Time    // always set after booking
+    Label    string
+
+    // Original-form retention for printer round-trip.
+    PerUnit  *Amount      // user's explicit per-unit, or canonical for lot-driven
+    Total    *Amount      // user's explicit surcharge total; nil if not specified
+}
+```
+
+`Number`/`Currency`/`Date`/`Label` define lot identity (Cost.Equal
+ignores PerUnit/Total). The reducer is responsible for keeping
+PerUnit/Total consistent with Number when it converts a CostSpec.
+
 ### Sealed union: `ast.CostHolder`
 
 ```go
 // CostHolder is the sealed union of cost representations carried on a
-// Posting. *CostSpec is the parse-tier form (some fields may be nil);
-// *Cost is the booked, fully-resolved form.
+// Posting. *CostSpec is the parse-tier form (any of PerUnit/Total/Date
+// may be nil); *Cost is the booked, fully-resolved form.
 type CostHolder interface {
-    isCostHolder()
-    // Booking-status-agnostic accessors.
-    Currency() string        // "" if not yet known (CostSpec with no PerUnit/Total)
-    Date() *time.Time        // nil iff CostSpec.Date is unset and not yet booked
-    Label() string
+    isCostHolder()  // sealed-union marker; only implementations in this package
 
-    // Polymorphic operations — each variant implements its own behavior,
-    // so callers do not need a type switch.
-    Total(units *Amount) (*Amount, error)  // total cost given posting units
-    AppendFormat(p *Printer)               // print-tier rendering
-    HashInto(h hash.Hash)                  // dedup
+    GetPerUnit() *Amount     // CostSpec: PerUnit field; Cost: PerUnit field
+    GetTotal()   *Amount     // CostSpec: Total field; Cost: Total field
+    GetCurrency() string     // CostSpec: derived from PerUnit/Total; Cost: Currency field
+    GetDate()    *time.Time  // CostSpec: Date field; Cost: &Cost.Date (copy)
+    GetLabel()   string      // shared field
+    IsBooked()   bool        // false for *CostSpec, true for *Cost
 }
 ```
+
+Naming: `Get*` prefix is used because `*CostSpec` already has exported
+fields named `PerUnit`/`Total`/`Date`/`Label`; a method with the same
+name as a field is a Go compile error. The collision rules out the
+idiomatic field-named getter, so the explicit `Get` prefix is accepted
+as the smallest-impact alternative — direct field access on the
+concrete struct is preserved (reducer mutators still write
+`spec.PerUnit = ...`), and only the interface boundary uses the
+prefixed form.
 
 `isCostHolder()` is a private marker method so external packages cannot
 extend the union. `*CostSpec` and `*Cost` are the only implementations.
 
-`Posting.Cost` becomes `CostHolder` (interface, nil-able).
+`Posting.Cost` becomes `CostHolder` (interface, nil-able). The
+field-vs-method collision does not arise on `Posting` itself because
+`Posting.Cost` (the interface-typed field) does not get a getter
+method.
 
-### Why polymorphic methods, not type assertions
+### How callers stay booking-status-agnostic
 
-The audit identified eight read sites and three "behavior differs per
-variant" sites (`printer.formatCostSpec`, `dedup.sumHash`, `cost.TotalCost`).
-The user constraint is to make callers booking-status-agnostic. Each of
-those three sites is naturally a method on the value: the variant knows
-how to format / hash / weight itself. Pushing them onto `CostHolder`
-eliminates the type-switch.
+Surcharge form preservation collapses the original "polymorphic
+Total/Format/Hash methods on the interface" idea into plain getters:
+because `*ast.Cost` carries `PerUnit` and `Total` as fields parallel to
+`CostSpec`, every read site can dispatch on `(GetPerUnit, GetTotal,
+IsBooked)` without a type assertion. The previously-proposed
+`AppendFormat`/`HashInto` methods on the interface are dropped — format
+stays in `pkg/printer` and dedup hashing stays in `pkg/distribute/dedup`,
+each dispatching on the agnostic getters.
+
+`(*Posting).TotalCost` (`pkg/ast/cost.go:33`) keeps its existing
+signature `(*Amount, error)`. Its branches read `p.Cost.GetPerUnit()` /
+`p.Cost.GetTotal()` via the interface and perform the `apd` arithmetic
+locally; error reporting remains on `TotalCost`, not on the getters.
 
 Sites that legitimately cannot be hidden behind the interface stay
 typed on the concrete variant and document why:
@@ -108,22 +148,36 @@ typed on the concrete variant and document why:
   interpolation. After booking the concept does not apply. Takes
   `*CostSpec` explicitly.
 - `inventory/reducer.go` mutators (`fillMissingCostFromReductions`,
-  `fillDeferredCost`): these run *before* the `CostSpec → Cost`
-  conversion, so the invariant they assume — that `Posting.Cost` is a
-  `*CostSpec` — is upheld by ordering, not by the type system. They keep
-  type-asserting `Posting.Cost.(*CostSpec)` and document the invariant.
+  `fillDeferredCost`): these mutate `CostSpec.PerUnit` / `CostSpec.Total`
+  by field assignment. They guard against the post-booking state with a
+  type-assertion-with-ok (`spec, ok := p.Cost.(*ast.CostSpec); if !ok
+  { continue }`) so a second reducer run over its own output (the
+  fixed-point contract exercised by `TestReducerRun_OutputIsFixedPoint`
+  in `pkg/inventory/integration_test.go:524`) is a no-op on
+  already-booked postings.
+- `pkg/printer` surcharge branch: when both `GetPerUnit()` and
+  `GetTotal()` are non-nil, the renderer prints both Amounts; this
+  works for `*CostSpec` and `*ast.Cost` symmetrically and stays
+  agnostic.
 
 ### Reducer pipeline addition
 
 After existing booking steps complete, add a terminal pass that converts
-each posting's cost in line with upstream:
+each posting's cost in line with upstream. The pass is idempotent: if a
+posting's cost is already `*ast.Cost` (second-pass case) it is skipped.
 
-- *augmenting posting with `*CostSpec`*: build `*ast.Cost` using the
-  spec's resolved per-unit number/currency, `spec.Date` if non-nil
-  otherwise `entry.Date`, and `spec.Label`.
-- *reducing posting*: the matched lot's `*ast.Cost` is already what we
-  want; install it on the posting.
-- *posting with no cost*: leave `Posting.Cost = nil`.
+Conversion rules (consistent with surcharge-form retention):
+
+| Original syntax | ast.Cost fields produced |
+|---|---|
+| `{X CUR}` | `PerUnit={X,CUR}`, `Total=nil`, `Number=X` |
+| `{{Y CUR}}` | `PerUnit=nil`, `Total={Y,CUR}`, `Number=Y/units` |
+| `{X CUR, # CUR}` (surcharge) | `PerUnit={X,CUR}`, `Total={#,CUR}`, `Number=(X*units+#)/units` |
+| `{}` (lot-driven, reducing) | `PerUnit={matched.Number,CUR}`, `Total=nil`, `Number=matched.Number` |
+
+In all cases `Date = spec.Date` if set, else `entry.Date` for augmenting;
+or `matched.Date` for reducing. `Label` is copied from the spec (or
+matched lot for lot-driven).
 
 Postings inside an entry that survived `book_reductions` errors (per
 upstream semantics) but did not get fully booked retain their `*CostSpec`.
@@ -157,30 +211,37 @@ Each slice is independently reviewable and leaves the tree green.
 
 ### Slice 1 — introduce `ast.Cost` and `ast.CostHolder`
 
-- Move `inventory.Cost` (type, methods, `Lot` alias) → `ast.Cost`.
-  Keep `inventory.Cost = ast.Cost` as a type alias for source compatibility
-  during transition.
-- Define `ast.CostHolder` interface with `isCostHolder()` + the agnostic
-  accessor set. Don't add polymorphic `Total/AppendFormat/HashInto` yet —
-  introduce them in slices 2/3/4 as their call sites migrate, to keep
-  each slice's surface small.
-- Implement `isCostHolder()` and the accessor methods on `*ast.CostSpec`
-  and `*ast.Cost`.
+- Move `inventory.Cost` (type, methods `Equal` / `Clone`, `Lot` alias)
+  into `pkg/ast/cost.go`. Extend `ast.Cost` with new `PerUnit *Amount` /
+  `Total *Amount` fields for surcharge-form retention.
+- Replace `pkg/inventory/cost.go`'s type declarations with type aliases:
+  `type Cost = ast.Cost`, `type Lot = ast.Cost`. `inventory.ResolveCost`
+  and `inventory.quoContext` stay in `pkg/inventory` and now return
+  `*ast.Cost` via the alias (signature unchanged at call sites).
+- Define `ast.CostHolder` interface (sealed marker + 6 getters as
+  designed above). Implement on `*ast.CostSpec` and `*ast.Cost` with
+  compile-time interface assertions
+  (`var _ CostHolder = (*CostSpec)(nil)`, `var _ CostHolder = (*Cost)(nil)`).
 - `Posting.Cost` stays `*CostSpec` in this slice (no caller migration
-  yet). The interface is dormant.
-- Run gazelle, build, test. No behavior change expected.
+  yet). The interface is dormant; no behavior change expected.
+- Update the comment in `pkg/ast/clone.go:33` that references
+  `inventory.Cost.Clone` to point at the new location.
+- Run gazelle, build, test. Existing tests including
+  `TestReducerRun_OutputIsFixedPoint` must continue to pass unchanged.
 
 ### Slice 2 — switch `Posting.Cost` to `CostHolder` and migrate read sites
 
 - Change `Posting.Cost *CostSpec` → `Posting.Cost CostHolder`.
-- Migrate the eight read sites to the agnostic accessor methods.
-- For sites whose behavior differs per variant (`TotalCost`,
-  `formatCostSpec`, `sumHash`), add the corresponding polymorphic
-  method (`Total`, `AppendFormat`, `HashInto`) to the interface and
-  implement on both variants. Callers stop type-switching.
+- Migrate the eight read sites identified in the Phase-3 audit to the
+  agnostic accessor methods (`GetPerUnit`, `GetTotal`, etc.).
+- `(*Posting).TotalCost` rewrites its branches to read through the
+  interface; its `(*Amount, error)` signature is preserved.
+- `printer.formatCostSpec` and `dedup.sumHash` are rewritten to dispatch
+  on getter values; format / hash logic stays in their own packages.
 - Tolerance site stays typed on `*CostSpec` (justified above).
-- Reducer mutators stay typed on `*CostSpec` via assertion, plus a
-  comment recording the ordering invariant.
+- Reducer mutators add the `, ok := p.Cost.(*ast.CostSpec)` guard so
+  they no-op on already-booked postings, with a comment recording the
+  idempotence invariant.
 
 ### Slice 3 — booking-time `CostSpec → Cost` conversion
 
@@ -214,12 +275,14 @@ Each slice is independently reviewable and leaves the tree green.
 
 ## Open items for slice-level design
 
-- Exact shape of `Total(units *Amount) (*Amount, error)` for `*CostSpec`
-  when `PerUnit` and `Total` are both nil (parser literal `{}`): return
-  `nil, nil`? An error? Today `TotalCost` lives at `pkg/ast/cost.go:37` —
-  revisit its contract in slice 2.
 - Whether `inventory.Cost` should remain as a type alias forever or be
-  removed once all callers reference `ast.Cost`. Decide at end of slice 1.
-- Whether the printer's existing `formatCostSpec` signature
-  (`pkg/printer/printer.go:350`, takes `ast.CostSpec` by value) can move
-  to a pointer receiver method on each variant without churning fixtures.
+  removed once all callers reference `ast.Cost`. Decide at end of
+  Slice 2.
+- Whether the printer's `formatCostSpec` should rename to e.g.
+  `formatCostHolder` to reflect that it now accepts both variants.
+  Cosmetic; decide during Slice 2 implementation.
+- Whether to keep an `OriginalSpec() *CostSpec` back-reference on
+  `ast.Cost` as a future extension to support fixture authoring /
+  debugging tools. Currently deferred (YAGNI); the surcharge-form
+  preservation via parallel `PerUnit`/`Total` fields removes the
+  immediate need.

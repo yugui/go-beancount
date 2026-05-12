@@ -29,8 +29,7 @@ func CloneDecimal(x *apd.Decimal) *apd.Decimal {
 //     are scalars or small value types; they are copied by value.
 //
 // Each Clone method on a pointer receiver is nil-safe: calling Clone
-// on a nil pointer returns nil. This matches the pattern established
-// by inventory.Cost.Clone and lets callers chain clones across
+// on a nil pointer returns nil. This lets callers chain clones across
 // optional fields without nil checks.
 
 // Clone returns a deep copy of t. The Postings slice is reallocated and

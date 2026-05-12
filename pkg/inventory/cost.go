@@ -14,53 +14,13 @@ import (
 // well above the practical ledger use case.
 var quoContext = apd.BaseContext.WithPrecision(34)
 
-// Cost is a resolved lot cost: a per-unit number, a currency, an
-// acquisition date, and an optional lot label. It is the resolved
-// counterpart to the raw [ast.CostSpec] — where a CostSpec captures what
-// the user wrote (any of per-unit/total/date/label may be nil), a Cost
-// always has a concrete per-unit number and currency and is safe to
-// compare for lot equality.
-//
-// Cost is a value type; the Number field is stored inline (not a
-// pointer) so a zero Cost has Number == 0 rather than a nil decimal.
-type Cost struct {
-	Number   apd.Decimal
-	Currency string
-	Date     time.Time
-	Label    string
-}
-
-// Lot is an alias for [Cost], preserved for documentation clarity at
-// call sites where "lot" reads more naturally than "cost".
-type Lot = Cost
-
-// Equal reports whether two costs describe the same lot: same per-unit
-// number (by value), currency, acquisition date, and label.
-func (c Cost) Equal(o Cost) bool {
-	if c.Currency != o.Currency || c.Label != o.Label {
-		return false
-	}
-	if !c.Date.Equal(o.Date) {
-		return false
-	}
-	// apd.Decimal.Cmp returns 0 when the two decimals have the same value.
-	return c.Number.Cmp(&o.Number) == 0
-}
-
-// Clone returns a deep copy of c. It is nil-safe: calling Clone on a
-// nil receiver returns nil, which matches the convention used by
-// Position for the optional Cost field.
-func (c *Cost) Clone() *Cost {
-	if c == nil {
-		return nil
-	}
-	return &Cost{
-		Number:   *ast.CloneDecimal(&c.Number),
-		Currency: c.Currency,
-		Date:     c.Date,
-		Label:    c.Label,
-	}
-}
+// Cost is the booked, fully-resolved cost of a posting. The canonical
+// type lives in [pkg/ast]; this alias preserves the inventory.Cost
+// spelling at existing call sites while the AST is the single source
+// of truth for the type definition, its methods, and its place in the
+// [ast.CostHolder] sealed union. Code that wants the "lot" spelling
+// should reference [ast.Lot].
+type Cost = ast.Cost
 
 // ResolveCost turns an [ast.CostSpec] on an augmenting posting into a
 // concrete [Cost]. It implements the following cost-resolution rules:
