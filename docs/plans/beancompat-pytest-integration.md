@@ -951,6 +951,187 @@ are:
   `ADAPTERS.pop("beancount", None)` activates. Document the observed behavior
   inline.
 
+### Detailed Design
+
+#### Contract
+
+These items are locked at design time. The implementer must hit them exactly;
+deviation requires re-opening the design.
+
+**1. `third_party/beancompat/beancompat.BUILD` extension.**
+
+Add one new filegroup. Existing filegroups (`parse_fixtures`, `check_fixtures`,
+`implementations_py`, `strategies_py`, `tests_py`, the `exports_files` line)
+remain untouched.
+
+```
+filegroup(
+    name = "scripts_py",
+    srcs = glob(
+        ["scripts/**/*.py"],
+        exclude = ["scripts/**/__pycache__/**", "scripts/**/*.pyc"],
+    ),
+    visibility = ["//visibility:public"],
+)
+```
+
+Rationale (load-bearing): upstream `tests/test_fixtures.py` does
+`from scripts.fixture_format import contains_parse_result`. Without this
+filegroup, pytest collection fails with `ModuleNotFoundError: No module named
+'scripts'`.
+
+**2. New file `pkg/compat/beancompat/pyharness/pytest_main.py`.**
+
+Thin entrypoint delegating to in-process `pytest.main`. Locked behavior:
+
+- Resolves the upstream test file via Bazel runfiles:
+  ```
+  from python.runfiles import Runfiles
+  r = Runfiles.Create()
+  test_file = r.Rlocation("beancompat/tests/test_fixtures.py")
+  ```
+  If `r is None` or `test_file` is None or doesn't exist, MUST raise loudly.
+  Returning a degenerate exit code is forbidden.
+- Invokes `pytest.main([...])` exactly once with the resolved path as the last
+  positional, exits with its return code via
+  `if __name__ == "__main__": sys.exit(_main())`.
+- MUST register the overlay conftest as an explicit pytest plugin via
+  `plugins=[_conftest]` (imported as `import conftest as _conftest`).
+  Auto-discovery does not work across the runfiles branch boundary: pytest's
+  filesystem-based conftest walk cannot cross from the test target's sandbox
+  directory into the `@beancompat//tests/` runfiles branch. Explicit plugin
+  registration is the canonical pytest mechanism for this case.
+- MUST NOT pass `--collect-only`, `-k` filters that bypass the allowlist, or
+  `--continue-on-collection-errors` (which would mask the failure-mode contract).
+- MUST NOT mutate `sys.path` itself; `:conftest` is responsible.
+
+**3. `pkg/compat/beancompat/pyharness/BUILD.bazel` extension.**
+
+Append one new `py_test` rule (existing `:conftest` and `:conftest_smoke_test`
+intact). Locked attributes:
+
+```
+py_test(
+    name = "test_fixtures",
+    srcs = ["pytest_main.py"],
+    main = "pytest_main.py",
+    imports = ["."],
+    data = [
+        "@beancompat//:parse_fixtures",
+        "@beancompat//:check_fixtures",
+        "@beancompat//:scripts_py",
+        "//pkg/compat/beancompat/adapter/beanparse:beanparse",
+    ],
+    deps = [
+        ":conftest",
+        "@gobeancount_pip//pytest",
+        "@rules_python//python/runfiles",
+    ],
+    env = {
+        "BEANPARSE_BIN": "$(rootpath //pkg/compat/beancompat/adapter/beanparse:beanparse)",
+    },
+    size = "small",
+)
+```
+
+Locked rationale per attribute:
+
+- `data` contains exactly four entries; `tests_py / implementations_py /
+  strategies_py` flow transitively through `:conftest`.
+- `env = {"BEANPARSE_BIN": "$(rootpath ...)"}` activates Step 4's first-priority
+  binary discovery branch and bypasses runfiles fallback (which serves as
+  defense-in-depth only).
+- `size = "small"`: 3 cases × 1 subprocess each, well under 60s.
+- `tags`: not set. MUST run under default `bazel test //...`. NOT `["manual"]`.
+
+**4. Observable test behavior (verification target).**
+
+`bazel test //pkg/compat/beancompat/pyharness:test_fixtures` MUST:
+
+- Exit 0.
+- Show three parametrized cases passing for `gobeancount`:
+  - `parse/open_single.json`
+  - `parse/price.json`
+  - `parse/transaction_balanced.json`
+- Skip every other parametrized item with reason `"not in ALLOWED_FIXTURES"`.
+- Final summary: `3 passed, N skipped`.
+
+`bazel test //...` MUST be green; new target raises count by exactly one.
+
+**5. Failure-mode contract.**
+
+- **Allowlisted-fixture divergence MUST fail** (skip mechanism does not mask
+  failures of allowlisted items).
+- **Collection failures MUST surface** (no `--continue-on-collection-errors`).
+- **Subprocess-level adapter errors MUST surface as test failures, not test
+  errors**: Step 4's adapter contract guarantees `parse_string` /
+  `check_file` never raise; relying on this is part of Step 6's surface.
+
+**6. Cross-step references — what Step 6 does NOT need to do.**
+
+- Does NOT re-add beancompat root to `sys.path` (Step 5's conftest does).
+- Does NOT list `tests_py / implementations_py / strategies_py` in own `data`
+  (transitive via `:conftest`).
+- Does NOT depend on `//pkg/compat/beancompat/adapter:adapter` directly
+  (transitive via `:conftest`).
+- Does NOT require any change to `pkg/compat/beancompat/serialize.go`. If a
+  divergence appears, the resolution rule from the plan applies (small fix or
+  pull from allowlist).
+
+#### Suggested Internals
+
+- **pytest CLI flags.** Suggest `["-v", "--no-header", "--tb=short", str(test_file)]`.
+  - `-v` shows parametrize ids in the log.
+  - NOT recommended: `-x` (stop-on-first-failure). With three cases, seeing
+    all failures simultaneously when serialize.go regresses is more
+    diagnostic.
+  - NOT recommended: `-q` (suppresses pass/skip enumeration).
+- **`_main()` factoring.** Top-level `def _main() -> int:` containing the
+  runfiles lookup and `pytest.main` call. Lets a future smoke test import
+  `_main` without re-running pytest.
+- **Runfiles probe shape.** Mirror Step 4's adapter pattern (loud raise on
+  failure).
+- **chdir / `--rootdir`.** Probably unnecessary. Defer until empirical testing
+  shows pytest discovery confused.
+- **Cross-impl test files.** Out of scope. `test_cross_impl.py` is meaningless
+  with one adapter; `test_discrepancies.py` may need `hypothesis`.
+
+#### Alternatives discussed
+
+- **In-process `pytest.main` vs subprocess.** In-process wins: subprocess
+  loses rules_python's import hooks.
+- **File-level positional vs `--collect-only` + `--deselect`.** File-level
+  wins: simpler; `--deselect` would duplicate the allowlist.
+- **`env` injection vs runfiles fallback only.** Inject via `env` for
+  determinism; bypasses rules_go's `beanparse_/beanparse` intermediate-dir
+  fragility in runfiles.
+- **`tags = ["manual"]` vs default.** Default. Step 6's whole purpose is
+  integration into `bazel test //...`.
+- **`size = "small"` vs `"medium"`.** `small`. If wall-clock exceeds 60s,
+  escalate rather than masking with `timeout = N`.
+- **List `tests_py` in `data` directly vs trust transitive.** Trust transitive.
+  Repeating creates two edit sites.
+
+#### Recommendation
+
+Land the test target as specified. Four highest-leverage decisions:
+
+1. **Add `scripts_py` to the external BUILD.** Without this, pytest
+   collection fails — the single most likely first-failure mode.
+2. **Inject `BEANPARSE_BIN` via `env = {"...": "$(rootpath ...)"}`.** Locks
+   the binary path at test-target-build time, bypassing rules_go's runfiles
+   intermediate-directory fragility.
+3. **Trust transitive flow through `:conftest` for bulk data deps.** One
+   place to edit; minimizes drift.
+4. **Keep `pytest_main.py` minimal — runfiles probe + `pytest.main`,
+   nothing else.** The entrypoint's job is "find the test file, start
+   pytest"; resist sys.path tweaks, env scrubbing, per-case filtering at
+   this layer.
+
+The Step 6 plan section's `pytest_main.py` sketch suggested `-x`; the
+recommendation is to omit it (diagnostic value of seeing all failures
+simultaneously outweighs marginal wall-clock saving).
+
 ---
 
 ## Alternatives discussed (high level — see planner output for full rationale)

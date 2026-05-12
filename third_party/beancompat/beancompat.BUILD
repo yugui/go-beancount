@@ -38,3 +38,12 @@ filegroup(
     ),
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "scripts_py",
+    srcs = glob(
+        ["scripts/**/*.py"],
+        exclude = ["scripts/**/__pycache__/**", "scripts/**/*.pyc"],
+    ),
+    visibility = ["//visibility:public"],
+)

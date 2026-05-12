@@ -30,7 +30,9 @@ def _resolve_beancompat_root() -> str:
         raise ImportError(
             f"beancompat/implementations/__init__.py not found in runfiles (got {probe!r})"
         )
-    return str(Path(probe).parent.parent)
+    # Follow all symlinks so _FIXTURES_DIR matches the resolved path that
+    # test_fixtures.py computes via Path(__file__).resolve().
+    return str(Path(probe).resolve().parent.parent)
 
 
 _beancompat_root = _resolve_beancompat_root()
