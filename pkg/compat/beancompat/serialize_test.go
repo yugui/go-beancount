@@ -1617,7 +1617,7 @@ func TestSerializePrice(t *testing.T) {
 // keeping the per-subtest JSON literal focused on what is actually under test
 // (the cost_spec encoding) rather than padding every literal with directive
 // boilerplate.
-func txnWithCost(t *testing.T, cost *ast.CostSpec) *ast.Transaction {
+func txnWithCost(t *testing.T, cost ast.CostHolder) *ast.Transaction {
 	t.Helper()
 	return &ast.Transaction{
 		Date:      mustDate(t, "2024-01-15"),

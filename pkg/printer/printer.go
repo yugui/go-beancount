@@ -282,7 +282,7 @@ func (p *printer) printPosting(posting ast.Posting, txn *ast.Transaction) {
 	suffix.WriteString(p.formatAmount(*posting.Amount))
 	if posting.Cost != nil {
 		suffix.WriteByte(' ')
-		suffix.WriteString(p.formatCostSpec(*posting.Cost))
+		suffix.WriteString(p.formatCostHolder(posting.Cost))
 	}
 	if posting.Price != nil {
 		suffix.WriteByte(' ')
@@ -347,8 +347,16 @@ func (p *printer) formatDecimal(d *apd.Decimal) string {
 // "{502.12 # 9.95 USD}". If the currencies happen to differ — a defensive
 // branch that the lowerer rejects — both currencies are emitted explicitly
 // rather than panicking.
-func (p *printer) formatCostSpec(cs ast.CostSpec) string {
-	totalOnly := cs.Total != nil && cs.PerUnit == nil
+// formatCostHolder renders either a parse-tier *ast.CostSpec or a
+// booked *ast.Cost. The two variants are dispatched through the
+// [ast.CostHolder] interface; the printer reads the user's syntactic
+// form (per-unit, total, surcharge) from GetPerUnit / GetTotal so a
+// booked Cost that retained its original PerUnit / Total round-trips
+// through the same code path as the equivalent CostSpec.
+func (p *printer) formatCostHolder(h ast.CostHolder) string {
+	perUnit := h.GetPerUnit()
+	total := h.GetTotal()
+	totalOnly := total != nil && perUnit == nil
 	openBrace, closeBrace := "{", "}"
 	if totalOnly {
 		openBrace, closeBrace = "{{", "}}"
@@ -356,28 +364,28 @@ func (p *printer) formatCostSpec(cs ast.CostSpec) string {
 
 	var parts []string
 	switch {
-	case cs.PerUnit != nil && cs.Total != nil:
+	case perUnit != nil && total != nil:
 		var leading string
-		if cs.PerUnit.Currency == cs.Total.Currency {
+		if perUnit.Currency == total.Currency {
 			// Suppress the per-unit currency to match typical source form.
-			leading = p.formatDecimal(&cs.PerUnit.Number) + " # " + p.formatAmount(*cs.Total)
+			leading = p.formatDecimal(&perUnit.Number) + " # " + p.formatAmount(*total)
 		} else {
 			// The lowerer from source rejects mismatched currencies, but a
 			// directly-constructed AST may reach this branch; emit both
 			// currencies explicitly rather than panicking.
-			leading = p.formatAmount(*cs.PerUnit) + " # " + p.formatAmount(*cs.Total)
+			leading = p.formatAmount(*perUnit) + " # " + p.formatAmount(*total)
 		}
 		parts = append(parts, leading)
-	case cs.PerUnit != nil:
-		parts = append(parts, p.formatAmount(*cs.PerUnit))
-	case cs.Total != nil:
-		parts = append(parts, p.formatAmount(*cs.Total))
+	case perUnit != nil:
+		parts = append(parts, p.formatAmount(*perUnit))
+	case total != nil:
+		parts = append(parts, p.formatAmount(*total))
 	}
-	if cs.Date != nil {
-		parts = append(parts, cs.Date.Format("2006-01-02"))
+	if date, ok := h.GetDate(); ok {
+		parts = append(parts, date.Format("2006-01-02"))
 	}
-	if cs.Label != "" {
-		parts = append(parts, beancountQuote(cs.Label))
+	if label := h.GetLabel(); label != "" {
+		parts = append(parts, beancountQuote(label))
 	}
 
 	return openBrace + strings.Join(parts, ", ") + closeBrace

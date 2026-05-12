@@ -109,23 +109,23 @@ func postingKey(p ast.Posting) string {
 	}
 	b.WriteByte('|')
 	if p.Cost != nil {
-		if p.Cost.PerUnit != nil {
-			b.WriteString(p.Cost.PerUnit.Number.String())
+		if pu := p.Cost.GetPerUnit(); pu != nil {
+			b.WriteString(pu.Number.String())
 			b.WriteByte(':')
-			b.WriteString(p.Cost.PerUnit.Currency)
+			b.WriteString(pu.Currency)
 		}
 		b.WriteByte('/')
-		if p.Cost.Total != nil {
-			b.WriteString(p.Cost.Total.Number.String())
+		if tot := p.Cost.GetTotal(); tot != nil {
+			b.WriteString(tot.Number.String())
 			b.WriteByte(':')
-			b.WriteString(p.Cost.Total.Currency)
+			b.WriteString(tot.Currency)
 		}
 		b.WriteByte('/')
-		if p.Cost.Date != nil {
-			b.WriteString(p.Cost.Date.Format(time.RFC3339))
+		if d, ok := p.Cost.GetDate(); ok {
+			b.WriteString(d.Format(time.RFC3339))
 		}
 		b.WriteByte('/')
-		b.WriteString(p.Cost.Label)
+		b.WriteString(p.Cost.GetLabel())
 	}
 	b.WriteByte('|')
 	if p.Price != nil {

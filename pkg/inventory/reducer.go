@@ -273,7 +273,13 @@ func (r *Reducer) fillMissingCostFromReductions(p *ast.Posting, steps []Reductio
 	if len(steps) == 0 {
 		return
 	}
-	if p.Cost == nil || p.Cost.PerUnit != nil || p.Cost.Total != nil {
+	// Idempotence guard: this mutator writes back into the
+	// parse-tier CostSpec. After the reducer's terminal
+	// CostSpec→Cost conversion lands, a re-run of the reducer
+	// (e.g. TestReducerRun_OutputIsFixedPoint) sees *ast.Cost
+	// here and the cost is already concrete; skip the synthesis.
+	spec, ok := p.Cost.(*ast.CostSpec)
+	if !ok || spec == nil || spec.PerUnit != nil || spec.Total != nil {
 		return
 	}
 	var total apd.Decimal
@@ -305,7 +311,7 @@ func (r *Reducer) fillMissingCostFromReductions(p *ast.Posting, steps []Reductio
 		}
 		total.Set(&sum)
 	}
-	p.Cost.Total = &ast.Amount{
+	spec.Total = &ast.Amount{
 		Number:   total,
 		Currency: currency,
 	}
@@ -569,17 +575,24 @@ func (r *Reducer) fillDeferredCost(
 		})
 		return BookedPosting{}, false
 	}
-	perUnit := &ast.Amount{Currency: residual.Currency}
-	if _, err := quoContext.Quo(&perUnit.Number, &residual.Number, &deferred.Amount.Number); err != nil {
-		r.errs = append(r.errs, Error{
-			Code:    CodeInternalError,
-			Span:    deferred.Span,
-			Account: deferred.Account,
-			Message: "interpolate: divide residual by units: " + err.Error(),
-		})
-		return BookedPosting{}, false
+	// Idempotence guard: interpolation writes back into the
+	// parse-tier CostSpec. If a prior reducer pass already
+	// converted Cost to *ast.Cost, the per-unit is concrete and
+	// the interpolation step is a no-op; bookOne below operates
+	// on the existing Cost directly.
+	if spec, ok := deferred.Cost.(*ast.CostSpec); ok && spec != nil {
+		perUnit := &ast.Amount{Currency: residual.Currency}
+		if _, err := quoContext.Quo(&perUnit.Number, &residual.Number, &deferred.Amount.Number); err != nil {
+			r.errs = append(r.errs, Error{
+				Code:    CodeInternalError,
+				Span:    deferred.Span,
+				Account: deferred.Account,
+				Message: "interpolate: divide residual by units: " + err.Error(),
+			})
+			return BookedPosting{}, false
+		}
+		spec.PerUnit = perUnit
 	}
-	deferred.Cost.PerUnit = perUnit
 	inv := trace.prepareForEdit(deferred.Account)
 	bp, errs := bookOne(inv, deferred, r.booking[deferred.Account], txn.Date, false)
 	r.errs = append(r.errs, errs...)

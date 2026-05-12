@@ -2,33 +2,54 @@ package inventory
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
-// specIsEmpty reports whether a cost spec is structurally empty, i.e.
-// it carries no per-unit, no total, no date, and no label. A nil spec
-// and an empty "{}" spec both count as empty for the purpose of the
-// cost-currency hint rule: in both cases the posting has no
-// cost-selection constraint of its own, so when a price annotation is
-// present its currency is used as the cost currency to match against.
-func specIsEmpty(c *ast.CostSpec) bool {
-	return c == nil || (c.PerUnit == nil && c.Total == nil && c.Date == nil && c.Label == "")
+// specIsEmpty reports whether a cost holder is structurally empty,
+// i.e. it carries no per-unit, no total, no date, and no label. A nil
+// holder and an empty "{}" CostSpec both count as empty for the
+// purpose of the cost-currency hint rule: in both cases the posting
+// has no cost-selection constraint of its own, so when a price
+// annotation is present its currency is used as the cost currency to
+// match against. A booked [*ast.Cost] is never empty (the reducer
+// always fills at least one of Number / PerUnit / Total).
+func specIsEmpty(c ast.CostHolder) bool {
+	if c == nil {
+		return true
+	}
+	if c.GetPerUnit() != nil || c.GetTotal() != nil {
+		return false
+	}
+	if _, ok := c.GetDate(); ok {
+		return false
+	}
+	return c.GetLabel() == ""
 }
 
-// costNumberMissing reports whether a cost spec has neither a per-unit
-// nor a total cost number, signalling that the user wants a lot tracked
-// but expects the booking layer to fill in the cost from context. A
-// non-nil spec with at least one of PerUnit or Total set is concrete
-// enough for [ResolveCost] to handle on its own and is therefore not
-// "missing" in this sense; a nil spec means no cost was requested at
-// all (cash/no-lot augmentation) and is also not "missing". Date and
-// Label are ignored: both `{}` (lot-tracked, cost TBD) and
-// `{2025-01-01, "label"}` (lot identity stated, cost TBD) qualify.
-func costNumberMissing(c *ast.CostSpec) bool {
-	return c != nil && c.PerUnit == nil && c.Total == nil
+// costNumberMissing reports whether a cost holder has neither a
+// per-unit nor a total cost number, signalling that the user wants a
+// lot tracked but expects the booking layer to fill in the cost from
+// context. A holder with at least one of PerUnit or Total set is
+// concrete enough for [ResolveCost] to handle on its own and is
+// therefore not "missing" in this sense; a nil holder means no cost
+// was requested at all (cash/no-lot augmentation) and is also not
+// "missing". A booked [*ast.Cost] is by definition concrete and
+// returns false unconditionally — the explicit IsBooked short-circuit
+// makes the contract testable rather than relying on the (currently
+// unwitnessed) invariant that the reducer's terminal pass populates
+// PerUnit or Total on every produced *Cost.
+func costNumberMissing(c ast.CostHolder) bool {
+	if c == nil {
+		return false
+	}
+	if c.IsBooked() {
+		return false
+	}
+	return c.GetPerUnit() == nil && c.GetTotal() == nil
 }
 
 // BookedPosting is the result of routing a single [ast.Posting] through
@@ -120,10 +141,10 @@ func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 	// matcher's empty-{} fallback is reachable from bookOne.
 	hintCcy := ""
 	switch {
-	case p.Cost != nil && p.Cost.PerUnit != nil:
-		hintCcy = p.Cost.PerUnit.Currency
-	case p.Cost != nil && p.Cost.Total != nil:
-		hintCcy = p.Cost.Total.Currency
+	case p.Cost != nil && p.Cost.GetPerUnit() != nil:
+		hintCcy = p.Cost.GetPerUnit().Currency
+	case p.Cost != nil && p.Cost.GetTotal() != nil:
+		hintCcy = p.Cost.GetTotal().Currency
 	case specIsEmpty(p.Cost) && p.Price != nil:
 		hintCcy = p.Price.Amount.Currency
 	}
@@ -240,7 +261,23 @@ func bookAugment(
 	booked BookedPosting,
 	txnDate time.Time,
 ) (BookedPosting, []Error) {
-	lot, err := ResolveCost(p.Cost, *p.Amount, txnDate)
+	// ResolveCost is parse-tier (operates on the user-written CostSpec
+	// before booking resolves it). When the reducer's terminal
+	// CostSpec→Cost conversion lands in a later slice, a re-run over
+	// its own output will deliver *ast.Cost here; until bookOne has
+	// been taught to re-book a fully-resolved cost (lot lookup vs.
+	// resolution), refuse loudly rather than silently producing a
+	// lotless Position by calling ResolveCost(nil).
+	spec, ok := p.Cost.(*ast.CostSpec)
+	if p.Cost != nil && !ok {
+		return BookedPosting{}, []Error{{
+			Code:    CodeInternalError,
+			Span:    p.Span,
+			Account: p.Account,
+			Message: fmt.Sprintf("bookAugment: handling for already-booked cost (%T) is not implemented", p.Cost),
+		}}
+	}
+	lot, err := ResolveCost(spec, *p.Amount, txnDate)
 	if err != nil {
 		// ResolveCost returns inventory.Error values already; enrich
 		// them with the posting's span and account which ResolveCost
@@ -318,7 +355,22 @@ func bookReduce(
 	if specIsEmpty(p.Cost) && p.Price != nil {
 		priceCcy = p.Price.Amount.Currency
 	}
-	matcher := NewCostMatcher(p.Cost, priceCcy)
+	// NewCostMatcher consumes the user-written CostSpec; like
+	// bookAugment above, an already-booked *ast.Cost reaches bookReduce
+	// only after the terminal CostSpec→Cost conversion lands in a
+	// later slice. Rather than silently building a lot-less matcher
+	// (which would re-pick an arbitrary lot), refuse loudly until
+	// bookOne is taught how to re-match an already-resolved cost.
+	spec, ok := p.Cost.(*ast.CostSpec)
+	if p.Cost != nil && !ok {
+		return BookedPosting{}, []Error{{
+			Code:    CodeInternalError,
+			Span:    p.Span,
+			Account: p.Account,
+			Message: fmt.Sprintf("bookReduce: handling for already-booked cost (%T) is not implemented", p.Cost),
+		}}
+	}
+	matcher := NewCostMatcher(spec, priceCcy)
 
 	if inv == nil {
 		// A reduction against a nil inventory is structurally

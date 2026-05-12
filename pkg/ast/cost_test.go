@@ -490,14 +490,18 @@ func TestLowerPosting_WithCostAndPrice(t *testing.T) {
 	if p.Cost == nil {
 		t.Fatal("Cost is nil")
 	}
-	if p.Cost.PerUnit == nil {
+	cs, ok := p.Cost.(*CostSpec)
+	if !ok {
+		t.Fatalf("Cost concrete type = %T, want *CostSpec", p.Cost)
+	}
+	if cs.PerUnit == nil {
 		t.Fatal("Cost.PerUnit is nil")
 	}
-	if got := p.Cost.PerUnit.Number.String(); got != "100" {
+	if got := cs.PerUnit.Number.String(); got != "100" {
 		t.Errorf("Cost.PerUnit.Number = %q, want %q", got, "100")
 	}
-	if p.Cost.PerUnit.Currency != "USD" {
-		t.Errorf("Cost.PerUnit.Currency = %q, want %q", p.Cost.PerUnit.Currency, "USD")
+	if cs.PerUnit.Currency != "USD" {
+		t.Errorf("Cost.PerUnit.Currency = %q, want %q", cs.PerUnit.Currency, "USD")
 	}
 	if p.Price == nil {
 		t.Fatal("Price is nil")

@@ -35,42 +35,43 @@ func (p *Posting) TotalCost() (*Amount, error) {
 	if p == nil || p.Amount == nil || p.Cost == nil {
 		return nil, nil
 	}
-	if p.Cost.PerUnit == nil && p.Cost.Total == nil {
-		return nil, nil
-	}
+	perUnit := p.Cost.GetPerUnit()
+	total := p.Cost.GetTotal()
 	units := &p.Amount.Number
 	switch {
-	case p.Cost.PerUnit != nil && p.Cost.Total != nil:
-		if p.Cost.PerUnit.Currency != p.Cost.Total.Currency {
+	case perUnit != nil && total != nil:
+		if perUnit.Currency != total.Currency {
 			return nil, fmt.Errorf(
 				"combined cost currencies differ: %q vs %q",
-				p.Cost.PerUnit.Currency, p.Cost.Total.Currency)
+				perUnit.Currency, total.Currency)
 		}
 		perPart := new(apd.Decimal)
-		if _, err := apd.BaseContext.Mul(perPart, units, &p.Cost.PerUnit.Number); err != nil {
+		if _, err := apd.BaseContext.Mul(perPart, units, &perUnit.Number); err != nil {
 			return nil, err
 		}
-		totalPart, err := signedAbs(units, &p.Cost.Total.Number)
+		totalPart, err := signedAbs(units, &total.Number)
 		if err != nil {
 			return nil, err
 		}
-		out := Amount{Currency: p.Cost.PerUnit.Currency}
+		out := Amount{Currency: perUnit.Currency}
 		if _, err := apd.BaseContext.Add(&out.Number, perPart, totalPart); err != nil {
 			return nil, err
 		}
 		return &out, nil
-	case p.Cost.PerUnit != nil:
-		out := Amount{Currency: p.Cost.PerUnit.Currency}
-		if _, err := apd.BaseContext.Mul(&out.Number, units, &p.Cost.PerUnit.Number); err != nil {
+	case perUnit != nil:
+		out := Amount{Currency: perUnit.Currency}
+		if _, err := apd.BaseContext.Mul(&out.Number, units, &perUnit.Number); err != nil {
 			return nil, err
 		}
 		return &out, nil
-	default:
-		signed, err := signedAbs(units, &p.Cost.Total.Number)
+	case total != nil:
+		signed, err := signedAbs(units, &total.Number)
 		if err != nil {
 			return nil, err
 		}
-		return &Amount{Number: *CloneDecimal(signed), Currency: p.Cost.Total.Currency}, nil
+		return &Amount{Number: *CloneDecimal(signed), Currency: total.Currency}, nil
+	default:
+		return nil, nil
 	}
 }
 

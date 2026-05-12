@@ -27,6 +27,7 @@ go_test(
         "booking_test.go",
         "cost_test.go",
         "errors_test.go",
+        "idempotence_test.go",
         "integration_test.go",
         "inventory_test.go",
         "matcher_test.go",

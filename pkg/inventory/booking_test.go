@@ -23,7 +23,7 @@ func mkAmountPtr(t *testing.T, num, currency string) *ast.Amount {
 }
 
 // mkPosting builds a minimal ast.Posting for booking tests.
-func mkPosting(t *testing.T, account string, units ast.Amount, cost *ast.CostSpec, price *ast.PriceAnnotation) *ast.Posting {
+func mkPosting(t *testing.T, account string, units ast.Amount, cost ast.CostHolder, price *ast.PriceAnnotation) *ast.Posting {
 	t.Helper()
 	a := units
 	return &ast.Posting{

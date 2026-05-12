@@ -708,7 +708,17 @@ func postingPayload(p *ast.Posting) (postingData, error) {
 	}
 	cost := json.RawMessage("null")
 	if p.Cost != nil {
-		c, err := costSpecPayload(p.Cost)
+		// The serializer's *ast.Cost branch is not yet wired up:
+		// the loader only emits *ast.CostSpec into Posting.Cost
+		// today, and the unified cost-holder serialization is
+		// scheduled for the next slice. Until then, reject any
+		// other concrete type loudly rather than silently emitting
+		// a malformed payload.
+		spec, ok := p.Cost.(*ast.CostSpec)
+		if !ok {
+			return postingData{}, fmt.Errorf("beancompat serializer: unsupported cost holder type %T", p.Cost)
+		}
+		c, err := costSpecPayload(spec)
 		if err != nil {
 			return postingData{}, err
 		}

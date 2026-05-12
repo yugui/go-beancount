@@ -175,7 +175,7 @@ func TestApply_AugmentationFillsPerUnit(t *testing.T) {
 		t.Fatalf("booking.Apply() Directives = nil, want non-nil clone")
 	}
 	// The plugin must NOT mutate the input AST.
-	if got := txn.Postings[0].Cost.PerUnit.Number.Text('f'); got != "100.00" {
+	if got := txn.Postings[0].Cost.(*ast.CostSpec).PerUnit.Number.Text('f'); got != "100.00" {
 		t.Errorf("input PerUnit after Apply: got %q, want %q", got, "100.00")
 	}
 	// Find the cloned transaction and check its CostSpec.
@@ -1148,8 +1148,8 @@ func TestApply_EmptyBracesAugmentationInterpolated(t *testing.T) {
 	if bookedXfer == nil {
 		t.Fatalf("Apply: xfer not found")
 	}
-	cs := bookedXfer.Postings[0].Cost
-	if cs == nil || cs.PerUnit == nil {
+	cs, ok := bookedXfer.Postings[0].Cost.(*ast.CostSpec)
+	if !ok || cs == nil || cs.PerUnit == nil {
 		t.Fatalf("Apply: Assets:A CostSpec.PerUnit is nil; want interpolated 100 JPY")
 	}
 	want := dec("100")

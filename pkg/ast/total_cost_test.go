@@ -169,7 +169,8 @@ func TestPostingTotalCost_ResultIsFreshAmount(t *testing.T) {
 		t.Fatal("TotalCost() returned nil")
 	}
 	got.Number.Set(&apd.Decimal{}) // overwrite to zero
-	if p.Cost.PerUnit.Number.String() != "5" {
-		t.Errorf("TotalCost() mutating result corrupted CostSpec: PerUnit.Number = %s", p.Cost.PerUnit.Number.String())
+	cs := p.Cost.(*CostSpec)
+	if cs.PerUnit.Number.String() != "5" {
+		t.Errorf("TotalCost() mutating result corrupted CostSpec: PerUnit.Number = %s", cs.PerUnit.Number.String())
 	}
 }
