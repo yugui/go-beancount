@@ -1,0 +1,30 @@
+# gazelle:ignore
+
+load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_python//python:py_test.bzl", "py_test")
+
+py_library(
+    name = "conftest",
+    srcs = [
+        "allowlist.py",
+        "conftest.py",
+    ],
+    imports = ["."],
+    data = [
+        "@beancompat//:implementations_py",
+        "@beancompat//:strategies_py",
+        "@beancompat//:tests_py",
+    ],
+    deps = [
+        "//pkg/compat/beancompat/adapter",
+        "@gobeancount_pip//pytest",
+        "@rules_python//python/runfiles",
+    ],
+    visibility = ["//pkg/compat/beancompat/pyharness:__subpackages__"],
+)
+
+py_test(
+    name = "conftest_smoke_test",
+    srcs = ["conftest_smoke_test.py"],
+    deps = [":conftest"],
+)

@@ -30,14 +30,14 @@ without architectural rework.
 - `pkg/compat/beancompat/adapter/` Python package containing `GoBeancountAdapter`,
   implementing beancompat's `Implementation` protocol (`CAP_PARSE` only),
   invoking `beanparse` via runfiles.
-- `pkg/compat/beancompat/tests/` containing the overlay `conftest.py`,
+- `pkg/compat/beancompat/pyharness/` containing the overlay `conftest.py`,
   `allowlist.py` (deny-by-default fixture skip list), and the `py_test`
   entrypoint. Overlay registers `gobeancount` into beancompat's `ADAPTERS`
   dict via top-level mutation.
 - `third_party/beancompat/beancompat.BUILD` extended with filegroups for
   `tests/`, `implementations/`, `strategies/`. No `py_library` in that external
   BUILD (keeps the external repo's BUILD `rules_python`-independent).
-- One `py_test` target `//pkg/compat/beancompat/tests:test_fixtures` that runs
+- One `py_test` target `//pkg/compat/beancompat/pyharness:test_fixtures` that runs
   pytest against `tests/test_fixtures.py` for go-beancount only, with the same
   three fixtures (`open_single`, `price`, `transaction_balanced`) the Go-side
   allowlist enables.
@@ -207,7 +207,7 @@ values directly.
 - **Visibility:** hub-repo targets are public by `rules_python` default; do
   not constrain. Downstream BUILD files in
   `//pkg/compat/beancompat/adapter/...` and
-  `//pkg/compat/beancompat/tests/...` will reference them by full label.
+  `//pkg/compat/beancompat/pyharness/...` will reference them by full label.
 - **Non-Contract (explicitly out of scope for this Step):** `hypothesis`,
   `beancount` reference package, any test-only deps beyond `pytest`. Adding
   `hypothesis` is deferred to whichever future step enables a test_*.py file
@@ -627,11 +627,11 @@ fragility entirely.
 
 ---
 
-### Step 5 — Overlay conftest + skip-list at `pkg/compat/beancompat/tests/`
+### Step 5 — Overlay conftest + skip-list at `pkg/compat/beancompat/pyharness/`
 
 **Functional requirements.**
 
-- New directory `pkg/compat/beancompat/tests/` containing:
+- New directory `pkg/compat/beancompat/pyharness/` containing:
   - `conftest.py`: at module load time, mutates
     `tests.conftest.ADAPTERS["gobeancount"] = GoBeancountAdapter` (importing
     the upstream conftest by module path). Also configures `sys.path` so
@@ -656,13 +656,13 @@ fragility entirely.
 
 **Modules / files / targets touched.**
 
-- New: `pkg/compat/beancompat/tests/conftest.py`,
-  `pkg/compat/beancompat/tests/allowlist.py`,
-  `pkg/compat/beancompat/tests/BUILD.bazel`.
+- New: `pkg/compat/beancompat/pyharness/conftest.py`,
+  `pkg/compat/beancompat/pyharness/allowlist.py`,
+  `pkg/compat/beancompat/pyharness/BUILD.bazel`.
 
 **Verification.**
 
-- `bazel test //pkg/compat/beancompat/tests:conftest_smoke_test` passes.
+- `bazel test //pkg/compat/beancompat/pyharness:conftest_smoke_test` passes.
 - `bazel test //...` still green.
 
 **Quality requirements.**
@@ -673,13 +673,243 @@ fragility entirely.
 - Lazy import of the `gobeancount` adapter so a collection failure does not
   silently mask the underlying `ImportError`.
 
+### Detailed Design
+
+#### Contract
+
+These items are locked at design time. Step 6's `py_test` references them by
+exact name / behavior; nothing in this section is negotiable at implementation
+time.
+
+**Directory and file layout.**
+
+- `pkg/compat/beancompat/pyharness/conftest.py`
+- `pkg/compat/beancompat/pyharness/allowlist.py`
+- `pkg/compat/beancompat/pyharness/conftest_smoke_test.py`
+- `pkg/compat/beancompat/pyharness/BUILD.bazel`
+
+**`allowlist.py` exports.**
+
+- Module-level constant `ALLOWED_FIXTURES: frozenset[str]` (frozenset, not
+  set — the value is read-only after import).
+- Initial value (exact strings):
+
+  ```
+  ALLOWED_FIXTURES = frozenset({
+      "parse/open_single.json",
+      "parse/price.json",
+      "parse/transaction_balanced.json",
+  })
+  ```
+
+- Format rationale (load-bearing): upstream `tests/test_fixtures.py`'s
+  `_fixture_id(path)` returns `str(path.relative_to(FIXTURES_DIR))`, i.e. the
+  tier-prefixed path including the `.json` extension. Locking the allowlist to
+  the same form keeps the conftest's lookup a direct membership test.
+- Allowlist is intentionally *not* the same string form as Go-side
+  `enabledParseFixtures` (which uses bare basenames `"open_single"`).
+  Three-fixture string duplication is the correct tradeoff at this scope.
+
+**`conftest.py` module-load behavior (observable to Step 6).**
+
+The following actions occur in this exact order at module import time
+(top-level statements, not deferred to `pytest_configure`):
+
+1. Locate beancompat root via Bazel runfiles using
+   `Runfiles.Create()` + `r.Rlocation("beancompat/implementations/__init__.py")`
+   + `.parent.parent`. Same resolution path as Step 4's adapter.
+2. Prepend the beancompat root to `sys.path` (idempotent
+   `if root not in sys.path`).
+3. `import tests.conftest as _upstream`.
+4. Replace `ADAPTERS` in-place:
+
+   ```python
+   from adapter import GoBeancountAdapter
+   _upstream.ADAPTERS.clear()
+   _upstream.ADAPTERS["gobeancount"] = GoBeancountAdapter
+   ```
+
+   In-place `clear()` + assignment (not rebind) because
+   `tests/test_fixtures.py` captures the dict reference at its own import
+   time via `from tests.conftest import ADAPTERS`. The exact import order
+   in pytest — Step 5 conftest loads *before* `tests/test_fixtures.py` is
+   collected — guarantees the mutation is visible when upstream's
+   `@pytest.fixture(scope="session", params=list(ADAPTERS.keys()))`
+   decoration runs.
+
+   **Unconditional reject-by-removal of all non-gobeancount adapters**: not
+   gated on `is_available()`. This eliminates per-test `subprocess.run`
+   probes from reference / non-go adapters that would never produce useful
+   items in our hermetic sandbox, and resolves Phase 1's "beancount
+   reference adapter absent" risk unambiguously.
+
+All exceptions in steps 1-4 propagate as `ImportError` / `RuntimeError`
+(loud, not silenced). A misconfigured runfiles tree must fail loudly so
+pytest surfaces the collection error with full traceback.
+
+**`conftest.py` collection-time behavior — `pytest_collection_modifyitems`.**
+
+```python
+def pytest_collection_modifyitems(config, items):
+    skip_mark = pytest.mark.skip(reason="not in ALLOWED_FIXTURES")
+    for item in items:
+        fid = _fixture_id_of(item)
+        if fid is None or fid not in ALLOWED_FIXTURES:
+            item.add_marker(skip_mark)
+```
+
+The `_fixture_id_of(item)` helper algorithm:
+
+1. Inspect `item.callspec.params` (dict populated by parametrize on
+   `Function` items). Key `"fixture_path"` matches upstream's
+   `@pytest.mark.parametrize("fixture_path", ...)`.
+2. Get the `Path` object and compute `str(path.relative_to(FIXTURES_DIR))`
+   where `FIXTURES_DIR = Path(beancompat_root) / "fixtures"` — module-level
+   constant computed once. This mirrors upstream `_fixture_id` exactly.
+3. If `callspec` or `params["fixture_path"]` is absent, return `None` and
+   let the caller skip the item.
+
+Comparison key against `ALLOWED_FIXTURES` is the tier-prefixed,
+.json-suffixed form.
+
+**`conftest_smoke_test.py` contract.**
+
+Standalone `unittest.TestCase`-based test (matches Step 4 precedent;
+avoids the smoke test depending on the pytest harness it validates).
+
+Test cases (exact set):
+
+- `test_adapter_registered`: imports the overlay conftest module by file
+  path, asserts `"gobeancount" in tests.conftest.ADAPTERS` and
+  `tests.conftest.ADAPTERS["gobeancount"].__name__ == "GoBeancountAdapter"`.
+- `test_other_adapters_removed`: asserts
+  `set(tests.conftest.ADAPTERS) == {"gobeancount"}`.
+- `test_allowlist_shape`: asserts `ALLOWED_FIXTURES` is a non-empty
+  `frozenset` of `str` and every entry matches `^(parse|check)/.+\.json$`.
+
+Smoke test does NOT need fixture JSON files in its runfiles; it does not
+invoke `pytest.main` or run any actual fixture comparison.
+
+**`BUILD.bazel` target shape (locked names and labels).**
+
+```
+# gazelle:ignore
+
+load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_python//python:py_test.bzl", "py_test")
+
+py_library(
+    name = "conftest",
+    srcs = [
+        "allowlist.py",
+        "conftest.py",
+    ],
+    imports = ["."],
+    data = [
+        "@beancompat//:implementations_py",
+        "@beancompat//:strategies_py",
+        "@beancompat//:tests_py",
+    ],
+    deps = [
+        "//pkg/compat/beancompat/adapter",
+        "@gobeancount_pip//pytest",
+        "@rules_python//python/runfiles",
+    ],
+    visibility = ["//pkg/compat/beancompat/pyharness:__subpackages__"],
+)
+
+py_test(
+    name = "conftest_smoke_test",
+    srcs = ["conftest_smoke_test.py"],
+    deps = [":conftest"],
+)
+```
+
+Locked attributes Step 6 will reference:
+
+- Label `//pkg/compat/beancompat/pyharness:conftest` — Step 6's `py_test`
+  lists this in `deps`.
+- `imports = ["."]` puts the test directory on `sys.path` so
+  `from allowlist import ALLOWED_FIXTURES` resolves from inside
+  `conftest.py`.
+- `data` contains all three beancompat filegroups. Step 6 inherits via
+  `deps`; does NOT need to repeat them.
+- Visibility constrained to subpackages of `//pkg/compat/beancompat/pyharness`.
+
+**Cross-step references — Step 6 obligations surfaced by Step 5.**
+
+- Step 6's `py_test(name = "test_fixtures", ...)` declares
+  `deps = ["//pkg/compat/beancompat/pyharness:conftest", ...]`. It does NOT
+  list `conftest.py` in its own `srcs`; runfiles propagation through
+  `deps` is sufficient (pytest auto-discovers `conftest.py` during
+  collection).
+- Step 6 sets its own `imports = ["."]` but does NOT need to re-add the
+  beancompat root to `sys.path` — Step 5's conftest does that.
+- Step 6 must add a `scripts_py` filegroup (or equivalent) to
+  `third_party/beancompat/beancompat.BUILD` so
+  `from scripts.fixture_format import contains_parse_result` resolves at
+  collection time inside `tests/test_fixtures.py`. Step 5 surfaces this
+  obligation but does not fulfil it (the smoke test does not exercise
+  that import path).
+
+#### Suggested Internals
+
+The implementer may adopt, modify, or replace any of the following.
+
+- **`_resolve_beancompat_root()` snippet.** Mirror Step 4's helper. Factoring
+  into Step 4's adapter module is rejected (small enough to duplicate;
+  factoring forces a non-adapter responsibility on the adapter module).
+- **Fixture-ID extraction.** Recommended: `Path(params["fixture_path"]).relative_to(FIXTURES_DIR)`.
+  Alternative `nodeid` regex parsing is rejected (implementation-detail).
+- **`sys.path` placement.** Top of module (not `pytest_configure`) —
+  `pytest_configure` runs after conftest module imports complete, too late
+  for `from tests.conftest import ADAPTERS` at the top.
+- **Smoke test pattern.** `unittest.TestCase` + `unittest.main()`. Pytest
+  rejected: smoke test should not depend on the harness it validates.
+- **Error handling for missing data deps.** Let
+  `_resolve_beancompat_root()` raise (loud). Do NOT swallow into a
+  degenerate "no adapters" state — Step 6 would see "0 tests collected"
+  with no actionable message.
+
+#### Alternatives discussed
+
+- **ADAPTERS mutation: top-level vs `pytest_configure` vs entry-point plugin.**
+  Top-level wins because `pytest_configure` runs after parametrize is
+  evaluated; entry-point plugin requires a wheel and pip install.
+- **Fixture-ID source: `Path` from `callspec.params` vs nodeid regex.**
+  Path object is the public stable API; regex parses an implementation
+  detail.
+- **Beancount reference adapter handling: trust `is_available()` vs pop
+  beancount only vs `clear()` everything.** `clear()` everything wins —
+  tightest test surface, zero subprocess probes, no fragility against
+  upstream upgrades of `is_available()`.
+- **Allowlist format: `"parse/open_single.json"` vs `"open_single.json"`
+  vs `"open_single"`.** Tier-prefixed with extension exactly matches
+  upstream `_fixture_id`; no normalization layer.
+- **`py_library` for conftest+allowlist vs srcs-in-py_test.** Library lets
+  Step 6 consume via `deps` without repeating filegroups.
+
+#### Recommendation
+
+Land the overlay conftest as specified. The three highest-leverage decisions
+are:
+
+1. **`_upstream.ADAPTERS.clear()` then single-key re-register**: tightest
+   surface, no subprocess probes, resolves Phase 1's beancount-reference
+   risk at registration.
+2. **Allowlist value `"parse/open_single.json"` (tier-prefixed with
+   extension)**: exact match for upstream `_fixture_id`, no normalization
+   layer to drift.
+3. **Single `py_library` consumed via `deps`**: Step 6 stays small;
+   data-dep wiring lives in one place.
+
 ---
 
 ### Step 6 — Add the `py_test` target and validate end-to-end
 
 **Functional requirements.**
 
-- In `pkg/compat/beancompat/tests/BUILD.bazel`, declare:
+- In `pkg/compat/beancompat/pyharness/BUILD.bazel`, declare:
   - `py_test(name = "test_fixtures", srcs = ["pytest_main.py"], main = "pytest_main.py", data = ["@beancompat//:tests_py", "@beancompat//:implementations_py", "@beancompat//:strategies_py", "@beancompat//:parse_fixtures", "@beancompat//:check_fixtures", "//pkg/compat/beancompat/adapter/beanparse:beanparse"], deps = ["//pkg/compat/beancompat/adapter", "@<pip-hub>//pyyaml", "@<pip-hub>//pytest"], env = {"BEANPARSE_BIN": "$(rootpath //pkg/compat/beancompat/adapter/beanparse:beanparse)"}, imports = ["…"])`.
   - `pytest_main.py` is a thin wrapper that calls
     `pytest.main(["-x", "<runfiles-path-to>/tests/test_fixtures.py"])` and
@@ -693,15 +923,15 @@ fragility entirely.
 
 **Modules / files / targets touched.**
 
-- `pkg/compat/beancompat/tests/BUILD.bazel`,
-  `pkg/compat/beancompat/tests/pytest_main.py`.
+- `pkg/compat/beancompat/pyharness/BUILD.bazel`,
+  `pkg/compat/beancompat/pyharness/pytest_main.py`.
 - Possibly small surgical fixes to `pkg/compat/beancompat/serialize.go` if a
   fixture we expect to pass actually fails for a cleanly-fixable reason;
   otherwise pull the fixture from the allowlist and document.
 
 **Verification.**
 
-- `bazel test //pkg/compat/beancompat/tests:test_fixtures` is green, with
+- `bazel test //pkg/compat/beancompat/pyharness:test_fixtures` is green, with
   pytest output showing three parametrized cases passing for `gobeancount`,
   remaining cases skipped (capability gating or allowlist policy).
 - `bazel test //...` reports all targets green; total count = previous
@@ -749,7 +979,7 @@ choices, in priority order:
 3. **Filegroup-only exposure of beancompat Python sources** keeps
    `third_party/beancompat/beancompat.BUILD` decoupled from `rules_python`.
 4. **`pytest_collection_modifyitems`-based local skip list** in
-   `pkg/compat/beancompat/tests/allowlist.py`. Three fixtures don't justify
+   `pkg/compat/beancompat/pyharness/allowlist.py`. Three fixtures don't justify
    cross-language allowlist plumbing.
 5. **Reuse `pkg/compat/beancompat.SerializeParsed`.** That serializer is
    already test-covered by the Go side. The new py_test is a second harness
