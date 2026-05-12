@@ -701,6 +701,17 @@ type postingData struct {
 // silently normalize trailing zeros and break matchDecimal's precision
 // check.
 //
+// Units emits JSON null when Posting.Amount is nil (the elided-amount
+// posting case, where the parser records no explicit amount). Unlike the
+// optional sub-fields of costSpecPayload (which are omitted rather than
+// nullified), the units key is always emitted (the struct tag has no
+// omitempty, so a nil *amountData marshals to JSON null) for symmetry with
+// the other always-emitted envelope fields (cost/price/flag/meta);
+// containment matches either way, so a future switch to key omission via
+// omitempty under Plan D would not break fixtures. The elided_posting_amount
+// subtest in TestSerializeTransaction pins this null-emission as a
+// deliberate contract.
+//
 // Cost is rendered as JSON null when the AST has no CostSpec attached
 // (parser-emitted postings without a {...}/{{...}} clause); a non-nil
 // CostSpec is delegated to costSpecPayload, which emits the discriminated

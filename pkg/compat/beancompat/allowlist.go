@@ -11,6 +11,7 @@ package beancompat
 var enabledParseFixtures = map[string]string{
 	"close":                "verified 2026-05-12",
 	"commodity":            "verified 2026-05-12",
+	"missing_sentinel":     "verified 2026-05-12",
 	"open_multi_currency":  "verified 2026-05-12",
 	"open_no_currency":     "verified 2026-05-12",
 	"open_single":          "verified 2026-05-11",
