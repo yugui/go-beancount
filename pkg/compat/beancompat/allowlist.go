@@ -9,6 +9,10 @@ package beancompat
 // even when go-beancount's serializer cannot yet produce a matching
 // Result for it.
 var enabledParseFixtures = map[string]string{
+	"close":                "verified 2026-05-12",
+	"commodity":            "verified 2026-05-12",
+	"open_multi_currency":  "verified 2026-05-12",
+	"open_no_currency":     "verified 2026-05-12",
 	"open_single":          "verified 2026-05-11",
 	"price":                "verified 2026-05-11",
 	"transaction_balanced": "verified 2026-05-11",
