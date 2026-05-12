@@ -9,12 +9,10 @@ import (
 )
 
 // TestParseFixtures drives the parse-tier beancompat suite. Every fixture
-// is enumerated as a subtest, but with an empty enabledParseFixtures
-// (Step 2) every subtest reports SKIP. This verifies the fixture
-// discovery and gating plumbing in isolation, before any serializer
-// implementation can claim behavioral coverage.
+// runs by default; only entries listed in parseDivergences (local) or
+// the fixture's own known_divergences["go-beancount"] (upstream) skip.
 func TestParseFixtures(t *testing.T) {
-	runFixtures(t, fixturesDir(t, "parse"), enabledParseFixtures,
+	runFixtures(t, fixturesDir(t, "parse"), parseDivergences,
 		func(src string) (Result, error) {
 			ledger, err := ast.Load(src)
 			if err != nil {

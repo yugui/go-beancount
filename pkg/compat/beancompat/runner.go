@@ -15,7 +15,7 @@ import (
 // adapterName is the identifier this package reports as in beancompat's
 // per-adapter divergence book-keeping. A fixture's known_divergences map
 // keyed by this name causes the corresponding subtest to skip with the
-// divergence reason, independent of the allowlist.
+// divergence reason, independent of the local denylist.
 const adapterName = "go-beancount"
 
 // fixturesDir resolves the runfiles location of an upstream beancompat
@@ -51,11 +51,14 @@ func loadFixture(t *testing.T, p string) Fixture {
 }
 
 // runFixtures drives one tier of the beancompat suite. It iterates every
-// fixture file in dir as a subtest, applies a two-tier gating policy
-// (known_divergences first, then allowlist), and invokes serialize +
-// Match only for explicitly enabled fixtures. After the loop it checks
-// that every allowlist entry corresponds to an actual fixture file, so
-// stale entries surface as test failures rather than silently passing.
+// fixture file in dir as a subtest and runs the comparison by default;
+// only fixtures the suite has explicitly declared as divergent skip. The
+// gating policy is two-tier: an upstream-recorded divergence
+// (fx.KnownDivergences[adapterName]) takes precedence, falling back to the
+// local denylist for divergences not yet reflected upstream. After the loop
+// it checks that every denylist entry corresponds to an actual fixture
+// file, so stale entries surface as test failures rather than silently
+// gating nothing.
 //
 // The serialize callback is the tier-specific bridge from beancount
 // source text to an Result — parse-tier and check-tier tests differ
@@ -63,7 +66,7 @@ func loadFixture(t *testing.T, p string) Fixture {
 func runFixtures(
 	t *testing.T,
 	dir string,
-	allowlist map[string]string,
+	denylist map[string]string,
 	serialize func(src string) (Result, error),
 ) {
 	t.Helper()
@@ -81,10 +84,10 @@ func runFixtures(
 		t.Run(name, func(t *testing.T) {
 			fx := loadFixture(t, p)
 			if reason, ok := fx.KnownDivergences[adapterName]; ok {
-				t.Skipf("known divergence: %s", reason)
+				t.Skipf("known divergence (upstream): %s", reason)
 			}
-			if _, ok := allowlist[name]; !ok {
-				t.Skipf("not in allowlist; add %q to enabledParseFixtures or enabledCheckFixtures to enable", name)
+			if reason, ok := denylist[name]; ok {
+				t.Skipf("known divergence (local): %s", reason)
 			}
 			actual, err := serialize(fx.Source)
 			if err != nil {
@@ -95,9 +98,9 @@ func runFixtures(
 			}
 		})
 	}
-	for name := range allowlist {
+	for name := range denylist {
 		if !seen[name] {
-			t.Errorf("allowlist entry %q has no matching fixture in %q", name, dir)
+			t.Errorf("denylist entry %q has no matching fixture in %q", name, dir)
 		}
 	}
 }
