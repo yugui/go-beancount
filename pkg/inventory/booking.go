@@ -2,7 +2,6 @@ package inventory
 
 import (
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
@@ -140,11 +139,16 @@ func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 	// purposes: the price annotation supplies the currency so the
 	// matcher's empty-{} fallback is reachable from bookOne.
 	hintCcy := ""
+	var perUnit, total *ast.Amount
+	if p.Cost != nil {
+		perUnit = p.Cost.GetPerUnit()
+		total = p.Cost.GetTotal()
+	}
 	switch {
-	case p.Cost != nil && p.Cost.GetPerUnit() != nil:
-		hintCcy = p.Cost.GetPerUnit().Currency
-	case p.Cost != nil && p.Cost.GetTotal() != nil:
-		hintCcy = p.Cost.GetTotal().Currency
+	case perUnit != nil:
+		hintCcy = perUnit.Currency
+	case total != nil:
+		hintCcy = total.Currency
 	case specIsEmpty(p.Cost) && p.Price != nil:
 		hintCcy = p.Price.Amount.Currency
 	}
@@ -261,23 +265,7 @@ func bookAugment(
 	booked BookedPosting,
 	txnDate time.Time,
 ) (BookedPosting, []Error) {
-	// ResolveCost is parse-tier (operates on the user-written CostSpec
-	// before booking resolves it). When the reducer's terminal
-	// CostSpec→Cost conversion lands in a later slice, a re-run over
-	// its own output will deliver *ast.Cost here; until bookOne has
-	// been taught to re-book a fully-resolved cost (lot lookup vs.
-	// resolution), refuse loudly rather than silently producing a
-	// lotless Position by calling ResolveCost(nil).
-	spec, ok := p.Cost.(*ast.CostSpec)
-	if p.Cost != nil && !ok {
-		return BookedPosting{}, []Error{{
-			Code:    CodeInternalError,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: fmt.Sprintf("bookAugment: handling for already-booked cost (%T) is not implemented", p.Cost),
-		}}
-	}
-	lot, err := ResolveCost(spec, *p.Amount, txnDate)
+	lot, err := ResolveCost(p.Cost, *p.Amount, txnDate)
 	if err != nil {
 		// ResolveCost returns inventory.Error values already; enrich
 		// them with the posting's span and account which ResolveCost
@@ -355,22 +343,7 @@ func bookReduce(
 	if specIsEmpty(p.Cost) && p.Price != nil {
 		priceCcy = p.Price.Amount.Currency
 	}
-	// NewCostMatcher consumes the user-written CostSpec; like
-	// bookAugment above, an already-booked *ast.Cost reaches bookReduce
-	// only after the terminal CostSpec→Cost conversion lands in a
-	// later slice. Rather than silently building a lot-less matcher
-	// (which would re-pick an arbitrary lot), refuse loudly until
-	// bookOne is taught how to re-match an already-resolved cost.
-	spec, ok := p.Cost.(*ast.CostSpec)
-	if p.Cost != nil && !ok {
-		return BookedPosting{}, []Error{{
-			Code:    CodeInternalError,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: fmt.Sprintf("bookReduce: handling for already-booked cost (%T) is not implemented", p.Cost),
-		}}
-	}
-	matcher := NewCostMatcher(spec, priceCcy)
+	matcher := NewCostMatcher(p.Cost, priceCcy)
 
 	if inv == nil {
 		// A reduction against a nil inventory is structurally

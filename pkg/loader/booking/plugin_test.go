@@ -192,16 +192,15 @@ func TestApply_AugmentationFillsPerUnit(t *testing.T) {
 		t.Errorf("booking.Apply() cloned transaction aliases input, want a distinct clone")
 	}
 	cs := clonedTxn.Postings[0].Cost
-	wantCS := &ast.CostSpec{
-		PerUnit: &ast.Amount{Number: dec("100.00"), Currency: "USD"},
-		Date:    dayp(2024, 1, 15),
-		Label:   "lot1",
+	wantCS := &ast.Cost{
+		Number:   dec("100.00"),
+		Currency: "USD",
+		Date:     day(2024, 1, 15),
+		Label:    "lot1",
+		PerUnit:  &ast.Amount{Number: dec("100.00"), Currency: "USD"},
 	}
-	opts := append(cmp.Options{
-		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
-	}, astCmpOpts...)
-	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
-		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(wantCS, cs, astCmpOpts...); diff != "" {
+		t.Errorf("booking.Apply() Cost mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -258,15 +257,28 @@ func TestApply_AugmentationPreservesTotalCostSpec(t *testing.T) {
 	if bookedTxn == nil {
 		t.Fatalf("booking.Apply: no transaction found")
 	}
-	cs := bookedTxn.Postings[0].Cost
-	wantCS := &ast.CostSpec{
-		Total: &ast.Amount{Number: dec("4.2"), Currency: "JPY"},
+	got, ok := bookedTxn.Postings[0].Cost.(*ast.Cost)
+	if !ok {
+		t.Fatalf("Cost concrete type = %T, want *ast.Cost", bookedTxn.Postings[0].Cost)
 	}
-	opts := append(cmp.Options{
-		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
-	}, astCmpOpts...)
-	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
-		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
+	// The {{Total CUR}} form: the retention contract is that Total
+	// keeps the user's literal (4.2 JPY) and PerUnit stays nil, so
+	// the printer can round-trip the surcharge-style syntax. Number
+	// is the resolved per-unit = Total / |units| at the reducer's
+	// internal precision; its exact representation is the reducer's
+	// concern, not this test's.
+	if got.PerUnit != nil {
+		t.Errorf("PerUnit = %v, want nil for {{Y CUR}} form", got.PerUnit)
+	}
+	wantTotal := &ast.Amount{Number: dec("4.2"), Currency: "JPY"}
+	if diff := cmp.Diff(wantTotal, got.Total, astCmpOpts...); diff != "" {
+		t.Errorf("Total retention mismatch (-want +got):\n%s", diff)
+	}
+	if got.Currency != "JPY" {
+		t.Errorf("Currency = %q, want JPY", got.Currency)
+	}
+	if !got.Date.Equal(day(2025, 1, 1)) {
+		t.Errorf("Date = %v, want %v", got.Date, day(2025, 1, 1))
 	}
 }
 
@@ -354,17 +366,19 @@ func TestApply_ReductionAggregatesTotal(t *testing.T) {
 	}
 	cs := bookedSell.Postings[0].Cost
 	if cs == nil {
-		t.Fatalf("CostSpec on reducing posting is nil")
+		t.Fatalf("Cost on reducing posting is nil")
 	}
-	wantCS := &ast.CostSpec{
-		Total: &ast.Amount{Number: dec("200.00"), Currency: "USD"},
-		Date:  dayp(2024, 1, 1),
+	// Single-step reduction (date filter selects lot A only): the
+	// terminal pass installs the matched lot's *ast.Cost, which
+	// carries the per-unit form of the original augmentation.
+	wantCS := &ast.Cost{
+		Number:   dec("100.00"),
+		Currency: "USD",
+		Date:     day(2024, 1, 1),
+		PerUnit:  &ast.Amount{Number: dec("100.00"), Currency: "USD"},
 	}
-	opts := append(cmp.Options{
-		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
-	}, astCmpOpts...)
-	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
-		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(wantCS, cs, astCmpOpts...); diff != "" {
+		t.Errorf("booking.Apply() Cost mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -815,21 +829,25 @@ func TestApply_Idempotent(t *testing.T) {
 		t.Fatalf("sell transaction not found after second booking pass")
 	}
 
-	wantCS := &ast.CostSpec{
-		Total: &ast.Amount{Number: dec("200.00"), Currency: "USD"},
-		Date:  dayp(2024, 1, 1),
+	// After Slice 3's terminal pass, a single-step reduction is
+	// installed on the AST as the matched lot's *ast.Cost. The lot
+	// (lot A, augmented at 100.00 USD on 2024-01-01) carries its
+	// per-unit form, so both runs see the same booked *ast.Cost
+	// shape — that is the idempotence contract.
+	wantCS := &ast.Cost{
+		Number:   dec("100.00"),
+		Currency: "USD",
+		Date:     day(2024, 1, 1),
+		PerUnit:  &ast.Amount{Number: dec("100.00"), Currency: "USD"},
 	}
-	opts := append(cmp.Options{
-		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
-	}, astCmpOpts...)
-	if diff := cmp.Diff(wantCS, firstSell.Postings[0].Cost, opts...); diff != "" {
-		t.Errorf("booking.Apply() first-run CostSpec mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(wantCS, firstSell.Postings[0].Cost, astCmpOpts...); diff != "" {
+		t.Errorf("booking.Apply() first-run Cost mismatch (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(wantCS, secondSell.Postings[0].Cost, opts...); diff != "" {
-		t.Errorf("booking.Apply() second-run CostSpec mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(wantCS, secondSell.Postings[0].Cost, astCmpOpts...); diff != "" {
+		t.Errorf("booking.Apply() second-run Cost mismatch (-want +got):\n%s", diff)
 	}
-	if diff := cmp.Diff(firstSell.Postings[0].Cost, secondSell.Postings[0].Cost, opts...); diff != "" {
-		t.Errorf("booking.Apply() CostSpec drift across runs (-first +second):\n%s", diff)
+	if diff := cmp.Diff(firstSell.Postings[0].Cost, secondSell.Postings[0].Cost, astCmpOpts...); diff != "" {
+		t.Errorf("booking.Apply() Cost drift across runs (-first +second):\n%s", diff)
 	}
 }
 
@@ -1065,19 +1083,21 @@ func TestApply_DeferredAugmentationInterpolated(t *testing.T) {
 	if bookedXfer == nil {
 		t.Fatalf("xfer transaction not found in booked directives")
 	}
-	// Augmenting posting (Assets:A): partial spec is filled with
-	// PerUnit=100 JPY, Date and Label preserved.
+	// Augmenting posting (Assets:A): resolveCostFromResidual
+	// constructs the *ast.Cost from the residual (+500 JPY absorbed
+	// across 5 STOCK) in Total form — Total retains the user-paid
+	// residual exactly, Number is the canonical per-unit Total/|units|.
+	// spec.Date and spec.Label are inherited onto the booked Cost.
 	cs := bookedXfer.Postings[0].Cost
-	wantCS := &ast.CostSpec{
-		PerUnit: &ast.Amount{Number: dec("100"), Currency: "JPY"},
-		Date:    dayp(2025, 1, 1),
-		Label:   "label",
+	wantCS := &ast.Cost{
+		Number:   dec("100"),
+		Currency: "JPY",
+		Date:     day(2025, 1, 1),
+		Label:    "label",
+		Total:    &ast.Amount{Number: dec("500"), Currency: "JPY"},
 	}
-	opts := append(cmp.Options{
-		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
-	}, astCmpOpts...)
-	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
-		t.Errorf("Assets:A interpolated CostSpec mismatch (-want +got):\n%s", diff)
+	if diff := cmp.Diff(wantCS, cs, astCmpOpts...); diff != "" {
+		t.Errorf("Assets:A interpolated Cost mismatch (-want +got):\n%s", diff)
 	}
 }
 
@@ -1148,20 +1168,35 @@ func TestApply_EmptyBracesAugmentationInterpolated(t *testing.T) {
 	if bookedXfer == nil {
 		t.Fatalf("Apply: xfer not found")
 	}
-	cs, ok := bookedXfer.Postings[0].Cost.(*ast.CostSpec)
-	if !ok || cs == nil || cs.PerUnit == nil {
-		t.Fatalf("Apply: Assets:A CostSpec.PerUnit is nil; want interpolated 100 JPY")
+	// After booking the AST holds a *ast.Cost with the resolved
+	// values: canonical Number, retained Total (the residual the
+	// interpolation absorbed), Date defaulting to the transaction
+	// date (the user wrote `{}` with no explicit Date), and an empty
+	// Label. The deferred-augment path retains Total form (not
+	// PerUnit) so resolveCostFromResidual stays symmetric with
+	// resolveCostFromReductions — neither divides at the point of
+	// retention; the canonical Number is computed once for inventory
+	// matching and the user-paid Total stays exact.
+	cs, ok := bookedXfer.Postings[0].Cost.(*ast.Cost)
+	if !ok || cs == nil {
+		t.Fatalf("Apply: Assets:A Cost type = %T, want *ast.Cost", bookedXfer.Postings[0].Cost)
 	}
-	want := dec("100")
-	if cs.PerUnit.Number.Cmp(&want) != 0 || cs.PerUnit.Currency != "JPY" {
-		t.Errorf("Apply: Assets:A PerUnit = %+v, want 100 JPY", cs.PerUnit)
+	if cs.PerUnit != nil {
+		t.Errorf("Apply: Assets:A Cost.PerUnit = %v, want nil (Total form retention)", cs.PerUnit)
 	}
-	// writeAugmentationCost only fills PerUnit/Total; the user wrote
-	// no Date and no Label on `{}` so the spec keeps both empty. The
-	// txnDate fallback the resolver applied lives on the booked
-	// inventory.Cost record, not on the AST.
-	if cs.Date != nil {
-		t.Errorf("Apply: Assets:A Cost.Date = %v, want nil (preserved from \"{}\" input)", cs.Date)
+	if cs.Total == nil {
+		t.Fatalf("Apply: Assets:A Cost.Total is nil; want retained interpolated total")
+	}
+	wantTotal := dec("500")
+	if cs.Total.Number.Cmp(&wantTotal) != 0 || cs.Total.Currency != "JPY" {
+		t.Errorf("Apply: Assets:A Total = %+v, want 500 JPY (5 STOCK × 100 JPY interpolated)", cs.Total)
+	}
+	wantNumber := dec("100")
+	if cs.Number.Cmp(&wantNumber) != 0 || cs.Currency != "JPY" {
+		t.Errorf("Apply: Assets:A Number/Currency = %s %q, want 100 JPY", cs.Number.Text('f'), cs.Currency)
+	}
+	if !cs.Date.Equal(day(2025, 2, 17)) {
+		t.Errorf("Apply: Assets:A Cost.Date = %v, want xfer txn date 2025-02-17", cs.Date)
 	}
 	if cs.Label != "" {
 		t.Errorf("Apply: Assets:A Cost.Label = %q, want \"\" (preserved from \"{}\" input)", cs.Label)

@@ -40,19 +40,22 @@ type CostMatcher struct {
 	Label      string
 }
 
-// NewCostMatcher builds a matcher from the reducing posting's cost spec
-// and an optional cost-currency hint derived from a price annotation on
-// the posting. The hint covers the case where a reducing posting has no
-// explicit cost currency but does carry a price annotation (for example
-// `-5 AAPL {} @ 190 USD`): the matcher then takes the cost currency
-// from the price annotation.
+// NewCostMatcher builds a matcher from the reducing posting's cost
+// holder and an optional cost-currency hint derived from a price
+// annotation. The two [ast.CostHolder] variants are handled uniformly:
 //
-// Behaviour summary:
+//   - c is nil && priceCurrency == "": empty matcher (matches any lot).
+//   - c is nil && priceCurrency != "": Currency = priceCurrency (the
+//     bare "@ price" reduction case).
+//   - c is *[ast.Cost]: tight matcher constrained on Number / Currency /
+//     Date / Label. The reducer is re-entering its own output and
+//     must re-match the exact lot identity recorded on the first run.
+//     priceCurrency is intentionally ignored in this branch — the
+//     booked Cost carries the authoritative Currency.
+//   - c is *[ast.CostSpec]: existing parse-tier rules apply.
 //
-//   - spec == nil && priceCurrency == "": empty matcher (matches any lot).
-//   - spec == nil && priceCurrency != "": a matcher whose only
-//     constraint is Currency = priceCurrency (the bare "@ price"
-//     reduction case).
+// CostSpec dispatch (unchanged from the parse-tier-only implementation):
+//
 //   - Per-unit-only form {X CUR} (spec.PerUnit != nil && spec.Total ==
 //     nil): HasPerUnit is set and both PerUnit and Currency are
 //     populated from spec.PerUnit — X is a real lot-selection
@@ -70,12 +73,36 @@ type CostMatcher struct {
 //
 // priceCurrency is only used as a fallback when the cost spec does not
 // itself supply a currency (i.e. both PerUnit and Total are nil).
-func NewCostMatcher(spec *ast.CostSpec, priceCurrency string) CostMatcher {
+func NewCostMatcher(c ast.CostHolder, priceCurrency string) CostMatcher {
 	var m CostMatcher
-	if spec == nil {
+	if c == nil {
 		if priceCurrency != "" {
 			m.Currency = priceCurrency
 		}
+		return m
+	}
+	if cost, ok := c.(*ast.Cost); ok {
+		// Booked input: re-match the exact lot. Number / Currency /
+		// Date / Label together are the lot identity (see
+		// [ast.Cost.Equal]), so constraining on all four reproduces
+		// the original lot selection on a re-run.
+		m.HasPerUnit = true
+		m.PerUnit = *ast.CloneDecimal(&cost.Number)
+		m.Currency = cost.Currency
+		if !cost.Date.IsZero() {
+			m.HasDate = true
+			m.Date = cost.Date
+		}
+		if cost.Label != "" {
+			m.HasLabel = true
+			m.Label = cost.Label
+		}
+		return m
+	}
+	spec, ok := c.(*ast.CostSpec)
+	if !ok {
+		// Unreachable under the sealed CostHolder union; defensive
+		// fallthrough yields an empty matcher.
 		return m
 	}
 
