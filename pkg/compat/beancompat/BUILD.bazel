@@ -5,7 +5,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "beancompat",
     srcs = [
-        "allowlist.go",
+        "denylist.go",
         "fixture.go",
         "match.go",
         "runner.go",
@@ -20,6 +20,14 @@ go_library(
         "@rules_go//go/runfiles",
     ],
 )
+
+# The gotags = ["beancompat_fixtures"] attribute on the fixture test
+# targets below activates the //go:build beancompat_fixtures constraint on
+# the corresponding sources. The tag exists to keep `go test ./...` from
+# loading these files (go test cannot fetch the @beancompat archive on its
+# own); bazel test //... still exercises them because the gotag is set
+# explicitly here. Do not remove the tag thinking it gates these targets
+# from bazel — it does not.
 
 go_test(
     name = "check_fixtures_test",

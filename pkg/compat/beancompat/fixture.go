@@ -2,10 +2,13 @@
 // measure go-beancount's behavioral conformance against other beancount
 // implementations.
 //
-// Fixtures are kept opt-in: each test file iterates every fixture but
-// individual cases run only when their name appears in the corresponding
-// allowlist (see allowlist.go). This lets new pipeline features be enabled
-// one fixture at a time without claiming coverage we have not yet verified.
+// Every fixture runs by default; deliberate divergences from spec must be
+// declared in one of two places. The upstream fixture file may carry a
+// known_divergences["go-beancount"] entry, which is the durable record once
+// a divergence has been accepted by the suite. Until then, a local entry in
+// parseDivergences or checkDivergences (see denylist.go) skips the fixture
+// with a recorded reason. Any fixture not declared in either place is
+// expected to pass and a Match failure surfaces as a real test failure.
 package beancompat
 
 import "encoding/json"
