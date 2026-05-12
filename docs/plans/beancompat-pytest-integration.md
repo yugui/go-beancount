@@ -420,6 +420,211 @@ Rationale, by consequence:
 - No upstream patches.
 - Tempfile cleanup via context manager; no leftover files in the sandbox.
 
+### Detailed Design
+
+#### Contract
+
+These items are locked at design time; Step 5's overlay conftest and Step 6's
+`py_test` will reference them by exact name.
+
+**Python package layout.**
+- Directory: `pkg/compat/beancompat/adapter/` (already established by Step 1
+  for the Go subdirectory `beanparse/`; this Step adds Python siblings).
+- Module file: `pkg/compat/beancompat/adapter/__init__.py`.
+- **Import name downstream code uses:** `from adapter import GoBeancountAdapter`.
+  Achieved by `imports = [".."]` on the `py_library` (puts the parent of
+  `adapter/` on `sys.path`, so the package importable name is `adapter`).
+  This choice is justified in Alternatives below; Step 5 and Step 6 MUST
+  use this exact import.
+
+**Class.** `GoBeancountAdapter` (exact name; Step 5's overlay conftest writes
+`tests.conftest.ADAPTERS["gobeancount"] = GoBeancountAdapter`).
+
+**Protocol surface implemented** (matching beancompat's `Implementation`
+protocol at `implementations/adapter.py` — note that `name` and `capabilities`
+are `@property`, not methods; upstream's autouse `_check_capabilities` fixture
+reads `impl.capabilities` as an attribute):
+
+- `@property name -> str` → returns the string `"gobeancount"`.
+- `@property capabilities -> set[str]` → returns `{CAP_PARSE}`, imported as
+  `from implementations.adapter import CAP_PARSE`. Type is plain `set`, not
+  `frozenset` (matches upstream rustledger / limabean and the protocol's own
+  annotation).
+- `is_available(self) -> bool` → returns True iff `_resolve_binary()` produces
+  a non-None path AND the resolved binary is executable. MUST NOT raise on
+  missing binary; returns False instead.
+- `parse_string(self, source: str) -> ParseResult` → writes `source` to a
+  tempfile and delegates to `check_file`. Returns a beancompat `ParseResult`
+  (imported from `implementations.adapter`).
+- `check_file(self, path: Path) -> ParseResult` → invokes the `beanparse`
+  binary with `path` as the sole positional argument and reshapes its
+  `{directives, errors, options}` JSON into a `ParseResult`. Per-directive
+  reshape is `Directive(type=d["type"], date=d["date"], meta=d.get("meta",
+  {}), data=d.get("data", {}))`, identical to rustledger/limabean.
+
+**Methods NOT declared on the class.** `execute_query`, `format_source`,
+`hash_entries`, `parse_string_with_plugins`, `clamp`, `load_as_fava`, and
+`run_importer` are **not declared**. This matches rustledger/limabean.
+Rationale: `Implementation` is a structural `Protocol`, so non-declaration is
+legal; upstream's `_check_capabilities` autouse fixture gates calls by
+`capabilities` membership, so unreachable methods never execute.
+
+**Binary discovery — locked in this order.**
+1. If env var `BEANPARSE_BIN` is set and non-empty, treat its value as an
+   absolute filesystem path to the binary.
+2. Otherwise, construct a `Runfiles` instance via
+   `from python.runfiles import Runfiles; r = Runfiles.Create()` and call
+   `r.Rlocation("go-beancount/pkg/compat/beancompat/adapter/beanparse/beanparse")`.
+   `"go-beancount"` is this project's `module(name = ...)` in `MODULE.bazel`.
+3. If both fail, `is_available()` returns False and `parse_string` /
+   `check_file` return a `ParseResult` with empty `directives` and a single
+   diagnostic error string.
+
+The `Runfiles.Create()` API path is from `rules_python` 1.7.0 (verified in
+the materialized `@rules_python+` repo at
+`python/runfiles/runfiles.py`; the `__init__.py` re-exports the symbol).
+
+**Subprocess invocation contract.** The adapter MUST produce a well-formed
+`ParseResult` for every outcome an upstream test could plausibly exercise —
+including beancount-level errors in the source. Specifically:
+
+- Exit 0 with valid JSON → reshape into `ParseResult`.
+- Exit nonzero → return `ParseResult(directives=[], errors=[<diagnostic
+  including stderr>])`. **MUST NOT raise** out of `parse_string` /
+  `check_file`; upstream tests expect a value.
+- Invalid JSON on stdout → same: `ParseResult(directives=[], errors=[...])`.
+- `subprocess.TimeoutExpired` → same: `ParseResult(directives=[],
+  errors=[...])`.
+
+Step 6's quality requirement ("pytest output for a failing fixture must
+surface the upstream assertion") depends on the test comparison logic seeing
+a `ParseResult`, not a subprocess exception.
+
+**Subprocess env propagation.** When invoking the binary the adapter SHOULD
+merge `r.EnvVars()` (where `r` is the `Runfiles` instance) into
+`os.environ.copy()` for the subprocess `env=` argument so that a
+runfiles-aware subprocess (if `beanparse` ever grew to read runfiles) keeps
+working. Today's binary does not read runfiles; this is defensive.
+
+**`BUILD.bazel` target shape (locked names and labels).**
+
+```
+load("@rules_python//python:py_library.bzl", "py_library")
+
+py_library(
+    name = "adapter",
+    srcs = ["__init__.py"],
+    imports = [".."],
+    data = ["//pkg/compat/beancompat/adapter/beanparse"],
+    deps = ["@rules_python//python/runfiles"],
+    visibility = ["//visibility:public"],
+)
+```
+
+- `name = "adapter"` (label `//pkg/compat/beancompat/adapter:adapter`).
+- `imports = [".."]` — puts `pkg/compat/beancompat/` on `sys.path`, so
+  the import name is `adapter`. Locked; Step 5 depends on this.
+- `data` lists the `beanparse` go_binary label so runfiles can locate it.
+- `deps` references the rules_python runfiles `py_library`.
+- `//visibility:public` — Step 5's conftest and Step 6's py_test depend on
+  this target.
+
+**Gazelle directive.** Add `# gazelle:ignore` as the first line of
+`pkg/compat/beancompat/adapter/BUILD.bazel`. Matches the convention already
+established by the sibling `beanparse/BUILD.bazel`.
+
+**Cross-step references.** Step 5's conftest performs (effectively):
+
+```python
+from adapter import GoBeancountAdapter
+import tests.conftest
+tests.conftest.ADAPTERS["gobeancount"] = GoBeancountAdapter
+```
+
+Step 6's `py_test` lists `"//pkg/compat/beancompat/adapter:adapter"` in its
+`deps` and (optionally) sets `env = {"BEANPARSE_BIN": "$(rootpath
+//pkg/compat/beancompat/adapter/beanparse)"}`.
+
+#### Suggested Internals
+
+- **Tempfile management.** `tempfile.NamedTemporaryFile(mode="w",
+  suffix=".beancount", delete=False)` inside a `with` block, then `os.unlink`
+  in a `finally`. Reference adapters skip the unlink (OS cleanup handles it).
+- **Subprocess timeout.** Suggest **30 seconds**. Reference adapters use 10s
+  for `is_available()` probes; same pattern is reasonable.
+- **JSON parsing error handling.** `try: data = json.loads(...) except
+  json.JSONDecodeError as e: return ParseResult(directives=[],
+  errors=[f"beanparse produced invalid JSON: {e}; stdout={result.stdout!r}"])`.
+- **`is_available()` implementation.** Just check `_resolve_binary() is not
+  None and os.access(path, os.X_OK)`. No defensive subprocess probe — the
+  Bazel runfiles path is hermetic.
+- **Unimplemented protocol methods.** Omit (rustledger / limabean parity)
+  rather than `NotImplementedError` stubs. Switch to stubs only if Step 6
+  surfaces an upstream test that calls a method without checking capability.
+- **`adapter_test.py` smoke test.** Recommend **including it** as a small
+  `py_test` that parses `"2024-01-01 open Assets:Cash USD\n"` and asserts
+  the `ParseResult` has at least one directive of type `"open"`. Bisection
+  fence for Step 6 debugging.
+- **Import block.**
+  ```python
+  from implementations.adapter import (
+      CAP_PARSE,
+      Directive,
+      ParseResult,
+  )
+  ```
+  Matches rustledger. `Implementation` need not be imported (structural
+  Protocol).
+
+#### Alternatives discussed
+
+- **Python import name: `adapter` vs `gobeancount_adapter` vs
+  `pkg.compat.beancompat.adapter`.**
+  - `adapter` (recommended): shortest, matches upstream pattern (rustledger
+    is `implementations.rustledger` exporting `RustledgerAdapter`), one-line
+    import in Step 5 conftest. Bazel py_test sandbox isolates sys.path so
+    no real collision risk.
+  - `gobeancount_adapter`: more self-describing but requires a separate
+    Python directory or `imports = ["."]` plus a re-export shim — mismatch
+    between Bazel layout and Python package name.
+  - `pkg.compat.beancompat.adapter`: mirrors Bazel path but forces
+    `imports = ["../../../../"]`. Brittle.
+- **Runfiles API: `python.runfiles` (rules_python target) vs
+  `bazel-runfiles` pypi vs direct env-var manipulation.**
+  - `python.runfiles` from `@rules_python//python/runfiles` (recommended):
+    no extra wheel in the lock; covered by rules_python's release versioning.
+  - `bazel-runfiles` pypi: extra pip dep for no benefit.
+  - Direct env-var manipulation: re-implements manifest parsing; brittle.
+- **Unimplemented methods: omit vs `NotImplementedError` vs sentinel returns.**
+  - Omit (recommended): rustledger/limabean precedent; `Protocol` is
+    structural; capability gating prevents calls.
+  - `NotImplementedError`: marginal defensive value.
+  - Sentinel returns: advertises capability the class lacks; misleading.
+- **Smoke test `adapter_test.py` now vs deferring to Step 6.**
+  - Now (recommended): cheap and converts Step 6's multi-layer failure mode
+    into a localized bisection.
+
+#### Recommendation
+
+Land the adapter as described under Contract. Use the bare `adapter` import
+name with `imports = [".."]` because (1) it minimizes friction for the two
+downstream Steps, (2) it matches upstream adapter conventions, and (3) the
+rename cost if a collision ever surfaces is one BUILD attribute change.
+
+Surface the unimplemented protocol methods by omission, not by
+`NotImplementedError` stubs: parity with rustledger/limabean is worth more
+than the marginal defensive value of stubs.
+
+Include the optional `adapter_test.py` smoke test in this Step. It converts
+Step 6's potential failure mode "the whole pytest harness is red, where do
+I start?" into "adapter_test green → bug in overlay conftest / allowlist /
+pytest invocation; adapter_test red → bug in subprocess wire."
+
+Locking `BEANPARSE_BIN` as a first-class override at the Contract level is
+deliberate: Step 6's `py_test` can inject the resolved binary path via
+`env = {"BEANPARSE_BIN": "$(rootpath ...)"}` and bypass any runfiles lookup
+fragility entirely.
+
 ---
 
 ### Step 5 — Overlay conftest + skip-list at `pkg/compat/beancompat/tests/`

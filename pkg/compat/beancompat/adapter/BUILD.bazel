@@ -1,0 +1,31 @@
+# gazelle:ignore
+
+load("@rules_python//python:py_library.bzl", "py_library")
+load("@rules_python//python:py_test.bzl", "py_test")
+
+py_library(
+    name = "adapter",
+    srcs = ["__init__.py"],
+    imports = [".."],
+    data = [
+        "@beancompat//:implementations_py",
+        "//pkg/compat/beancompat/adapter/beanparse",
+    ],
+    deps = [
+        "@rules_python//python/runfiles",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+py_test(
+    name = "adapter_test",
+    srcs = ["adapter_test.py"],
+    data = [
+        "@beancompat//:implementations_py",
+        "//pkg/compat/beancompat/adapter/beanparse",
+    ],
+    deps = [
+        ":adapter",
+        "@rules_python//python/runfiles",
+    ],
+)
