@@ -135,11 +135,11 @@ func scan(seq iter.Seq2[int, ast.Directive]) (declared map[string]struct{}, acco
 					accountOccs[occurrence{string(p.Account), p.Amount.Currency}] = struct{}{}
 				}
 				if p.Cost != nil {
-					if p.Cost.PerUnit != nil {
-						accountOccs[occurrence{string(p.Account), p.Cost.PerUnit.Currency}] = struct{}{}
+					if pu := p.Cost.GetPerUnit(); pu != nil {
+						accountOccs[occurrence{string(p.Account), pu.Currency}] = struct{}{}
 					}
-					if p.Cost.Total != nil {
-						accountOccs[occurrence{string(p.Account), p.Cost.Total.Currency}] = struct{}{}
+					if tot := p.Cost.GetTotal(); tot != nil {
+						accountOccs[occurrence{string(p.Account), tot.Currency}] = struct{}{}
 					}
 				}
 				if p.Price != nil {

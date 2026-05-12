@@ -555,6 +555,37 @@ func TestReducerRun_OutputIsFixedPoint(t *testing.T) {
 		t.Fatalf("1st Run: got %d errors, want 0", len(errs1))
 	}
 
+	// Witness the terminal CostSpec→Cost pass: after the first run
+	// at least one cost-bearing posting must have been converted to
+	// *ast.Cost so the second Run engages the already-booked path
+	// somewhere. The branch-specific coverage of the resolution
+	// helpers (ResolveCost / NewCostMatcher with *ast.Cost input)
+	// is pinned by focused unit tests in idempotence_test.go; here
+	// we only assert that the integration glue connects the
+	// terminal pass to the next run.
+	costConverted := 0
+	costRetained := 0
+	for _, d := range out1 {
+		txn, ok := d.(*ast.Transaction)
+		if !ok {
+			continue
+		}
+		for i := range txn.Postings {
+			p := &txn.Postings[i]
+			if p.Cost == nil {
+				continue
+			}
+			if _, ok := p.Cost.(*ast.Cost); ok {
+				costConverted++
+			} else {
+				costRetained++
+			}
+		}
+	}
+	if costConverted == 0 {
+		t.Errorf("terminal pass converted no postings to *ast.Cost (retained=%d); 2nd Run cannot exercise the already-booked path", costRetained)
+	}
+
 	r2 := inventory.NewReducer(slices.All(out1))
 	out2, errs2 := r2.Run()
 	if len(errs2) != 0 {

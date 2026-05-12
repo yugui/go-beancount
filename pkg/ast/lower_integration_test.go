@@ -277,13 +277,17 @@ func TestLower_Integration_CostAndPrice(t *testing.T) {
 	if p0.Cost == nil {
 		t.Fatal("buy posting Cost is nil")
 	}
-	if p0.Cost.PerUnit == nil || p0.Cost.PerUnit.Number.String() != "185.50" {
-		t.Errorf("Cost.PerUnit = %v, want 185.50 USD", p0.Cost.PerUnit)
+	cs, ok := p0.Cost.(*ast.CostSpec)
+	if !ok {
+		t.Fatalf("buy posting Cost concrete type = %T, want *CostSpec", p0.Cost)
 	}
-	if p0.Cost.Label != "lot1" {
-		t.Errorf("Cost.Label = %q, want %q", p0.Cost.Label, "lot1")
+	if cs.PerUnit == nil || cs.PerUnit.Number.String() != "185.50" {
+		t.Errorf("Cost.PerUnit = %v, want 185.50 USD", cs.PerUnit)
 	}
-	if p0.Cost.Date == nil {
+	if cs.Label != "lot1" {
+		t.Errorf("Cost.Label = %q, want %q", cs.Label, "lot1")
+	}
+	if cs.Date == nil {
 		t.Error("Cost.Date is nil")
 	}
 	if p0.Price == nil {

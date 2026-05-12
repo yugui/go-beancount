@@ -115,7 +115,7 @@ func costsEqualForMerge(a, b *Cost) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	return a.Equal(*b)
+	return a.Equal(b)
 }
 
 // Reduce consumes |units.Number| of the given commodity, filtered by

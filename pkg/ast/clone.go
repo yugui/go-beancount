@@ -1,6 +1,10 @@
 package ast
 
-import "github.com/cockroachdb/apd/v3"
+import (
+	"fmt"
+
+	"github.com/cockroachdb/apd/v3"
+)
 
 // CloneDecimal returns a freshly allocated deep copy of x. The returned
 // pointer owns its own storage; the caller may discard or mutate the
@@ -29,8 +33,7 @@ func CloneDecimal(x *apd.Decimal) *apd.Decimal {
 //     are scalars or small value types; they are copied by value.
 //
 // Each Clone method on a pointer receiver is nil-safe: calling Clone
-// on a nil pointer returns nil. This matches the pattern established
-// by inventory.Cost.Clone and lets callers chain clones across
+// on a nil pointer returns nil. This lets callers chain clones across
 // optional fields without nil checks.
 
 // Clone returns a deep copy of t. The Postings slice is reallocated and
@@ -60,9 +63,27 @@ func (p Posting) Clone() Posting {
 	out := p
 	out.Meta = cloneMeta(p.Meta)
 	out.Amount = p.Amount.Clone()
-	out.Cost = p.Cost.Clone()
+	out.Cost = cloneCostHolder(p.Cost)
 	out.Price = p.Price.Clone()
 	return out
+}
+
+// cloneCostHolder dispatches deep-clone over the [CostHolder] sealed
+// union. The switch is exhaustive: only *[CostSpec] and *[Cost]
+// satisfy the interface (enforced by the unexported isCostHolder
+// marker), so an unknown concrete type indicates a programming error
+// in this package.
+func cloneCostHolder(h CostHolder) CostHolder {
+	switch c := h.(type) {
+	case nil:
+		return nil
+	case *CostSpec:
+		return c.Clone()
+	case *Cost:
+		return c.Clone()
+	default:
+		panic(fmt.Sprintf("ast: unknown CostHolder concrete type %T", h))
+	}
 }
 
 // Clone returns a deep copy of c. PerUnit, Total, and Date are

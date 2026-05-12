@@ -147,21 +147,28 @@ func Infer(postings []ast.Posting, opts *options.Values, residualCurrencies []st
 		// from either component, so we use the more precise (more
 		// negative) exponent. The lowerer guarantees both components
 		// share a currency in the combined case.
+		// Tolerance is computed from the precision of the user's
+		// authored cost literals. The retained PerUnit / Total
+		// amounts on a booked *ast.Cost preserve the original
+		// Number.Exponent, so this branch dispatches identically
+		// over CostSpec and Cost via the CostHolder getters.
+		perUnit := p.Cost.GetPerUnit()
+		total := p.Cost.GetTotal()
 		var costCur string
 		var costExp int32
 		switch {
-		case p.Cost.PerUnit != nil && p.Cost.Total != nil:
-			costCur = p.Cost.PerUnit.Currency
-			costExp = p.Cost.PerUnit.Number.Exponent
-			if te := p.Cost.Total.Number.Exponent; te < costExp {
+		case perUnit != nil && total != nil:
+			costCur = perUnit.Currency
+			costExp = perUnit.Number.Exponent
+			if te := total.Number.Exponent; te < costExp {
 				costExp = te
 			}
-		case p.Cost.PerUnit != nil:
-			costCur = p.Cost.PerUnit.Currency
-			costExp = p.Cost.PerUnit.Number.Exponent
-		case p.Cost.Total != nil:
-			costCur = p.Cost.Total.Currency
-			costExp = p.Cost.Total.Number.Exponent
+		case perUnit != nil:
+			costCur = perUnit.Currency
+			costExp = perUnit.Number.Exponent
+		case total != nil:
+			costCur = total.Currency
+			costExp = total.Number.Exponent
 		default:
 			continue
 		}

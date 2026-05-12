@@ -7,12 +7,19 @@ import (
 )
 
 // Posting represents a posting within a transaction.
+//
+// Cost is a [CostHolder] (sealed union): either *[CostSpec] for the
+// parse-tier form (the lowerer always installs this) or *[Cost] for
+// the fully-booked form (installed by the inventory reducer's
+// terminal pass). nil means the posting carries no cost annotation.
+// Sites that need write access (e.g. reducer mutators) type-assert
+// to *[CostSpec]; sites that only read use the [CostHolder] getters.
 type Posting struct {
 	Span    Span
 	Flag    byte // '*', '!', or 0 if not specified
 	Account Account
 	Amount  *Amount          // nil if not specified (auto-balanced posting)
-	Cost    *CostSpec        // nil if no cost spec
+	Cost    CostHolder       // nil if no cost annotation; see Posting doc
 	Price   *PriceAnnotation // nil if no price annotation
 	Meta    Metadata
 }

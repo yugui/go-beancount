@@ -24,7 +24,7 @@ func TestPositionClone(t *testing.T) {
 	if clone.Cost == orig.Cost {
 		t.Fatal("clone shares Cost pointer with original")
 	}
-	if !clone.Cost.Equal(*orig.Cost) {
+	if !clone.Cost.Equal(orig.Cost) {
 		t.Errorf("clone.Cost %+v not equal to orig.Cost %+v", clone.Cost, orig.Cost)
 	}
 

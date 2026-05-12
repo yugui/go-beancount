@@ -33,6 +33,7 @@ go_test(
         "ast_test.go",
         "booking_test.go",
         "clone_test.go",
+        "cost_holder_test.go",
         "cost_test.go",
         "ledger_test.go",
         "load_test.go",

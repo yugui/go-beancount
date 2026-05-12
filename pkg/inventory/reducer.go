@@ -3,6 +3,7 @@ package inventory
 import (
 	"fmt"
 	"iter"
+	"time"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -152,14 +153,18 @@ func (r *Reducer) Walk(visit VisitFunc) ([]ast.Directive, []Error) {
 // needsBookingClone reports whether txn could be mutated by the booking
 // pass and therefore must be cloned before its postings are handed to
 // the booking machinery. The pass fills auto-posting amounts and may
-// rewrite cost specs (deferred PerUnit, multi-lot reduction Total); a
-// transaction with neither marker — every posting carries an Amount and
-// no Cost — is observationally unchanged by Walk and reuses its
-// pointer in the output, avoiding redundant copying on cash-flow-heavy
-// ledgers.
+// resolve parse-tier *ast.CostSpec into booked *ast.Cost values; a
+// transaction whose postings all carry an Amount and either have no
+// cost or already hold a booked *ast.Cost is observationally
+// unchanged by Walk and reuses its pointer in the output. The
+// IsBooked check is what makes a second reducer run over its own
+// output skip the clone — the booked variant is not mutated again.
 func needsBookingClone(txn *ast.Transaction) bool {
 	for _, p := range txn.Postings {
-		if p.Cost != nil || p.Amount == nil {
+		if p.Amount == nil {
+			return true
+		}
+		if p.Cost != nil && !p.Cost.IsBooked() {
 			return true
 		}
 	}
@@ -211,8 +216,29 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			continue
 		}
 		r.errs = append(r.errs, errs...)
+		// TODO(failed-posting-removal): upstream beancount removes the
+		// entire currency group from txn.Postings when book_reductions
+		// returns errors. The Go reducer currently keeps the failing
+		// posting with its original parse-tier *ast.CostSpec, which is
+		// the only place where a *ast.CostSpec can survive past Pass 1
+		// in the output AST. Matching upstream requires structurally
+		// removing failing postings here; this is a wider semantic
+		// change than the current slice scope.
 		if len(errs) == 0 {
-			r.fillMissingCostFromReductions(p, bp.Reductions)
+			// Install the resolved *ast.Cost. Augmenting postings carry
+			// it on bp.Lot; reducing postings dispatch through
+			// resolveCostFromReductions for the single / multi / cash
+			// carve-out. The IsBooked guard makes this a no-op when the
+			// reducer is re-run over its own output — the fixed-point
+			// contract checked by TestReducerRun_OutputIsFixedPoint.
+			if _, alreadyBooked := p.Cost.(*ast.Cost); !alreadyBooked {
+				switch {
+				case bp.Lot != nil:
+					p.Cost = bp.Lot.Clone()
+				case len(bp.Reductions) > 0:
+					r.resolveCostFromReductions(p, bp.Reductions)
+				}
+			}
 			booked = append(booked, bp)
 		}
 	}
@@ -226,18 +252,32 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		r.flagAmbiguousUnknowns(unknowns)
 	case len(unknowns) == 1:
 		unknownP := unknowns[0]
-		if residual, ok := r.solveResidual(booked, unknownP); ok {
-			var bp BookedPosting
-			var fillOk bool
-			if unknownP.Amount == nil {
-				bp, fillOk = r.fillAutoPosting(txn, unknownP, residual, trace)
-			} else {
-				bp, fillOk = r.fillDeferredCost(txn, unknownP, residual, trace)
-			}
-			if fillOk {
-				r.fillMissingCostFromReductions(unknownP, bp.Reductions)
-				booked = append(booked, bp)
-			}
+		residual, ok := r.solveResidual(booked, unknownP)
+		if !ok {
+			break // solveResidual already appended the diagnostic
+		}
+		inferred := unknownP.Amount == nil
+		if inferred {
+			// Auto-posting: write the inferred Amount. validateStructure
+			// guarantees unknownP.Cost is nil, and this branch must
+			// preserve that — even if bookOne below ends up matching a
+			// held-at-cost lot, the auto-posting's Cost is deliberately
+			// not written. (See the no-install rationale next to the
+			// Pass 1 install block above; we apply it here by omission.)
+			unknownP.Amount = residual
+		} else if err := r.resolveCostFromResidual(unknownP, residual, txn.Date); err != nil {
+			r.errs = append(r.errs, *err)
+			break
+		}
+		// The deferred branch pre-installed *ast.Cost above, so bookOne
+		// takes the ResolveCost(*ast.Cost) short-circuit path; the
+		// auto-posting branch left Cost nil. No post-bookOne install is
+		// needed in either case.
+		inv := trace.prepareForEdit(unknownP.Account)
+		bp, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date, inferred)
+		r.errs = append(r.errs, errs...)
+		if len(errs) == 0 {
+			booked = append(booked, bp)
 		}
 	}
 
@@ -245,35 +285,65 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	return before, after, booked, false
 }
 
-// fillMissingCostFromReductions writes a synthesized Cost.Total into p
-// when the user-supplied cost spec carries no concrete number — i.e.
-// `{}`, `{date}`, or `{label}` on a multi-lot reduction. The total is:
+// resolveCostFromReductions resolves p.Cost using the per-lot
+// information bp.Reductions carries. Dispatch over the reduction
+// shape:
 //
-//	Σ |step.Units| × step.Lot.Number
+//   - len(steps) == 0: defensive no-op. bookReduce never returns this
+//     shape on success.
+//   - Single non-cash step: install steps[0].Lot.Clone() directly.
+//     The matched lot's *ast.Cost was established when the lot was
+//     augmented and already carries the canonical Number / Currency
+//     / Date / Label plus the surcharge-form retention fields.
+//   - Single cash step (zero-value Cost — the cash-position sentinel
+//     used by [ReductionStep.Lot] when an inventory line was stored
+//     with Cost == nil): no-op. Cloning a zero Cost would put a
+//     degenerate *ast.Cost{Number:0,Currency:""} onto the AST and
+//     lose the user's syntactic intent.
+//   - Multiple steps: synthesize the aggregate
+//     Σ |step.Units| × step.Lot.Number into spec.Total on the
+//     parse-tier *ast.CostSpec; do NOT replace p.Cost with an
+//     *ast.Cost. A single *ast.Cost would have to carry a single
+//     synthesized Number (Σ/|units|) that no real lot's Number
+//     matches, which breaks the second-run lot match in the
+//     fixed-point contract. Leaving the holder as *ast.CostSpec
+//     preserves NewCostMatcher's currency-only (lenient) matcher
+//     shape so the second run re-selects the same lots.
 //
-// across the matched reduction steps, which is the figure the
-// transaction-balance validator (via PostingWeight's Total branch)
-// needs to see in cost currency.
-//
-// When the user wrote a concrete per-unit (`{X CUR}`) or both per-unit
-// and total (`{X # T CUR}`), the matcher already guarantees every
-// matched lot shares that per-unit cost, so units * PerUnit equals the
-// per-step sum and PostingWeight produces the correct weight straight
-// from the user's spec. In those cases this function is a no-op; the
-// AST is preserved verbatim, mirroring the augmentation-side policy of
-// not rewriting concrete user numbers.
-//
-// Arithmetic errors on apd.BaseContext are not expected for ledger-
-// realistic numbers, but if one occurs the function records a
+// Arithmetic failures on apd.BaseContext are not expected for
+// ledger-realistic numbers, but if one occurs the function records a
 // CodeInternalError diagnostic on the reducer rather than silently
-// leaving the cost spec unwritten — a silent skip would let the
-// validator fall through to the price branch and produce a subtly
-// wrong weight.
-func (r *Reducer) fillMissingCostFromReductions(p *ast.Posting, steps []ReductionStep) {
+// leaving p.Cost unchanged — a silent skip would let the validator
+// fall through to the price branch and produce a subtly wrong weight.
+//
+// TODO(posting-expansion): upstream beancount expands a multi-lot
+// reduction into one posting per matched lot, each carrying its own
+// *ast.Cost. The Go reducer compresses the matches into a single
+// posting whose CostSpec carries the aggregate Total. Implementing
+// the expansion would let every booked posting carry a concrete
+// *ast.Cost (matching upstream's check-tier output) but requires
+// growing txn.Postings during booking, which is out of the current
+// scope.
+func (r *Reducer) resolveCostFromReductions(p *ast.Posting, steps []ReductionStep) {
 	if len(steps) == 0 {
 		return
 	}
-	if p.Cost == nil || p.Cost.PerUnit != nil || p.Cost.Total != nil {
+	if len(steps) == 1 {
+		lot := &steps[0].Lot
+		if lot.Currency == "" && lot.Number.Sign() == 0 {
+			return // cash position; keep parse-tier *ast.CostSpec
+		}
+		p.Cost = lot.Clone()
+		return
+	}
+	// Multi-lot: mutate the parse-tier *ast.CostSpec to carry the
+	// synthesized Total. If the user already specified PerUnit or
+	// Total on the spec, do not overwrite — the matcher already
+	// found lots consistent with their literal, and on a second
+	// reducer run this branch reaches the same posting whose Total
+	// is already populated and must be a no-op.
+	spec, ok := p.Cost.(*ast.CostSpec)
+	if !ok || spec == nil || spec.PerUnit != nil || spec.Total != nil {
 		return
 	}
 	var total apd.Decimal
@@ -305,10 +375,7 @@ func (r *Reducer) fillMissingCostFromReductions(p *ast.Posting, steps []Reductio
 		}
 		total.Set(&sum)
 	}
-	p.Cost.Total = &ast.Amount{
-		Number:   total,
-		Currency: currency,
-	}
+	spec.Total = &ast.Amount{Number: total, Currency: currency}
 }
 
 // validateStructure rejects transactions whose auto-posting structure
@@ -528,62 +595,66 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 	return out, true
 }
 
-// fillAutoPosting writes the resolved residual into the auto-posting's
-// Amount and books it, using trace.prepareForEdit to record the prior
-// state of the auto-posting's account if this is the first time the
-// transaction has touched it. Errors emitted by bookOne are appended
-// to r.errs; ok is true exactly when the booking succeeded.
-func (r *Reducer) fillAutoPosting(
-	txn *ast.Transaction,
-	auto *ast.Posting,
-	residual *ast.Amount,
-	trace *stateTrace,
-) (BookedPosting, bool) {
-	auto.Amount = residual
-	inv := trace.prepareForEdit(auto.Account)
-	method := r.booking[auto.Account]
-	bp, errs := bookOne(inv, auto, method, txn.Date, true)
-	r.errs = append(r.errs, errs...)
-	return bp, len(errs) == 0
-}
-
-// fillDeferredCost solves for the per-unit cost that absorbs residual
-// across the posting's units, writes it back into deferred.Cost.PerUnit
-// (so ResolveCost and PostingWeight see the same number), and re-books
-// the posting. A zero unit count or arithmetic failure is reported via
-// r.errs and yields ok=false. The deferred posting's account was
-// already prepared for edit during Pass 1, so the prepareForEdit call
-// here is a fetch.
-func (r *Reducer) fillDeferredCost(
-	txn *ast.Transaction,
-	deferred *ast.Posting,
-	residual *ast.Amount,
-	trace *stateTrace,
-) (BookedPosting, bool) {
-	if deferred.Amount.Number.Sign() == 0 {
-		r.errs = append(r.errs, Error{
+// resolveCostFromResidual constructs the booked *ast.Cost for a
+// deferred-augment posting (one written as `{}` and held back from
+// Pass 1) using the residual the rest of the transaction left to
+// absorb. The synthesized Cost is installed on p.Cost in place of the
+// parse-tier *ast.CostSpec, so the subsequent bookOne call takes the
+// ResolveCost(*ast.Cost) short-circuit branch.
+//
+// Number is residual / |p.Amount| at the divider's full precision;
+// Total retains residual verbatim so PostingWeight's Total branch
+// reproduces the user-paid amount without precision loss. Date and
+// Label are inherited from the parse-tier *ast.CostSpec when set,
+// otherwise Date falls back to the transaction date (matching
+// ResolveCost's default for spec.Date == nil).
+//
+// A zero-unit posting or apd.Decimal arithmetic failure is reported
+// as an *Error so the caller can append it to r.errs and abort the
+// Pass 2 interpolation.
+func (r *Reducer) resolveCostFromResidual(p *ast.Posting, residual *ast.Amount, txnDate time.Time) *Error {
+	if p.Amount.Number.Sign() == 0 {
+		return &Error{
 			Code:    CodeUnresolvableInterpolation,
-			Span:    deferred.Span,
-			Account: deferred.Account,
+			Span:    p.Span,
+			Account: p.Account,
 			Message: "deferred cost cannot be interpolated: posting has zero units",
-		})
-		return BookedPosting{}, false
+		}
 	}
-	perUnit := &ast.Amount{Currency: residual.Currency}
-	if _, err := quoContext.Quo(&perUnit.Number, &residual.Number, &deferred.Amount.Number); err != nil {
-		r.errs = append(r.errs, Error{
+	absUnits := new(apd.Decimal)
+	if _, err := apd.BaseContext.Abs(absUnits, &p.Amount.Number); err != nil {
+		return &Error{
 			Code:    CodeInternalError,
-			Span:    deferred.Span,
-			Account: deferred.Account,
-			Message: "interpolate: divide residual by units: " + err.Error(),
-		})
-		return BookedPosting{}, false
+			Span:    p.Span,
+			Account: p.Account,
+			Message: "interpolate: abs units: " + err.Error(),
+		}
 	}
-	deferred.Cost.PerUnit = perUnit
-	inv := trace.prepareForEdit(deferred.Account)
-	bp, errs := bookOne(inv, deferred, r.booking[deferred.Account], txn.Date, false)
-	r.errs = append(r.errs, errs...)
-	return bp, len(errs) == 0
+	var perUnit apd.Decimal
+	if _, err := quoContext.Quo(&perUnit, &residual.Number, absUnits); err != nil {
+		return &Error{
+			Code:    CodeInternalError,
+			Span:    p.Span,
+			Account: p.Account,
+			Message: "interpolate: divide residual by units: " + err.Error(),
+		}
+	}
+	date := txnDate
+	var label string
+	if spec, ok := p.Cost.(*ast.CostSpec); ok && spec != nil {
+		if spec.Date != nil {
+			date = *spec.Date
+		}
+		label = spec.Label
+	}
+	p.Cost = &ast.Cost{
+		Number:   perUnit,
+		Currency: residual.Currency,
+		Date:     date,
+		Label:    label,
+		Total:    &ast.Amount{Number: *ast.CloneDecimal(&residual.Number), Currency: residual.Currency},
+	}
+	return nil
 }
 
 // Run walks the directives without a visitor, returning the booked

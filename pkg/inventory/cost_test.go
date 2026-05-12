@@ -92,11 +92,11 @@ func TestCostEqual(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.a.Equal(tc.b); got != tc.want {
+			if got := tc.a.Equal(&tc.b); got != tc.want {
 				t.Errorf("Equal = %v, want %v", got, tc.want)
 			}
 			// Equal is symmetric.
-			if got := tc.b.Equal(tc.a); got != tc.want {
+			if got := tc.b.Equal(&tc.a); got != tc.want {
 				t.Errorf("Equal (reversed) = %v, want %v", got, tc.want)
 			}
 		})
@@ -122,7 +122,7 @@ func TestCostClone(t *testing.T) {
 		if clone == orig {
 			t.Fatal("Clone returned the same pointer")
 		}
-		if !clone.Equal(*orig) {
+		if !clone.Equal(orig) {
 			t.Errorf("clone %+v not equal to original %+v", clone, orig)
 		}
 

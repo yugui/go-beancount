@@ -132,11 +132,11 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 					observe(units, p.Account, p.Amount.Currency)
 				}
 				if p.Cost != nil {
-					if p.Cost.PerUnit != nil {
-						observe(costs, p.Account, p.Cost.PerUnit.Currency)
+					if pu := p.Cost.GetPerUnit(); pu != nil {
+						observe(costs, p.Account, pu.Currency)
 					}
-					if p.Cost.Total != nil {
-						observe(costs, p.Account, p.Cost.Total.Currency)
+					if tot := p.Cost.GetTotal(); tot != nil {
+						observe(costs, p.Account, tot.Currency)
 					}
 				}
 			}

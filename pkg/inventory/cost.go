@@ -14,74 +14,56 @@ import (
 // well above the practical ledger use case.
 var quoContext = apd.BaseContext.WithPrecision(34)
 
-// Cost is a resolved lot cost: a per-unit number, a currency, an
-// acquisition date, and an optional lot label. It is the resolved
-// counterpart to the raw [ast.CostSpec] — where a CostSpec captures what
-// the user wrote (any of per-unit/total/date/label may be nil), a Cost
-// always has a concrete per-unit number and currency and is safe to
-// compare for lot equality.
+// Cost is the booked, fully-resolved cost of a posting. The canonical
+// type lives in [pkg/ast]; this alias preserves the inventory.Cost
+// spelling at existing call sites while the AST is the single source
+// of truth for the type definition, its methods, and its place in the
+// [ast.CostHolder] sealed union. Code that wants the "lot" spelling
+// should reference [ast.Lot].
+type Cost = ast.Cost
+
+// ResolveCost turns an [ast.CostHolder] on an augmenting posting into
+// a concrete [Cost]. The two CostHolder variants are handled
+// uniformly so callers (bookAugment, the reducer's terminal pass) do
+// not have to type-switch:
 //
-// Cost is a value type; the Number field is stored inline (not a
-// pointer) so a zero Cost has Number == 0 rather than a nil decimal.
-type Cost struct {
-	Number   apd.Decimal
-	Currency string
-	Date     time.Time
-	Label    string
-}
-
-// Lot is an alias for [Cost], preserved for documentation clarity at
-// call sites where "lot" reads more naturally than "cost".
-type Lot = Cost
-
-// Equal reports whether two costs describe the same lot: same per-unit
-// number (by value), currency, acquisition date, and label.
-func (c Cost) Equal(o Cost) bool {
-	if c.Currency != o.Currency || c.Label != o.Label {
-		return false
-	}
-	if !c.Date.Equal(o.Date) {
-		return false
-	}
-	// apd.Decimal.Cmp returns 0 when the two decimals have the same value.
-	return c.Number.Cmp(&o.Number) == 0
-}
-
-// Clone returns a deep copy of c. It is nil-safe: calling Clone on a
-// nil receiver returns nil, which matches the convention used by
-// Position for the optional Cost field.
-func (c *Cost) Clone() *Cost {
-	if c == nil {
-		return nil
-	}
-	return &Cost{
-		Number:   *ast.CloneDecimal(&c.Number),
-		Currency: c.Currency,
-		Date:     c.Date,
-		Label:    c.Label,
-	}
-}
-
-// ResolveCost turns an [ast.CostSpec] on an augmenting posting into a
-// concrete [Cost]. It implements the following cost-resolution rules:
-//
-//   - spec == nil       -> (nil, nil). The posting has no cost lot.
-//   - spec with no PerUnit and no Total (empty "{}" on an augmentation)
-//     returns an [Error] with [CodeAugmentationRequiresCost]. Reductions
-//     never call ResolveCost; they build a [CostMatcher] instead.
+//   - c is nil                       -> (nil, nil). No cost lot.
+//   - c is *[ast.Cost]               -> c.Clone(). Already resolved;
+//     the reducer is re-entering its own output and the canonical
+//     [ast.Cost.Number] is preserved as-is.
+//   - c is *[ast.CostSpec] with no PerUnit and no Total (empty "{}"
+//     on an augmentation) -> [Error] with
+//     [CodeAugmentationRequiresCost]. Reductions never call
+//     ResolveCost for this case; they build a [CostMatcher] instead.
 //   - per-unit only ({X CUR})                     -> Number = X
 //   - total only      ({{T CUR}})                 -> Number = T / |units|
 //   - combined form   ({X # T CUR}, {X # T CUR})  -> Number = X + T/|units|
 //
-// The computed Number is always positive (cost is a magnitude). The
-// Date defaults to txnDate when spec.Date is unset; Label is copied
-// verbatim. When both PerUnit and Total are present ResolveCost
-// defensively verifies that their currencies agree; a mismatch is
-// reported as [CodeInternalError] because earlier parse/lower stages
-// should have caught it.
-func ResolveCost(spec *ast.CostSpec, units ast.Amount, txnDate time.Time) (*Cost, error) {
-	if spec == nil {
+// For the CostSpec branches, the returned [ast.Cost] also retains the
+// user's PerUnit / Total literals so the printer round-trips the
+// surcharge form. The computed Number is always positive (cost is a
+// magnitude). The Date defaults to txnDate when spec.Date is unset;
+// Label is copied verbatim. When both PerUnit and Total are present
+// the function defensively verifies that their currencies agree; a
+// mismatch is reported as [CodeInternalError] because earlier
+// parse/lower stages should have caught it.
+func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, error) {
+	if c == nil {
 		return nil, nil
+	}
+	if cost, ok := c.(*ast.Cost); ok {
+		return cost.Clone(), nil
+	}
+	spec, ok := c.(*ast.CostSpec)
+	if !ok {
+		// Unreachable under the sealed CostHolder union: only the
+		// two variants above satisfy isCostHolder. The check is
+		// defensive against a future extension that forgets to
+		// update this dispatch.
+		return nil, Error{
+			Code:    CodeInternalError,
+			Message: "ResolveCost: unknown CostHolder concrete type",
+		}
 	}
 	if spec.PerUnit == nil && spec.Total == nil {
 		return nil, Error{
@@ -98,6 +80,12 @@ func ResolveCost(spec *ast.CostSpec, units ast.Amount, txnDate time.Time) (*Cost
 		out.Date = txnDate
 	}
 	out.Label = spec.Label
+	// Retain the user's syntactic form so the printer round-trips
+	// surcharge / total-only / per-unit-only after booking. The
+	// retained Amounts are cloned (not aliased) so later AST edits
+	// on the spec do not propagate to the booked Cost.
+	out.PerUnit = spec.PerUnit.Clone()
+	out.Total = spec.Total.Clone()
 
 	// |units| is used as the denominator for the total-to-per-unit
 	// division. Compute it once.

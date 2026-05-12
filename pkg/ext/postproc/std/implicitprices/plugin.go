@@ -219,9 +219,14 @@ func perUnitNumber(number, units apd.Decimal, isTotal bool, tx *ast.Transaction,
 // annotation. It accepts all four CostSpec shapes (per-unit only,
 // total only, combined, empty); returns (nil, nil) for the empty
 // case and for postings whose units would force a division by zero.
-func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*ast.Amount, *ast.Diagnostic) {
+func costPerUnit(c ast.CostHolder, units apd.Decimal, tx *ast.Transaction) (*ast.Amount, *ast.Diagnostic) {
+	if c == nil {
+		return nil, nil
+	}
+	perUnit := c.GetPerUnit()
+	total := c.GetTotal()
 	switch {
-	case c.PerUnit != nil && c.Total != nil:
+	case perUnit != nil && total != nil:
 		// Combined form: per + T/|units|. The AST contract
 		// (pkg/ast/directives.go) guarantees both components share the
 		// same currency in the combined form, so a mismatch here would
@@ -241,7 +246,7 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*ast.
 			}
 		}
 		quo := new(apd.Decimal)
-		totalNum := c.Total.Number
+		totalNum := total.Number
 		if _, err := quoContext.Quo(quo, &totalNum, absUnits); err != nil {
 			return nil, &ast.Diagnostic{
 				Code:     codeImplicitPriceError,
@@ -251,7 +256,7 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*ast.
 			}
 		}
 		out := new(apd.Decimal)
-		perNum := c.PerUnit.Number
+		perNum := perUnit.Number
 		if _, err := apd.BaseContext.Add(out, &perNum, quo); err != nil {
 			return nil, &ast.Diagnostic{
 				Code:     codeImplicitPriceError,
@@ -260,8 +265,8 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*ast.
 				Severity: ast.Error,
 			}
 		}
-		return &ast.Amount{Number: *out, Currency: c.PerUnit.Currency}, nil
-	case c.Total != nil:
+		return &ast.Amount{Number: *out, Currency: perUnit.Currency}, nil
+	case total != nil:
 		if units.Sign() == 0 {
 			return nil, nil
 		}
@@ -275,7 +280,7 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*ast.
 			}
 		}
 		out := new(apd.Decimal)
-		totalNum := c.Total.Number
+		totalNum := total.Number
 		if _, err := quoContext.Quo(out, &totalNum, absUnits); err != nil {
 			return nil, &ast.Diagnostic{
 				Code:     codeImplicitPriceError,
@@ -284,9 +289,9 @@ func costPerUnit(c *ast.CostSpec, units apd.Decimal, tx *ast.Transaction) (*ast.
 				Severity: ast.Error,
 			}
 		}
-		return &ast.Amount{Number: *out, Currency: c.Total.Currency}, nil
-	case c.PerUnit != nil:
-		return &ast.Amount{Number: *ast.CloneDecimal(&c.PerUnit.Number), Currency: c.PerUnit.Currency}, nil
+		return &ast.Amount{Number: *out, Currency: total.Currency}, nil
+	case perUnit != nil:
+		return &ast.Amount{Number: *ast.CloneDecimal(&perUnit.Number), Currency: perUnit.Currency}, nil
 	default:
 		// Empty cost spec ({} or {{}}): no concrete number to record.
 		return nil, nil
