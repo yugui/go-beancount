@@ -22,5 +22,6 @@ var enabledParseFixtures = map[string]string{
 // enabledCheckFixtures gates which check-tier fixtures actually execute,
 // using the same convention as enabledParseFixtures.
 var enabledCheckFixtures = map[string]string{
-	"transaction_with_cost": "verified 2026-05-12",
+	"transaction_auto_balance": "verified 2026-05-12",
+	"transaction_with_cost":    "verified 2026-05-12",
 }
