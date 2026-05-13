@@ -465,10 +465,11 @@ func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 		t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
 	}
 
-	// The booked transfer's reducing posting must keep the user's
-	// per-unit cost spec verbatim; no Total rewrite is performed
-	// because every matched lot shares that per-unit cost and the
-	// validation layer's PostingWeight reads units * PerUnit directly.
+	// The booked transfer's reducing posting is expanded into one
+	// posting per matched lot; each child carries the matched lot's
+	// resolved *ast.Cost rather than the user's parse-tier
+	// *ast.CostSpec. The explicit cash and gain legs follow the
+	// expanded children.
 	var bookedTransfer *ast.Transaction
 	for _, d := range res.Directives {
 		if tx, ok := d.(*ast.Transaction); ok && tx.Narration == "transfer" {
@@ -479,19 +480,7 @@ func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 	if bookedTransfer == nil {
 		t.Fatalf("transfer transaction not found in booked directives")
 	}
-	cs := bookedTransfer.Postings[0].Cost
-	if cs == nil {
-		t.Fatalf("CostSpec on reducing posting is nil")
-	}
-	wantCS := &ast.CostSpec{
-		PerUnit: &ast.Amount{Number: dec("100"), Currency: "JPY"},
-	}
-	opts := append(cmp.Options{
-		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
-	}, astCmpOpts...)
-	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
-		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
-	}
+	assertReducingExpansion(t, bookedTransfer)
 }
 
 // TestApply_StrictTotalMatchEmptyCost mirrors
@@ -499,9 +488,9 @@ func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 // spec on the reducing posting. The empty matcher accepts every lot,
 // so under STRICT this reduction is also a total match: requested
 // 20 STOCK == 10 + 10 across the two held lots. After booking, the
-// reducing posting's CostSpec must be filled with a concrete Total
-// so the transaction-balance validator no longer sees an unbalanced
-// residual in STOCK.
+// reducing posting is expanded into one posting per matched lot,
+// each carrying its own resolved *ast.Cost so the transaction-balance
+// validator sees per-child weights summing to the requested total.
 func TestApply_StrictTotalMatchEmptyCost(t *testing.T) {
 	openA := &ast.Open{
 		Date:       day(2025, 1, 1),
@@ -579,18 +568,53 @@ func TestApply_StrictTotalMatchEmptyCost(t *testing.T) {
 	if bookedTransfer == nil {
 		t.Fatalf("transfer transaction not found in booked directives")
 	}
-	cs := bookedTransfer.Postings[0].Cost
-	if cs == nil {
-		t.Fatalf("CostSpec on reducing posting is nil")
+	assertReducingExpansion(t, bookedTransfer)
+}
+
+// assertReducingExpansion is the shared verification body for
+// TestApply_StrictTotalMatch{PerUnitCost,EmptyCost}: both fixtures
+// produce identical expanded output (two per-lot children on
+// Assets:A followed by the unchanged JPY legs) regardless of the
+// reducing posting's input CostSpec form.
+func assertReducingExpansion(t *testing.T, bookedTransfer *ast.Transaction) {
+	t.Helper()
+	if got := len(bookedTransfer.Postings); got != 4 {
+		t.Fatalf("booking.Apply: Postings count = %d, want 4 (multi-lot reduction expanded into 2 per-lot children + 2 unchanged JPY legs)", got)
 	}
-	wantCS := &ast.CostSpec{
-		Total: &ast.Amount{Number: dec("2000"), Currency: "JPY"},
-	}
-	opts := append(cmp.Options{
-		cmpopts.IgnoreFields(ast.CostSpec{}, "Span"),
-	}, astCmpOpts...)
-	if diff := cmp.Diff(wantCS, cs, opts...); diff != "" {
-		t.Errorf("booking.Apply() CostSpec mismatch (-want +got):\n%s", diff)
+	wantLabels := []string{"first", "second"}
+	wantDate := day(2025, 1, 1)
+	for i, label := range wantLabels {
+		child := bookedTransfer.Postings[i]
+		if child.Account != "Assets:A" {
+			t.Errorf("booking.Apply: Postings[%d].Account = %q, want Assets:A", i, child.Account)
+		}
+		cs, ok := child.Cost.(*ast.Cost)
+		if !ok || cs == nil {
+			t.Fatalf("booking.Apply: Postings[%d].Cost type = %T, want *ast.Cost", i, child.Cost)
+		}
+		// PerUnit and Total are intentionally left zero on wantCost: an
+		// expanded reduction child carries only the matched lot's
+		// identity (Number/Currency/Date/Label), not the user-written
+		// surcharge form retained on augmenting postings. Comparing
+		// without IgnoreFields pins the contract that the booking
+		// pipeline does not leak provenance fields into reduction
+		// children.
+		wantCost := &ast.Cost{
+			Number:   dec("100"),
+			Currency: "JPY",
+			Date:     wantDate,
+			Label:    label,
+		}
+		if diff := cmp.Diff(wantCost, cs, astCmpOpts...); diff != "" {
+			t.Errorf("booking.Apply: Postings[%d].Cost mismatch (-want +got):\n%s", i, diff)
+		}
+		if child.Amount == nil {
+			t.Fatalf("booking.Apply: Postings[%d].Amount = nil", i)
+		}
+		wantAmount := &ast.Amount{Number: dec("-10"), Currency: "STOCK"}
+		if diff := cmp.Diff(wantAmount, child.Amount, astCmpOpts...); diff != "" {
+			t.Errorf("booking.Apply: Postings[%d].Amount mismatch (-want +got):\n%s", i, diff)
+		}
 	}
 }
 
@@ -1173,33 +1197,23 @@ func TestApply_EmptyBracesAugmentationInterpolated(t *testing.T) {
 	// interpolation absorbed), Date defaulting to the transaction
 	// date (the user wrote `{}` with no explicit Date), and an empty
 	// Label. The deferred-augment path retains Total form (not
-	// PerUnit) so resolveCostFromResidual stays symmetric with
-	// resolveCostFromReductions — neither divides at the point of
-	// retention; the canonical Number is computed once for inventory
-	// matching and the user-paid Total stays exact.
+	// PerUnit) so the canonical Number is computed once for
+	// inventory matching and the user-paid Total stays exact.
 	cs, ok := bookedXfer.Postings[0].Cost.(*ast.Cost)
 	if !ok || cs == nil {
 		t.Fatalf("Apply: Assets:A Cost type = %T, want *ast.Cost", bookedXfer.Postings[0].Cost)
 	}
-	if cs.PerUnit != nil {
-		t.Errorf("Apply: Assets:A Cost.PerUnit = %v, want nil (Total form retention)", cs.PerUnit)
+	// Total form retention: PerUnit nil, Total carrying the 5 STOCK × 100
+	// JPY = 500 JPY interpolation. Date defaults to the transfer date and
+	// Label remains empty per the user's "{}" input.
+	wantCost := &ast.Cost{
+		Number:   dec("100"),
+		Currency: "JPY",
+		Date:     day(2025, 2, 17),
+		Total:    &ast.Amount{Number: dec("500"), Currency: "JPY"},
 	}
-	if cs.Total == nil {
-		t.Fatalf("Apply: Assets:A Cost.Total is nil; want retained interpolated total")
-	}
-	wantTotal := dec("500")
-	if cs.Total.Number.Cmp(&wantTotal) != 0 || cs.Total.Currency != "JPY" {
-		t.Errorf("Apply: Assets:A Total = %+v, want 500 JPY (5 STOCK × 100 JPY interpolated)", cs.Total)
-	}
-	wantNumber := dec("100")
-	if cs.Number.Cmp(&wantNumber) != 0 || cs.Currency != "JPY" {
-		t.Errorf("Apply: Assets:A Number/Currency = %s %q, want 100 JPY", cs.Number.Text('f'), cs.Currency)
-	}
-	if !cs.Date.Equal(day(2025, 2, 17)) {
-		t.Errorf("Apply: Assets:A Cost.Date = %v, want xfer txn date 2025-02-17", cs.Date)
-	}
-	if cs.Label != "" {
-		t.Errorf("Apply: Assets:A Cost.Label = %q, want \"\" (preserved from \"{}\" input)", cs.Label)
+	if diff := cmp.Diff(wantCost, cs, astCmpOpts...); diff != "" {
+		t.Errorf("Apply: Assets:A booked Cost mismatch (-want +got):\n%s", diff)
 	}
 }
 

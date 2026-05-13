@@ -5,18 +5,21 @@
 ; testing purposes. No real-world brokers, funds, or tickers are
 ; referenced. USD is used as a neutral cash currency.
 ;
-; The fixture exercises every Pass-2 interpolation/synthesis path the
+; The fixture exercises every interpolation / rewrite path the
 ; Reducer can take, in a single ledger:
 ;
-;   (A) Deferred per-unit cost on an augmenting `{}` posting. Pass 2
+;   (A) Deferred per-unit cost on an augmenting `{}` posting. Pass 3
 ;       solves PerUnit from the residual.
-;   (B) Multi-lot reduction Total synthesis: a `{}` reduction crosses
-;       a lot boundary under FIFO and the Reducer writes back
-;       Cost.Total = Σ |units| × lot.Number.
+;   (B) Multi-lot reduction expansion: a `{}` reduction crosses a lot
+;       boundary under FIFO and Pass 2 replaces the posting with one
+;       child per matched lot, each carrying its own resolved
+;       *ast.Cost.
 ;   (C) Auto-balanced posting (nil Amount) inferred from the residual.
 ;
 ; (B) and (C) coexist on the same transaction so a single sale drives
-; both edits.
+; both edits — and pins the contract that Pass 2 (expansion) must run
+; before Pass 3 (residual), so PostingWeight on each expanded child
+; sums to the residual the auto-posting absorbs.
 ;
 ; A trivial cash-only transaction is also included so the test exercises
 ; the no-clone path (needsBookingClone == false) alongside the cloned
@@ -36,7 +39,7 @@ option "operating_currency" "USD"
   Equity:Opening-Balances    -1000.00 USD
 
 ; (A) Deferred cost: the augmenting STOCK posting has a `{}` cost spec
-; with no number. Pass 2 divides the residual (-(-50.00) = 50.00 USD)
+; with no number. Pass 3 divides the residual (-(-50.00) = 50.00 USD)
 ; by the 10-unit Amount to solve PerUnit = 5.00 USD per share.
 2025-01-10 * "Buy STOCK with deferred cost"
   Assets:Stock                     10 STOCK {}
@@ -51,10 +54,12 @@ option "operating_currency" "USD"
 
 ; (B) + (C): selling 15 STOCK under `{}` consumes 10 from the first lot
 ; (5.00 USD basis) and 5 from the second lot (6.00 USD basis), for a
-; total cost basis of 10*5 + 5*6 = 80.00 USD. Pass 1 writes that figure
-; back as Cost.Total. The cash leg is explicit at +100.00 USD, so the
-; auto-balanced Income:Capital posting absorbs the realized gain
-; (residual = -20.00 USD).
+; total cost basis of 10*5 + 5*6 = 80.00 USD. Pass 2 replaces the
+; reducing posting with two children, one per matched lot, each
+; carrying its own *ast.Cost. The cash leg is explicit at +100.00 USD,
+; so the auto-balanced Income:Capital posting absorbs the realized
+; gain (residual = -20.00 USD) computed by Pass 3 against the
+; expanded children's per-child weights.
 2025-03-01 * "Sell STOCK at gain"
   Assets:Stock                    -15 STOCK {}
   Assets:Cash                  100.00 USD

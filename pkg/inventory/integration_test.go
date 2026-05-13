@@ -1,6 +1,7 @@
 package inventory_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,6 +25,20 @@ var invCmpOpts = cmp.Options{
 	cmp.Comparer(func(x, y time.Time) bool { return x.Equal(y) }),
 	cmpopts.EquateEmpty(),
 }
+
+// lotIdentityCmpOpts extends invCmpOpts with IgnoreFields options for
+// fields that exist on a booked record solely as presentation
+// provenance and are intentionally excluded from lot identity:
+//
+//   - ast.Cost.PerUnit / ast.Cost.Total — retained by the booked Cost
+//     so the printer can round-trip the user's original syntax. Lot
+//     identity per ast.Cost.Equal is Number / Currency / Date / Label.
+//   - inventory.ReductionStep.SalePricePer — populated only when the
+//     reducing posting carries a price annotation; not part of the
+//     per-lot consumption record that lot-identity tests assert.
+var lotIdentityCmpOpts = append(append(cmp.Options(nil), invCmpOpts...),
+	cmpopts.IgnoreFields(ast.Cost{}, "PerUnit", "Total"),
+	cmpopts.IgnoreFields(inventory.ReductionStep{}, "SalePricePer"))
 
 // loadInspectionFixture loads testdata/inspection_e2e.beancount via the
 // ast layer directly (no loader pipeline) and fails the test on any
@@ -385,8 +400,11 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 }
 
 // TestInventoryIntegration_InspectFIFOReduction verifies that a FIFO
-// sale crossing a lot boundary emits one ReductionStep per consumed lot
-// and that per-step realized gains sum to the expected total.
+// sale crossing a lot boundary is expanded into one BookedPosting per
+// consumed lot, each carrying its own single-step Reductions slice and
+// per-step realized gain. Summed across the expanded postings the
+// realized gains reproduce the per-share basis the inventory layer
+// computes.
 func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 	ledger := loadInspectionFixture(t)
 	r := inventory.NewReducer(ledger.All())
@@ -418,75 +436,80 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 		},
 	)
 
-	var gizmoBP *inventory.BookedPosting
+	var gizmoBPs []*inventory.BookedPosting
 	for i := range insp.Booked {
 		if insp.Booked[i].Account == "Assets:Investments:BrokerB" {
-			gizmoBP = &insp.Booked[i]
+			gizmoBPs = append(gizmoBPs, &insp.Booked[i])
 		}
 	}
-	if gizmoBP == nil {
-		t.Fatalf("no BookedPosting for Assets:Investments:BrokerB")
-	}
-	if gizmoBP.InferredAuto {
-		t.Errorf("gizmoBP.InferredAuto = true, want false")
-	}
-	if len(gizmoBP.Reductions) != 2 {
-		t.Fatalf("gizmoBP.Reductions: got %d steps, want 2", len(gizmoBP.Reductions))
+	if len(gizmoBPs) != 2 {
+		t.Fatalf("BrokerB BookedPostings: got %d, want 2 (FIFO sale expanded into two per-lot postings)", len(gizmoBPs))
 	}
 
-	// Reductions[0]: FIFO consumes the entire 10 units from the 2025-01-10
-	// lot at cost 50 USD. Gain = (60 - 50) * 10 = 100 USD.
-	s0 := gizmoBP.Reductions[0]
-	want50 := mustDecimal(t, "50")
-	if s0.Lot.Number.Cmp(&want50) != 0 {
-		t.Errorf("step[0].Lot.Number = %s, want 50", s0.Lot.Number.Text('f'))
+	// Per-lot expectations in FIFO order: first the 2025-01-10 lot
+	// fully consumed (10 units @ 50 USD basis), then the 2025-02-15
+	// lot partially consumed (2 units @ 55 USD basis).
+	wantLots := []struct {
+		basis    string
+		date     time.Time
+		units    string
+		signed   string
+		gain     string
+		currency string
+	}{
+		{basis: "50", date: date(2025, 1, 10), units: "10", signed: "-10", gain: "100", currency: "USD"},
+		{basis: "55", date: date(2025, 2, 15), units: "2", signed: "-2", gain: "10", currency: "USD"},
 	}
-	if !s0.Lot.Date.Equal(date(2025, 1, 10)) {
-		t.Errorf("step[0].Lot.Date = %s, want 2025-01-10", s0.Lot.Date)
-	}
-	want10 := mustDecimal(t, "10")
-	if s0.Units.Cmp(&want10) != 0 {
-		t.Errorf("step[0].Units = %s, want 10", s0.Units.Text('f'))
-	}
-	wantGain0 := mustDecimal(t, "100")
-	if !decimalEq(s0.RealizedGain, &wantGain0) {
-		var got string
-		if s0.RealizedGain != nil {
-			got = s0.RealizedGain.Text('f')
-		}
-		t.Errorf("step[0].RealizedGain = %s, want 100", got)
-	}
-	if s0.GainCurrency != "USD" {
-		t.Errorf("step[0].GainCurrency = %q, want USD", s0.GainCurrency)
-	}
+	for i, want := range wantLots {
+		t.Run(fmt.Sprintf("lot[%d]", i), func(t *testing.T) {
+			bp := gizmoBPs[i]
+			if bp.InferredAuto {
+				t.Errorf("Inspect: InferredAuto = true, want false")
+			}
+			wantUnits := ast.Amount{Number: mustDecimal(t, want.signed), Currency: "GIZMO"}
+			if diff := cmp.Diff(wantUnits, bp.Units, invCmpOpts); diff != "" {
+				t.Errorf("Inspect: BookedPosting.Units mismatch (-want +got):\n%s", diff)
+			}
+			if len(bp.Reductions) != 1 {
+				t.Fatalf("Inspect: Reductions: got %d steps, want 1 (expanded child is a single-lot reduction)", len(bp.Reductions))
+			}
+			wantGain := mustDecimal(t, want.gain)
+			wantStep := inventory.ReductionStep{
+				Lot:          inventory.Cost{Number: mustDecimal(t, want.basis), Currency: "USD", Date: want.date},
+				Units:        mustDecimal(t, want.units),
+				RealizedGain: &wantGain,
+				GainCurrency: want.currency,
+			}
+			step := bp.Reductions[0]
+			if diff := cmp.Diff(wantStep, step, lotIdentityCmpOpts); diff != "" {
+				t.Errorf("Inspect: Reductions[0] mismatch (-want +got):\n%s", diff)
+			}
 
-	// Reductions[1]: remainder of 2 units consumed from the 2025-02-15 lot at
-	// cost 55 USD. Gain = (60 - 55) * 2 = 10 USD.
-	s1 := gizmoBP.Reductions[1]
-	want55 := mustDecimal(t, "55")
-	if s1.Lot.Number.Cmp(&want55) != 0 {
-		t.Errorf("step[1].Lot.Number = %s, want 55", s1.Lot.Number.Text('f'))
-	}
-	if !s1.Lot.Date.Equal(date(2025, 2, 15)) {
-		t.Errorf("step[1].Lot.Date = %s, want 2025-02-15", s1.Lot.Date)
-	}
-	want2 := mustDecimal(t, "2")
-	if s1.Units.Cmp(&want2) != 0 {
-		t.Errorf("step[1].Units = %s, want 2", s1.Units.Text('f'))
-	}
-	wantGain1 := mustDecimal(t, "10")
-	if !decimalEq(s1.RealizedGain, &wantGain1) {
-		var got string
-		if s1.RealizedGain != nil {
-			got = s1.RealizedGain.Text('f')
-		}
-		t.Errorf("step[1].RealizedGain = %s, want 10", got)
+			// Each expanded child carries its own *ast.Cost rendering
+			// the matched lot's identity. This is the witness for the
+			// kind:"cost" output the beancompat serializer needs.
+			if bp.Source == nil {
+				t.Fatalf("Inspect: Source = nil")
+			}
+			cost, ok := bp.Source.Cost.(*ast.Cost)
+			if !ok || cost == nil {
+				t.Fatalf("Inspect: Source.Cost type = %T, want *ast.Cost", bp.Source.Cost)
+			}
+			wantCost := &ast.Cost{
+				Number:   mustDecimal(t, want.basis),
+				Currency: "USD",
+				Date:     want.date,
+			}
+			if diff := cmp.Diff(wantCost, cost, lotIdentityCmpOpts); diff != "" {
+				t.Errorf("Inspect: Source.Cost mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 
 	// Sum of per-step realized gains: 100 + 10 = 110 USD, which
 	// matches (60 - avg_cost) * 8 = 110 when you solve for avg_cost.
 	var sum apd.Decimal
-	if _, err := apd.BaseContext.Add(&sum, s0.RealizedGain, s1.RealizedGain); err != nil {
+	if _, err := apd.BaseContext.Add(&sum, gizmoBPs[0].Reductions[0].RealizedGain, gizmoBPs[1].Reductions[0].RealizedGain); err != nil {
 		t.Fatalf("sum gains: %v", err)
 	}
 	wantTotal := mustDecimal(t, "110")
@@ -523,14 +546,16 @@ func loadIdempotencyFixture(t *testing.T) *ast.Ledger {
 
 // TestReducerRun_OutputIsFixedPoint asserts that re-running the Reducer
 // over its own output yields the same booked directives, the same
-// per-account final inventory, and no errors. The Reducer's Pass-2
-// rewrites — auto-posting Amount inference, deferred per-unit cost
-// solving, and multi-lot reduction Total synthesis — are designed so
-// that once the AST has been enriched with the inferred values, a
-// second pass routes those postings through the explicit-value path
-// instead of the Pass-2 path and converges on the same numbers. The
-// fixture (testdata/idempotency_e2e.beancount) packs all three
-// rewrites into one ledger so a single round-trip exercises every path.
+// per-account final inventory, and no errors. The Reducer's rewrites —
+// Pass-1 augment Cost install, Pass-2 single-lot Cost install and
+// multi-lot reduction expansion, Pass-3 auto-posting Amount inference
+// and deferred per-unit cost solving — are designed so that once the
+// AST has been enriched with the inferred values (and expanded into
+// per-lot postings), a second pass routes those postings through the
+// explicit-value path instead of the rewrite path and converges on
+// the same numbers. The fixture (testdata/idempotency_e2e.beancount)
+// packs every rewrite into one ledger so a single round-trip
+// exercises every path.
 //
 // The two snapshots compared:
 //
@@ -683,5 +708,120 @@ func TestInventoryIntegration_AutoPostingInference(t *testing.T) {
 	}
 	if len(autoBP.Reductions) != 0 {
 		t.Errorf("len(autoBP.Reductions) = %d, want 0", len(autoBP.Reductions))
+	}
+}
+
+// TestInventoryIntegration_MultiLotExpansionWithAutoPosting pins the
+// load-bearing ordering contract between Pass 2 (expandReductions)
+// and Pass 3 (residual). The "Sell STOCK at gain" transaction in
+// idempotency_e2e.beancount is a multi-lot reduction (15 STOCK
+// crossing two FIFO lots) co-located with an auto-balanced
+// Income:Capital leg. Pass 3 reads PostingWeight on every booked
+// Source to compute the residual the auto-posting absorbs; with the
+// parent's parse-tier *ast.CostSpec carrying no synthesized Total,
+// the only way Pass 3 sees a well-defined weight is for Pass 2 to
+// have already expanded the parent into per-lot children whose
+// *ast.Cost provides PostingWeight's Total branch directly. If
+// expansion were ever reordered after Pass 3 the auto-posting would
+// fail to resolve and this test would fail loudly.
+func TestInventoryIntegration_MultiLotExpansionWithAutoPosting(t *testing.T) {
+	ledger := loadIdempotencyFixture(t)
+	r := inventory.NewReducer(ledger.All())
+
+	sale := txnByNarration(ledger, "Sell STOCK at gain")
+	if sale == nil {
+		t.Fatalf("could not find the multi-lot + auto-posting sale transaction in the fixture")
+	}
+	if len(sale.Postings) != 3 {
+		t.Fatalf("input sale has %d postings, want 3 (reducing, cash, auto)", len(sale.Postings))
+	}
+
+	insp, errs := r.Inspect(sale)
+	if len(errs) != 0 {
+		for _, e := range errs {
+			t.Logf("inspect error: %s", e)
+		}
+		t.Fatalf("Inspect: got %d errors, want 0", len(errs))
+	}
+	if insp == nil {
+		t.Fatalf("Inspect returned nil inspection")
+	}
+
+	// Booked layout after expansion: two reducing children on
+	// Assets:Stock followed by the explicit Cash leg and the
+	// inferred Income:Capital auto-posting.
+	if got, want := len(insp.Booked), 4; got != want {
+		t.Fatalf("len(Booked) = %d, want %d (2 expanded children + cash + auto)", got, want)
+	}
+
+	var children []*inventory.BookedPosting
+	var cashBP, autoBP *inventory.BookedPosting
+	for i := range insp.Booked {
+		bp := &insp.Booked[i]
+		switch bp.Account {
+		case "Assets:Stock":
+			children = append(children, bp)
+		case "Assets:Cash":
+			cashBP = bp
+		case "Income:Capital":
+			autoBP = bp
+		}
+	}
+	if len(children) != 2 || cashBP == nil || autoBP == nil {
+		t.Fatalf("Booked dispatch: stock=%d cash=%v auto=%v", len(children), cashBP, autoBP)
+	}
+
+	// Children carry the FIFO lots in order: 10 @ 5.00 USD from the
+	// 2025-01-10 deferred-cost lot, then 5 @ 6.00 USD from the
+	// 2025-02-15 explicit lot. Each child's *ast.Cost is the witness
+	// for the per-lot expansion the beancompat serializer requires.
+	wantLots := []struct {
+		signed string
+		number string
+		date   time.Time
+	}{
+		{signed: "-10", number: "5.00", date: date(2025, 1, 10)},
+		{signed: "-5", number: "6.00", date: date(2025, 2, 15)},
+	}
+	for i, want := range wantLots {
+		t.Run(fmt.Sprintf("child[%d]", i), func(t *testing.T) {
+			bp := children[i]
+			wantUnits := ast.Amount{Number: mustDecimal(t, want.signed), Currency: "STOCK"}
+			if diff := cmp.Diff(wantUnits, bp.Units, invCmpOpts); diff != "" {
+				t.Errorf("Inspect: BookedPosting.Units mismatch (-want +got):\n%s", diff)
+			}
+			if bp.Source == nil {
+				t.Fatalf("Inspect: Source = nil")
+			}
+			cost, ok := bp.Source.Cost.(*ast.Cost)
+			if !ok || cost == nil {
+				t.Fatalf("Inspect: Source.Cost type = %T, want *ast.Cost", bp.Source.Cost)
+			}
+			wantCost := &ast.Cost{
+				Number:   mustDecimal(t, want.number),
+				Currency: "USD",
+				Date:     want.date,
+			}
+			if diff := cmp.Diff(wantCost, cost, lotIdentityCmpOpts); diff != "" {
+				t.Errorf("Inspect: Source.Cost mismatch (-want +got):\n%s", diff)
+			}
+			if !cost.IsBooked() {
+				t.Errorf("Inspect: Source.Cost reports IsBooked()=false")
+			}
+		})
+	}
+
+	// Pass 3 absorbed the residual onto Income:Capital. The
+	// transaction's expected residual is
+	//   -((-10 × 5.00) + (-5 × 6.00) + 100.00) = -(−80 + 100) = -20
+	// which is the realized gain (the user *received* 100 but
+	// only "earned" 80 in cost basis terms). The auto-posting
+	// records this on Income:Capital as -20.00 USD.
+	if !autoBP.InferredAuto {
+		t.Errorf("Inspect: Income:Capital.InferredAuto = false, want true")
+	}
+	wantAutoUnits := ast.Amount{Number: mustDecimal(t, "-20.00"), Currency: "USD"}
+	if diff := cmp.Diff(wantAutoUnits, autoBP.Units, invCmpOpts); diff != "" {
+		t.Errorf("Inspect: Income:Capital.Units mismatch — residual computed against expanded per-child weights (-want +got):\n%s", diff)
 	}
 }
