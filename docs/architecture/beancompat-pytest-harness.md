@@ -4,17 +4,20 @@ This document describes the steady-state architecture of the Bazel-native
 harness that runs upstream beancompat's pytest compatibility suite against
 go-beancount via a subprocess adapter. It is the post-decision reference;
 the chronological design narrative (alternatives weighed, decisions made)
-lives in `docs/plans/beancompat-pytest-integration.md`.
+lives in `docs/plans/beancompat-pytest-integration.md` and, for the
+denylist + full-pipeline migration that brought coverage to all 13
+upstream fixtures, `docs/plans/pyharness-denylist-migration.md`.
 
 ## Overview
 
 The harness lets `bazel test //...` exercise upstream beancompat fixtures
-against go-beancount. Today it runs `tests/test_fixtures.py` (parse-tier,
-`CAP_PARSE` only) for three fixtures (`open_single`, `price`,
-`transaction_balanced`) — the same set the Go-side
-`parse_fixtures_test.go` already covers. The framework is designed to be
-extended to other `tests/test_*.py` files and to broader fixture
-allowlists without architectural rework.
+against go-beancount. It runs `tests/test_fixtures.py` against all 13
+upstream fixtures (10 parse + 3 check). The Python adapter advertises
+`{CAP_PARSE, CAP_BOOKING}`, so check-tier fixtures parametrize
+alongside parse-tier ones. Per-fixture divergences are tracked through
+a two-tier xfail policy (see "Divergence Policy" below); the framework
+is designed to be extended to other `tests/test_*.py` files without
+architectural rework.
 
 Hermeticity is a hard requirement: no network, no system Python, no
 system beancount. All inputs are resolved through Bazel runfiles.
@@ -34,28 +37,29 @@ system beancount. All inputs are resolved through Bazel runfiles.
        plugin        ▼                  ▼
        ┌─────────────────────┐  ┌──────────────────────────┐
        │  conftest.py        │  │  tests/test_fixtures.py  │
-       │  + allowlist.py     │  │  (upstream, @beancompat) │
+       │  + denylist.py      │  │  (upstream, @beancompat) │
        │  (pyharness/, ours) │  │  parametrize over        │
        │                     │  │  (adapter, fixture)      │
        │  - sys.path setup   │  └────────────┬─────────────┘
        │  - ADAPTERS.clear() │               │
        │  - register adapter │               │  calls ADAPTERS["gobeancount"]
-       │  - skip-list hook   │               │
+       │  - xfail-mark hook  │               │
        └─────────────────────┘               ▼
-                             ┌────────────────────────────────┐
-                             │  GoBeancountAdapter            │  Python adapter
-                             │  (adapter/__init__.py, ours)   │  Step 4
-                             │  - Implementation protocol     │
-                             │  - subprocess.run(beanparse)   │
-                             └───────────────┬────────────────┘
-                                             │  os.exec, JSON over stdout
-                                             ▼
-                             ┌────────────────────────────────┐
-                             │  beanparse                     │  Go binary
-                             │  (adapter/beanparse/, ours)    │  Step 1
-                             │  - ast.Load + SerializeParsed  │
-                             │  - {directives, errors, options}
-                             └────────────────────────────────┘
+                             ┌──────────────────────────────────┐
+                             │  GoBeancountAdapter              │  Python adapter
+                             │  (adapter/__init__.py, ours)     │
+                             │  - Implementation protocol       │
+                             │  - {CAP_PARSE, CAP_BOOKING}      │
+                             │  - subprocess.run(beanparse)     │
+                             └────────────────┬─────────────────┘
+                                              │  os.exec, JSON over stdout
+                                              ▼
+                             ┌──────────────────────────────────┐
+                             │  beanparse                       │  Go binary
+                             │  (adapter/beanparse/, ours)      │
+                             │  - loader.Load + SerializeChecked│
+                             │  - {directives, errors, options} │
+                             └──────────────────────────────────┘
 ```
 
 Four owned surfaces:
@@ -69,8 +73,8 @@ Four owned surfaces:
   `Implementation` protocol. Locates the binary via the
   `BEANPARSE_BIN` env var (preferred) or Bazel runfiles (fallback).
 - **`pkg/compat/beancompat/pyharness/`** — Bazel `py_test` integration
-  layer: overlay `conftest.py`, deny-by-default `allowlist.py`, and
-  the `pytest_main.py` entrypoint. The seam between Bazel's test
+  layer: overlay `conftest.py`, local divergence registry `denylist.py`,
+  and the `pytest_main.py` entrypoint. The seam between Bazel's test
   runner and upstream pytest.
 - **`third_party/beancompat/beancompat.BUILD`** — Bazel BUILD overlay
   for the externally-fetched upstream repo. Exposes upstream Python
@@ -93,11 +97,17 @@ $ beanparse <file.beancount>
               serializer errors
 ```
 
-Parse-tier semantics are load-bearing: `beanparse` calls `ast.Load` then
-`pkg/compat/beancompat.SerializeParsed`, NOT the loader's full plugin /
-pad / balance / validation pipeline. Mixing parse-tier output with
-post-validation directives would change the JSON shape and break
-fixture comparison.
+`beanparse` runs the full loader pipeline: `loader.Load(ctx, src)`
+followed by `pkg/compat/beancompat.SerializeChecked`. The output is
+the check-tier shape — directives reflect parse + plugins + pad +
+balance + validations. This matches upstream's `CAP_BOOKING` contract,
+which expects `parse_string` to return post-booking output (e.g.
+`posting["cost"]["number"]` as a flat field on a booked `Cost`, the
+shape `tests/test_cost_inventory.py` asserts). Parse-tier-only output
+(`SerializeParsed`) is reachable only through the Go library, not
+through this binary; nothing on the Python side consumes it because
+parse-tier `CostSpec` is not in beancompat's validation surface
+(verified: zero references in upstream `tests/`).
 
 The Python adapter wraps subprocess failures (missing binary, nonzero
 exit, invalid JSON, timeout) into a `ParseResult` with a diagnostic
@@ -114,7 +124,7 @@ share an address space. A cgo-fused binary was considered and rejected:
 it would force an ABI between Go and Python types, inflate the sandbox
 dependency footprint with `libpython`, and complicate `rules_go` /
 `rules_python` interop. The marginal cost of process startup is
-invisible at this scale (3 fixtures × ~10ms each).
+invisible at this scale (13 fixtures × ~10ms each).
 
 ## Adapter Registration
 
@@ -149,33 +159,55 @@ Two notable choices:
    failure class driven by upstream changes to `is_available()`
    semantics.
 
-## Skip Policy (Deny-by-Default Allowlist)
+## Divergence Policy (Two-Tier xfail Denylist)
 
-Upstream parametrizes over `(adapter, fixture)` pairs. Without
-filtering, the harness would report failures for every fixture we
-don't yet support. Instead we apply a deny-by-default skip list via
-pytest's `pytest_collection_modifyitems` hook:
+Every collected `(adapter, fixture)` pair runs by default. A fixture
+that diverges from its expected envelope is recorded as a known
+divergence at one of two tiers; the test still runs, but its failure
+is reported as XFAIL and an inadvertent fix surfaces as XPASS in the
+test output.
+
+**Tier 1 — upstream `known_divergences`.** A fixture file may carry
+`known_divergences: {adapter_name: "reason"}` in its JSON.
+Upstream `tests/test_fixtures.py` reads this inside the test body and
+calls `pytest.xfail(...)` when the active adapter is listed. This is
+the right tier once a divergence is accepted upstream.
+
+**Tier 2 — local `pyharness/denylist.py`.** Divergences not yet
+reflected upstream live in a `DENIED_FIXTURES: dict[str, str]` mapping
+tier-prefixed fixture path → reason. The overlay
+`pytest_collection_modifyitems` hook applies
+`pytest.mark.xfail(strict=False, reason=...)` to each matching
+collected item.
 
 ```python
-# pyharness/allowlist.py
-ALLOWED_FIXTURES: frozenset[str] = frozenset({
-    "parse/open_single.json",
-    "parse/price.json",
-    "parse/transaction_balanced.json",
-})
+# pyharness/denylist.py
+DENIED_FIXTURES: dict[str, str] = {
+    "parse/display_precision_by_currency.json": (
+        "go-beancount fix pending: parse-tier serializer does not yet "
+        "emit the options envelope (display_precision_by_currency expected)."
+    ),
+    ...
+}
 ```
 
-The hook resolves each item's `fixture_path` parameter to a
-tier-prefixed JSON path and applies `pytest.mark.skip(reason="not in
-ALLOWED_FIXTURES")` to any item whose identifier is not in the set.
-Allowlisted items run normally; if they fail, the test FAILS — the
-skip mechanism does not mask failures of allowlisted fixtures.
+`strict=False` mirrors the Go-side `t.Skipf` semantics in
+`pkg/compat/beancompat/denylist.go`: a denylisted fixture that briefly
+passes surfaces as XPASS without failing the suite. This is the
+intended maintenance signal, not a tripwire — flipping to
+`strict=True` would re-cast the registry as a regression gate.
 
-The fixture identifier is read from `item.callspec.params["fixture_path"]`
-and compared against the form upstream's `_fixture_id` emits, so no
-normalization layer can drift.
+Stale entries fail collection. The hook tracks which `DENIED_FIXTURES`
+keys matched a collected fixture id; any entry that did not match
+raises `pytest.UsageError`, which pytest surfaces as a collection
+error (exit code 4). Mirrors `runFixtures`' `t.Errorf` on stale
+denylist entries on the Go side. Annotate every entry's reason with
+"upstream-PR pending" or "go-beancount fix pending" so the registry
+is easy to triage as fixes land.
 
-Widening the allowlist is a deliberate, file-local edit.
+The fixture identifier is read from
+`item.callspec.params["fixture_path"]` and compared against the form
+upstream's `_fixture_id` emits, so no normalization layer can drift.
 
 ## Bazel Integration Touch-points
 
@@ -219,7 +251,9 @@ Widening the allowlist is a deliberate, file-local edit.
    `Path(__file__).resolve()`, which follows all symlinks to the
    cache root. The conftest must use `Path(probe).resolve()` for
    its own `_FIXTURES_DIR` so the two roots agree; otherwise every
-   fixture-id comparison against the allowlist fails silently.
+   fixture-id comparison against the denylist fails silently — and
+   because stale entries fail collection, that silent drift would
+   manifest as bogus collection errors rather than passing tests.
 
 ## Surgical Forward Fix: HTML Escape
 
@@ -239,8 +273,8 @@ The bug:
 Go-side `parse_fixtures_test.go` matchers unmarshal both sides before
 comparing, so `\u003c` and `<` round-trip to the same Go string and
 tests pass regardless of escaping convention. The Python harness is
-escape-sensitive in some comparison paths, so any future allowlist
-fixture containing `<` / `>` / `&` would diverge.
+escape-sensitive in some comparison paths, so any fixture containing
+`<` / `>` / `&` would diverge without the fix.
 
 `marshalNoEscape` uses `json.NewEncoder(&buf)` with
 `SetEscapeHTML(false)` and strips the trailing newline `Encode`
@@ -249,9 +283,10 @@ unconditionally appends. It is applied to every per-directive
 `marshalSortedObject`. Keys are Go identifiers or beancount keywords
 and cannot contain HTML-special characters.
 
-The fix is forward-looking: it does not unblock the current three
-allowlist entries, but it eliminates a latent failure mode that would
-surface the first time the allowlist grows.
+The fix is forward-looking: the 11 currently-passing fixtures happen
+not to contain HTML-special characters in their expected envelopes,
+but the escape-insensitivity it grants is what keeps that property
+non-fragile as new fixtures are accepted upstream.
 
 ## Extensibility
 
@@ -266,23 +301,30 @@ a second `py_test` rule in `pyharness/BUILD.bazel`. Most data flow is
 transitive through `:conftest`; only test-file-specific fixtures or
 scripts modules need new `data` entries.
 
-**Widening the fixture allowlist.** Add tier-prefixed paths to
-`ALLOWED_FIXTURES` in `pyharness/allowlist.py`. Newly-included
-fixtures that don't pass yet either get pulled back out (with a
-comment documenting the divergence) or motivate a surgical fix to
-`pkg/compat/beancompat/serialize.go`.
+**Recording a new divergence.** Add a tier-prefixed path to
+`DENIED_FIXTURES` in `pyharness/denylist.py` with a reason annotated
+"go-beancount fix pending" or "upstream-PR pending". When the
+underlying fix lands, remove the entry; pytest will start producing
+XPASS reports immediately if the fixture starts passing while the
+entry is still present, and stale entries (no matching fixture) fail
+collection. Track the Go-side `pkg/compat/beancompat/denylist.go` for
+parity.
 
-**Adding capabilities (CAP_CHECK and above).** The current adapter
-implements `CAP_PARSE` only. CAP_CHECK requires:
+**Adding more capabilities.** The current adapter advertises
+`{CAP_PARSE, CAP_BOOKING}`. Wiring up a new capability (e.g.
+`CAP_PLUGINS`, `CAP_BQL`, `CAP_PRINT`) requires:
 
-- A `SerializeChecked` (or similarly-named) entry point in
-  `pkg/compat/beancompat` emitting the post-validation JSON shape.
-- A second Go CLI (or a flag on `beanparse`) that runs the full
-  loader pipeline.
-- An adapter method (`check_file`) wired to the new subprocess.
-- A new `CAP_CHECK` flag in the adapter's `capabilities` set.
+- A serializer or query entry point in `pkg/compat/beancompat` (and
+  any supporting Go-side machinery — for example, BQL needs a BQL
+  evaluator).
+- A new Go CLI or method on the adapter that exposes it via
+  subprocess.
+- A new capability constant in the adapter's `capabilities` set
+  (mirroring the upstream literal).
+- Optionally a new `py_test` target if the relevant
+  `tests/test_*.py` file is not yet wired in.
 
-The Bazel rules, conftest, and allowlist mechanisms carry over
+The Bazel rules, conftest, and denylist mechanisms carry over
 unchanged.
 
 ## Future Work
@@ -293,13 +335,11 @@ In rough priority order:
   appears, factor the runfiles probe out and pass the target
   rlocation via an env var (e.g. `BEANCOMPAT_TEST_RLOCATION`). One
   entrypoint file serves N test targets.
-- **CAP_BOOKING / CAP_CHECK / `SerializeChecked`.** Tracked separately
-  under repo-root `PLAN.md` (Plan-C). When that lands, this harness
-  extends to check-tier fixtures with no overlay changes.
-- **Negative test for "allowlisted-fixture divergence MUST fail".**
+- **Negative test for "non-denylisted divergence MUST fail".**
   A small `py_test` (gated `tags = ["manual"]`) that monkeypatches
-  one allowlisted fixture's expected output and asserts the suite
-  fails. Validates that the skip mechanism does not mask failures.
+  one passing fixture's expected output and asserts the suite
+  fails. Validates that the xfail mechanism does not mask failures
+  for fixtures outside the denylist.
 - **`hypothesis` in the pip lock.** Required for
   `tests/test_discrepancies.py`. Pulls in transitive deps; defer
   until that test file is wanted.
@@ -310,8 +350,9 @@ In rough priority order:
 
 ## Out of Scope
 
-- **Upstreaming `GoBeancountAdapter` to beancompat.** Premature: only
-  `CAP_PARSE` is supported. Revisit once CAP_CHECK lands.
+- **Upstreaming `GoBeancountAdapter` to beancompat.** Premature:
+  only `{CAP_PARSE, CAP_BOOKING}` are supported. Revisit once
+  plugins / BQL / print capabilities land.
 - **Reference Python `beancount` package in the sandbox.** Inflates
   pip deps significantly and brings ABI dependencies (the C extension
   is not pip-installable hermetically on all platforms). Out-of-band
