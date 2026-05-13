@@ -17,7 +17,7 @@ jobs:
           path: ~/.cache/bazel
           key: bazel-${{ runner.os }}-${{ hashFiles('MODULE.bazel', 'go.sum') }}
           restore-keys: bazel-${{ runner.os }}-
-      - run: bazel test //... --test_output=errors
+      - run: bazel test --show_progress_rate_limit 0 --test_output=streamed -- //...
 
   go-test:
     name: go test
@@ -28,7 +28,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./...
+      - run: go test -test.v ./...
 
   fmt:
     name: go fmt
