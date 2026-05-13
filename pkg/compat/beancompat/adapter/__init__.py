@@ -1,6 +1,11 @@
 """Go-beancount adapter for beancompat.
 
-Implements beancompat's Implementation protocol for the parse tier only.
+Implements beancompat's Implementation protocol covering parse + booking
+tiers (CAP_PARSE + CAP_BOOKING). parse_string returns post-booking output
+because the underlying beanparse binary runs the full loader pipeline
+(parse + plugins + pad/balance/validations); upstream's CAP_BOOKING
+contract expects exactly that shape.
+
 Delegates to the beanparse binary via subprocess; never raises out of
 parse_string or check_file for subprocess-level failures (missing binary,
 nonzero exit, invalid JSON, timeout) -- those produce a ParseResult with a
@@ -25,10 +30,11 @@ from pathlib import Path
 from typing import Optional
 
 
-# CAP_PARSE is the string literal value defined in beancompat's
+# CAP_PARSE / CAP_BOOKING are the string literal values defined in beancompat's
 # implementations/adapter.py. Duplicated here so the `capabilities` property
 # never triggers the heavier beancompat import. Verified against upstream.
 _CAP_PARSE = "parse"
+_CAP_BOOKING = "booking"
 
 
 def _resolve_beancompat_root() -> str:
@@ -106,9 +112,11 @@ def _runfiles_env() -> dict:
 
 
 class GoBeancountAdapter:
-    """Adapter for go-beancount (parse tier only).
+    """Adapter for go-beancount covering parse + booking tiers.
 
-    Invokes the beanparse binary via subprocess. Binary is located via the
+    Invokes the beanparse binary via subprocess. The binary runs go-beancount's
+    full loader pipeline, so parse_string returns post-booking output suitable
+    for both CAP_PARSE and CAP_BOOKING fixtures. Binary is located via the
     BEANPARSE_BIN environment variable or Bazel runfiles.
     """
 
@@ -118,7 +126,7 @@ class GoBeancountAdapter:
 
     @property
     def capabilities(self) -> set[str]:
-        return {_CAP_PARSE}
+        return {_CAP_PARSE, _CAP_BOOKING}
 
     def is_available(self) -> bool:
         path = _resolve_binary()

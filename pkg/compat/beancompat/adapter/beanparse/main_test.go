@@ -9,8 +9,8 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/compat/beancompat"
+	"github.com/yugui/go-beancount/pkg/loader"
 )
 
 func writeTempBeancount(t *testing.T, src string) string {
@@ -72,11 +72,11 @@ func TestRun_SuccessExitsZero(t *testing.T) {
 	}
 }
 
-// TestRun_JSONMatchesSerializeParsed checks structural equality between
-// run's stdout and direct SerializeParsed output on the same source.
-// Both paths call ast.Load on the same string content, so the Results
+// TestRun_JSONMatchesSerializeChecked checks structural equality between
+// run's stdout and direct SerializeChecked output on the same source.
+// Both paths call loader.Load on the same string content, so the Results
 // should be identical.
-func TestRun_JSONMatchesSerializeParsed(t *testing.T) {
+func TestRun_JSONMatchesSerializeChecked(t *testing.T) {
 	path := writeTempBeancount(t, openSrc)
 
 	var stdout, stderr bytes.Buffer
@@ -90,22 +90,22 @@ func TestRun_JSONMatchesSerializeParsed(t *testing.T) {
 	}
 
 	// Produce the reference result directly via the library path using
-	// ast.Load(string(bytes)), which mirrors run's internal load call.
+	// loader.Load(ctx, string(bytes)), which mirrors run's internal load call.
 	src, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read temp file: %v", err)
 	}
-	ledger, err := ast.Load(string(src))
+	ledger, err := loader.Load(t.Context(), string(src))
 	if err != nil {
-		t.Fatalf("ast.Load: %v", err)
+		t.Fatalf("loader.Load: %v", err)
 	}
-	want, err := beancompat.SerializeParsed(ledger)
+	want, err := beancompat.SerializeChecked(ledger)
 	if err != nil {
-		t.Fatalf("SerializeParsed: %v", err)
+		t.Fatalf("SerializeChecked: %v", err)
 	}
 
 	if diff := cmp.Diff(want, got); diff != "" {
-		t.Errorf("run output differs from SerializeParsed (-want +got):\n%s", diff)
+		t.Errorf("run output differs from SerializeChecked (-want +got):\n%s", diff)
 	}
 }
 
@@ -152,7 +152,7 @@ func TestRun_DirectivesPresent(t *testing.T) {
 			{Type: "open", Date: "2020-01-01"},
 		},
 	}
-	// Meta and Data are verified by TestRun_JSONMatchesSerializeParsed;
+	// Meta and Data are verified by TestRun_JSONMatchesSerializeChecked;
 	// this test's stated purpose is "directives survive serialization with
 	// correct type/date and count", so ignore those fields here.
 	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(beancompat.Directive{}, "Meta", "Data")); diff != "" {

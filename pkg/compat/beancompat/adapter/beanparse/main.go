@@ -1,10 +1,13 @@
-// Command beanparse reads a beancount file through the parse-only path and
-// writes its contents to stdout as a JSON object in beancompat's portable
-// {directives, errors, options} schema.
+// Command beanparse reads a beancount file through the full loader pipeline
+// (parse + plugins + pad/balance/validations) and writes its contents to
+// stdout as a JSON object in beancompat's portable {directives, errors,
+// options} schema.
 //
-// Parse-tier only — no plugin / validation pipeline. The serialized result
-// reflects exactly what the parser and lowering pass see, before any
-// booking, padding, balance-checking, or plugin transforms are applied.
+// The output corresponds to beancompat's check-tier semantics:
+// SerializeChecked over a loader.Load result. This matches what upstream's
+// CAP_BOOKING-aware adapters are expected to return from parse_string — the
+// Python adapter at pkg/compat/beancompat/adapter declares both CAP_PARSE
+// and CAP_BOOKING and delegates straight to this binary.
 //
 // Usage:
 //
@@ -18,13 +21,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 
-	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/compat/beancompat"
+	"github.com/yugui/go-beancount/pkg/loader"
 )
 
 func main() {
@@ -38,27 +42,25 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	filename := args[0]
 
-	// Read+Load (not ast.LoadFile) so I/O failures keep exiting 2 instead
-	// of being absorbed into the ledger's diagnostic stream — ast.LoadFile
-	// would report a missing file as an Error Diagnostic and return nil
-	// err, conflating infrastructure failure with ledger content errors.
-	// The exit-code contract is pinned by TestRun_MissingFile and documented
-	// in the package header; the I/O / ledger distinction is what lets the
+	// Read+Load (not loader.LoadFile) so I/O failures keep exiting 2 instead
+	// of being absorbed into the ledger's diagnostic stream — LoadFile would
+	// report a missing file as an Error Diagnostic and return nil err,
+	// conflating infrastructure failure with ledger content errors. The
+	// exit-code contract is pinned by TestRun_MissingFile and documented in
+	// the package header; the I/O / ledger distinction is what lets the
 	// Python adapter and ad-hoc CLI users tell "test harness broken" from
-	// "ledger has errors". As a side benefit, ast.Load(string) uses the
-	// default "<input>" virtual filename, matching parse_fixtures_test.go
-	// and main_test.go's reference path.
+	// "ledger has errors".
 	src, err := os.ReadFile(filename)
 	if err != nil {
 		fmt.Fprintf(stderr, "beanparse: %v\n", err)
 		return 2
 	}
-	ledger, err := ast.Load(string(src))
+	ledger, err := loader.Load(context.Background(), string(src))
 	if err != nil {
 		fmt.Fprintf(stderr, "beanparse: %v\n", err)
 		return 2
 	}
-	result, err := beancompat.SerializeParsed(ledger)
+	result, err := beancompat.SerializeChecked(ledger)
 	if err != nil {
 		fmt.Fprintf(stderr, "beanparse: serialize: %v\n", err)
 		return 2

@@ -3,9 +3,9 @@
 Verifies (1) the subprocess wire end-to-end against the real beanparse binary,
 (2) the "NEVER raises" contract for subprocess-level failures: when the binary
 cannot be located, parse_string must return a ParseResult with a non-empty
-errors list rather than propagating an exception, and (3) that the _CAP_PARSE
-literal matches the value imported from upstream beancompat so capability
-advertisement cannot drift silently.
+errors list rather than propagating an exception, and (3) that the
+_CAP_PARSE / _CAP_BOOKING literals match the values imported from upstream
+beancompat so capability advertisement cannot drift silently.
 
 Uses unittest.main() so `py_test` invoking the file as a plain Python script
 (`python adapter_test.py`) actually discovers and executes the test methods.
@@ -51,6 +51,23 @@ class GoBeancountAdapterSmokeTest(unittest.TestCase):
             GoBeancountAdapter().capabilities,
             "GoBeancountAdapter.capabilities does not contain upstream CAP_PARSE; "
             "update _CAP_PARSE in adapter/__init__.py",
+        )
+
+    def test_cap_booking_literal_matches_upstream(self):
+        """_CAP_BOOKING must equal the value upstream beancompat exports as CAP_BOOKING.
+
+        beanparse always runs the full loader pipeline (parse + booking +
+        validations), so the adapter advertises CAP_BOOKING alongside CAP_PARSE.
+        This locks the duplicated literal against upstream drift, same shape as
+        test_cap_parse_literal_matches_upstream.
+        """
+        from implementations.adapter import CAP_BOOKING
+
+        self.assertIn(
+            CAP_BOOKING,
+            GoBeancountAdapter().capabilities,
+            "GoBeancountAdapter.capabilities does not contain upstream CAP_BOOKING; "
+            "update _CAP_BOOKING in adapter/__init__.py",
         )
 
     def test_missing_binary_returns_diagnostic(self):
