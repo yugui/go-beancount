@@ -2,8 +2,15 @@
 
 Inserts GoBeancountAdapter as the sole entry in tests.conftest.ADAPTERS
 at module load time (before pytest parametrizes the session fixtures).
-Also installs a pytest_collection_modifyitems hook that skips any fixture
-not in ALLOWED_FIXTURES (deny-by-default policy).
+
+Every collected fixture runs by default. Local divergences are applied
+via pytest.mark.xfail(strict=False, reason=...) keyed by DENIED_FIXTURES
+from denylist.py — this is the second tier of a two-tier divergence
+policy; the first tier is the upstream fixture file's
+known_divergences["gobeancount"] entry, which upstream test_fixtures.py
+handles inline with pytest.xfail() at the test body. Stale local
+entries (denylisted but with no matching collected fixture id) fail
+collection so the registry cannot rot silently.
 
 All exceptions propagate loudly; no silent swallowing of errors.
 """
@@ -18,7 +25,7 @@ import pytest
 
 from python.runfiles import Runfiles
 
-from allowlist import ALLOWED_FIXTURES
+from denylist import DENIED_FIXTURES
 
 
 def _resolve_beancompat_root() -> str:
@@ -65,8 +72,26 @@ def _fixture_id_of(item) -> str | None:
 
 
 def pytest_collection_modifyitems(config, items):
-    skip_mark = pytest.mark.skip(reason="not in ALLOWED_FIXTURES")
+    # strict=False matches the Go-side t.Skipf semantics: a denylisted
+    # fixture briefly passing produces XPASS in the report without failing
+    # the suite, surfacing the maintenance signal without acting as a
+    # tripwire. See docs/plans/pyharness-denylist-migration.md.
+    seen: set[str] = set()
     for item in items:
         fid = _fixture_id_of(item)
-        if fid is None or fid not in ALLOWED_FIXTURES:
-            item.add_marker(skip_mark)
+        if fid is None:
+            continue
+        if fid in DENIED_FIXTURES:
+            seen.add(fid)
+            item.add_marker(
+                pytest.mark.xfail(reason=DENIED_FIXTURES[fid], strict=False)
+            )
+    stale = set(DENIED_FIXTURES) - seen
+    if stale:
+        # pytest.UsageError surfaces as exit code 4 ("pytest was misused")
+        # at collection time — mirrors runFixtures' t.Errorf on stale
+        # denylist entries on the Go side.
+        listing = ", ".join(sorted(stale))
+        raise pytest.UsageError(
+            f"denylist entries do not match any collected fixture: {listing}"
+        )

@@ -6,8 +6,8 @@ load("@rules_python//python:py_test.bzl", "py_test")
 py_library(
     name = "conftest",
     srcs = [
-        "allowlist.py",
         "conftest.py",
+        "denylist.py",
     ],
     imports = ["."],
     data = [
