@@ -289,17 +289,19 @@ Each slice is independently reviewable and leaves the tree green.
 
 ## Future work surfaced by Slice 4
 
-- **Multi-lot reduction posting expansion.** Upstream beancount expands a
-  reducing posting that matches multiple lots into one posting per
-  matched lot, each carrying a `kind:cost` Cost. Slice 3's terminal
-  pass leaves such postings as a single `*ast.CostSpec` (with a
-  synthesized `Total` from `fillMissingCostFromReductions`), so the
-  serializer renders them as `kind:cost_spec`. Any check-tier fixture
-  whose source exercises a multi-lot reduction will diverge from
-  upstream until the reducer is taught to expand. The collapse-when-
-  all-lots-equal optimization noted on
-  `(*Reducer).finalizeBookedCost` is a partial mitigation, not a
-  replacement for the expansion.
+- **Multi-lot reduction posting expansion.** *Landed.* The reducer's
+  Pass 2 (`expandReductions`) replaces every multi-lot reducing
+  posting with one child per matched lot, each carrying its own
+  resolved `*ast.Cost`; single-lot reductions install the lot in
+  place via `installReductionLot`. The synthesized `spec.Total`
+  intermediate state that Slice 3 produced is gone — Pass 2 now runs
+  between Pass 1 (explicit booking) and Pass 3 (residual / auto-
+  posting solving), so Pass 3's `PostingWeight(bp.Source)` reads
+  concrete `*ast.Cost` on every booked child without any multi-lot
+  branching. Check-tier fixtures exercising multi-lot reductions can
+  now serialize as a sequence of `kind:"cost"` envelopes matching
+  upstream; enabling such fixtures in
+  `pkg/compat/beancompat/serialize.go` is a separate follow-up slice.
 - **Display-precision and other check-tier options.** `SerializeChecked`
   currently shares its body with `SerializeParsed`; the only tier-
   specific divergence so far is the cost-discriminator switch handled
