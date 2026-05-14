@@ -1701,21 +1701,10 @@ func TestReducerWalk_Step3_FailedGroupDroppedFlagSet(t *testing.T) {
 
 // TestReducerWalk_Step3_MultiCurrencyMultiLotReductionGrouping verifies
 // that when a single -N COMMODITY {} posting matches lots with two
-// different cost currencies, commitGroupMulti correctly files the
-// inventory mutation under both currency keys so that each key can be
-// independently rolled back.
-//
-// This test operates at the stateTrace level (via the public Walk API)
-// to pin the tension-1 resolution: rolling back the USD lot's group
-// must undo the USD consumption while leaving the EUR lot intact, which
-// is what commitGroupMulti enables.
-//
-// Verification strategy: since visitTxn does not expose the stateTrace
-// or postingResolution directly, we construct the scenario at the
-// stateTrace level as a companion to the commitGroupMulti unit tests in
-// state_trace_test.go, which exercise the API directly. This test
-// confirms the full-pipeline correctness (multi-lot expansion, both
-// BookedPostings present, each carrying the correct step currency).
+// different cost currencies, the reducer's multi-lot reduction path
+// expands the posting via addMultiLotReduction into one BookedPosting
+// per matched lot, and each child BookedPosting carries the correct
+// step currency (USD for the USD-cost lot, EUR for the EUR-cost lot).
 func TestReducerWalk_Step3_MultiCurrencyMultiLotReductionGrouping(t *testing.T) {
 	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	buyUSDDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
