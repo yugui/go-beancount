@@ -218,16 +218,15 @@ func bookOne(
 	p *ast.Posting,
 	method ast.BookingMethod,
 	txnDate time.Time,
-	inferred bool,
-) (BookedPosting, []Error) {
+) (augmented *ast.Lot, reductions []ReductionStep, errs []Error) {
 	if p == nil {
-		return BookedPosting{}, []Error{{
+		return nil, nil, []Error{{
 			Code:    CodeInternalError,
 			Message: "bookOne called with a nil posting",
 		}}
 	}
 	if p.Amount == nil {
-		return BookedPosting{}, []Error{{
+		return nil, nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -235,20 +234,21 @@ func bookOne(
 		}}
 	}
 
-	booked := BookedPosting{
-		Source:       p,
-		Account:      p.Account,
-		Units:        *p.Amount.Clone(),
-		InferredAuto: inferred,
-	}
-
 	switch classify(inv, p, method) {
 	case kindAugment:
-		return bookAugment(inv, p, booked, txnDate)
+		lot, errs := bookAugment(inv, p, txnDate)
+		if len(errs) > 0 {
+			return nil, nil, errs
+		}
+		return lot, nil, nil
 	case kindReduce:
-		return bookReduce(inv, p, booked, method)
+		r, errs := bookReduce(inv, p, method)
+		if len(errs) > 0 {
+			return nil, nil, errs
+		}
+		return nil, r, nil
 	default:
-		return BookedPosting{}, []Error{{
+		return nil, nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -262,9 +262,8 @@ func bookOne(
 func bookAugment(
 	inv *Inventory,
 	p *ast.Posting,
-	booked BookedPosting,
 	txnDate time.Time,
-) (BookedPosting, []Error) {
+) (*ast.Lot, []Error) {
 	lot, err := ResolveCost(p.Cost, *p.Amount, txnDate)
 	if err != nil {
 		// ResolveCost returns inventory.Error values already; enrich
@@ -280,9 +279,9 @@ func bookAugment(
 			if invErr.Account == "" {
 				invErr.Account = p.Account
 			}
-			return BookedPosting{}, []Error{invErr}
+			return nil, []Error{invErr}
 		}
-		return BookedPosting{}, []Error{{
+		return nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -294,7 +293,7 @@ func bookAugment(
 	// of booked.Units here is safe: the stored Position will not alias
 	// the BookedPosting's coefficient buffer.
 	pos := Position{
-		Units: booked.Units,
+		Units: *p.Amount.Clone(),
 		Cost:  lot,
 	}
 
@@ -308,9 +307,9 @@ func bookAugment(
 				if invErr.Account == "" {
 					invErr.Account = p.Account
 				}
-				return BookedPosting{}, []Error{invErr}
+				return nil, []Error{invErr}
 			}
-			return BookedPosting{}, []Error{{
+			return nil, []Error{{
 				Code:    CodeInternalError,
 				Span:    p.Span,
 				Account: p.Account,
@@ -319,8 +318,7 @@ func bookAugment(
 		}
 	}
 
-	booked.Lot = lot
-	return booked, nil
+	return lot, nil
 }
 
 // bookReduce handles the reduction path of bookOne: build a matcher,
@@ -336,9 +334,8 @@ func bookAugment(
 func bookReduce(
 	inv *Inventory,
 	p *ast.Posting,
-	booked BookedPosting,
 	method ast.BookingMethod,
-) (BookedPosting, []Error) {
+) ([]ReductionStep, []Error) {
 	priceCcy := ""
 	if specIsEmpty(p.Cost) && p.Price != nil {
 		priceCcy = p.Price.Amount.Currency
@@ -349,7 +346,7 @@ func bookReduce(
 		// A reduction against a nil inventory is structurally
 		// impossible — classify would have routed this to augment —
 		// but defend the invariant rather than crash.
-		return BookedPosting{}, []Error{{
+		return nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -367,9 +364,9 @@ func bookReduce(
 			if invErr.Account == "" {
 				invErr.Account = p.Account
 			}
-			return BookedPosting{}, []Error{invErr}
+			return nil, []Error{invErr}
 		}
-		return BookedPosting{}, []Error{{
+		return nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -381,12 +378,11 @@ func bookReduce(
 	// posting carries a usable price annotation.
 	if p.Price != nil && p.Price.Amount.Currency != "" {
 		if errs := fillRealizedGain(steps, p); len(errs) > 0 {
-			return BookedPosting{}, errs
+			return nil, errs
 		}
 	}
 
-	booked.Reductions = steps
-	return booked, nil
+	return steps, nil
 }
 
 // fillRealizedGain computes SalePricePer, RealizedGain, and

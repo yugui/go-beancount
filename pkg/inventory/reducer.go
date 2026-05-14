@@ -152,6 +152,115 @@ func (r *Reducer) Walk(visit VisitFunc) ([]ast.Directive, []Error) {
 	return out, append([]Error(nil), r.errs...)
 }
 
+// postingResolution maintains the state during the first pass of 
+// visitTxn: booking explicit postings and collecting unknowns.
+type postingResolution struct {
+	newPostings []ast.Posting
+
+	// booked holds the BookedPosting records for every postings that successfully booked
+	booked         []BookedPosting
+	// bookedOffsets holds remembers the offset in newPostings for each booked posting's Source, so the Source pointer can be updated after the loop without searching by pointer identity. The two slices are parallel and append-only, so the offset is always len(newPostings)-1 at the time of booking.
+	bookedOffsets []int
+
+	unknowns []int
+}
+
+func (p1 *postingResolution) addUnknown(p ast.Posting) {
+	p1.newPostings = append(p1.newPostings, p)
+	p1.unknowns = append(p1.unknowns, len(p1.newPostings)-1)
+}
+
+func (p1 *postingResolution) addBooked(p ast.Posting, aug *ast.Lot, steps []ReductionStep) {
+	p1.newPostings = append(p1.newPostings, p)
+	p1.bookedOffsets = append(p1.bookedOffsets, len(p1.newPostings)-1)
+	p1.booked = append(p1.booked, BookedPosting{
+		Account: p.Account,
+		Units: *p.Amount.Clone(),
+		Lot: aug,
+		Reductions: steps,
+		InferredAuto: false,
+	})
+}
+
+func (p1 *postingResolution) addLotAugmentation(p ast.Posting, aug *ast.Lot) {
+	p1.newPostings = append(p1.newPostings, p)
+	i := len(p1.newPostings) - 1
+	p1.newPostings[i].Cost = aug.Clone()
+	p1.bookedOffsets = append(p1.bookedOffsets, i)
+	p1.booked = append(p1.booked, BookedPosting{
+		Account: p.Account,
+		Units: *p.Amount.Clone(),
+		Lot: aug,
+		Reductions: nil,
+		InferredAuto: false,
+	})
+}
+
+func (p1 *postingResolution) addCashAugmentation(p ast.Posting) {
+	p1.newPostings = append(p1.newPostings, p)
+	p1.bookedOffsets = append(p1.bookedOffsets, len(p1.newPostings)-1)
+	p1.booked = append(p1.booked, BookedPosting{
+		Account: p.Account,
+		Units: *p.Amount.Clone(),
+		Lot: nil,
+		Reductions: nil,
+		InferredAuto: false,
+	})
+}
+
+func (p1 *postingResolution) addSingleLotReduction(p ast.Posting, r ReductionStep) {
+	p1.newPostings = append(p1.newPostings, p)
+	i := len(p1.newPostings) - 1
+
+	lot := r.Lot
+	if lot.Currency != "" || lot.Number.Sign() != 0 {
+		p1.newPostings[i].Cost = lot.Clone()
+	}
+
+	p1.bookedOffsets = append(p1.bookedOffsets, i)
+	p1.booked = append(p1.booked, BookedPosting{
+		Account: p.Account,
+		Units: *p.Amount.Clone(),
+		Lot: nil,
+		Reductions: []ReductionStep{r},
+		InferredAuto: false,
+	})
+}
+
+func (p1 *postingResolution) addMultiLotReduction(p ast.Posting, r ReductionStep) {
+	p1.newPostings = append(p1.newPostings, p)
+	i := len(p1.newPostings) - 1
+
+	child := &p1.newPostings[i]
+	child.Amount = &ast.Amount{
+		Number:   signedMagnitude(&r.Units, p.Amount.Number.Negative),
+		Currency: p.Amount.Currency,
+	}
+	child.Cost = r.Lot.Clone()
+	p1.bookedOffsets = append(p1.bookedOffsets, i)
+	p1.booked = append(p1.booked, BookedPosting{
+		Account:    p.Account,
+		Units:      *child.Amount.Clone(),
+		Reductions: []ReductionStep{r},
+	})
+}
+
+// finalize returns the booked postings with their Source pointers updated to point into the newPostings slice, and the unknowns remapped to point into newPostings as well. This must be called after all calls to addBooked/addLotAugmentation/addSingleLotReduction/addMultiLotReduction/addUnknown are done, and before any of the booked postings or unknowns are passed to Pass 3, so that the Source pointers are correct for solveResidual and any subsequent bookOne calls.
+func (p1 *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast.Posting) {
+	booked = make([]BookedPosting, len(p1.booked))
+	for i, bp := range p1.booked {
+		offset := p1.bookedOffsets[i]
+		bp.Source = &p1.newPostings[offset]
+		booked[i] = bp
+	}
+	unknowns = make([]*ast.Posting, len(p1.unknowns))
+	for i, offset := range p1.unknowns {
+		unknowns[i] = &p1.newPostings[offset]
+	}
+	return booked, unknowns
+}
+
+
 // needsBookingClone reports whether txn could be mutated by the booking
 // pass and therefore must be cloned before its postings are handed to
 // the booking machinery. The pass fills auto-posting amounts and may
@@ -211,6 +320,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	}
 
 	trace := newStateTrace(r.state)
+	pr := new(postingResolution)
 
 	// Pass 1: book explicit postings while collecting unknowns. A
 	// posting that fails with CodeAugmentationRequiresCost AND has a
@@ -219,21 +329,20 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	// auto-posting (Amount == nil) is also an unknown. If more than
 	// one unknown is collected, the transaction is ambiguous and is
 	// reported below.
-	var unknowns []*ast.Posting
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount == nil {
 			// Auto-posting (validated single & no cost/price by
 			// validateStructure).
-			unknowns = append(unknowns, p)
+			pr.addUnknown(*p)
 			continue
 		}
 
 		inv := trace.prepareForEdit(p.Account)
 		method := r.booking[p.Account] // zero value = BookingDefault
-		bp, errs := bookOne(inv, p, method, txn.Date, false)
+		aug, steps, errs := bookOne(inv, p, method, txn.Date)
 		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
-			unknowns = append(unknowns, p)
+			pr.addUnknown(*p)
 			continue
 		}
 		r.errs = append(r.errs, errs...)
@@ -247,15 +356,30 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		if len(errs) > 0 {
 			continue
 		}
-		booked = append(booked, bp)
+		if p.Cost != nil && !p.Cost.IsBooked() {
+			pr.addBooked(*p, aug, steps)
+			continue
+		}
+
+		if aug != nil {
+			pr.addLotAugmentation(*p, aug)
+			continue
+		}
+		switch len(steps) {
+		case 0:
+			pr.addCashAugmentation(*p)
+		case 1:
+			pr.addSingleLotReduction(*p, steps[0])
+		default:
+			for _, r := range steps {
+				pr.addMultiLotReduction(*p, r)
+			}
+		}
 	}
 
-	// Pass 2: install *ast.Cost on every booked posting and expand
-	// multi-lot reductions into one posting per matched lot. Must run
-	// before Pass 3 so PostingWeight on every booked Source returns a
-	// concrete weight (pinned by
-	// TestInventoryIntegration_MultiLotExpansionWithAutoPosting).
-	booked, unknowns = resolveBookedCosts(txn, booked, unknowns)
+	txn.Postings = pr.newPostings
+	var unknowns []*ast.Posting
+	booked, unknowns = pr.finalize()
 
 	// Pass 3: resolve the single unknown, if any.
 	switch {
@@ -288,10 +412,17 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		// auto-posting branch left Cost nil. No post-bookOne install is
 		// needed in either case.
 		inv := trace.prepareForEdit(unknownP.Account)
-		bp, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date, inferred)
+		aug, steps, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date)
 		r.errs = append(r.errs, errs...)
 		if len(errs) == 0 {
-			booked = append(booked, bp)
+			booked = append(booked, BookedPosting{
+				Source: unknownP,
+				Account: unknownP.Account,
+				Units: *unknownP.Amount.Clone(),
+				Lot: aug,
+				Reductions: steps,
+				InferredAuto: inferred,
+			})
 		}
 	}
 
