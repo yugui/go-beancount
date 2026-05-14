@@ -320,10 +320,10 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 	if acmeBP.Units.Number.Cmp(&wantNeg5) != 0 {
 		t.Errorf("acmeBP.Units.Number = %s, want -5", acmeBP.Units.Number.Text('f'))
 	}
-	if len(acmeBP.Reductions) != 1 {
-		t.Fatalf("acmeBP.Reductions: got %d steps, want 1", len(acmeBP.Reductions))
+	if acmeBP.Reduction == nil {
+		t.Fatal("acmeBP.Reduction is nil, want a single step")
 	}
-	step := acmeBP.Reductions[0]
+	step := *acmeBP.Reduction
 	if step.Lot.Label != "lot-2025a" {
 		t.Errorf("step.Lot.Label = %q, want lot-2025a", step.Lot.Label)
 	}
@@ -375,8 +375,8 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 	if cashBP.Lot != nil {
 		t.Errorf("cashBP.Lot = %+v, want nil", cashBP.Lot)
 	}
-	if len(cashBP.Reductions) != 0 {
-		t.Errorf("len(cashBP.Reductions) = %d, want 0", len(cashBP.Reductions))
+	if cashBP.Reduction != nil {
+		t.Errorf("cashBP.Reduction = %+v, want nil", cashBP.Reduction)
 	}
 
 	// Income:Gains posting: auto-inferred, absorbs the realized gain
@@ -394,14 +394,14 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 	if gainsBP.Lot != nil {
 		t.Errorf("gainsBP.Lot = %+v, want nil", gainsBP.Lot)
 	}
-	if len(gainsBP.Reductions) != 0 {
-		t.Errorf("len(gainsBP.Reductions) = %d, want 0", len(gainsBP.Reductions))
+	if gainsBP.Reduction != nil {
+		t.Errorf("gainsBP.Reduction = %+v, want nil", gainsBP.Reduction)
 	}
 }
 
 // TestInventoryIntegration_InspectFIFOReduction verifies that a FIFO
 // sale crossing a lot boundary is expanded into one BookedPosting per
-// consumed lot, each carrying its own single-step Reductions slice and
+// consumed lot, each carrying its own single Reduction step and
 // per-step realized gain. Summed across the expanded postings the
 // realized gains reproduce the per-share basis the inventory layer
 // computes.
@@ -470,8 +470,8 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 			if diff := cmp.Diff(wantUnits, bp.Units, invCmpOpts); diff != "" {
 				t.Errorf("Inspect: BookedPosting.Units mismatch (-want +got):\n%s", diff)
 			}
-			if len(bp.Reductions) != 1 {
-				t.Fatalf("Inspect: Reductions: got %d steps, want 1 (expanded child is a single-lot reduction)", len(bp.Reductions))
+			if bp.Reduction == nil {
+				t.Fatal("Inspect: Reduction is nil, want a single step (expanded child is a single-lot reduction)")
 			}
 			wantGain := mustDecimal(t, want.gain)
 			wantStep := inventory.ReductionStep{
@@ -480,9 +480,9 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 				RealizedGain: &wantGain,
 				GainCurrency: want.currency,
 			}
-			step := bp.Reductions[0]
+			step := *bp.Reduction
 			if diff := cmp.Diff(wantStep, step, lotIdentityCmpOpts); diff != "" {
-				t.Errorf("Inspect: Reductions[0] mismatch (-want +got):\n%s", diff)
+				t.Errorf("Inspect: Reduction mismatch (-want +got):\n%s", diff)
 			}
 
 			// Each expanded child carries its own *ast.Cost rendering
@@ -508,8 +508,14 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 
 	// Sum of per-step realized gains: 100 + 10 = 110 USD, which
 	// matches (60 - avg_cost) * 8 = 110 when you solve for avg_cost.
+	// Guard against a nil Reduction here: a per-lot subtest above can
+	// observe and t.Fatal on it, but t.Fatal inside t.Run only
+	// terminates the subtest, so this outer-body sum would still run.
+	if gizmoBPs[0].Reduction == nil || gizmoBPs[1].Reduction == nil {
+		t.Fatal("Inspect: gizmoBPs Reduction is nil on an expanded child; cannot sum realized gains")
+	}
 	var sum apd.Decimal
-	if _, err := apd.BaseContext.Add(&sum, gizmoBPs[0].Reductions[0].RealizedGain, gizmoBPs[1].Reductions[0].RealizedGain); err != nil {
+	if _, err := apd.BaseContext.Add(&sum, gizmoBPs[0].Reduction.RealizedGain, gizmoBPs[1].Reduction.RealizedGain); err != nil {
 		t.Fatalf("sum gains: %v", err)
 	}
 	wantTotal := mustDecimal(t, "110")
@@ -706,8 +712,8 @@ func TestInventoryIntegration_AutoPostingInference(t *testing.T) {
 	if autoBP.Lot != nil {
 		t.Errorf("autoBP.Lot = %+v, want nil", autoBP.Lot)
 	}
-	if len(autoBP.Reductions) != 0 {
-		t.Errorf("len(autoBP.Reductions) = %d, want 0", len(autoBP.Reductions))
+	if autoBP.Reduction != nil {
+		t.Errorf("autoBP.Reduction = %+v, want nil", autoBP.Reduction)
 	}
 }
 

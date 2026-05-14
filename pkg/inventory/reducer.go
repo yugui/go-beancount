@@ -173,30 +173,222 @@ func needsBookingClone(txn *ast.Transaction) bool {
 	return false
 }
 
+// postingResolution accumulates the per-transaction outcome of routing
+// each ast.Posting through bookOne into the rebuilt txn.Postings list
+// and the parallel []BookedPosting visitTxn returns. It is the single
+// owner of three intertwined concerns that used to be split across a
+// "book" pass and a separate "install" pass:
+//
+//  1. Rebuilding txn.Postings (multi-lot reductions expand into one
+//     child per matched lot, so the posting count changes).
+//  2. Installing the resolved *ast.Cost on each rebuilt posting under
+//     the rules dictated by the booking outcome (lot augmentation,
+//     cash augmentation, single-lot reduction with optional
+//     cash-sentinel skip, multi-lot expansion, second-run fixed
+//     point).
+//  3. Constructing the BookedPosting records the visitor will see,
+//     with Source pointers aliasing into the rebuilt slice.
+//
+// Concern (1) is why pointers cannot be assigned eagerly: a later
+// append in the same loop may reallocate the postings backing array
+// and invalidate any &postings[k] taken earlier. The bookedAt /
+// unknownAt offsets defer pointer binding until [finalize], which runs
+// after all appends are done.
+//
+// The zero value is usable; [newPostingResolution] pre-sizes the
+// slices for the common no-expansion case.
+type postingResolution struct {
+	// postings is the rebuilt list of postings for this transaction.
+	// visitTxn assigns txn.Postings = postings before calling finalize
+	// so BookedPosting.Source pointers alias the caller-visible slice.
+	postings []ast.Posting
+
+	// booked is parallel to bookedAt: each entry's Source field is
+	// filled by finalize from postings[bookedAt[i]]. Until then the
+	// field is left zero.
+	booked   []BookedPosting
+	bookedAt []int
+
+	// unknownAt holds offsets into postings for the auto-posting and
+	// any deferred-augment posting that the residual pass will
+	// resolve.
+	unknownAt []int
+}
+
+// newPostingResolution returns a postingResolution whose internal
+// slices are pre-sized for the common case where every input posting
+// produces exactly one rebuilt posting and one BookedPosting (no
+// multi-lot expansion, no bookOne failures). hint should be the
+// input transaction's posting count; over-allocation is harmless and
+// under-allocation just falls back to append's normal growth.
+// unknownAt is left nil: most transactions carry at most one unknown
+// and the first append allocates a tight-fit slice anyway.
+func newPostingResolution(hint int) postingResolution {
+	return postingResolution{
+		postings: make([]ast.Posting, 0, hint),
+		booked:   make([]BookedPosting, 0, hint),
+		bookedAt: make([]int, 0, hint),
+	}
+}
+
+// addUnknown records p as either the auto-posting or a deferred-augment
+// posting. The posting is appended unchanged; the residual pass
+// resolves its Amount or Cost from the transaction's residual.
+func (pr *postingResolution) addUnknown(p *ast.Posting) {
+	pr.postings = append(pr.postings, *p)
+	pr.unknownAt = append(pr.unknownAt, len(pr.postings)-1)
+}
+
+// addPreserved records a posting whose bookOne returned errors. The
+// posting is appended unchanged for the printer; no BookedPosting is
+// emitted and the residual pass does not see it.
+//
+// TODO(failed-posting-removal): upstream beancount removes the entire
+// currency group from txn.Postings when book_reductions returns
+// errors. Matching upstream requires structurally removing failing
+// postings here; this is a wider semantic change than the current
+// slice scope.
+func (pr *postingResolution) addPreserved(p *ast.Posting) {
+	pr.postings = append(pr.postings, *p)
+}
+
+// addAlreadyBooked records a posting that arrived carrying a booked
+// *ast.Cost. This is the second-run fixed-point path: bookOne still
+// runs to mutate the inventory, but the posting's Cost is preserved
+// pointer-identical so a reducer round-trip is byte-identical
+// (pinned by TestReducerRun_OutputIsFixedPoint). lot or step may be
+// non-nil — they are recorded in the BookedPosting so downstream
+// consumers can read the matched lot identity — but no Cost is
+// installed on the posting because p.Cost already reflects it.
+func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep) {
+	pr.postings = append(pr.postings, *p)
+	pr.bookedAt = append(pr.bookedAt, len(pr.postings)-1)
+	pr.booked = append(pr.booked, BookedPosting{
+		Account:   p.Account,
+		Units:     *p.Amount.Clone(),
+		Lot:       lot,
+		Reduction: step,
+	})
+}
+
+// addLotAugmentation records a first-run augmentation that carried a
+// cost spec. The rebuilt posting gets a fresh *ast.Cost cloned from
+// lot, replacing the parse-tier *ast.CostSpec; the BookedPosting
+// keeps lot in its Lot field so consumers can read it without
+// re-resolving.
+func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot) {
+	pr.postings = append(pr.postings, *p)
+	i := len(pr.postings) - 1
+	pr.postings[i].Cost = lot.Clone()
+	pr.bookedAt = append(pr.bookedAt, i)
+	pr.booked = append(pr.booked, BookedPosting{
+		Account: p.Account,
+		Units:   *p.Amount.Clone(),
+		Lot:     lot,
+	})
+}
+
+// addCashAugmentation records an augmentation that carries no cost
+// spec (a cash-leg posting). The rebuilt posting's Cost holder
+// (typically nil) is preserved verbatim — synthesizing a degenerate
+// *ast.Cost would change weight semantics for downstream consumers.
+func (pr *postingResolution) addCashAugmentation(p *ast.Posting) {
+	pr.postings = append(pr.postings, *p)
+	pr.bookedAt = append(pr.bookedAt, len(pr.postings)-1)
+	pr.booked = append(pr.booked, BookedPosting{
+		Account: p.Account,
+		Units:   *p.Amount.Clone(),
+	})
+}
+
+// addSingleLotReduction records a reduction whose matcher selected
+// exactly one lot. The rebuilt posting gets the matched lot's cost
+// installed, except for the cash-sentinel step (zero-value Lot): in
+// that case the parse-tier Cost holder is left alone so
+// [PostingWeight] falls through to the price branch.
+func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep) {
+	pr.postings = append(pr.postings, *p)
+	i := len(pr.postings) - 1
+	if step.Lot.Currency != "" || step.Lot.Number.Sign() != 0 {
+		pr.postings[i].Cost = step.Lot.Clone()
+	}
+	pr.bookedAt = append(pr.bookedAt, i)
+	pr.booked = append(pr.booked, BookedPosting{
+		Account:   p.Account,
+		Units:     *p.Amount.Clone(),
+		Reduction: &step,
+	})
+}
+
+// addMultiLotReduction expands a reduction that matched multiple lots
+// into one child posting per step, each carrying that step's lot and
+// the signed magnitude of the step's units (the sign comes from the
+// parent posting). Each child is a deep clone of p so siblings do not
+// share Meta / Price substructures.
+//
+// Inventory.Reduce never returns a multi-step result that includes the
+// cash sentinel — cost-bearing and cash positions of the same
+// commodity cannot coexist on a single inventory row — so step.Lot is
+// installed unconditionally here.
+func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep) {
+	// step (the range value) is a fresh per-iteration variable in
+	// Go 1.22+, so &step is heap-owned by the BookedPosting below and
+	// does not alias the caller's steps slice — symmetric with
+	// addSingleLotReduction's value-parameter form.
+	for _, step := range steps {
+		pr.postings = append(pr.postings, p.Clone())
+		i := len(pr.postings) - 1
+		child := &pr.postings[i]
+		child.Amount = &ast.Amount{
+			Number:   signedMagnitude(&step.Units, p.Amount.Number.Negative),
+			Currency: p.Amount.Currency,
+		}
+		child.Cost = step.Lot.Clone()
+		pr.bookedAt = append(pr.bookedAt, i)
+		pr.booked = append(pr.booked, BookedPosting{
+			Account:   p.Account,
+			Units:     *child.Amount.Clone(),
+			Reduction: &step,
+		})
+	}
+}
+
+// finalize binds the Source pointers on every BookedPosting and the
+// unknown pointers to indices into pr.postings, which by this point
+// must be the slice the caller intends to publish (typically already
+// assigned to txn.Postings). It must run after every add* call,
+// because intermediate appends may have grown the backing array.
+func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast.Posting) {
+	booked = pr.booked
+	for i, off := range pr.bookedAt {
+		booked[i].Source = &pr.postings[off]
+	}
+	unknowns = make([]*ast.Posting, len(pr.unknownAt))
+	for i, off := range pr.unknownAt {
+		unknowns[i] = &pr.postings[off]
+	}
+	return booked, unknowns
+}
+
 // visitTxn performs the per-transaction booking pass, mutating the
 // reducer's per-account state in place and returning the before/after
 // snapshots plus the booked postings. The stop return value is reserved
 // for future use (e.g. fatal structural errors); today it is always
 // false when the function returns normally.
 //
-// The body runs three passes:
+// The body runs two passes:
 //
-//   - Pass 1 books explicit postings against inventory state and
-//     collects unknowns (the auto-posting and any deferred-augment
-//     posting held back from booking). No *ast.Cost is installed
-//     here; that is Pass 2's responsibility.
-//   - Pass 2 ([resolveBookedCosts]) installs *ast.Cost on every
-//     booked posting: an augmentation gets bp.Lot in place, a
-//     reduction matching a single non-cash lot gets the matched
-//     step.Lot in place, and a reduction matching multiple lots is
-//     replaced by one posting per matched lot, each carrying that
-//     lot's *ast.Cost.
-//   - Pass 3 solves the residual and books the single unknown.
+//   - Pass 1 books each explicit posting via [bookOne] and routes the
+//     outcome through a [postingResolution] helper that rebuilds
+//     txn.Postings, installs the resolved *ast.Cost where needed,
+//     expands multi-lot reductions into per-lot children, and
+//     constructs the BookedPosting records. Unknowns (auto-posting,
+//     deferred augmentation) are recorded by offset for Pass 2.
+//   - Pass 2 solves the residual and books the single unknown.
 //
-// Pass 2 runs before Pass 3 because Pass 3's residual computation
-// reads PostingWeight on each booked Source; after Pass 2 every
-// booked Source carries a concrete *ast.Cost and the weight is
-// well-defined per posting without any multi-lot branching.
+// PostingWeight on every booked Source is well-defined for Pass 2's
+// residual computation because Pass 1 installs *ast.Cost on every
+// posting that needs one before finalize binds Source pointers.
 func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	before map[ast.Account]*Inventory,
 	after map[ast.Account]*Inventory,
@@ -211,53 +403,70 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	}
 
 	trace := newStateTrace(r.state)
+	pr := newPostingResolution(len(txn.Postings))
 
-	// Pass 1: book explicit postings while collecting unknowns. A
-	// posting that fails with CodeAugmentationRequiresCost AND has a
-	// cost spec without a number is held back as a deferred unknown
-	// (Pass 3 may infer its per-unit cost from the residual). The
-	// auto-posting (Amount == nil) is also an unknown. If more than
-	// one unknown is collected, the transaction is ambiguous and is
-	// reported below.
-	var unknowns []*ast.Posting
+	// Pass 1: classify each posting via bookOne and route the outcome
+	// through pr. A posting that fails with CodeAugmentationRequiresCost
+	// AND has a cost spec without a number is held back as a deferred
+	// unknown (Pass 2 may infer its per-unit cost from the residual).
+	// The auto-posting (Amount == nil) is also an unknown. If more
+	// than one unknown is collected, the transaction is ambiguous and
+	// is reported below.
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount == nil {
 			// Auto-posting (validated single & no cost/price by
 			// validateStructure).
-			unknowns = append(unknowns, p)
+			pr.addUnknown(p)
 			continue
 		}
 
 		inv := trace.prepareForEdit(p.Account)
 		method := r.booking[p.Account] // zero value = BookingDefault
-		bp, errs := bookOne(inv, p, method, txn.Date, false)
+		lot, steps, errs := bookOne(inv, p, method, txn.Date)
 		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
-			unknowns = append(unknowns, p)
+			pr.addUnknown(p)
 			continue
 		}
-		r.errs = append(r.errs, errs...)
-		// TODO(failed-posting-removal): upstream beancount removes the
-		// entire currency group from txn.Postings when book_reductions
-		// returns errors. The Go reducer currently keeps the failing
-		// posting with its original parse-tier *ast.CostSpec. Matching
-		// upstream requires structurally removing failing postings
-		// here; this is a wider semantic change than the current slice
-		// scope.
 		if len(errs) > 0 {
+			r.errs = append(r.errs, errs...)
+			pr.addPreserved(p)
 			continue
 		}
-		booked = append(booked, bp)
+		switch {
+		case p.Cost != nil && p.Cost.IsBooked():
+			// Already-booked second-run path: bookOne's tight matcher
+			// produces either a single-step reduction or an
+			// augmentation lot, never multi-step. The guard is
+			// defensive — if the invariant ever broke, firstStepOrNil
+			// would silently drop the extra steps.
+			if len(steps) > 1 {
+				r.errs = append(r.errs, Error{
+					Code:    CodeInternalError,
+					Span:    p.Span,
+					Account: p.Account,
+					Message: "already-booked posting produced a multi-lot reduction; tight-matcher invariant violated",
+				})
+				pr.addPreserved(p)
+				continue
+			}
+			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps))
+		case lot != nil:
+			pr.addLotAugmentation(p, lot)
+		case len(steps) == 0:
+			pr.addCashAugmentation(p)
+		case len(steps) == 1:
+			pr.addSingleLotReduction(p, steps[0])
+		default:
+			pr.addMultiLotReduction(p, steps)
+		}
 	}
 
-	// Pass 2: install *ast.Cost on every booked posting and expand
-	// multi-lot reductions into one posting per matched lot. Must run
-	// before Pass 3 so PostingWeight on every booked Source returns a
-	// concrete weight (pinned by
-	// TestInventoryIntegration_MultiLotExpansionWithAutoPosting).
-	booked, unknowns = resolveBookedCosts(txn, booked, unknowns)
+	txn.Postings = pr.postings
+	var unknowns []*ast.Posting
+	booked, unknowns = pr.finalize()
 
-	// Pass 3: resolve the single unknown, if any.
+	// Pass 2: resolve the single unknown, if any.
 	switch {
 	case len(unknowns) > 1:
 		// Ambiguous: too many unknowns for a single residual to pin
@@ -276,8 +485,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			// guarantees unknownP.Cost is nil, and this branch must
 			// preserve that — even if bookOne below ends up matching a
 			// held-at-cost lot, the auto-posting's Cost is deliberately
-			// not written. (See the no-install rationale next to the
-			// Pass 1 install block above; we apply it here by omission.)
+			// not written.
 			unknownP.Amount = residual
 		} else if err := r.resolveCostFromResidual(unknownP, residual, txn.Date); err != nil {
 			r.errs = append(r.errs, *err)
@@ -288,160 +496,43 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		// auto-posting branch left Cost nil. No post-bookOne install is
 		// needed in either case.
 		inv := trace.prepareForEdit(unknownP.Account)
-		bp, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date, inferred)
+		lot, steps, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date)
 		r.errs = append(r.errs, errs...)
 		if len(errs) == 0 {
-			booked = append(booked, bp)
+			if len(steps) > 1 {
+				// Multi-lot reductions from the residual pass would
+				// need to expand txn.Postings after Source pointers are
+				// already bound, which is not safe. The deferred-
+				// augment branch installs a tight *ast.Cost so its
+				// matcher returns a single lot; the auto-posting branch
+				// is typically a cash residual that augments. If we
+				// ever land here we want a diagnostic, not a silently-
+				// truncated BookedPosting.
+				r.errs = append(r.errs, Error{
+					Code:    CodeInternalError,
+					Span:    unknownP.Span,
+					Account: unknownP.Account,
+					Message: "residual pass produced a multi-lot reduction; expansion is not supported here",
+				})
+				break
+			}
+			// The unknown is already at its final offset in txn.Postings,
+			// so its address is stable: appending one BookedPosting here
+			// does not invalidate any of the Source pointers finalize
+			// just bound.
+			booked = append(booked, BookedPosting{
+				Source:       unknownP,
+				Account:      unknownP.Account,
+				Units:        *unknownP.Amount.Clone(),
+				Lot:          lot,
+				Reduction:    firstStepOrNil(steps),
+				InferredAuto: inferred,
+			})
 		}
 	}
 
 	before, after = trace.diff()
 	return before, after, booked, false
-}
-
-// resolveBookedCosts installs the resolved *ast.Cost on every booked
-// posting and rebuilds txn.Postings to interleave per-lot children at
-// the position of each multi-lot reducing parent.
-//
-// The shape of the install depends on bp, dispatched per booked entry:
-//
-//   - Posting already booked (Cost is *ast.Cost): second-run fixed
-//     point. Pass through with Source rebound; do not re-install.
-//   - Augmentation (bp.Lot != nil): install bp.Lot.Clone() on the
-//     pass-through posting.
-//   - Cash augmentation (bp.Lot == nil, no reductions): pass through
-//     with no Cost install. The posting's parse-tier Cost holder
-//     (typically nil for cash lines) is preserved.
-//   - Single-lot reduction (len(bp.Reductions) == 1): install
-//     step.Lot.Clone() on the pass-through posting. A cash-sentinel
-//     step (zero-value Lot) leaves the posting's Cost holder
-//     untouched so PostingWeight falls through to the price branch.
-//   - Multi-lot reduction (len(bp.Reductions) > 1): replace the
-//     parent posting with one child per matched lot. Each child
-//     carries that step's *ast.Cost and the signed magnitude of
-//     the step's units. step.Lot is installed unconditionally
-//     here — Inventory.Reduce never returns a multi-step result
-//     that includes a cash sentinel, because cost-bearing and
-//     cash positions of the same commodity cannot coexist on a
-//     single inventory row.
-//
-// txn.Postings is always rebuilt. BookedPosting.Source pointers in
-// the returned newBooked alias the new txn.Postings; unknowns is
-// remapped through the same rewrite so the caller's Pass 3 receives
-// pointers into the new slice. A posting that is in neither booked
-// nor unknowns (e.g. a posting whose bookOne failed) is preserved in
-// txn.Postings as-is, with no Cost install and no entry in newBooked
-// or newUnknowns.
-//
-// On a second reducer run over its own output every booked posting
-// already carries *ast.Cost and takes the alreadyBooked branch
-// above; bookOne's tight NewCostMatcher re-selects exactly the same
-// lot so every reduction is single-step. txn.Postings is still
-// rebuilt (deterministic, order-preserving), so the output is
-// byte-identical to the input. This is what makes
-// TestReducerRun_OutputIsFixedPoint hold.
-func resolveBookedCosts(
-	txn *ast.Transaction,
-	booked []BookedPosting,
-	unknowns []*ast.Posting,
-) (newBooked []BookedPosting, newUnknowns []*ast.Posting) {
-	// Sweep booked once to compute the rebuilt-slice capacity and the
-	// Source-pointer reverse map.
-	extra := 0
-	bySource := make(map[*ast.Posting]int, len(booked))
-	for i, bp := range booked {
-		bySource[bp.Source] = i
-		if n := len(bp.Reductions); n > 1 {
-			extra += n - 1
-		}
-	}
-	// unknownSet distinguishes auto-posting / deferred-augment entries
-	// (handed to Pass 3) from bookOne-failed entries (preserved but
-	// not given to Pass 3). Without this set the !hasBP branch below
-	// could not tell them apart, since both are absent from booked.
-	unknownSet := make(map[*ast.Posting]struct{}, len(unknowns))
-	for _, u := range unknowns {
-		unknownSet[u] = struct{}{}
-	}
-
-	// newPostings is pre-sized to its final capacity so append never
-	// reallocates and &newPostings[i] is stable for the slice's
-	// lifetime — load-bearing because BookedPosting.Source and the
-	// unknown remap both alias into it.
-	newPostings := make([]ast.Posting, 0, len(txn.Postings)+extra)
-	newBooked = make([]BookedPosting, 0, len(booked)+extra)
-	newUnknowns = make([]*ast.Posting, 0, len(unknowns))
-
-	for i := range txn.Postings {
-		old := &txn.Postings[i]
-
-		bIdx, hasBP := bySource[old]
-		if !hasBP {
-			// Unknown (Pass 3) or bookOne-failed (printer-only).
-			newPostings = append(newPostings, *old)
-			if _, isUnknown := unknownSet[old]; isUnknown {
-				newUnknowns = append(newUnknowns, &newPostings[len(newPostings)-1])
-			}
-			continue
-		}
-		bp := booked[bIdx]
-
-		if old.Cost != nil && old.Cost.IsBooked() {
-			// Already booked.
-			newPostings = append(newPostings, *old)
-			bp.Source = &newPostings[len(newPostings)-1]
-			newBooked = append(newBooked, bp)
-			continue
-		}
-
-		if bp.Lot != nil {
-			// Augmentation.
-			newPostings = append(newPostings, *old)
-			newP := &newPostings[len(newPostings)-1]
-			newP.Cost = bp.Lot.Clone()
-			bp.Source = newP
-			newBooked = append(newBooked, bp)
-			continue
-		}
-
-		switch len(bp.Reductions) {
-		case 0:
-			// Cash augmentation.
-			newPostings = append(newPostings, *old)
-			bp.Source = &newPostings[len(newPostings)-1]
-			newBooked = append(newBooked, bp)
-		case 1:
-			// Single-lot reduction.
-			newPostings = append(newPostings, *old)
-			newP := &newPostings[len(newPostings)-1]
-			lot := &bp.Reductions[0].Lot
-			if lot.Currency != "" || lot.Number.Sign() != 0 {
-				newP.Cost = lot.Clone()
-			}
-			bp.Source = newP
-			newBooked = append(newBooked, bp)
-		default:
-			// Multi-lot expansion.
-			for s := range bp.Reductions {
-				step := &bp.Reductions[s]
-				newPostings = append(newPostings, old.Clone())
-				child := &newPostings[len(newPostings)-1]
-				child.Amount = &ast.Amount{
-					Number:   signedMagnitude(&step.Units, old.Amount.Number.Negative),
-					Currency: old.Amount.Currency,
-				}
-				child.Cost = step.Lot.Clone()
-				newBooked = append(newBooked, BookedPosting{
-					Source:     child,
-					Account:    bp.Account,
-					Units:      *child.Amount.Clone(),
-					Reductions: []ReductionStep{*step},
-				})
-			}
-		}
-	}
-	txn.Postings = newPostings
-	return newBooked, newUnknowns
 }
 
 // signedMagnitude returns a copy of magnitude whose Negative flag
@@ -458,6 +549,21 @@ func signedMagnitude(magnitude *apd.Decimal, negative bool) apd.Decimal {
 		n.Negative = true
 	}
 	return n
+}
+
+// firstStepOrNil returns &steps[0] when steps has exactly one entry,
+// and nil otherwise. Callers use it on the already-booked second-run
+// path and the residual pass, where the matcher is constrained to a
+// single lot identity and bookOne therefore returns 0 or 1 step. Both
+// call sites guard against `len(steps) > 1` before invoking this
+// helper and emit CodeInternalError diagnostics if the tight-matcher
+// invariant were ever broken; this function should never observe
+// multi-step input in practice.
+func firstStepOrNil(steps []ReductionStep) *ReductionStep {
+	if len(steps) != 1 {
+		return nil
+	}
+	return &steps[0]
 }
 
 // validateStructure rejects transactions whose auto-posting structure
@@ -591,10 +697,10 @@ func (r *Reducer) flagAmbiguousUnknowns(unknowns []*ast.Posting) {
 // expressed as the [ast.Amount] that — added to the booked weights —
 // makes the transaction balance.
 //
-// At this point Pass 2 ([resolveBookedCosts]) has installed *ast.Cost
-// on every booked posting — augmentation in place, single-lot
-// reduction in place, multi-lot reduction as per-lot children — so
-// [PostingWeight] reads its Cost branch on every entry and yields
+// By the time solveResidual runs, [postingResolution] has installed
+// *ast.Cost on every booked posting — augmentation in place, single-
+// lot reduction in place, multi-lot reduction as per-lot children —
+// so [PostingWeight] reads its Cost branch on every entry and yields
 // the same exact figure that [pkg/validation] will see when it
 // checks transaction balance. There is no separate booked-only
 // weight path; the reducer and validation share a single
@@ -680,7 +786,7 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 
 // resolveCostFromResidual constructs the booked *ast.Cost for a
 // deferred-augment posting (one written as `{}` and held back from
-// Pass 1) using the residual Pass 3 derives from the rest of the
+// Pass 1) using the residual visitTxn derives from the rest of the
 // transaction. The synthesized Cost is installed on p.Cost in place of the
 // parse-tier *ast.CostSpec, so the subsequent bookOne call takes the
 // ResolveCost(*ast.Cost) short-circuit branch.
@@ -694,7 +800,7 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 //
 // A zero-unit posting or apd.Decimal arithmetic failure is reported
 // as an *Error so the caller can append it to r.errs and abort the
-// Pass 3 interpolation.
+// residual interpolation.
 func (r *Reducer) resolveCostFromResidual(p *ast.Posting, residual *ast.Amount, txnDate time.Time) *Error {
 	if p.Amount.Number.Sign() == 0 {
 		return &Error{
