@@ -542,3 +542,210 @@ func TestStateTrace_Group_RollbackBeforeIndependence(t *testing.T) {
 		t.Errorf("diff() after[acct] = %v, want 149 USD", after["Assets:A"])
 	}
 }
+
+// ---- commitGroupMulti tests ----
+
+// TestStateTrace_CommitGroupMulti_SingleKey verifies that commitGroupMulti
+// with a single-element keys slice behaves identically to commitGroup:
+// the mutation is filed under that key and can be rolled back.
+func TestStateTrace_CommitGroupMulti_SingleKey(t *testing.T) {
+	state := map[ast.Account]*Inventory{}
+	trace := newStateTrace(state)
+
+	tok := trace.enterGroup()
+	inv := trace.prepareForEdit("Assets:A")
+	if err := inv.Add(Position{Units: mkAmount(t, "10", "USD")}); err != nil {
+		t.Fatalf("Add(10 USD): %v", err)
+	}
+	trace.commitGroupMulti(tok, []string{"USD"})
+
+	// Mutation is live.
+	want := seedInventory(t, "10")
+	if !state["Assets:A"].Equal(want) {
+		t.Errorf("commitGroupMulti(tok, [USD]): state[acct] = %v, want 10 USD", state["Assets:A"])
+	}
+
+	// Rollback undoes the mutation.
+	trace.rollbackGroup("USD")
+	if !state["Assets:A"].IsEmpty() {
+		t.Errorf("rollbackGroup(USD): state[acct] = %v, want empty after rollback", state["Assets:A"])
+	}
+}
+
+// TestStateTrace_CommitGroupMulti_MultipleKeys verifies that a single
+// pending snapshot is filed independently under each of the supplied keys.
+// Rolling back one key undoes the mutation for that key's restore point,
+// and the other key retains an independent snapshot so it can also be
+// rolled back — or not — independently.
+func TestStateTrace_CommitGroupMulti_MultipleKeys(t *testing.T) {
+	state := map[ast.Account]*Inventory{"Assets:A": seedInventory(t, "100")}
+	trace := newStateTrace(state)
+
+	// One enterGroup scope that files under two currency keys simultaneously.
+	tok := trace.enterGroup()
+	inv := trace.prepareForEdit("Assets:A")
+	if err := inv.Add(Position{Units: mkAmount(t, "50", "USD")}); err != nil {
+		t.Fatalf("Add(50 USD): %v", err)
+	}
+	// File under both "USD" and "EUR" (simulates a multi-currency lot reduction).
+	trace.commitGroupMulti(tok, []string{"USD", "EUR"})
+
+	// Mutation is live: 150 USD total.
+	want150 := seedInventory(t, "150")
+	if !state["Assets:A"].Equal(want150) {
+		t.Errorf("commitGroupMulti(tok, [USD,EUR]): state[acct] = %v, want 150 USD", state["Assets:A"])
+	}
+
+	// Rolling back "USD" restores to 100 USD (pre-group snapshot).
+	trace.rollbackGroup("USD")
+	want100 := seedInventory(t, "100")
+	if !state["Assets:A"].Equal(want100) {
+		t.Errorf("rollbackGroup(USD): state[acct] = %v, want 100 USD", state["Assets:A"])
+	}
+
+	// The "EUR" bucket still has an independent snapshot (100 USD); rolling
+	// back "EUR" also restores to 100 USD (idempotent from a value standpoint,
+	// but uses the EUR bucket's stored snapshot, not the USD bucket's).
+	trace.rollbackGroup("EUR")
+	if !state["Assets:A"].Equal(want100) {
+		t.Errorf("rollbackGroup(EUR) after rollbackGroup(USD): state[acct] = %v, want 100 USD (independent snapshot)", state["Assets:A"])
+	}
+}
+
+// TestStateTrace_CommitGroupMulti_IndependentRollback verifies the
+// key invariant of commitGroupMulti for multi-currency lot reductions:
+// when a posting touches a single account but files under two currency
+// keys, rolling back only one key leaves the other key's snapshot
+// intact and usable for a separate independent rollback later.
+//
+// This pins the correctness of the tension-1 resolution:
+// a -20 AAPL {} that reduces both AAPL{USD} and AAPL{EUR} lots must
+// allow per-currency rollback of inventory state.
+func TestStateTrace_CommitGroupMulti_IndependentRollback(t *testing.T) {
+	state := map[ast.Account]*Inventory{"Assets:Brokerage": seedInventoryOf(t, "200", "USD")}
+	trace := newStateTrace(state)
+
+	// Simulate first posting: touches Brokerage, files under USD.
+	tokA := trace.enterGroup()
+	invA := trace.prepareForEdit("Assets:Brokerage")
+	if err := invA.Add(Position{Units: mkAmount(t, "10", "USD")}); err != nil {
+		t.Fatalf("Add(10 USD): %v", err)
+	}
+	trace.commitGroup(tokA, "USD")
+	// State: 210 USD
+
+	// Simulate second posting: touches Brokerage again, files under both
+	// USD and EUR (multi-lot reduction scenario).
+	tokB := trace.enterGroup()
+	invB := trace.prepareForEdit("Assets:Brokerage")
+	if err := invB.Add(Position{Units: mkAmount(t, "5", "USD")}); err != nil {
+		t.Fatalf("Add(5 USD): %v", err)
+	}
+	trace.commitGroupMulti(tokB, []string{"USD", "EUR"})
+	// State: 215 USD
+
+	// Rolling back "EUR" restores Brokerage to the snapshot at the moment the
+	// EUR scope started touching it — which is 210 USD (state after the first
+	// posting's commitGroup, since it was a second-touch within the EUR scope).
+	trace.rollbackGroup("EUR")
+	want210 := seedInventoryOf(t, "210", "USD")
+	if !state["Assets:Brokerage"].Equal(want210) {
+		t.Errorf("rollbackGroup(EUR): state = %v, want 210 USD (second-touch snapshot for EUR)", state["Assets:Brokerage"])
+	}
+
+	// Rolling back "USD" after "EUR" has been rolled back restores to the
+	// pre-transaction snapshot (200 USD), because USD's first-touch snapshot
+	// was taken before any scope touched the account.
+	trace.rollbackGroup("USD")
+	want200 := seedInventoryOf(t, "200", "USD")
+	if !state["Assets:Brokerage"].Equal(want200) {
+		t.Errorf("rollbackGroup(USD): state = %v, want 200 USD (pre-transaction snapshot)", state["Assets:Brokerage"])
+	}
+}
+
+// TestStateTrace_CommitGroupMulti_FirstTouchWinsPerKey verifies that
+// when two postings both call commitGroupMulti with overlapping keys,
+// the first filing for each key wins (earlier snapshot is preserved).
+func TestStateTrace_CommitGroupMulti_FirstTouchWinsPerKey(t *testing.T) {
+	state := map[ast.Account]*Inventory{"Assets:A": seedInventory(t, "100")}
+	trace := newStateTrace(state)
+
+	// First posting: files under "USD" and "EUR". Snapshot: 100 USD.
+	tok1 := trace.enterGroup()
+	inv1 := trace.prepareForEdit("Assets:A")
+	if err := inv1.Add(Position{Units: mkAmount(t, "20", "USD")}); err != nil {
+		t.Fatalf("first Add: %v", err)
+	}
+	trace.commitGroupMulti(tok1, []string{"USD", "EUR"})
+	// State: 120 USD
+
+	// Second posting: tries to file under "USD" (already has a snapshot).
+	// first-touch-wins means the 100 USD snapshot is kept, not overwritten.
+	tok2 := trace.enterGroup()
+	inv2 := trace.prepareForEdit("Assets:A")
+	if err := inv2.Add(Position{Units: mkAmount(t, "5", "USD")}); err != nil {
+		t.Fatalf("second Add: %v", err)
+	}
+	trace.commitGroupMulti(tok2, []string{"USD"})
+	// State: 125 USD
+
+	// Rolling back "USD" must restore to the first posting's pre-state: 100 USD.
+	trace.rollbackGroup("USD")
+	want100 := seedInventory(t, "100")
+	if !state["Assets:A"].Equal(want100) {
+		t.Errorf("rollbackGroup(USD): state = %v, want 100 USD (first-touch-wins across commitGroupMulti calls)", state["Assets:A"])
+	}
+}
+
+// TestStateTrace_CommitGroupMulti_CoarseGrainedRollback explicitly pins the
+// intended coarse-grained rollback semantics for multi-currency reductions
+// that share a single account.
+//
+// When a single bookOne call (e.g. `-20 AAPL {}` matching AAPL{USD} and
+// AAPL{EUR}) is filed under multiple currency keys via commitGroupMulti, only
+// one prepareForEdit call is made and thus only one account snapshot is
+// recorded. Rolling back either currency key restores the entire account to
+// that single pre-reduction snapshot — including mutations belonging to the
+// other currency's lot. In other words, there is no per-currency-lot
+// independent rollback within a single posting's scope: rollback is
+// coarse-grained at the account level.
+//
+// This is the only possible semantics given the "one posting, one snapshot"
+// structure, and it matches the upstream beancount model where currency-group
+// drop is atomic per group. The behaviour is intentional; this test exists to
+// make the intent explicit and prevent accidental breakage.
+func TestStateTrace_CommitGroupMulti_CoarseGrainedRollback(t *testing.T) {
+	// Initial account state: 100 USD (simulating a position worth 100 units).
+	initial := seedInventory(t, "100")
+	state := map[ast.Account]*Inventory{"Assets:Brokerage": initial}
+	trace := newStateTrace(state)
+
+	// One enterGroup scope adds 50 USD and is filed under both "USD" and "EUR"
+	// keys, simulating a bookOne that matches two different-cost-currency lots
+	// in a single atomic call.
+	tok := trace.enterGroup()
+	inv := trace.prepareForEdit("Assets:Brokerage")
+	if err := inv.Add(Position{Units: mkAmount(t, "50", "USD")}); err != nil {
+		t.Fatalf("Add(50 USD): %v", err)
+	}
+	trace.commitGroupMulti(tok, []string{"USD", "EUR"})
+	// State: 150 USD
+
+	// Rolling back "USD" restores to 100 USD — the entire mutation is undone,
+	// including the notional "EUR lot" part, because a single snapshot covers
+	// the full account. This is the intentional coarse-grained behaviour.
+	trace.rollbackGroup("USD")
+	want := seedInventory(t, "100")
+	if !state["Assets:Brokerage"].Equal(want) {
+		t.Errorf("rollbackGroup(USD): state = %v, want 100 USD (coarse-grained: full account restored from single snapshot)", state["Assets:Brokerage"])
+	}
+
+	// The EUR bucket holds an independent snapshot of the same pre-state (100 USD).
+	// Its rollback is a value no-op here, but confirms the bucket is usable
+	// independently of the USD bucket — per-key independence is preserved even
+	// though the per-account granularity is coarse.
+	trace.rollbackGroup("EUR")
+	if !state["Assets:Brokerage"].Equal(want) {
+		t.Errorf("rollbackGroup(EUR): state = %v, want 100 USD (independent snapshot still valid)", state["Assets:Brokerage"])
+	}
+}

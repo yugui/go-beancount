@@ -442,6 +442,32 @@ func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast
 	return booked, unknowns
 }
 
+// markForDrop marks the currency group identified by weightCurrency as
+// dropped, creating the bucket if it does not yet exist. Unlike
+// addPreserved it appends no posting: it is the entry point for marking
+// a group whose drop was decided by something other than a freshly
+// preserved posting — e.g. Pass 2 joining an auto-posting onto an
+// already-failed group (D6). Marking is idempotent.
+func (pr *postingResolution) markForDrop(weightCurrency string) {
+	pr.bucketFor(weightCurrency).dropped = true
+}
+
+// distinctStepCurrencies returns the distinct step.Lot.Currency values
+// from steps, preserving input order and removing duplicates. It is used
+// by the multi-lot reduction path in Pass 1 to determine the set of
+// currency group keys a single bookOne call touched.
+func distinctStepCurrencies(steps []ReductionStep) []string {
+	seen := make(map[string]struct{}, len(steps))
+	out := make([]string, 0, len(steps))
+	for _, step := range steps {
+		if _, ok := seen[step.Lot.Currency]; !ok {
+			seen[step.Lot.Currency] = struct{}{}
+			out = append(out, step.Lot.Currency)
+		}
+	}
+	return out
+}
+
 // visitTxn performs the per-transaction booking pass, mutating the
 // reducer's per-account state in place and returning the before/after
 // snapshots plus the booked postings. The stop return value is reserved
@@ -488,21 +514,29 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		p := &txn.Postings[i]
 		if p.Amount == nil {
 			// Auto-posting (validated single & no cost/price by
-			// validateStructure).
+			// validateStructure). No enterGroup: prepareForEdit is not
+			// called so there is no snapshot to record.
 			pr.addUnknown(p)
 			continue
 		}
 
+		tok := trace.enterGroup()
 		inv := trace.prepareForEdit(p.Account)
 		method := r.booking[p.Account] // zero value = BookingDefault
 		lot, steps, errs := bookOne(inv, p, method, txn.Date)
 		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
+			// Deferred-unknown path: Pass 2 will re-try with the inferred
+			// cost. The scope is closed but the group is not drop-marked —
+			// the inventory was not mutated (bookOne returned before Add).
 			pr.addUnknown(p)
+			trace.commitGroup(tok, weightCurrencyFallback(p))
 			continue
 		}
 		if len(errs) > 0 {
 			r.errs = append(r.errs, errs...)
-			pr.addPreserved(p, weightCurrencyFallback(p))
+			key := weightCurrencyFallback(p)
+			pr.addPreserved(p, key) // sets bucket.dropped = true
+			trace.commitGroup(tok, key)
 			continue
 		}
 		switch {
@@ -512,6 +546,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			// augmentation lot, never multi-step. The guard is
 			// defensive — if the invariant ever broke, firstStepOrNil
 			// would silently drop the extra steps.
+			key := weightCurrencyFallback(p)
 			if len(steps) > 1 {
 				r.errs = append(r.errs, Error{
 					Code:    CodeInternalError,
@@ -519,18 +554,26 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 					Account: p.Account,
 					Message: "already-booked posting produced a multi-lot reduction; tight-matcher invariant violated",
 				})
-				pr.addPreserved(p, weightCurrencyFallback(p))
+				pr.addPreserved(p, key)
+				trace.commitGroup(tok, key)
 				continue
 			}
-			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps), weightCurrencyFallback(p))
+			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps), key)
+			trace.commitGroup(tok, key)
 		case lot != nil:
 			pr.addLotAugmentation(p, lot, lot.Currency)
+			trace.commitGroup(tok, lot.Currency)
 		case len(steps) == 0:
-			pr.addCashAugmentation(p, cashGroupKey(p))
+			key := cashGroupKey(p)
+			pr.addCashAugmentation(p, key)
+			trace.commitGroup(tok, key)
 		case len(steps) == 1:
-			pr.addSingleLotReduction(p, steps[0], reductionGroupKey(p, steps[0]))
+			key := reductionGroupKey(p, steps[0])
+			pr.addSingleLotReduction(p, steps[0], key)
+			trace.commitGroup(tok, key)
 		default:
 			pr.addMultiLotReduction(p, steps)
+			trace.commitGroupMulti(tok, distinctStepCurrencies(steps))
 		}
 	}
 
@@ -789,29 +832,82 @@ func (st *stateTrace) enterGroup() groupToken {
 // all mutations accumulated across multiple enter/commit cycles.
 // Panics if tok does not match the open scope, or if no scope is open.
 func (st *stateTrace) commitGroup(tok groupToken, key string) {
+	st.commitGroupMulti(tok, []string{key})
+}
+
+// commitGroupMulti closes the scope opened by tok and files its per-account
+// snapshots under each of the given keys. This is used when a single bookOne
+// call affects multiple currency groups (e.g. a multi-currency multi-lot
+// reduction that consumes AAPL{USD} and AAPL{EUR} lots in one atomic call).
+//
+// The first key receives the pending map directly (ownership transfer, same
+// as commitGroup). Subsequent keys receive a clone of each pending snapshot
+// with first-touch-wins semantics — if a key already has a snapshot for an
+// account, the earlier snapshot is kept. If keys has a single element this
+// is equivalent to commitGroup.
+//
+// Panics if tok does not match the open scope, or if no scope is open.
+func (st *stateTrace) commitGroupMulti(tok groupToken, keys []string) {
 	if st.pending == nil {
-		panic("stateTrace.commitGroup: no group scope is open")
+		panic("stateTrace.commitGroupMulti: no group scope is open")
 	}
 	if tok != st.pendingToken {
-		panic("stateTrace.commitGroup: token does not match the open scope")
+		panic("stateTrace.commitGroupMulti: token does not match the open scope")
 	}
 
 	if st.groups == nil {
 		st.groups = make(map[string]map[ast.Account]*Inventory)
 	}
-	bucket, exists := st.groups[key]
-	if !exists {
-		// First commit for this key: take ownership of the pending map
-		// as the bucket. This is the normal path — it avoids a map copy.
-		st.groups[key] = st.pending
-	} else {
+
+	// cloneSnap returns a deep copy of snap, or nil if snap is nil.
+	// Used when filing pending snapshots into secondary keys so each
+	// key's bucket is independently restorable by rollbackGroup.
+	cloneSnap := func(snap *Inventory) *Inventory {
+		if snap == nil {
+			return nil
+		}
+		return snap.Clone()
+	}
+
+	// fileSnap returns the snapshot value to store in a bucket. For the
+	// first key (i==0) the pending snapshot is taken as-is (ownership
+	// transfer). For subsequent keys it is cloned so each bucket is
+	// independent and rollbackGroup can act on them separately.
+	fileSnap := func(i int, snap *Inventory) *Inventory {
+		if i == 0 {
+			return snap
+		}
+		return cloneSnap(snap)
+	}
+
+	for i, key := range keys {
+		bucket, exists := st.groups[key]
+		if !exists {
+			if i == 0 {
+				// First key, first commit: take ownership of the pending map
+				// as the bucket. This is the normal path — it avoids a map copy.
+				st.groups[key] = st.pending
+			} else {
+				// Subsequent key: clone each snapshot so each key's bucket
+				// is independent and rollbackGroup(key) can act independently.
+				cloned := make(map[ast.Account]*Inventory, len(st.pending))
+				for acct, snap := range st.pending {
+					cloned[acct] = cloneSnap(snap)
+				}
+				st.groups[key] = cloned
+			}
+			continue
+		}
 		// Merge pending into the existing bucket with first-touch-wins.
+		// For subsequent keys, clone each snapshot being merged so buckets
+		// remain independent.
 		for acct, snap := range st.pending {
 			if _, already := bucket[acct]; !already {
-				bucket[acct] = snap
+				bucket[acct] = fileSnap(i, snap)
 			}
 		}
 	}
+
 	st.pending = nil
 	st.pendingToken = groupToken{}
 }

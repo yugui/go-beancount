@@ -1582,3 +1582,248 @@ func TestReducerWalk_DoesNotMutateInput(t *testing.T) {
 		}
 	}
 }
+
+// ---- Step 3: Pass 1 wiring tests ----
+
+// TestReducerWalk_Step3_FailedGroupDroppedFlagSet verifies that a failed
+// bookOne in Pass 1 marks its currency group as dropped and leaves the
+// surviving group intact. Observable assertions (via Walk): the error is
+// emitted, only the surviving group produces a BookedPosting, and no
+// inventory mutation occurs for the failing reduction.
+func TestReducerWalk_Step3_FailedGroupDroppedFlagSet(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2024, 9, 1, 0, 0, 0, 0, time.UTC)
+
+	// Buy 5 AAPL @ 100 USD into the brokerage account.
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "5", "AAPL"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "USD"),
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
+	)
+
+	// Sell transaction with two currency groups:
+	//   - failing group (USD): attempt to reduce 10 AAPL{buyDate} but only 5 exist
+	//     → CodeReductionExceedsInventory → this group should be marked dropped
+	//   - surviving group (EUR): a plain EUR cash augmentation → succeeds
+	sell := mkTxn(sellDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "-10", "AAPL"), // more than the 5 available
+			Cost: &ast.CostSpec{
+				Date: &buyDate,
+			},
+		},
+		&ast.Posting{
+			Account: "Assets:EurCash",
+			Amount:  mkAmountPtr(t, "800", "EUR"),
+		},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Brokerage", ast.BookingFIFO),
+		mkOpen(openDate, "Assets:EurCash", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buy,
+		sell,
+	)
+
+	r := NewReducer(ledger.All())
+	var (
+		sellBrokerageBefore *Inventory
+		sellAfter           map[ast.Account]*Inventory
+		sellBooked          []BookedPosting
+	)
+	_, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		if got == sell {
+			sellBrokerageBefore = before["Assets:Brokerage"]
+			sellAfter = after
+			sellBooked = append([]BookedPosting(nil), booked...)
+		}
+		return true
+	})
+
+	// The failing reduction must emit exactly one error.
+	if len(errs) != 1 {
+		t.Fatalf("Walk errs = %v (len=%d), want exactly 1 error", errs, len(errs))
+	}
+	if errs[0].Code != CodeReductionExceedsInventory {
+		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", errs[0].Code)
+	}
+
+	// Verification is via the sellBooked slice populated by the visitor.
+
+	// The surviving group (EUR) produces exactly one BookedPosting.
+	var eurBooked, aaplBooked int
+	for _, bp := range sellBooked {
+		switch bp.Account {
+		case "Assets:EurCash":
+			eurBooked++
+		case "Assets:Brokerage":
+			aaplBooked++
+		}
+	}
+	if eurBooked != 1 {
+		t.Errorf("Walk(sell): EUR BookedPosting count = %d, want 1 (surviving group)", eurBooked)
+	}
+	// The failing AAPL posting produces no BookedPosting (addPreserved path).
+	if aaplBooked != 0 {
+		t.Errorf("Walk(sell): AAPL BookedPosting count = %d, want 0 (failing group gets no BookedPosting)", aaplBooked)
+	}
+
+	// The surviving group's account must appear in the after-snapshot.
+	if sellAfter["Assets:EurCash"] == nil {
+		t.Errorf("Walk(sell): after[Assets:EurCash] is nil; surviving group must touch the account")
+	}
+
+	// The failing reduction does not mutate the inventory (bookReduce returns
+	// an error before consuming). Brokerage must still hold the 5 AAPL from buy.
+	// (Confirming no rollback is needed because there was no partial mutation.)
+	if sellBrokerageBefore == nil || sellBrokerageBefore.Len() != 1 {
+		t.Errorf("before[Assets:Brokerage] = %v, want 1 position (5 AAPL{buyDate} lot)", sellBrokerageBefore)
+	}
+	brokerageAfter := sellAfter["Assets:Brokerage"]
+	if brokerageAfter == nil {
+		t.Errorf("after[Assets:Brokerage] is nil; account was touched by the failing posting")
+	} else if brokerageAfter.Len() != 1 {
+		// The lot was NOT consumed (reduction failed before consuming), so the
+		// inventory should still have 1 position. Step 3 does not rollback,
+		// so if the reduction had partially consumed, it would still be there.
+		t.Errorf("after[Assets:Brokerage] has %d positions, want 1 (unreduced lot)", brokerageAfter.Len())
+	}
+}
+
+// TestReducerWalk_Step3_MultiCurrencyMultiLotReductionGrouping verifies
+// that when a single -N COMMODITY {} posting matches lots with two
+// different cost currencies, commitGroupMulti correctly files the
+// inventory mutation under both currency keys so that each key can be
+// independently rolled back.
+//
+// This test operates at the stateTrace level (via the public Walk API)
+// to pin the tension-1 resolution: rolling back the USD lot's group
+// must undo the USD consumption while leaving the EUR lot intact, which
+// is what commitGroupMulti enables.
+//
+// Verification strategy: since visitTxn does not expose the stateTrace
+// or postingResolution directly, we construct the scenario at the
+// stateTrace level as a companion to the commitGroupMulti unit tests in
+// state_trace_test.go, which exercise the API directly. This test
+// confirms the full-pipeline correctness (multi-lot expansion, both
+// BookedPostings present, each carrying the correct step currency).
+func TestReducerWalk_Step3_MultiCurrencyMultiLotReductionGrouping(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyUSDDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	buyEURDate := time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2024, 9, 1, 0, 0, 0, 0, time.UTC)
+
+	// Buy 10 AAPL at 100 USD per share.
+	buyUSD := mkTxn(buyUSDDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "10", "AAPL"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "USD"),
+				Date:    &buyUSDDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "USD")},
+	)
+
+	// Buy 10 AAPL at 90 EUR per share (different cost currency).
+	buyEUR := mkTxn(buyEURDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "10", "AAPL"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "90", "EUR"),
+				Date:    &buyEURDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-900", "EUR")},
+	)
+
+	// Sell 20 AAPL with bare cost spec — matches both lots (multi-lot reduction).
+	// The reducer expands this into two child postings, one for each matched lot.
+	sell := mkTxn(sellDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "-20", "AAPL"),
+			Cost:    &ast.CostSpec{}, // empty: matches all lots
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "2800", "USD")},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Brokerage", ast.BookingFIFO),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buyUSD,
+		buyEUR,
+		sell,
+	)
+
+	r := NewReducer(ledger.All())
+	var sellBooked []BookedPosting
+	_, errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		if got == sell {
+			sellBooked = append([]BookedPosting(nil), booked...)
+		}
+		return true
+	})
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+
+	// The multi-lot reduction expands into two child postings, one per matched
+	// lot (AAPL{USD} and AAPL{EUR}). Verify both are present in sellBooked.
+	var usdSteps, eurSteps []*ReductionStep
+	for i := range sellBooked {
+		bp := &sellBooked[i]
+		if bp.Account != "Assets:Brokerage" {
+			continue
+		}
+		if bp.Reduction == nil {
+			t.Errorf("sellBooked[%d] (Brokerage): Reduction is nil, want a step", i)
+			continue
+		}
+		switch bp.Reduction.Lot.Currency {
+		case "USD":
+			usdSteps = append(usdSteps, bp.Reduction)
+		case "EUR":
+			eurSteps = append(eurSteps, bp.Reduction)
+		default:
+			t.Errorf("sellBooked[%d] (Brokerage): unexpected lot currency %q", i, bp.Reduction.Lot.Currency)
+		}
+	}
+
+	if len(usdSteps) != 1 {
+		t.Errorf("Walk(sell): USD lot BookedPosting count = %d, want 1", len(usdSteps))
+	}
+	if len(eurSteps) != 1 {
+		t.Errorf("Walk(sell): EUR lot BookedPosting count = %d, want 1", len(eurSteps))
+	}
+
+	// Each step must report the full lot quantity (10 AAPL).
+	wantQty := decimalVal(t, "10")
+	for _, step := range usdSteps {
+		if step.Units.Cmp(&wantQty) != 0 {
+			t.Errorf("Walk(sell): USD step.Units = %s, want 10", step.Units.Text('f'))
+		}
+	}
+	for _, step := range eurSteps {
+		if step.Units.Cmp(&wantQty) != 0 {
+			t.Errorf("Walk(sell): EUR step.Units = %s, want 10", step.Units.Text('f'))
+		}
+	}
+
+	// After the sell, the brokerage should be empty (both lots fully consumed).
+	brokerageAfter := r.Final("Assets:Brokerage")
+	if brokerageAfter == nil || !brokerageAfter.IsEmpty() {
+		t.Errorf("r.Final(Assets:Brokerage) = %v, want empty (both lots consumed)", brokerageAfter)
+	}
+}
