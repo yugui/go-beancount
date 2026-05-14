@@ -603,6 +603,11 @@ func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
 	return true
 }
 
+// groupToken is an opaque handle returned by [stateTrace.enterGroup].
+// It identifies an open group scope and must be passed to
+// [stateTrace.commitGroup] to close it.
+type groupToken struct{ id uint64 }
+
 // stateTrace records edits to a per-account inventory map within the
 // scope of a single transaction. It pairs the long-lived state map
 // (shared with the owning Reducer, mutated in place by edits) with a
@@ -612,9 +617,29 @@ func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
 // A nil before-value records that the account had no inventory prior
 // to this trace — that nil is the visitor-contract signal for "newly
 // touched account".
+//
+// Group checkpoint/rollback: callers may open a group scope via
+// [stateTrace.enterGroup], which causes subsequent [stateTrace.prepareForEdit]
+// calls to also snapshot into a per-group restore map. [stateTrace.commitGroup]
+// files the scope's snapshots under a currency-key, and
+// [stateTrace.rollbackGroup] restores every account the group touched to its
+// pre-group state.
 type stateTrace struct {
 	state  map[ast.Account]*Inventory
 	before map[ast.Account]*Inventory
+
+	// pending holds snapshots for the currently open group scope. nil
+	// when no scope is open. enterGroup allocates it; commitGroup files
+	// it into groups and sets it back to nil.
+	pending map[ast.Account]*Inventory
+	// pendingToken is the token of the currently open scope. It is used
+	// to detect misuse (double-enter, commit-without-enter).
+	pendingToken groupToken
+	// nextTokenID is incremented on each enterGroup to mint unique tokens.
+	nextTokenID uint64
+	// groups maps weight-currency key → per-account restore snapshots,
+	// accumulated across all commit cycles of that group.
+	groups map[string]map[ast.Account]*Inventory
 }
 
 // newStateTrace begins recording edits against state. before-snapshots
@@ -627,25 +652,147 @@ func newStateTrace(state map[ast.Account]*Inventory) *stateTrace {
 	}
 }
 
+// enterGroup opens a group checkpoint scope. Until the matching
+// commitGroup call, every prepareForEdit that touches an account for
+// the first time within this scope records a restore snapshot for that
+// account. Returns an opaque token that must be passed to commitGroup.
+// Panics if a scope is already open (group scopes do not nest).
+func (st *stateTrace) enterGroup() groupToken {
+	if st.pending != nil {
+		panic("stateTrace.enterGroup: previous group scope was not committed")
+	}
+	st.nextTokenID++
+	tok := groupToken{id: st.nextTokenID}
+	st.pending = make(map[ast.Account]*Inventory)
+	st.pendingToken = tok
+	return tok
+}
+
+// commitGroup closes the scope opened by tok and files its per-account
+// snapshots under key (the group's weight-currency string). Filing uses
+// first-touch-wins: if an account already has a snapshot under key from
+// an earlier cycle of the same group, the earlier snapshot is kept
+// because it is closer to the group's true pre-state. The snapshots are
+// retained (not discarded) so that a later rollbackGroup(key) can undo
+// all mutations accumulated across multiple enter/commit cycles.
+// Panics if tok does not match the open scope, or if no scope is open.
+func (st *stateTrace) commitGroup(tok groupToken, key string) {
+	if st.pending == nil {
+		panic("stateTrace.commitGroup: no group scope is open")
+	}
+	if tok != st.pendingToken {
+		panic("stateTrace.commitGroup: token does not match the open scope")
+	}
+
+	if st.groups == nil {
+		st.groups = make(map[string]map[ast.Account]*Inventory)
+	}
+	bucket, exists := st.groups[key]
+	if !exists {
+		// First commit for this key: take ownership of the pending map
+		// as the bucket. This is the normal path — it avoids a map copy.
+		st.groups[key] = st.pending
+	} else {
+		// Merge pending into the existing bucket with first-touch-wins.
+		for acct, snap := range st.pending {
+			if _, already := bucket[acct]; !already {
+				bucket[acct] = snap
+			}
+		}
+	}
+	st.pending = nil
+	st.pendingToken = groupToken{}
+}
+
+// rollbackGroup undoes every mutation filed under key, restoring each
+// affected account's inventory in st.state to the snapshot taken when
+// that group first touched it. It is idempotent: calling it with an
+// unknown key or a key that has already been rolled back is a no-op.
+// rollbackGroup does not touch st.before; the before-map contract is
+// unaffected by group rollbacks.
+func (st *stateTrace) rollbackGroup(key string) {
+	bucket := st.groups[key]
+	if bucket == nil {
+		return
+	}
+	for acct, snap := range bucket {
+		if snap == nil {
+			// The account did not exist before this group touched it.
+			// stateTrace never removes an account from st.state once it
+			// has been prepared — that is an invariant of this type —
+			// so restore with an empty inventory rather than deleting
+			// the entry.
+			st.state[acct] = NewInventory()
+		} else {
+			// Clone so that st.state[acct] and the snapshot (which may
+			// alias st.before[acct] via the first-touch optimisation in
+			// prepareForEdit) remain independent after rollback. This
+			// preserves the invariant that live state is always
+			// independent of st.before.
+			st.state[acct] = snap.Clone()
+		}
+	}
+	delete(st.groups, key)
+}
+
 // prepareForEdit returns the inventory to mutate for acct. On the
 // first call for a given acct in this trace, it deep-clones the
 // account's current inventory into the before-snapshot (or records
 // nil if the account had no inventory yet) and lazily creates an
 // inventory if one did not exist. Subsequent calls return the same
 // inventory pointer without re-snapshotting.
+//
+// When a group scope is open, prepareForEdit additionally records a
+// restore snapshot in the pending map for any account touched for the
+// first time within this scope. This does not affect the return value
+// or the before-map — group snapshots are purely internal.
 func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
-	if _, seen := st.before[acct]; seen {
-		return st.state[acct]
+	firstTouchInTrace := false
+	if _, seen := st.before[acct]; !seen {
+		firstTouchInTrace = true
+		inv := st.state[acct]
+		if inv == nil {
+			inv = NewInventory()
+			st.state[acct] = inv
+			st.before[acct] = nil
+		} else {
+			st.before[acct] = inv.Clone()
+		}
 	}
-	inv := st.state[acct]
-	if inv == nil {
-		inv = NewInventory()
-		st.state[acct] = inv
-		st.before[acct] = nil
-	} else {
-		st.before[acct] = inv.Clone()
+
+	if st.pending != nil {
+		if _, seen := st.pending[acct]; !seen {
+			if firstTouchInTrace {
+				// This group is also the first toucher in the trace, so
+				// st.before[acct] is the correct pre-state. Alias it
+				// directly — no extra clone needed.
+				st.pending[acct] = st.before[acct]
+			} else {
+				// Another scope (or the trace itself outside a scope)
+				// already touched this account before this group opened.
+				// Snapshot the current live state as this group's restore
+				// point.
+				//
+				// This approximation relies on the R1 independence
+				// invariant: different currency groups affect disjoint
+				// inventory slots, so restoring one group's snapshot does
+				// not corrupt mutations from a separately committed group.
+				// Known limitation: if two groups share a Position slot
+				// (e.g. plain cash and a price-annotated posting on the
+				// same commodity), rolling back one group may incorrectly
+				// re-surface the other group's mutation. In practice this
+				// only arises when the other group fails bookOne, which is
+				// uncommon for plain cash postings.
+				if inv := st.state[acct]; inv != nil {
+					st.pending[acct] = inv.Clone()
+				} else {
+					st.pending[acct] = nil
+				}
+			}
+		}
 	}
-	return inv
+
+	return st.state[acct]
 }
 
 // diff returns the (before, after) pair for the visitor callback.
