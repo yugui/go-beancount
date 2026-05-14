@@ -295,6 +295,267 @@ plain-group が共有）は当該 group が `bookOne` で失敗しない＝rollb
 - **品質要件**:
   - Group が 1 つだけの txn では `txn.Postings` の slice 内容と順序が変わらない
 
+### Detailed Design
+
+#### Contract
+
+##### Scope boundary of Step 2（緊張A / 緊張B の決着）
+
+Step 2 は **behavior-preserving** なリファクタである。この step 完了後:
+
+- どの currency group も drop されない。`finalize` は今日とまったく同じ `txn.Postings` と
+  `[]BookedPosting` を同じ順序・同じ `Source`/unknown ポインタ束縛で返す。
+- 既存の `pkg/inventory` テスト全件 — 特に `TestReducerWalk_DoesNotMutateInput`、
+  `TestReducerRun_OutputIsFixedPoint`、`TestReducerRun_ClonesErrorsSlice` — が
+  **無改変で合格**しなければならない。
+- `visitTxn` Pass 1 は **provisional group key を posting ごとに計算して `add*` に渡す**
+  目的でのみ変更する。Pass 1 は `trace.enterGroup` / `commitGroup` / `rollbackGroup` を
+  **呼ばない**（その配線は Step 3 の責務）。Pass 1 はどの group も drop マークしない。
+- `finalize` は drop を適用しない（`dropped` bucket を skip しない）。drop 適用と
+  `txn.Postings` の rebuild は Step 5 の責務。Step 2 の `finalize` は Step 5 が拡張できる
+  *構造的素地*を得るだけで、observable な挙動は今日と同一。
+
+##### `postingResolution` の新フィールド
+
+既存フィールド（`postings`, `booked`, `bookedAt`, `unknownAt`）を保持しつつ追加:
+
+```go
+// groups maps a weight-currency key to the bucket of postings,
+// BookedPostings, and unknowns that belong to that currency group.
+// The flat postings/booked slices remain the source of truth for
+// ordering and Source-pointer binding; a bucket holds *indices* into
+// them. Step 2 populates this map but never acts on a bucket's
+// dropped flag; Step 5 consumes it.
+groups map[string]*currencyGroupBucket
+```
+
+flat な `postings []ast.Posting` と `booked []BookedPosting` は順序の権威として残る
+（D5: 入力順保持）。bucket は flat slice への *index* を持ち、コピーは持たない。
+
+##### `currencyGroupBucket` 型 — externally observable surface
+
+`reducer.go` に宣言。以下のメンバは Step 3/4/5 が依存するため **ロック対象**:
+
+- group 単位の **`dropped bool`**（または同等の boolean state）。Step 3/4 が drop API 経由で
+  set し、Step 5 が読む。
+- group ごとに、どの flat-slice index が属するかを記録し、Step 5 が生存 group から
+  `txn.Postings` と `BookedPosting` 集合を rebuild できるよう partition する。正確な
+  フィールド名と partition（`postingsIdx` / `bookedIdx` / `unknownIdx`）は **Suggested
+  Internals** であってロックしない（Step 5 の Phase 4 が rebuild 戦略を所有するため
+  ここで過度に制約しない）。
+
+ロックされるのは: `groups` map があれば、Step 5 は `pr.postings` の各エントリと
+`pr.booked` の各エントリについて、どの group key に属し、その group が drop 済みか
+判定できること。
+
+##### `add*` メソッドのシグネチャ（ロック対象）
+
+今日 `pr.postings` に append する全 routing メソッドは、末尾に `group string` 引数を
+得る（call site の diff を最小化するため末尾）。戻り値型は **不変**（全て void のまま）。
+
+```go
+func (pr *postingResolution) addUnknown(p *ast.Posting)                                  // group 引数なし — unknown は group 未確定
+func (pr *postingResolution) addPreserved(p *ast.Posting, group string)
+func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep, group string)
+func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, group string)
+func (pr *postingResolution) addCashAugmentation(p *ast.Posting, group string)
+func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep, group string)
+func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep, group string)
+```
+
+`addUnknown` は `group` 引数を **取らない**。`addUnknown` が呼ばれる時点（Pass 1）で
+unknown の weight currency は未確定（D3: Pass 2 が `residual.Currency` で決定）。
+
+##### `addPreserved` の新責務（ロック対象、observable）
+
+`addPreserved(p, group)` は:
+
+1. `*p` を `pr.postings` に **今日と同じく** append する（Step 2 が behavior-preserving で
+   あるため — posting は依然 emit され、入力順も保たれる）。
+2. 加えて、append された posting の index を `groups[group]` に登録し、その bucket を
+   `dropped` マークする。
+
+Step 2 時点の observable: `finalize` が `dropped` をまだ参照しないため、preserved posting
+は依然 `txn.Postings` に現れ、`BookedPosting` を生まない — 今日と同一。`dropped` マークは
+*Step 5 のために記録される*だけで、それまで効果はない。
+
+##### `finalize` — Step 2 完了時点の externally observable な挙動（ロック対象）
+
+`finalize` は現在のシグネチャ
+`func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast.Posting)`
+と現在の observable contract を保持:
+
+- `pr.booked` を、各エントリの `Source` を記録済み booked offset の `&pr.postings[off]` に
+  束縛して返す。
+- unknown ポインタの fresh な `[]*ast.Posting` を返す。各々 unknown の `pr.postings` 内の
+  スロットを指す。
+- 全 `add*` 呼び出し後に走る。`dropped` に基づいて posting を skip / reorder / 省略
+  しない。drop が無いので返り値 `booked`/`unknowns` と最終 `pr.postings` は Step 2 前と
+  同一。
+
+内部的に offset を bucket から再導出するか、`bookedAt`/`unknownAt` をそのまま使うかは
+Suggested Internals。*contract* は上記の戻り値とポインタ束縛のみ。
+
+##### Unknown handling — Step 4 が依存する部分（緊張D、ロック対象）
+
+unknown（auto-posting, deferred-augment）は `addUnknown` が **group key なし**で記録する。
+weight currency が Pass 2 まで不明なため。構造は、Step 4 が `solveResidual` で
+`residual.Currency` を得た後に、各 unknown をその currency key の group bucket に
+*attach* できるようにすること（bucket が無ければ作成、生存/drop 済み bucket への join は
+D6 に従う）。
+
+ロック要件: Step 2 完了時点で unknown は `finalize` から今日どおり取得可能（`pr.postings`
+への offset）であり、まだどの `groups` bucket のメンバでもない。Step 4 が join を所有する。
+unknown offset を既存 `unknownAt` slice に置くか、予約 bucket に置くか、専用フィールドに
+置くかは **Suggested Internals**。
+
+##### `visitTxn` Pass 1 の変更（ロックされたスコープ）
+
+Pass 1（415-463 行）は **以下のみ**変更:
+
+- 各明示 posting について、`bookOne` 返却後に provisional group key 文字列を計算し、選択
+  された `add*` メソッドに渡す。key は posting の weight currency: 成功時は
+  `PostingWeight(p)` の `Currency`、`PostingWeight` エラー時は `p.Amount.Currency` に
+  フォールバック（D3; このブランチでは `p.Amount != nil` が構造的に保証される）。
+  `addPreserved`（`len(errs) > 0` ブランチ）の key も同様に `p` から計算。
+- `addUnknown` の呼び出し箇所（auto-posting ブランチと `CodeAugmentationRequiresCost`
+  defer ブランチ）は **不変** — key 引数なし。
+- `enterGroup`/`commitGroup`/`rollbackGroup` 呼び出しは追加しない。`markForDrop` 呼び出しも
+  追加しない。失敗時の `r.errs = append(...)` は不変。
+
+weight-currency のタイミング注記: cost-bearing posting の weight currency は `add*` が
+`*ast.Cost` を install した後でないと `p` から読めない。ただし Pass 1 は booking outcome
+（`lot`/`steps`）を既に手元に持つので、key は `p` + booking outcome から install 前に
+計算できる（augmentation は `lot.Currency`、reduction は `steps[0].Lot.Currency`、cash/plain
+は `p.Amount.Currency`、price は `p.Price.Amount.Currency`）。正確な呼び出し順序はロック
+しない。key が「posting の最終 weight currency（`p.Amount.Currency` フォールバック付き）」
+に等しいことだけがロック。
+
+##### 既存テスト（緊張E、ロック対象）
+
+`bazel test //pkg/inventory/...` がテストファイル無改変で完全 green であること。
+fixed-point テスト、does-not-mutate-input テスト、errors-slice-clone テストがこの保証の
+回帰検知器。
+
+##### 新規ファイルなし
+
+全追加（`currencyGroupBucket` 型、`groups` フィールド、シグネチャ変更）は `reducer.go`
+内。Step 2 では Gazelle 再生成不要。
+
+#### Suggested Internals
+
+以下は全て助言。generator は実装中の発見に応じて採用・改変・置換してよい。
+
+##### `currencyGroupBucket` フィールド構成（案 I1 推奨）
+
+```go
+type currencyGroupBucket struct {
+    postingsIdx []int  // indices into pr.postings owned by this group
+    bookedIdx   []int  // indices into pr.booked owned by this group
+    unknownIdx  []int  // indices into pr.postings for unknowns joined to this group (Step 4 で埋まる)
+    dropped     bool
+}
+```
+
+`postingsIdx` と `bookedIdx` を分けるのは、全 posting が `BookedPosting` を生むとは限らない
+ため（preserved posting は `postingsIdx` エントリを持つが `bookedIdx` エントリを持たない；
+multi-lot 親は両方を複数生む）。これは既存 `bookedAt` 機構の per-group partition。
+
+##### 既存 `bookedAt` / `unknownAt` との関係（案 I-A 推奨）
+
+`bookedAt` と `unknownAt` を現状維持し、`finalize` のポインタ束縛を今日どおり駆動する。
+新しい `groups` bucket は `add*` メソッドが *並行して* populate する。Step 5 が後で bucket と
+`bookedAt` をクロス参照する。これで Step 2 の `finalize` は文字どおり不変になり、
+behavior-preserving が自明に検証できる。（案 I-B「bucket を single source of truth に」は
+クリーンだが `finalize` の iteration 順序の決定性確保が必要で Step 2 にはリスク。Step 5 で
+望むなら採用。）
+
+##### Unknown storage（案 U1 推奨）
+
+既存 `unknownAt []int` フィールドを維持。`addUnknown` は今日どおり append。bucket には
+空の `unknownIdx` を出荷し、Step 4 が `residual.Currency` 算出後に
+`groups[residual.Currency].unknownIdx` へ unknown index を file する（その helper は Step 4 で
+追加、Step 2 ではない）。（案 U2「予約 `groups[""]` bucket」は "ungrouped" と実 key の混同を
+招くため却下。）
+
+##### `add*` 内部実装
+
+各 `add*` は既存 append ロジックの後に
+`pr.bucketFor(group).postingsIdx = append(..., idx)`、`pr.booked` にも append する箇所では
+`...bookedIdx = append(..., len(pr.booked)-1)` を行う。小さな private helper:
+
+```go
+func (pr *postingResolution) bucketFor(group string) *currencyGroupBucket {
+    b := pr.groups[group]
+    if b == nil {
+        b = &currencyGroupBucket{}
+        if pr.groups == nil {
+            pr.groups = map[string]*currencyGroupBucket{}
+        }
+        pr.groups[group] = b
+    }
+    return b
+}
+```
+
+`addPreserved` は index 登録後に `b.dropped = true` も set する。
+
+##### Multi-lot expansion の child 登録（緊張C）
+
+`addMultiLotReduction` は N 個の child を `pr.postings` に、N 個のエントリを `pr.booked` に
+append する。全て **同じ** group（親の weight currency）に属する。既存の
+`for _, step := range steps` ループ内で、各 child append 後にその `pr.postings` index を
+`bucketFor(group).postingsIdx` に、`pr.booked` index を `bookedIdx` に push する。特別扱い
+不要。`bookedAt` が既に 1 親 posting に対し N offset を記録するのと同じ。
+
+##### Pass 1 の provisional group-key 計算（案 K1 推奨）
+
+Pass 1 で key を計算し `add*` に渡す。cost-bearing outcome の場合 key は `lot.Currency`
+（augmentation）/ `steps[0].Lot.Currency`（reduction）— どちらも Pass 1 で利用可能。
+cash/plain は `p.Amount.Currency`、price は `p.Price.Amount.Currency`、already-`*ast.Cost`
+は `PostingWeight(p)` が直接動く。（案 K2「各 `add*` が内部で key 計算」は Step 3 が Pass 1
+で key を見る必要があるため却下。）
+
+##### `newPostingResolution` の pre-sizing
+
+`groups` は nil map のままにし `bucketFor` が lazy 生成。bucket の pre-size は不要。
+
+#### Alternatives discussed
+
+- **緊張A（Step 2 が Pass 1 をどこまで触るか）**: A1（Pass 1 で実 provisional key を算出して
+  `add*` に渡す。stateTrace API 呼び出しと drop マークなし）を採用。A2（`""` sentinel group
+  を渡し Step 3 で実 key を再配線）は却下 — grouping 作業を Step 3 に二重化し Step 3 の diff を
+  near-rewrite にする。A3（Step 2 で `enterGroup`/`commitGroup` も配線）は却下 — Step 境界を
+  侵犯し、rollback の無い snapshot 機構は Step 2 では純オーバーヘッド。
+- **緊張B（`finalize` の責務分担）**: B1（Step 2 の `finalize` は observable に不変、bucket
+  構造を記録するが `dropped` を参照しない）を採用。B2（Step 2 の `finalize` が `dropped`
+  bucket を既に skip）は却下 — Step 5 の Phase 4 が設計すべき rebuild 戦略を先取りし、
+  ゼロテストの未検証パスを追加する。
+- **`add*` シグネチャ**: 末尾 positional `string` 引数を採用。「引数なし、各 `add*` が内部で
+  key 計算」は却下（Step 3 が Pass 1 で key を見る必要）。「`groupKey` struct でラップ」は
+  speculative generality として却下（D3 で key は plain currency string）。
+- **Unknown storage**: U1（`unknownAt` 維持 + bucket に空 `unknownIdx`）を採用。U2（予約
+  `groups[""]` bucket）は却下。
+
+#### Recommendation
+
+**A1 + B1 + 末尾 positional `string` 引数 + U1** を採用。
+
+- **A1 over A2**: A2 は Step 2 の diff を最小化するように見えるが、grouping 作業を Step 3 に
+  *再配置*しつつ call-site 編集を*二重化*するだけ。A1 は正しい provisional key を一度計算し、
+  Step 3 の diff は純粋に additive（`enterGroup`/`commitGroup`/`markForDrop` 呼び出し）になり、
+  レビューしやすく fixed-point テストを壊しにくい。
+- **A1 over A3**: A3 は Step 3 に何の利益も与えず（両者とも Pass 1 で key が必要）、rollback の
+  無い snapshot 機構に Step 2 の予算を費やし、計画の Step 1/Step 3 の group API 所有を侵犯する。
+- **B1 over B2**: B2 は `finalize` を、計画が意図的に Step 5 の Phase 4 に委ねた drop 適用戦略に
+  先行コミットさせる。B1 は `finalize` の observable contract を凍結したまま保ち、fixed-point と
+  does-not-mutate-input テストが Step 2 commit を無料で検証し、Step 5 が設計余地を保つ。
+- **末尾 positional `string` 引数**: D3 で group identity は sentinel なしの plain weight-currency
+  文字列に固定されているのでラップするものがなく、末尾引数が Step 2/Step 3 双方の diff の
+  ノイズを最小化する。
+- **U1**: `unknownAt` 再利用は Step 2 を構造的に behavior-preserving に保ち、Step 4 に
+  クリーンで明示的な join point（`bucket.unknownIdx`）を sentinel key を発明せずに与える。
+
 ### Step 3: Pass 1 — bookOne 結果を group へ振り分け、失敗時に mark-for-drop
 
 - **機能要件**:
