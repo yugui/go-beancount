@@ -202,7 +202,7 @@ type groupRef struct {
 // append in the same loop may reallocate the postings backing array
 // and invalidate any &postings[k] taken earlier. bookedDesc / unknownDesc
 // carry posting offsets into postings and defer pointer binding until
-// [finalize], which runs after all appends are done.
+// [bindAndCollect], which runs after all appends are done.
 //
 // dropped records weight-currency keys whose currency group failed
 // bookOne. It is nil for error-free transactions. The drop-application
@@ -212,12 +212,13 @@ type groupRef struct {
 // slices for the common no-expansion case.
 type postingResolution struct {
 	// postings is the rebuilt list of postings for this transaction.
-	// visitTxn assigns txn.Postings = postings before calling finalize
-	// so BookedPosting.Source pointers alias the caller-visible slice.
+	// bindAndCollect binds Source pointers to addresses within this
+	// backing array. txn.Postings = pr.postings is assigned after
+	// applyDrops, which may rebuild the slice to exclude failed groups.
 	postings []ast.Posting
 
 	// booked holds the BookedPosting records whose Source fields are
-	// filled by finalize once all appends are done.
+	// filled by bindAndCollect once all appends are done.
 	booked []BookedPosting
 
 	// bookedDesc is parallel to booked: bookedDesc[j].postingAt is the
@@ -267,10 +268,15 @@ func (pr *postingResolution) addUnknown(p *ast.Posting) {
 
 // markForDrop records the given weight-currency group as dropped. The
 // failed posting is not appended to pr.postings — it will not appear in
-// the output or in the residual computation. The dropped map is
-// lazily initialized on first use so error-free transactions pay no
-// allocation cost. Marking is idempotent: re-marking an already-dropped
-// currency is a no-op.
+// the output or in the residual computation. The dropped map is lazily
+// initialized on first use so error-free transactions pay no allocation
+// cost. Marking is idempotent: re-marking an already-dropped currency
+// is a no-op.
+//
+// Callers must also call trace.prepareForRollback for every account
+// involved in the failure, to ensure the state-diff pass can apply its
+// exclusion rule (state == before → suppress) even when the booking
+// failed before mutating the inventory.
 func (pr *postingResolution) markForDrop(weightCurrency string) {
 	if pr.dropped == nil {
 		pr.dropped = make(map[string]bool)
@@ -385,14 +391,14 @@ func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []Reduct
 	}
 }
 
-// finalize binds the Source pointers on every BookedPosting and
+// bindAndCollect binds the Source pointers on every BookedPosting and
 // collects the unknown posting pointers, both via offsets in
 // bookedDesc/unknownDesc. It must run after every add* call because
 // intermediate appends may have grown the backing array, invalidating
 // any earlier &pr.postings[k] addresses. Drop application (reading
 // pr.dropped to exclude failed groups) is handled by a later
-// drop-application pass; finalize binds all entries unconditionally.
-func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast.Posting) {
+// applyDrops call; bindAndCollect binds all entries unconditionally.
+func (pr *postingResolution) bindAndCollect() (booked []BookedPosting, unknowns []*ast.Posting) {
 	booked = pr.booked
 	for i, ref := range pr.bookedDesc {
 		booked[i].Source = &pr.postings[ref.postingAt]
@@ -402,6 +408,151 @@ func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast
 		unknowns[i] = &pr.postings[ref.postingAt]
 	}
 	return booked, unknowns
+}
+
+// applyDrops rebuilds txn.Postings to exclude all currency groups that
+// failed bookOne, rolls back their inventory mutations via inverse Add
+// calls, and returns only the surviving BookedPosting records with
+// Source pointers re-bound to the rebuilt slice.
+//
+// If pr.dropped is nil or empty, applyDrops is a complete no-op: it
+// returns booked unchanged without any allocation. This is the hot path
+// for the vast majority of error-free transactions.
+//
+// The rebuild preserves input posting order. Survival is determined by
+// scanning bookedDesc and unknownDesc: a posting survives iff its
+// currency is "" (unresolved unknown) or its currency is not in
+// pr.dropped. A postingAt that appears in both descriptors (a resolved
+// unknown that was also booked) is treated consistently because both
+// entries carry the same currency after Pass 2.
+//
+// For each dropped booked entry, reverseBooking is called to undo the
+// inventory mutation. Errors from reverseBooking (CodeInternalError
+// from apd arithmetic; only reachable via CodeInternalError bookOne
+// paths) are appended to r.errs.
+//
+// Source pointers on surviving BookedPostings are re-bound to their new
+// addresses in the rebuilt postings slice.
+func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrace, r *Reducer) []BookedPosting {
+	if len(pr.dropped) == 0 {
+		return booked
+	}
+
+	// Phase 1: determine which posting indices survive.
+	// A posting survives iff every descriptor that references its postingAt
+	// carries either "" (unresolved unknown — always survives) or a currency
+	// not in pr.dropped. Postings without any descriptor are not in
+	// pr.postings (markForDrop skips the append), so the loops below
+	// cover all entries.
+	survives := make([]bool, len(pr.postings))
+	for _, ref := range pr.bookedDesc {
+		if !pr.dropped[ref.currency] {
+			survives[ref.postingAt] = true
+		}
+	}
+	for _, ref := range pr.unknownDesc {
+		// currency == "" means unresolved; dropped[""] is always false
+		// per the invariant established in Pass 1/2 (markForDrop never
+		// receives ""), so unresolved unknowns always survive.
+		if !pr.dropped[ref.currency] {
+			survives[ref.postingAt] = true
+		}
+	}
+
+	// Phase 2: rebuild pr.postings in ascending index order (= input order).
+	// Build newIdx[old] = new index, or -1 if the posting is dropped.
+	newIdx := make([]int, len(pr.postings))
+	for i := range newIdx {
+		newIdx[i] = -1 // sentinel: dropped
+	}
+	newPostings := make([]ast.Posting, 0, len(pr.postings))
+	for i, p := range pr.postings {
+		if survives[i] {
+			newIdx[i] = len(newPostings)
+			newPostings = append(newPostings, p)
+		}
+	}
+	pr.postings = newPostings
+
+	// Phase 3: process bookedDesc — reverse mutations for dropped entries,
+	// re-bind Source pointers for surviving entries, collect surviving
+	// BookedPostings (bookedDesc and booked are parallel).
+	out := make([]BookedPosting, 0, len(booked))
+	for j, ref := range pr.bookedDesc {
+		if pr.dropped[ref.currency] {
+			// Roll back the inventory mutation for this booking.
+			inv := trace.prepareForRollback(booked[j].Account)
+			if err := reverseBooking(inv, booked[j]); err != nil {
+				if typed, ok := err.(Error); ok {
+					r.errs = append(r.errs, typed)
+				} else {
+					r.errs = append(r.errs, Error{
+						Code:    CodeInternalError,
+						Account: booked[j].Account,
+						Message: err.Error(),
+					})
+				}
+			}
+			continue
+		}
+		// Surviving entry: re-bind Source to the rebuilt slice.
+		bp := booked[j]
+		bp.Source = &pr.postings[newIdx[ref.postingAt]]
+		out = append(out, bp)
+	}
+
+	return out
+}
+
+// reverseBooking undoes the inventory mutation a single BookedPosting
+// applied, by issuing the inverse Inventory.Add.
+//
+// Augmentation inverse (bp.Reduction == nil): adds Position with
+// negated units and the same lot. This shrinks or removes the lot;
+// for cash augmentations (bp.Lot == nil) the cash position is
+// similarly shrunk.
+//
+// Reduction inverse (bp.Reduction != nil): adds Position with the
+// positive magnitude from bp.Reduction.Units and the original lot
+// cost. A zero-value bp.Reduction.Lot (cash sentinel) maps to a nil
+// Cost so Inventory.Add merges into the cash slot. A non-sentinel lot
+// is cloned to avoid aliasing.
+//
+// inv must be the live inventory for bp.Account, obtained via
+// trace.prepareForRollback so that diff() records the rollback.
+// Errors are CodeInternalError from apd arithmetic and are only
+// reachable via the CodeInternalError bookOne path (partial-mutation
+// residue); normal bookings never trigger them.
+func reverseBooking(inv *Inventory, bp BookedPosting) error {
+	if bp.Reduction == nil {
+		// Augmentation inverse: negate units, preserve lot.
+		var neg apd.Decimal
+		if _, err := apd.BaseContext.Neg(&neg, &bp.Units.Number); err != nil {
+			return Error{
+				Code:    CodeInternalError,
+				Account: bp.Account,
+				Message: "reverseBooking: negate augmentation units: " + err.Error(),
+			}
+		}
+		return inv.Add(Position{
+			Units: ast.Amount{Number: neg, Currency: bp.Units.Currency},
+			Cost:  bp.Lot,
+		})
+	}
+	// Reduction inverse: restore the consumed units back to the lot.
+	var cost *Cost
+	if bp.Reduction.Lot.Currency != "" || bp.Reduction.Lot.Number.Sign() != 0 {
+		// Non-sentinel lot: clone to avoid aliasing the step's Lot value.
+		lotCopy := bp.Reduction.Lot
+		cost = lotCopy.Clone()
+	}
+	// bp.Reduction.Units is a positive magnitude; no sign flip needed.
+	// bp.Units.Currency is the consumed commodity (set by bookOne from the
+	// posting's amount; in a reduction the amount carries the lot commodity).
+	return inv.Add(Position{
+		Units: ast.Amount{Number: *ast.CloneDecimal(&bp.Reduction.Units), Currency: bp.Units.Currency},
+		Cost:  cost,
+	})
 }
 
 // visitTxn performs the per-transaction booking pass, mutating the
@@ -422,7 +573,7 @@ func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast
 //
 // PostingWeight on every booked Source is well-defined for Pass 2's
 // residual computation because Pass 1 installs *ast.Cost on every
-// posting that needs one before finalize binds Source pointers.
+// posting that needs one before bindAndCollect binds Source pointers.
 func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	before map[ast.Account]*Inventory,
 	after map[ast.Account]*Inventory,
@@ -468,6 +619,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		if len(errs) > 0 {
 			r.errs = append(r.errs, errs...)
 			pr.markForDrop(weightCurrencyFallback(p))
+			trace.prepareForRollback(p.Account)
 			continue
 		}
 		switch {
@@ -486,6 +638,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 					Message: "already-booked posting produced a multi-lot reduction; tight-matcher invariant violated",
 				})
 				pr.markForDrop(key)
+				trace.prepareForRollback(p.Account)
 				continue
 			}
 			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps), key)
@@ -500,9 +653,13 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 	}
 
-	txn.Postings = pr.postings
+	// bindAndCollect must run before Pass 2 because solveResidual reads
+	// PostingWeight(bp.Source) on every booked entry — the Source
+	// pointers must already alias the final postings slice. txn.Postings
+	// assignment is deferred until after applyDrops so the output slice
+	// reflects the post-drop state.
 	var unknowns []*ast.Posting
-	booked, unknowns = pr.finalize()
+	booked, unknowns = pr.bindAndCollect()
 
 	// Pass 2: resolve the single unknown, if any.
 	switch {
@@ -517,7 +674,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		if !ok {
 			break // solveResidual already appended the diagnostic
 		}
-		// D6: if the residual currency belongs to a group that already failed
+		// If the residual currency belongs to a group that already failed
 		// in Pass 1, the auto-posting joins that dropped group. Record the
 		// currency so the drop-application pass can exclude this posting from
 		// txn.Postings. Do not touch Amount/Cost — the posting will be
@@ -550,6 +707,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			// drop-application pass removes the auto-posting along with its
 			// Pass 1 postings.
 			pr.markForDrop(residual.Currency)
+			trace.prepareForRollback(unknownP.Account)
 			pr.unknownDesc[0].currency = residual.Currency
 			break
 		}
@@ -572,7 +730,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 		// The unknown is already at its final offset in txn.Postings,
 		// so its address is stable: appending one BookedPosting here
-		// does not invalidate any of the Source pointers finalize
+		// does not invalidate any of the Source pointers bindAndCollect
 		// just bound. Record the booking in both booked and bookedDesc so
 		// they remain parallel (drop-application-pass prerequisite). Also
 		// mark the unknownDesc entry with the resolved currency for the
@@ -592,6 +750,14 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		pr.unknownDesc[0].currency = residual.Currency
 	}
 
+	// Apply drop: rebuild txn.Postings without failed currency groups,
+	// roll back their inventory mutations, and re-bind Source pointers.
+	// No-op for error-free transactions (pr.dropped is nil).
+	booked = pr.applyDrops(booked, trace, r)
+	txn.Postings = pr.postings
+
+	// diff must run after applyDrops so prepareForRollback's marks are
+	// visible to the exclusion rule in diff().
 	before, after = trace.diff()
 	return before, after, booked, false
 }
@@ -715,9 +881,9 @@ func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
 // touched account".
 //
 // rolledBack records accounts whose currency group was fully rolled back
-// via inverse-operation bookings (Step 5). diff() uses this set to
-// suppress accounts that are back to their pre-transaction state from
-// the visitor output.
+// via inverse-operation bookings during applyDrops. diff() uses this
+// set to suppress accounts that are back to their pre-transaction state
+// from the visitor output.
 type stateTrace struct {
 	state      map[ast.Account]*Inventory
 	before     map[ast.Account]*Inventory
@@ -756,10 +922,11 @@ func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
 }
 
 // prepareForRollback records acct in the rolledBack set and returns the
-// live inventory for acct. It is called by Step 5 when applying inverse
-// operations to roll back a failed currency group's mutations. The
-// rolledBack set is used by diff() to suppress accounts whose state is
-// back to its pre-transaction value from the visitor output.
+// live inventory for acct. It is called when a failed currency group's
+// account needs to be marked so diff() can suppress it if no net
+// mutation occurred. The rolledBack set is used by diff() to suppress
+// accounts whose state is back to its pre-transaction value from the
+// visitor output.
 //
 // The rolledBack map is lazily initialized on first call. If acct has
 // not yet been touched in this trace, prepareForEdit semantics apply
