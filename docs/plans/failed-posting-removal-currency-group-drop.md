@@ -118,9 +118,76 @@ type postingResolution struct {
   4. 返却される全 `BookedPosting.Source` が rebuild 後の `txn.Postings` 内の対応 posting を正しく指す
 - **Phase 4 で決める未確定事項**: drop 適用と Source ポインタ束縛のタイミング（現状 `finalize` は Pass 2 の前に走るが、Pass 2 が `dropped` を増やしうるので drop 適用は Pass 2 完了後でなければならない — `finalize` の責務分割 / 呼び出し位置の再構成）。rebuild 時の旧→新 index 対応（`groupRef.postingAt` の remap）。「旧→新 index map を別途構築する」ことを前提化しない
 
+## 改訂2 (2026-05-14): stateTrace を inverse-operation rollback に再設計
+
+> ⚠️ **この改訂2セクションが stateTrace と Refactor-2 / Step 4 / Step 5 の正となる。** 上の「改訂」セクションの Refactor（postingResolution descriptor 化）はコミット済み（`38f91c5`）で有効。本セクションは Step 1 の `stateTrace` group-checkpoint 機構と Step 3 の enter/commit 配線・`commitGroupMulti` を撤回する。
+
+### 改訂2の理由
+
+Step 1-3 の `stateTrace` group-checkpoint（snapshot-restore 方式）に問題があるため作り直す:
+- `visitTxn` に閉じた単一呼び出し元なのに `groupToken` で誤用検出するのは過剰
+- `commitGroupMulti` は snapshot-restore で multi-currency rollback を成立させるためだけに存在
+- **本質的欠陥**: アカウント単位で Inventory 全体を snapshot するため、1 アカウントが複数 currency を持つとき片方の group を rollback すると他方も巻き込まれる（Step 1 で「既知の限界」と記録、evaluator も「粗粒度」と指摘）
+
+### 設計方針
+
+Augment/Reduce が `stateTrace` の責務でない以上、atomic group rollback も `stateTrace` の責務ではない。`stateTrace` の責務は **「全 mutation が巻き戻されたアカウントが `diff()` の出力に現れないこと」だけ**。実際の inventory 巻き戻しは Step 5 が `BookedPosting` の逆操作で行う。
+
+### 新しい stateTrace
+
+```go
+type stateTrace struct {
+    state      map[ast.Account]*Inventory
+    before     map[ast.Account]*Inventory
+    rolledBack map[ast.Account]struct{}   // group rollback が適用されたアカウント
+}
+func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory      // pre-Step-1 と同一
+func (st *stateTrace) prepareForRollback(acct ast.Account) *Inventory  // 新規: rolledBack に acct を記録し live inventory を返す
+func (st *stateTrace) diff() (before, after map[ast.Account]*Inventory) // 変更: 下記の除外規則
+```
+
+**削除**: `groupToken` 型 / `pending` / `pendingToken` / `nextTokenID` / `groups` フィールド / `enterGroup` / `commitGroup` / `commitGroupMulti` / `rollbackGroup` メソッド / `distinctStepCurrencies` 関数、`visitTxn` Pass 1 の enter/commit 配線、`state_trace_test.go` の group チェックポイント関連テスト。`stateTrace` は実質 Step 1 以前の形に戻る（`rolledBack` と `prepareForRollback` だけが追加）。
+
+**`diff()` の除外規則**: アカウント `acct` が `rolledBack` に記録されており、かつ `before[acct]` と `state[acct]` が「等しい」場合、`before`/`after` どちらの出力にも含めない。「等しい」とは: `before[acct] == nil` かつ `state[acct]` が空（`IsEmpty()`）、または `before[acct] != nil` かつ `before[acct].Equal(state[acct])`。`rolledBack` にあるが等しくないアカウント（drop group と生存 group の両方が触った、または下記既知の限界の partial mutation 残り）は通常どおり含める。`rolledBack` に無いアカウントは net-zero でも従来どおり含める（`rolledBack` 集合が「巻き戻されて不変」と「触ったが net-zero」を区別する）。
+
+### inverse-operation rollback（Step 5 が使う）
+
+`Inventory.Add`（`inventory.go:77`）が「同一 commodity + 等価 Cost の Position に単純加算マージ、合計 0 で Position 削除」する性質を利用:
+- **augmentation の逆**（`bp.Reduction == nil`）: `Add(Position{Units: -bp.Units, Cost: bp.Lot})` — その lot を縮小、0 で削除（`bp.Lot == nil` の cash augmentation も同様）
+- **reduction の逆**（`bp.Reduction != nil`）: `Add(Position{Units: +bp.Reduction.Units, Cost: <step.Lot、cash sentinel は nil>})` — その lot に足し戻す（完全消費で削除済みなら再生成）
+
+逆操作の順序は最終状態に影響しない。新しい `Inventory` メソッドは不要。
+
+### 既知の限界
+
+`CodeInternalError`（apd 算術エラー = 正常入力では起きない）で失敗した `bookOne` が partial mutation を残した場合、その失敗 posting には `BookedPosting` が無いため逆操作で巻き戻せない。ただし `diff()` の `before==state` 比較により巻き戻し残りは「変化あり」として diff に**可視化される**（silent な誤りにはならない）。一方この設計は snapshot-restore 方式の「cash collision の粗粒度 rollback」既知バグを**解消**する。
+
+### Refactor-2: stateTrace を inverse-operation rollback 用に簡素化
+
+- **影響モジュール**: `pkg/inventory/reducer.go`
+  - `stateTrace` を上記の新形に: `groupToken`/`pending`/`pendingToken`/`nextTokenID`/`groups`/`enterGroup`/`commitGroup`/`commitGroupMulti`/`rollbackGroup`/`distinctStepCurrencies` を削除、`rolledBack` フィールド・`prepareForRollback` メソッドを追加、`diff()` に除外規則を追加
+  - `visitTxn` Pass 1 から enter/commit 配線を削除（`bookOne` は `prepareForEdit` 経由で `state` を直接 mutate するだけに戻る）。`markForDrop` 呼び出しと group-key 計算（`weightCurrencyFallback` 等）は残す
+- **`pkg/inventory/state_trace_test.go`**: group チェックポイント関連テスト（`TestStateTrace_Group_*` / `TestStateTrace_CommitGroupMulti_*`）を削除。`prepareForEdit`/`diff` の既存テストは維持。`prepareForRollback` と `diff()` 除外規則の単体テストを追加
+- **検証**: `bazel test //pkg/inventory/...` が group テスト削除以外は無改変で green
+- **behavior-preserving**: 削除する enter/commit 配線は誰も読まない `stateTrace.groups` を埋めるだけ。`rolledBack` は Step 5 まで空なので `diff()` の新規分岐は発火しない
+
+### Step 4 (改訂2): Pass 2 — unknown を group へ join
+
+- `solveResidual` 成功後、`residual.Currency` を当該 unknown の `unknownDesc[k].currency` に書き込む
+- D6: `residual.Currency` が既に `dropped` にあれば `unknownDesc[k].currency` をセットするだけ（Step 5 が自動除外）。drop 済みでなければ unknown を `prepareForEdit` 経由で `bookOne`、失敗時は `markForDrop(residual.Currency)`
+- enterGroup/commitGroup は無い（Refactor-2 で削除済み）
+- Pass 2 で resolved unknown が `BookedPosting` を生む場合、Step 5 がそれを currency 付きで参照できる構造にする（Phase 4 で詰める）
+- `flagAmbiguousUnknowns` / `solveResidual` 自体の挙動は不変。behavior-preserving（drop 適用は Step 5）
+
+### Step 5 (改訂2): drop 適用（txn.Postings rebuild + inventory 逆操作）
+
+- **(a) txn.Postings rebuild**: `bookedDesc`/`unknownDesc` のうち `dropped[currency]` のエントリを除外し生存 posting だけで `txn.Postings` を入力順に rebuild、生存 `BookedPosting` の `Source` ポインタを再束縛
+- **(b) inventory 逆操作**: drop された各 group の `BookedPosting` について `trace.prepareForRollback(bp.Account)` で live inventory を取り inverse `Add` で巻き戻す。逆操作 helper（例 `reverseBooking(inv, bp)`）を Step 5 で導入
+- **Phase 4 で詰める**: drop 適用と `Source` 束縛のタイミング（Pass 2 完了後）、rebuild の旧→新 index remap
+
 ## Steps（順序付き）
 
-> 以下 Step 1〜7 は当初計画の記録。Step 2-3 の Detailed Design は `currencyGroupBucket` 方式でコミット済み、上記「改訂」セクションの Refactor で置換される。Step 4-5 は上記「改訂」セクションを正とする。
+> 以下 Step 1〜7 は当初計画の記録。Step 2-3 の Detailed Design は `currencyGroupBucket` 方式でコミット済みだが「改訂」セクションの Refactor-1 で置換済み。Step 1 の `stateTrace` Detailed Design と Step 3 の enter/commit 配線・`commitGroupMulti` は「改訂2」セクションの Refactor-2 で撤回される。Step 4-5 は「改訂2」セクションを正とする。
 
 ### Step 1: `stateTrace` に group checkpoint / rollback を導入
 
