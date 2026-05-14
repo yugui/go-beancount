@@ -759,25 +759,19 @@ func (st *stateTrace) prepareForRollback(acct ast.Account) *Inventory {
 //
 // Exclusion rule: if acct is in rolledBack and its state equals its
 // before-snapshot (meaning all mutations were successfully reversed),
-// the account is omitted from both before and after. "Equal" means
-// before[acct] == nil and state[acct] is empty, or before[acct] != nil
-// and before[acct].Equal(state[acct]). Accounts in rolledBack that still
+// the account is omitted from both before and after. Inventory.Equal
+// treats a nil before-snapshot as empty, so a newly-touched account
+// rolled back to nothing is excluded. Accounts in rolledBack that still
 // differ (partial mutation residue) are included as usual, so they
 // remain visible in the diff output.
 func (st *stateTrace) diff() (before, after map[ast.Account]*Inventory) {
 	after = make(map[ast.Account]*Inventory, len(st.before))
 	for acct := range st.before {
-		if _, rolled := st.rolledBack[acct]; rolled {
-			// Suppress accounts that have been fully rolled back to their
-			// pre-transaction state so the visitor does not see a no-op diff.
-			inv := st.state[acct]
-			snap := st.before[acct]
-			equal := (snap == nil && (inv == nil || inv.IsEmpty())) ||
-				(snap != nil && snap.Equal(inv))
-			if equal {
-				delete(st.before, acct) // Deleting the current key during a map range is safe per the Go spec.
-				continue
-			}
+		if _, rolled := st.rolledBack[acct]; rolled && st.state[acct].Equal(st.before[acct]) {
+			// The account was fully rolled back to its pre-transaction
+			// state; suppress it so the visitor does not see a no-op diff.
+			delete(st.before, acct) // Deleting the current key during a map range is safe per the Go spec.
+			continue
 		}
 		inv := st.state[acct]
 		if inv != nil {

@@ -484,21 +484,23 @@ func (i *Inventory) Clone() *Inventory {
 // Equal reports whether two inventories are position-for-position
 // equal in insertion order. Two positions are equal when their
 // commodity, units number (by value), and cost lot all match; a cash
-// position and a non-cash position are never equal. Two nil inventories
-// are equal; a nil inventory is never equal to a non-nil one.
+// position and a non-cash position are never equal. A nil inventory is
+// treated as empty: it equals any other empty (or nil) inventory and is
+// never equal to a non-empty one.
 func (i *Inventory) Equal(o *Inventory) bool {
-	if i == nil {
-		return o == nil
+	var ip, op []Position
+	if i != nil {
+		ip = i.positions
 	}
-	if o == nil {
+	if o != nil {
+		op = o.positions
+	}
+	if len(ip) != len(op) {
 		return false
 	}
-	if len(i.positions) != len(o.positions) {
-		return false
-	}
-	for idx := range i.positions {
-		a := i.positions[idx]
-		b := o.positions[idx]
+	for idx := range ip {
+		a := ip[idx]
+		b := op[idx]
 		if a.Units.Currency != b.Units.Currency {
 			return false
 		}
