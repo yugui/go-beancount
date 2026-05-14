@@ -517,6 +517,15 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		if !ok {
 			break // solveResidual already appended the diagnostic
 		}
+		// D6: if the residual currency belongs to a group that already failed
+		// in Pass 1, the auto-posting joins that dropped group. Record the
+		// currency so the drop-application pass can exclude this posting from
+		// txn.Postings. Do not touch Amount/Cost — the posting will be
+		// removed, so mutating it would be misleading.
+		if pr.dropped[residual.Currency] {
+			pr.unknownDesc[0].currency = residual.Currency
+			break
+		}
 		inferred := unknownP.Amount == nil
 		if inferred {
 			// Auto-posting: write the inferred Amount. validateStructure
@@ -536,37 +545,51 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		inv := trace.prepareForEdit(unknownP.Account)
 		lot, steps, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date)
 		r.errs = append(r.errs, errs...)
-		if len(errs) == 0 {
-			if len(steps) > 1 {
-				// Multi-lot reductions from the residual pass would
-				// need to expand txn.Postings after Source pointers are
-				// already bound, which is not safe. The deferred-
-				// augment branch installs a tight *ast.Cost so its
-				// matcher returns a single lot; the auto-posting branch
-				// is typically a cash residual that augments. If we
-				// ever land here we want a diagnostic, not a silently-
-				// truncated BookedPosting.
-				r.errs = append(r.errs, Error{
-					Code:    CodeInternalError,
-					Span:    unknownP.Span,
-					Account: unknownP.Account,
-					Message: "residual pass produced a multi-lot reduction; expansion is not supported here",
-				})
-				break
-			}
-			// The unknown is already at its final offset in txn.Postings,
-			// so its address is stable: appending one BookedPosting here
-			// does not invalidate any of the Source pointers finalize
-			// just bound.
-			booked = append(booked, BookedPosting{
-				Source:       unknownP,
-				Account:      unknownP.Account,
-				Units:        *unknownP.Amount.Clone(),
-				Lot:          lot,
-				Reduction:    firstStepOrNil(steps),
-				InferredAuto: inferred,
-			})
+		if len(errs) > 0 {
+			// bookOne failed: mark this currency group as dropped so the
+			// drop-application pass removes the auto-posting along with its
+			// Pass 1 postings.
+			pr.markForDrop(residual.Currency)
+			pr.unknownDesc[0].currency = residual.Currency
+			break
 		}
+		if len(steps) > 1 {
+			// Multi-lot reductions from the residual pass would
+			// need to expand txn.Postings after Source pointers are
+			// already bound, which is not safe. The deferred-
+			// augment branch installs a tight *ast.Cost so its
+			// matcher returns a single lot; the auto-posting branch
+			// is typically a cash residual that augments. If we
+			// ever land here we want a diagnostic, not a silently-
+			// truncated BookedPosting.
+			r.errs = append(r.errs, Error{
+				Code:    CodeInternalError,
+				Span:    unknownP.Span,
+				Account: unknownP.Account,
+				Message: "residual pass produced a multi-lot reduction; expansion is not supported here",
+			})
+			break
+		}
+		// The unknown is already at its final offset in txn.Postings,
+		// so its address is stable: appending one BookedPosting here
+		// does not invalidate any of the Source pointers finalize
+		// just bound. Record the booking in both booked and bookedDesc so
+		// they remain parallel (drop-application-pass prerequisite). Also
+		// mark the unknownDesc entry with the resolved currency for the
+		// drop-application pass's rebuild.
+		booked = append(booked, BookedPosting{
+			Source:       unknownP,
+			Account:      unknownP.Account,
+			Units:        *unknownP.Amount.Clone(),
+			Lot:          lot,
+			Reduction:    firstStepOrNil(steps),
+			InferredAuto: inferred,
+		})
+		pr.bookedDesc = append(pr.bookedDesc, groupRef{
+			currency:  residual.Currency,
+			postingAt: pr.unknownDesc[0].postingAt,
+		})
+		pr.unknownDesc[0].currency = residual.Currency
 	}
 
 	before, after = trace.diff()
