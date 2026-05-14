@@ -174,9 +174,11 @@ func needsBookingClone(txn *ast.Transaction) bool {
 }
 
 // groupRef pairs a posting's index in [postingResolution.postings] with
-// the weight-currency key of its booking group.
+// the weight-currency key of its booking group. For auto-postings and
+// deferred augments, currency is "" until Pass 2 resolves the residual
+// and fills it in.
 type groupRef struct {
-	currency  string // weight currency; "" until Pass 2 resolves an unknown
+	currency  string // weight currency
 	postingAt int    // index into postingResolution.postings
 }
 
@@ -233,7 +235,7 @@ type postingResolution struct {
 	// dropped is the set of weight-currency keys whose bookOne call
 	// failed. nil until the first failure. The drop-application pass
 	// reads this to rebuild txn.Postings without failed groups and to
-	// call stateTrace.rollbackGroup for each dropped currency.
+	// apply inverse bookings to roll back each dropped currency.
 	dropped map[string]bool
 }
 
@@ -402,22 +404,6 @@ func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast
 	return booked, unknowns
 }
 
-// distinctStepCurrencies returns the distinct step.Lot.Currency values
-// from steps, preserving input order and removing duplicates. It is used
-// by the multi-lot reduction path in Pass 1 to determine the set of
-// currency group keys a single bookOne call touched.
-func distinctStepCurrencies(steps []ReductionStep) []string {
-	seen := make(map[string]struct{}, len(steps))
-	out := make([]string, 0, len(steps))
-	for _, step := range steps {
-		if _, ok := seen[step.Lot.Currency]; !ok {
-			seen[step.Lot.Currency] = struct{}{}
-			out = append(out, step.Lot.Currency)
-		}
-	}
-	return out
-}
-
 // visitTxn performs the per-transaction booking pass, mutating the
 // reducer's per-account state in place and returning the before/after
 // snapshots plus the booked postings. The stop return value is reserved
@@ -464,29 +450,24 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		p := &txn.Postings[i]
 		if p.Amount == nil {
 			// Auto-posting (validated single & no cost/price by
-			// validateStructure). No enterGroup: prepareForEdit is not
-			// called so there is no snapshot to record.
+			// validateStructure). prepareForEdit is not called here —
+			// Pass 2 will book it once the residual is resolved.
 			pr.addUnknown(p)
 			continue
 		}
 
-		tok := trace.enterGroup()
 		inv := trace.prepareForEdit(p.Account)
 		method := r.booking[p.Account] // zero value = BookingDefault
 		lot, steps, errs := bookOne(inv, p, method, txn.Date)
 		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
 			// Deferred-unknown path: Pass 2 will re-try with the inferred
-			// cost. The scope is closed but the group is not drop-marked —
-			// the inventory was not mutated (bookOne returned before Add).
+			// cost. The inventory was not mutated (bookOne returned before Add).
 			pr.addUnknown(p)
-			trace.commitGroup(tok, weightCurrencyFallback(p))
 			continue
 		}
 		if len(errs) > 0 {
 			r.errs = append(r.errs, errs...)
-			key := weightCurrencyFallback(p)
-			pr.markForDrop(key)
-			trace.commitGroup(tok, key)
+			pr.markForDrop(weightCurrencyFallback(p))
 			continue
 		}
 		switch {
@@ -505,25 +486,17 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 					Message: "already-booked posting produced a multi-lot reduction; tight-matcher invariant violated",
 				})
 				pr.markForDrop(key)
-				trace.commitGroup(tok, key)
 				continue
 			}
 			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps), key)
-			trace.commitGroup(tok, key)
 		case lot != nil:
 			pr.addLotAugmentation(p, lot, lot.Currency)
-			trace.commitGroup(tok, lot.Currency)
 		case len(steps) == 0:
-			key := cashGroupKey(p)
-			pr.addCashAugmentation(p, key)
-			trace.commitGroup(tok, key)
+			pr.addCashAugmentation(p, cashGroupKey(p))
 		case len(steps) == 1:
-			key := reductionGroupKey(p, steps[0])
-			pr.addSingleLotReduction(p, steps[0], key)
-			trace.commitGroup(tok, key)
+			pr.addSingleLotReduction(p, steps[0], reductionGroupKey(p, steps[0]))
 		default:
 			pr.addMultiLotReduction(p, steps)
-			trace.commitGroupMulti(tok, distinctStepCurrencies(steps))
 		}
 	}
 
@@ -708,11 +681,6 @@ func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
 	return true
 }
 
-// groupToken is an opaque handle returned by [stateTrace.enterGroup].
-// It identifies an open group scope and must be passed to
-// [stateTrace.commitGroup] to close it.
-type groupToken struct{ id uint64 }
-
 // stateTrace records edits to a per-account inventory map within the
 // scope of a single transaction. It pairs the long-lived state map
 // (shared with the owning Reducer, mutated in place by edits) with a
@@ -723,174 +691,25 @@ type groupToken struct{ id uint64 }
 // to this trace — that nil is the visitor-contract signal for "newly
 // touched account".
 //
-// Group checkpoint/rollback: callers may open a group scope via
-// [stateTrace.enterGroup], which causes subsequent [stateTrace.prepareForEdit]
-// calls to also snapshot into a per-group restore map. [stateTrace.commitGroup]
-// files the scope's snapshots under a currency-key, and
-// [stateTrace.rollbackGroup] restores every account the group touched to its
-// pre-group state.
+// rolledBack records accounts whose currency group was fully rolled back
+// via inverse-operation bookings (Step 5). diff() uses this set to
+// suppress accounts that are back to their pre-transaction state from
+// the visitor output.
 type stateTrace struct {
-	state  map[ast.Account]*Inventory
-	before map[ast.Account]*Inventory
-
-	// pending holds snapshots for the currently open group scope. nil
-	// when no scope is open. enterGroup allocates it; commitGroup files
-	// it into groups and sets it back to nil.
-	pending map[ast.Account]*Inventory
-	// pendingToken is the token of the currently open scope. It is used
-	// to detect misuse (double-enter, commit-without-enter).
-	pendingToken groupToken
-	// nextTokenID is incremented on each enterGroup to mint unique tokens.
-	nextTokenID uint64
-	// groups maps weight-currency key → per-account restore snapshots,
-	// accumulated across all commit cycles of that group.
-	groups map[string]map[ast.Account]*Inventory
+	state      map[ast.Account]*Inventory
+	before     map[ast.Account]*Inventory
+	rolledBack map[ast.Account]struct{} // lazily initialized; nil until first prepareForRollback
 }
 
 // newStateTrace begins recording edits against state. before-snapshots
 // are scoped to this trace; state is shared with the caller and is
-// mutated in place by [stateTrace.prepareForEdit].
+// mutated in place by [stateTrace.prepareForEdit]. rolledBack is left
+// nil and initialized lazily by the first [stateTrace.prepareForRollback] call.
 func newStateTrace(state map[ast.Account]*Inventory) *stateTrace {
 	return &stateTrace{
 		state:  state,
 		before: map[ast.Account]*Inventory{},
 	}
-}
-
-// enterGroup opens a group checkpoint scope. Until the matching
-// commitGroup call, every prepareForEdit that touches an account for
-// the first time within this scope records a restore snapshot for that
-// account. Returns an opaque token that must be passed to commitGroup.
-// Panics if a scope is already open (group scopes do not nest).
-func (st *stateTrace) enterGroup() groupToken {
-	if st.pending != nil {
-		panic("stateTrace.enterGroup: previous group scope was not committed")
-	}
-	st.nextTokenID++
-	tok := groupToken{id: st.nextTokenID}
-	st.pending = make(map[ast.Account]*Inventory)
-	st.pendingToken = tok
-	return tok
-}
-
-// commitGroup closes the scope opened by tok and files its per-account
-// snapshots under key (the group's weight-currency string). Filing uses
-// first-touch-wins: if an account already has a snapshot under key from
-// an earlier cycle of the same group, the earlier snapshot is kept
-// because it is closer to the group's true pre-state. The snapshots are
-// retained (not discarded) so that a later rollbackGroup(key) can undo
-// all mutations accumulated across multiple enter/commit cycles.
-// Panics if tok does not match the open scope, or if no scope is open.
-func (st *stateTrace) commitGroup(tok groupToken, key string) {
-	st.commitGroupMulti(tok, []string{key})
-}
-
-// commitGroupMulti closes the scope opened by tok and files its per-account
-// snapshots under each of the given keys. This is used when a single bookOne
-// call affects multiple currency groups (e.g. a multi-currency multi-lot
-// reduction that consumes AAPL{USD} and AAPL{EUR} lots in one atomic call).
-//
-// The first key receives the pending map directly (ownership transfer, same
-// as commitGroup). Subsequent keys receive a clone of each pending snapshot
-// with first-touch-wins semantics — if a key already has a snapshot for an
-// account, the earlier snapshot is kept. If keys has a single element this
-// is equivalent to commitGroup.
-//
-// Panics if tok does not match the open scope, or if no scope is open.
-func (st *stateTrace) commitGroupMulti(tok groupToken, keys []string) {
-	if st.pending == nil {
-		panic("stateTrace.commitGroupMulti: no group scope is open")
-	}
-	if tok != st.pendingToken {
-		panic("stateTrace.commitGroupMulti: token does not match the open scope")
-	}
-
-	if st.groups == nil {
-		st.groups = make(map[string]map[ast.Account]*Inventory)
-	}
-
-	// cloneSnap returns a deep copy of snap, or nil if snap is nil.
-	// Used when filing pending snapshots into secondary keys so each
-	// key's bucket is independently restorable by rollbackGroup.
-	cloneSnap := func(snap *Inventory) *Inventory {
-		if snap == nil {
-			return nil
-		}
-		return snap.Clone()
-	}
-
-	// fileSnap returns the snapshot value to store in a bucket. For the
-	// first key (i==0) the pending snapshot is taken as-is (ownership
-	// transfer). For subsequent keys it is cloned so each bucket is
-	// independent and rollbackGroup can act on them separately.
-	fileSnap := func(i int, snap *Inventory) *Inventory {
-		if i == 0 {
-			return snap
-		}
-		return cloneSnap(snap)
-	}
-
-	for i, key := range keys {
-		bucket, exists := st.groups[key]
-		if !exists {
-			if i == 0 {
-				// First key, first commit: take ownership of the pending map
-				// as the bucket. This is the normal path — it avoids a map copy.
-				st.groups[key] = st.pending
-			} else {
-				// Subsequent key: clone each snapshot so each key's bucket
-				// is independent and rollbackGroup(key) can act independently.
-				cloned := make(map[ast.Account]*Inventory, len(st.pending))
-				for acct, snap := range st.pending {
-					cloned[acct] = cloneSnap(snap)
-				}
-				st.groups[key] = cloned
-			}
-			continue
-		}
-		// Merge pending into the existing bucket with first-touch-wins.
-		// For subsequent keys, clone each snapshot being merged so buckets
-		// remain independent.
-		for acct, snap := range st.pending {
-			if _, already := bucket[acct]; !already {
-				bucket[acct] = fileSnap(i, snap)
-			}
-		}
-	}
-
-	st.pending = nil
-	st.pendingToken = groupToken{}
-}
-
-// rollbackGroup undoes every mutation filed under key, restoring each
-// affected account's inventory in st.state to the snapshot taken when
-// that group first touched it. It is idempotent: calling it with an
-// unknown key or a key that has already been rolled back is a no-op.
-// rollbackGroup does not touch st.before; the before-map contract is
-// unaffected by group rollbacks.
-func (st *stateTrace) rollbackGroup(key string) {
-	bucket := st.groups[key]
-	if bucket == nil {
-		return
-	}
-	for acct, snap := range bucket {
-		if snap == nil {
-			// The account did not exist before this group touched it.
-			// stateTrace never removes an account from st.state once it
-			// has been prepared — that is an invariant of this type —
-			// so restore with an empty inventory rather than deleting
-			// the entry.
-			st.state[acct] = NewInventory()
-		} else {
-			// Clone so that st.state[acct] and the snapshot (which may
-			// alias st.before[acct] via the first-touch optimisation in
-			// prepareForEdit) remain independent after rollback. This
-			// preserves the invariant that live state is always
-			// independent of st.before.
-			st.state[acct] = snap.Clone()
-		}
-	}
-	delete(st.groups, key)
 }
 
 // prepareForEdit returns the inventory to mutate for acct. On the
@@ -899,15 +718,8 @@ func (st *stateTrace) rollbackGroup(key string) {
 // nil if the account had no inventory yet) and lazily creates an
 // inventory if one did not exist. Subsequent calls return the same
 // inventory pointer without re-snapshotting.
-//
-// When a group scope is open, prepareForEdit additionally records a
-// restore snapshot in the pending map for any account touched for the
-// first time within this scope. This does not affect the return value
-// or the before-map — group snapshots are purely internal.
 func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
-	firstTouchInTrace := false
 	if _, seen := st.before[acct]; !seen {
-		firstTouchInTrace = true
 		inv := st.state[acct]
 		if inv == nil {
 			inv = NewInventory()
@@ -917,40 +729,25 @@ func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
 			st.before[acct] = inv.Clone()
 		}
 	}
-
-	if st.pending != nil {
-		if _, seen := st.pending[acct]; !seen {
-			if firstTouchInTrace {
-				// This group is also the first toucher in the trace, so
-				// st.before[acct] is the correct pre-state. Alias it
-				// directly — no extra clone needed.
-				st.pending[acct] = st.before[acct]
-			} else {
-				// Another scope (or the trace itself outside a scope)
-				// already touched this account before this group opened.
-				// Snapshot the current live state as this group's restore
-				// point.
-				//
-				// This approximation relies on the R1 independence
-				// invariant: different currency groups affect disjoint
-				// inventory slots, so restoring one group's snapshot does
-				// not corrupt mutations from a separately committed group.
-				// Known limitation: if two groups share a Position slot
-				// (e.g. plain cash and a price-annotated posting on the
-				// same commodity), rolling back one group may incorrectly
-				// re-surface the other group's mutation. In practice this
-				// only arises when the other group fails bookOne, which is
-				// uncommon for plain cash postings.
-				if inv := st.state[acct]; inv != nil {
-					st.pending[acct] = inv.Clone()
-				} else {
-					st.pending[acct] = nil
-				}
-			}
-		}
-	}
-
 	return st.state[acct]
+}
+
+// prepareForRollback records acct in the rolledBack set and returns the
+// live inventory for acct. It is called by Step 5 when applying inverse
+// operations to roll back a failed currency group's mutations. The
+// rolledBack set is used by diff() to suppress accounts whose state is
+// back to its pre-transaction value from the visitor output.
+//
+// The rolledBack map is lazily initialized on first call. If acct has
+// not yet been touched in this trace, prepareForEdit semantics apply
+// (the account is added to before with a nil snapshot and a fresh
+// inventory is installed if absent).
+func (st *stateTrace) prepareForRollback(acct ast.Account) *Inventory {
+	if st.rolledBack == nil {
+		st.rolledBack = make(map[ast.Account]struct{})
+	}
+	st.rolledBack[acct] = struct{}{}
+	return st.prepareForEdit(acct)
 }
 
 // diff returns the (before, after) pair for the visitor callback.
@@ -959,10 +756,31 @@ func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
 // single visitTxn invocation and is discarded immediately after.
 // after is freshly constructed as clones of the current state for
 // every account first touched by this trace.
+//
+// Exclusion rule: if acct is in rolledBack and its state equals its
+// before-snapshot (meaning all mutations were successfully reversed),
+// the account is omitted from both before and after. "Equal" means
+// before[acct] == nil and state[acct] is empty, or before[acct] != nil
+// and before[acct].Equal(state[acct]). Accounts in rolledBack that still
+// differ (partial mutation residue) are included as usual, so they
+// remain visible in the diff output.
 func (st *stateTrace) diff() (before, after map[ast.Account]*Inventory) {
 	after = make(map[ast.Account]*Inventory, len(st.before))
 	for acct := range st.before {
-		if inv := st.state[acct]; inv != nil {
+		if _, rolled := st.rolledBack[acct]; rolled {
+			// Suppress accounts that have been fully rolled back to their
+			// pre-transaction state so the visitor does not see a no-op diff.
+			inv := st.state[acct]
+			snap := st.before[acct]
+			equal := (snap == nil && (inv == nil || inv.IsEmpty())) ||
+				(snap != nil && snap.Equal(inv))
+			if equal {
+				delete(st.before, acct) // Deleting the current key during a map range is safe per the Go spec.
+				continue
+			}
+		}
+		inv := st.state[acct]
+		if inv != nil {
 			after[acct] = inv.Clone()
 		} else {
 			// Defensive: prepareForEdit always installs a non-nil
