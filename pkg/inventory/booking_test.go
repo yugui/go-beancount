@@ -171,15 +171,15 @@ func TestClassify_EmptyCostSpecWithPriceHint(t *testing.T) {
 		t.Fatalf("classify(empty spec + USD price) = %v, want kindReduce", got)
 	}
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, date, false)
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne errors: %v", errs)
 	}
-	if len(bp.Reductions) != 1 {
-		t.Fatalf("Reductions len = %d, want 1", len(bp.Reductions))
+	if len(steps) != 1 {
+		t.Fatalf("Reductions len = %d, want 1", len(steps))
 	}
-	if bp.Reductions[0].Lot.Currency != "USD" {
-		t.Errorf("Reductions[0].Lot.Currency = %q, want USD", bp.Reductions[0].Lot.Currency)
+	if steps[0].Lot.Currency != "USD" {
+		t.Errorf("Reductions[0].Lot.Currency = %q, want USD", steps[0].Lot.Currency)
 	}
 	// Verify the USD lot was partially consumed (5 remaining) and the
 	// JPY lot is untouched (still 10).
@@ -208,22 +208,19 @@ func TestBookOne_AugmentPerUnitCost(t *testing.T) {
 	spec := &ast.CostSpec{PerUnit: mkAmountPtr(t, "100", "USD")}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne returned errors: %v", errs)
 	}
-	if bp.Source != p {
-		t.Errorf("Source = %p, want %p (alias)", bp.Source, p)
-	}
-	if bp.Lot == nil {
-		t.Fatal("BookedPosting.Lot should be set for augmentation with cost")
+	if lot == nil {
+		t.Fatal("bookOne lot should be set for augmentation with cost")
 	}
 	want := decimalVal(t, "100")
-	if bp.Lot.Number.Cmp(&want) != 0 {
-		t.Errorf("Lot.Number = %s, want 100", bp.Lot.Number.String())
+	if lot.Number.Cmp(&want) != 0 {
+		t.Errorf("Lot.Number = %s, want 100", lot.Number.String())
 	}
-	if bp.Lot.Currency != "USD" {
-		t.Errorf("Lot.Currency = %q, want USD", bp.Lot.Currency)
+	if lot.Currency != "USD" {
+		t.Errorf("Lot.Currency = %q, want USD", lot.Currency)
 	}
 	if inv.Len() != 1 {
 		t.Fatalf("inventory Len = %d, want 1", inv.Len())
@@ -244,16 +241,16 @@ func TestBookOne_AugmentCombinedCost(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne returned errors: %v", errs)
 	}
-	if bp.Lot == nil {
-		t.Fatal("Lot should be set")
+	if lot == nil {
+		t.Fatal("bookOne: Lot should be set")
 	}
 	want := decimalVal(t, "110")
-	if bp.Lot.Number.Cmp(&want) != 0 {
-		t.Errorf("Lot.Number = %s, want 110", bp.Lot.Number.String())
+	if lot.Number.Cmp(&want) != 0 {
+		t.Errorf("Lot.Number = %s, want 110", lot.Number.String())
 	}
 }
 
@@ -263,16 +260,16 @@ func TestBookOne_AugmentTotalCost(t *testing.T) {
 	spec := &ast.CostSpec{Total: mkAmountPtr(t, "500", "USD")}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne returned errors: %v", errs)
 	}
-	if bp.Lot == nil {
-		t.Fatal("Lot should be set")
+	if lot == nil {
+		t.Fatal("bookOne: Lot should be set")
 	}
 	want := decimalVal(t, "100")
-	if bp.Lot.Number.Cmp(&want) != 0 {
-		t.Errorf("Lot.Number = %s, want 100", bp.Lot.Number.String())
+	if lot.Number.Cmp(&want) != 0 {
+		t.Errorf("Lot.Number = %s, want 100", lot.Number.String())
 	}
 }
 
@@ -281,12 +278,12 @@ func TestBookOne_AugmentCash(t *testing.T) {
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	p := mkPosting(t, "Assets:Cash", mkAmount(t, "100", "USD"), nil, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne returned errors: %v", errs)
 	}
-	if bp.Lot != nil {
-		t.Errorf("Lot should be nil for cash augmentation, got %+v", bp.Lot)
+	if lot != nil {
+		t.Errorf("Lot should be nil for cash augmentation, got %+v", lot)
 	}
 	if inv.Len() != 1 {
 		t.Fatalf("inventory Len = %d, want 1", inv.Len())
@@ -302,7 +299,7 @@ func TestBookOne_AugmentEmptyCostSpecErrors(t *testing.T) {
 	spec := &ast.CostSpec{} // empty "{}"
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	_, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	_, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
 	}
@@ -317,12 +314,12 @@ func TestBookOne_AugmentDateDefaultsToTxnDate(t *testing.T) {
 	spec := &ast.CostSpec{PerUnit: mkAmountPtr(t, "100", "USD")} // no Date
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	if !bp.Lot.Date.Equal(txnDate) {
-		t.Errorf("Lot.Date = %v, want %v (txn date default)", bp.Lot.Date, txnDate)
+	if !lot.Date.Equal(txnDate) {
+		t.Errorf("Lot.Date = %v, want %v (txn date default)", lot.Date, txnDate)
 	}
 }
 
@@ -335,28 +332,19 @@ func TestBookOne_AugmentLabelCopied(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) > 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
-	if bp.Lot.Label != "lot-A" {
-		t.Errorf("Lot.Label = %q, want lot-A", bp.Lot.Label)
+	if lot.Label != "lot-A" {
+		t.Errorf("Lot.Label = %q, want lot-A", lot.Label)
 	}
 }
 
-func TestBookOne_InferredAutoFlagPropagates(t *testing.T) {
-	inv := NewInventory()
-	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	p := mkPosting(t, "Assets:Cash", mkAmount(t, "-500", "USD"), nil, nil)
-
-	bp, errs := bookOne(inv, p, ast.BookingStrict, txnDate, true)
-	if len(errs) > 0 {
-		t.Fatalf("unexpected errors: %v", errs)
-	}
-	if !bp.InferredAuto {
-		t.Errorf("InferredAuto = false, want true")
-	}
-}
+// InferredAuto is no longer populated by bookOne — the reducer owns
+// that flag — so a focused unit test is no longer expressible here.
+// End-to-end propagation through Reducer.Walk is covered by
+// TestReducerWalk_AutoPostingInference in reducer_test.go.
 
 // --- bookOne: reduction --------------------------------------------------
 
@@ -374,21 +362,21 @@ func TestBookOne_ReduceFIFO(t *testing.T) {
 	spec := &ast.CostSpec{} // empty matcher
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), spec, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingFIFO, newDate, false)
+	_, steps, errs := bookOne(inv, p, ast.BookingFIFO, newDate)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne errors: %v", errs)
 	}
-	if len(bp.Reductions) != 1 {
-		t.Fatalf("Reductions len = %d, want 1", len(bp.Reductions))
+	if len(steps) != 1 {
+		t.Fatalf("Reductions len = %d, want 1", len(steps))
 	}
 	// FIFO consumes the oldest lot (100 USD).
 	want := decimalVal(t, "100")
-	if bp.Reductions[0].Lot.Number.Cmp(&want) != 0 {
-		t.Errorf("reduced lot cost = %s, want 100", bp.Reductions[0].Lot.Number.String())
+	if steps[0].Lot.Number.Cmp(&want) != 0 {
+		t.Errorf("reduced lot cost = %s, want 100", steps[0].Lot.Number.String())
 	}
 	wantUnits := decimalVal(t, "5")
-	if bp.Reductions[0].Units.Cmp(&wantUnits) != 0 {
-		t.Errorf("reduced units = %s, want 5", bp.Reductions[0].Units.String())
+	if steps[0].Units.Cmp(&wantUnits) != 0 {
+		t.Errorf("reduced units = %s, want 5", steps[0].Units.String())
 	}
 }
 
@@ -405,15 +393,15 @@ func TestBookOne_ReduceStrictWithLabel(t *testing.T) {
 	spec := &ast.CostSpec{Label: "lot-a"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), spec, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, date, false)
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne errors: %v", errs)
 	}
-	if len(bp.Reductions) != 1 {
-		t.Fatalf("Reductions len = %d, want 1", len(bp.Reductions))
+	if len(steps) != 1 {
+		t.Fatalf("Reductions len = %d, want 1", len(steps))
 	}
-	if bp.Reductions[0].Lot.Label != "lot-a" {
-		t.Errorf("reduced lot label = %q, want lot-a", bp.Reductions[0].Lot.Label)
+	if steps[0].Lot.Label != "lot-a" {
+		t.Errorf("reduced lot label = %q, want lot-a", steps[0].Lot.Label)
 	}
 	// The other lot must remain untouched.
 	if inv.Len() != 2 {
@@ -445,14 +433,14 @@ func TestBookOne_ReduceWithPerUnitPrice_RealizedGain(t *testing.T) {
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{},
 		&ast.PriceAnnotation{Amount: mkAmount(t, "110", "USD"), IsTotal: false})
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, date, false)
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne errors: %v", errs)
 	}
-	if len(bp.Reductions) != 1 {
-		t.Fatalf("Reductions len = %d, want 1", len(bp.Reductions))
+	if len(steps) != 1 {
+		t.Fatalf("Reductions len = %d, want 1", len(steps))
 	}
-	step := bp.Reductions[0]
+	step := steps[0]
 	if step.SalePricePer == nil {
 		t.Fatal("SalePricePer should be set")
 	}
@@ -483,14 +471,14 @@ func TestBookOne_ReduceWithTotalPrice_RealizedGain(t *testing.T) {
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{},
 		&ast.PriceAnnotation{Amount: mkAmount(t, "550", "USD"), IsTotal: true})
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, date, false)
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne errors: %v", errs)
 	}
-	if len(bp.Reductions) != 1 {
-		t.Fatalf("Reductions len = %d, want 1", len(bp.Reductions))
+	if len(steps) != 1 {
+		t.Fatalf("Reductions len = %d, want 1", len(steps))
 	}
-	step := bp.Reductions[0]
+	step := steps[0]
 	wantSP := decimalVal(t, "110")
 	if step.SalePricePer == nil || step.SalePricePer.Cmp(&wantSP) != 0 {
 		t.Errorf("SalePricePer = %v, want 110", step.SalePricePer)
@@ -511,14 +499,14 @@ func TestBookOne_ReduceWithPerUnitPrice_RealizedLoss(t *testing.T) {
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{},
 		&ast.PriceAnnotation{Amount: mkAmount(t, "90", "USD"), IsTotal: false})
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, date, false)
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne errors: %v", errs)
 	}
-	if len(bp.Reductions) != 1 {
-		t.Fatalf("Reductions len = %d, want 1", len(bp.Reductions))
+	if len(steps) != 1 {
+		t.Fatalf("Reductions len = %d, want 1", len(steps))
 	}
-	step := bp.Reductions[0]
+	step := steps[0]
 	if step.RealizedGain == nil {
 		t.Fatal("RealizedGain should be set")
 	}
@@ -558,16 +546,16 @@ func TestBookOne_ReduceTotalMatchPerStepRealizedGain(t *testing.T) {
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-20", "ACME"), &ast.CostSpec{},
 		&ast.PriceAnnotation{Amount: mkAmount(t, "2500", "USD"), IsTotal: true})
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, d2, false)
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, d2)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne: %v", errs)
 	}
-	if len(bp.Reductions) != 2 {
-		t.Fatalf("bookOne Reductions len = %d, want 2", len(bp.Reductions))
+	if len(steps) != 2 {
+		t.Fatalf("bookOne Reductions len = %d, want 2", len(steps))
 	}
 	wantSP := decimalVal(t, "125")
 	wantGains := []apd.Decimal{decimalVal(t, "250"), decimalVal(t, "150")}
-	for i, step := range bp.Reductions {
+	for i, step := range steps {
 		switch {
 		case step.SalePricePer == nil:
 			t.Errorf("step[%d].SalePricePer = nil, want 125", i)
@@ -594,14 +582,14 @@ func TestBookOne_ReduceWithoutPriceLeavesGainZero(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingStrict, date, false)
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne errors: %v", errs)
 	}
-	if len(bp.Reductions) != 1 {
-		t.Fatalf("Reductions len = %d, want 1", len(bp.Reductions))
+	if len(steps) != 1 {
+		t.Fatalf("Reductions len = %d, want 1", len(steps))
 	}
-	step := bp.Reductions[0]
+	step := steps[0]
 	if step.SalePricePer != nil {
 		t.Errorf("SalePricePer = %v, want nil", step.SalePricePer)
 	}
@@ -623,7 +611,7 @@ func TestBookOne_ReduceExceedsInventory(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
 
-	_, errs := bookOne(inv, p, ast.BookingFIFO, date, false)
+	_, _, errs := bookOne(inv, p, ast.BookingFIFO, date)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
@@ -641,7 +629,7 @@ func TestBookOne_ReduceNoMatchingLot(t *testing.T) {
 	spec := &ast.CostSpec{Label: "missing"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), spec, nil)
 
-	_, errs := bookOne(inv, p, ast.BookingStrict, date, false)
+	_, _, errs := bookOne(inv, p, ast.BookingStrict, date)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
 	}
@@ -661,7 +649,7 @@ func TestBookOne_ReduceStrictAmbiguous(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
 
-	_, errs := bookOne(inv, p, ast.BookingStrict, date, false)
+	_, _, errs := bookOne(inv, p, ast.BookingStrict, date)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
 	}
@@ -677,7 +665,7 @@ func TestBookOne_NilAmountReturnsInternalError(t *testing.T) {
 	// defensive path returns CodeInternalError rather than panicking.
 	p := mkAutoPosting("Assets:A")
 
-	_, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	_, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
@@ -698,12 +686,12 @@ func TestBookOne_BookingNoneShortPosition(t *testing.T) {
 	// -5 ACME with no cost spec under BookingNone.
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), nil, nil)
 
-	bp, errs := bookOne(inv, p, ast.BookingNone, txnDate, false)
+	lot, _, errs := bookOne(inv, p, ast.BookingNone, txnDate)
 	if len(errs) > 0 {
 		t.Fatalf("bookOne errors: %v", errs)
 	}
-	if bp.Lot != nil {
-		t.Errorf("Lot = %+v, want nil (no cost spec)", bp.Lot)
+	if lot != nil {
+		t.Errorf("Lot = %+v, want nil (no cost spec)", lot)
 	}
 	if inv.Len() != 1 {
 		t.Fatalf("inventory Len = %d, want 1", inv.Len())
@@ -728,7 +716,7 @@ func TestBookOne_ErrorAsInventoryError(t *testing.T) {
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), &ast.CostSpec{}, nil)
 
-	_, errs := bookOne(inv, p, ast.BookingStrict, txnDate, false)
+	_, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}

@@ -51,12 +51,15 @@ func costNumberMissing(c ast.CostHolder) bool {
 	return c.GetPerUnit() == nil && c.GetTotal() == nil
 }
 
-// BookedPosting is the result of routing a single [ast.Posting] through
-// an inventory. Augmenting postings carry a Lot; reducing postings carry
-// a list of [ReductionStep] entries; cash / no-cost postings carry
-// neither. Source aliases into the originating transaction — bookOne
-// never copies the posting — so callers may index back into the
-// transaction via Source without a reverse lookup.
+// BookedPosting is the per-posting outcome the reducer publishes to its
+// visitors. Augmenting postings carry a Lot; reducing postings carry a
+// Reduction; cash / no-cost postings carry neither. Multi-lot
+// reductions are expanded by the reducer into one BookedPosting per
+// matched lot, so each record holds at most one [ReductionStep].
+// Source aliases into the rebuilt ast.Transaction so callers may index
+// back into the transaction via Source without a reverse lookup; the
+// reducer assigns Source after rebuilding txn.Postings so it always
+// reflects the post-expansion identity of the posting.
 type BookedPosting struct {
 	// Source is the posting this record was booked from. It is an
 	// alias into the originating ast.Transaction; it is never a copy.
@@ -71,10 +74,12 @@ type BookedPosting struct {
 	// Lot is the resolved cost lot, set iff this was an augmentation
 	// whose posting carried a cost spec. For cash augmentations and
 	// reductions this is nil.
-	Lot *Cost
-	// Reductions is the per-lot breakdown of a reducing posting. It
-	// is non-nil iff the posting was classified as a reduction.
-	Reductions []ReductionStep
+	Lot *Lot
+	// Reduction is the per-lot record of a reducing posting (single
+	// step; multi-lot reductions are expanded into siblings by the
+	// reducer). It is non-nil iff the posting was classified as a
+	// reduction.
+	Reduction *ReductionStep
 	// InferredAuto is true when Units was inferred from the residual
 	// of a transaction's other postings rather than read directly
 	// from the posting's Amount field.
@@ -184,12 +189,20 @@ func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 }
 
 // bookOne routes a single posting through inv, mutating inv as needed,
-// and returns the [BookedPosting] record plus any inventory errors.
-// bookOne does NOT mutate the backing ast.Posting.
+// and reports the booking outcome the reducer needs to assemble a
+// [BookedPosting]: the resolved cost lot for an augmentation, or the
+// per-lot reduction steps for a reduction. bookOne does NOT mutate the
+// backing ast.Posting and does NOT construct a BookedPosting — the
+// reducer owns the BookedPosting shape (Source, InferredAuto) and the
+// CostSpec → Cost install on the posting itself, because the same
+// outcome can map to several install shapes (lot augmentation, cash
+// augmentation, single-lot reduction, multi-lot expansion, second-run
+// fixed point) and that knowledge belongs next to the txn.Postings
+// rewrite, not split across this file.
 //
 // Augmentation path: resolves the cost spec via [ResolveCost], creates
-// a [Position], and calls [Inventory.Add]. The returned record has Lot
-// set iff a cost was resolved.
+// a [Position], and calls [Inventory.Add]. The returned lot is non-nil
+// iff a cost was resolved.
 //
 // Reduction path: builds a [CostMatcher] from the spec and, when the
 // spec is structurally empty but a price annotation is present, from
@@ -201,14 +214,13 @@ func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 // txnDate is used as the default acquisition date for augmentations
 // whose cost spec omits an explicit date. method is the caller-
 // resolved booking method for the posting's account; the reducer
-// tracks per-account state and passes the right one in. inferred
-// populates the BookedPosting's InferredAuto field verbatim.
+// tracks per-account state and passes the right one in.
 //
 // Preconditions:
 //
 //   - p.Amount must be non-nil. Auto-postings are resolved by the
-//     reducer (Pass 2) before bookOne is called. A nil amount returns
-//     a [CodeInternalError] rather than panicking so the reducer can
+//     reducer before bookOne is called. A nil amount returns a
+//     [CodeInternalError] rather than panicking so the reducer can
 //     report it through the normal diagnostics channel.
 //   - An auto-posting that also carries a cost or price spec is
 //     structurally invalid and must be rejected upstream by the reducer
@@ -218,16 +230,15 @@ func bookOne(
 	p *ast.Posting,
 	method ast.BookingMethod,
 	txnDate time.Time,
-	inferred bool,
-) (BookedPosting, []Error) {
+) (lot *Lot, steps []ReductionStep, errs []Error) {
 	if p == nil {
-		return BookedPosting{}, []Error{{
+		return nil, nil, []Error{{
 			Code:    CodeInternalError,
 			Message: "bookOne called with a nil posting",
 		}}
 	}
 	if p.Amount == nil {
-		return BookedPosting{}, []Error{{
+		return nil, nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -235,20 +246,15 @@ func bookOne(
 		}}
 	}
 
-	booked := BookedPosting{
-		Source:       p,
-		Account:      p.Account,
-		Units:        *p.Amount.Clone(),
-		InferredAuto: inferred,
-	}
-
 	switch classify(inv, p, method) {
 	case kindAugment:
-		return bookAugment(inv, p, booked, txnDate)
+		lot, errs = bookAugment(inv, p, txnDate)
+		return lot, nil, errs
 	case kindReduce:
-		return bookReduce(inv, p, booked, method)
+		steps, errs = bookReduce(inv, p, method)
+		return nil, steps, errs
 	default:
-		return BookedPosting{}, []Error{{
+		return nil, nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -258,13 +264,14 @@ func bookOne(
 }
 
 // bookAugment handles the augmentation path of bookOne: resolve the
-// cost spec, build a Position, and Add it to the inventory.
+// cost spec, build a Position, and Add it to the inventory. Returns
+// the resolved lot (nil iff p carried no cost spec — a cash
+// augmentation).
 func bookAugment(
 	inv *Inventory,
 	p *ast.Posting,
-	booked BookedPosting,
 	txnDate time.Time,
-) (BookedPosting, []Error) {
+) (*Lot, []Error) {
 	lot, err := ResolveCost(p.Cost, *p.Amount, txnDate)
 	if err != nil {
 		// ResolveCost returns inventory.Error values already; enrich
@@ -280,9 +287,9 @@ func bookAugment(
 			if invErr.Account == "" {
 				invErr.Account = p.Account
 			}
-			return BookedPosting{}, []Error{invErr}
+			return nil, []Error{invErr}
 		}
-		return BookedPosting{}, []Error{{
+		return nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -290,11 +297,10 @@ func bookAugment(
 		}}
 	}
 
-	// Inventory.Add clones the position on append, so the value copy
-	// of booked.Units here is safe: the stored Position will not alias
-	// the BookedPosting's coefficient buffer.
+	// Inventory.Add clones the position on append, so it does not alias
+	// the caller's posting amount.
 	pos := Position{
-		Units: booked.Units,
+		Units: *p.Amount.Clone(),
 		Cost:  lot,
 	}
 
@@ -308,9 +314,9 @@ func bookAugment(
 				if invErr.Account == "" {
 					invErr.Account = p.Account
 				}
-				return BookedPosting{}, []Error{invErr}
+				return nil, []Error{invErr}
 			}
-			return BookedPosting{}, []Error{{
+			return nil, []Error{{
 				Code:    CodeInternalError,
 				Span:    p.Span,
 				Account: p.Account,
@@ -319,8 +325,7 @@ func bookAugment(
 		}
 	}
 
-	booked.Lot = lot
-	return booked, nil
+	return lot, nil
 }
 
 // bookReduce handles the reduction path of bookOne: build a matcher,
@@ -336,9 +341,8 @@ func bookAugment(
 func bookReduce(
 	inv *Inventory,
 	p *ast.Posting,
-	booked BookedPosting,
 	method ast.BookingMethod,
-) (BookedPosting, []Error) {
+) ([]ReductionStep, []Error) {
 	priceCcy := ""
 	if specIsEmpty(p.Cost) && p.Price != nil {
 		priceCcy = p.Price.Amount.Currency
@@ -349,7 +353,7 @@ func bookReduce(
 		// A reduction against a nil inventory is structurally
 		// impossible — classify would have routed this to augment —
 		// but defend the invariant rather than crash.
-		return BookedPosting{}, []Error{{
+		return nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -367,9 +371,9 @@ func bookReduce(
 			if invErr.Account == "" {
 				invErr.Account = p.Account
 			}
-			return BookedPosting{}, []Error{invErr}
+			return nil, []Error{invErr}
 		}
-		return BookedPosting{}, []Error{{
+		return nil, []Error{{
 			Code:    CodeInternalError,
 			Span:    p.Span,
 			Account: p.Account,
@@ -381,12 +385,11 @@ func bookReduce(
 	// posting carries a usable price annotation.
 	if p.Price != nil && p.Price.Amount.Currency != "" {
 		if errs := fillRealizedGain(steps, p); len(errs) > 0 {
-			return BookedPosting{}, errs
+			return nil, errs
 		}
 	}
 
-	booked.Reductions = steps
-	return booked, nil
+	return steps, nil
 }
 
 // fillRealizedGain computes SalePricePer, RealizedGain, and

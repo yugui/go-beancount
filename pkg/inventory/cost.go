@@ -19,8 +19,14 @@ var quoContext = apd.BaseContext.WithPrecision(34)
 // spelling at existing call sites while the AST is the single source
 // of truth for the type definition, its methods, and its place in the
 // [ast.CostHolder] sealed union. Code that wants the "lot" spelling
-// should reference [ast.Lot].
+// should reference [Lot] (an alias for the same underlying type).
 type Cost = ast.Cost
+
+// Lot is the augmentation-flavoured alias for [Cost]. It points at the
+// same underlying [ast.Cost] type; the dual spelling matches the booking
+// vocabulary where an augmenting posting "adds a lot" while a reducing
+// posting "matches a lot".
+type Lot = ast.Lot
 
 // ResolveCost turns an [ast.CostHolder] on an augmenting posting into
 // a concrete [Cost]. The two CostHolder variants are handled
