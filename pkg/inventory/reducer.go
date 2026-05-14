@@ -427,9 +427,8 @@ func (pr *postingResolution) bindAndCollect() (booked []BookedPosting, unknowns 
 // entries carry the same currency after Pass 2.
 //
 // For each dropped booked entry, reverseBooking is called to undo the
-// inventory mutation. Errors from reverseBooking (CodeInternalError
-// from apd arithmetic; only reachable via CodeInternalError bookOne
-// paths) are appended to r.errs.
+// inventory mutation. Errors from reverseBooking are CodeInternalError
+// from apd arithmetic and do not occur for normal ledger inputs.
 //
 // Source pointers on surviving BookedPostings are re-bound to their new
 // addresses in the rebuilt postings slice.
@@ -520,9 +519,8 @@ func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrac
 //
 // inv must be the live inventory for bp.Account, obtained via
 // trace.prepareForRollback so that diff() records the rollback.
-// Errors are CodeInternalError from apd arithmetic and are only
-// reachable via the CodeInternalError bookOne path (partial-mutation
-// residue); normal bookings never trigger them.
+// Errors are CodeInternalError from apd arithmetic and do not occur
+// for normal ledger inputs.
 func reverseBooking(inv *Inventory, bp BookedPosting) error {
 	if bp.Reduction == nil {
 		// Augmentation inverse: negate units, preserve lot.

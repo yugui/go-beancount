@@ -2198,6 +2198,484 @@ func TestReducerWalk_AllPostingsDroppedEmitsEmptyTxn(t *testing.T) {
 	}
 }
 
+// ---- Pass 2 D6 and bookOne failure regression tests ----
+
+// TestReducerWalk_Pass2UnknownJoinsDroppedGroup is a direct regression test
+// for D6 (reducer.go approx line 682): when solveResidual resolves the
+// auto-posting's residual to a currency that was already dropped in Pass 1,
+// the auto-posting joins the dropped group without touching its Amount/Cost
+// and is excluded from txn.Postings by applyDrops. No additional error is
+// emitted and no BookedPosting is produced for the auto-posting's account.
+//
+// Scenario: a prior buy seeds Assets:Brokerage with 5 AAPL @ 100 USD. The
+// sell transaction has three postings:
+//   - failing USD group: -10 AAPL{buyDate} from Assets:Brokerage
+//     (CodeReductionExceedsInventory → USD group dropped)
+//   - surviving USD cash: +500 USD to Assets:Cash (same USD group, also dropped)
+//   - auto-posting at Expenses:Plug (nil Amount)
+//
+// After Pass 1, the booked residual from Assets:Cash contributes +500 USD.
+// solveResidual → residual = -500 USD (Currency = "USD"). Since USD is
+// already dropped (D6), the auto-posting joins the group without being
+// booked. applyDrops removes all USD postings, leaving txn.Postings empty.
+func TestReducerWalk_Pass2UnknownJoinsDroppedGroup(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2024, 9, 1, 0, 0, 0, 0, time.UTC)
+
+	// Seed 5 AAPL @ 100 USD.
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "5", "AAPL"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "USD"),
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
+	)
+
+	// Sell transaction: failing USD group (reduction exceeds inventory) +
+	// surviving USD cash (same group, also dropped) + auto-posting (D6 join).
+	//
+	// The AAPL posting carries PerUnit so weightCurrencyFallback returns "USD"
+	// (its weight is the USD cost). The 500 USD cash posting is also "USD"
+	// group. USD is therefore the only group, and it is dropped when the AAPL
+	// reduction fails. The auto-posting's residual resolves to -500 USD (from
+	// the surviving cash), which matches the dropped "USD" key → D6 fires.
+	sell := mkTxn(sellDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "-10", "AAPL"), // fails: only 5 available
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "USD"), // weight = USD → USD group dropped
+				Date:    &buyDate,
+			},
+		},
+		&ast.Posting{
+			Account: "Assets:Cash",
+			Amount:  mkAmountPtr(t, "500", "USD"), // USD group, drops with AAPL
+		},
+		&ast.Posting{Account: "Expenses:Plug"}, // auto-posting: D6 join to USD group
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Brokerage", ast.BookingFIFO),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Plug", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buy,
+		sell,
+	)
+
+	r := NewReducer(ledger.All())
+	var sellVisited bool
+	var sellBefore, sellAfter map[ast.Account]*Inventory
+	var sellBooked []BookedPosting
+	dirs, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		if got == sell {
+			sellVisited = true
+			sellBefore = before
+			sellAfter = after
+			sellBooked = append([]BookedPosting(nil), booked...)
+		}
+		return true
+	})
+
+	// Only the AAPL reduction error; no additional error from D6 or applyDrops.
+	if len(errs) != 1 {
+		t.Fatalf("Walk errs = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", errs, len(errs))
+	}
+	if errs[0].Code != CodeReductionExceedsInventory {
+		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", errs[0].Code)
+	}
+
+	// All postings belong to the dropped USD group (including the auto-posting
+	// via D6), so before is empty and the visitor is not called.
+	if sellVisited {
+		t.Errorf("sell visitor was called; want no visit (all postings dropped, before is empty)")
+	}
+
+	// The sell transaction must still appear in the directive output, but
+	// with an empty Postings slice (every group was dropped).
+	var bookedSell *ast.Transaction
+	for _, d := range dirs {
+		tx, ok := d.(*ast.Transaction)
+		if ok && tx.Date.Equal(sellDate) {
+			bookedSell = tx
+			break
+		}
+	}
+	if bookedSell == nil {
+		t.Fatalf("sell transaction not found in Walk directive output")
+	}
+	if len(bookedSell.Postings) != 0 {
+		t.Errorf("booked sell txn.Postings len = %d, want 0 (all postings dropped by D6)", len(bookedSell.Postings))
+	}
+
+	// Expenses:Plug (the auto-posting account) must not appear in before/after.
+	// sellBefore/sellAfter/sellBooked are nil maps/slices because the visitor
+	// was never called; the map-range and slice-range below are no-ops, and the
+	// key-lookup loop is what enforces the "must not appear" invariant.
+	for _, acct := range []ast.Account{"Expenses:Plug", "Assets:Cash", "Assets:Brokerage"} {
+		if _, ok := sellBefore[acct]; ok {
+			t.Errorf("Walk(sell): before[%s] present; D6 join must not touch account", acct)
+		}
+		if _, ok := sellAfter[acct]; ok {
+			t.Errorf("Walk(sell): after[%s] present; D6 join must not touch account", acct)
+		}
+	}
+
+	// No BookedPosting should be emitted for Expenses:Plug.
+	for _, bp := range sellBooked {
+		if bp.Account == "Expenses:Plug" {
+			t.Errorf("Walk(sell): BookedPosting for Expenses:Plug present; D6 path must produce no booking")
+		}
+	}
+
+	// The AAPL position must be unchanged: the failing reduction left no mutation.
+	brokerage := r.Final("Assets:Brokerage")
+	if brokerage == nil {
+		t.Fatalf("r.Final(Assets:Brokerage) is nil; buy should have seeded it")
+	}
+	if brokerage.Len() != 1 {
+		t.Errorf("r.Final(Assets:Brokerage) has %d positions, want 1 (5 AAPL unaffected)", brokerage.Len())
+	}
+}
+
+// TestReducerWalk_Pass2UnknownBookOneFailsDropsCurrency is a regression test
+// for the Pass 2 bookOne failure path (reducer.go approx lines 705–713):
+// when solveResidual succeeds and residual.Currency is not yet dropped, but
+// the subsequent bookOne for the unknown posting fails, the currency is
+// markForDrop'd, the account is prepareForRollback'd, and the unknown is
+// excluded from txn.Postings by applyDrops.
+//
+// This is the only reducer path that adds a NEW currency to pr.dropped in
+// Pass 2 (D6 joins an existing dropped group; this path creates one).
+//
+// Construction: seed Assets:Stock with 2 AAPL (cash, no cost). A transaction
+// augments +5 AAPL (cash) to Assets:Exchange (Pass 1, AAPL group), leaving
+// a residual of -5 AAPL. The auto-posting targets Assets:Stock. After Pass 2
+// fills in Amount=-5 AAPL, bookOne classifies it as a kindReduce against the
+// 2 AAPL in Assets:Stock. Since 5 > 2, Reduce returns CodeReductionExceedsInventory
+// and the AAPL group is dropped. applyDrops reverses the Assets:Exchange
+// augmentation and excludes the auto-posting from txn.Postings.
+func TestReducerWalk_Pass2UnknownBookOneFailsDropsCurrency(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	seedDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+
+	// Seed 2 AAPL at 100 USD/share (cost-bearing lot) into Assets:Stock.
+	// Cost-bearing lots are required: Inventory.Reduce enforces the
+	// over-reduction check only for non-cash positions (cash overdrafts
+	// are deferred to the balance assertion layer).
+	seed := mkTxn(seedDate,
+		&ast.Posting{
+			Account: "Assets:Stock",
+			Amount:  mkAmountPtr(t, "2", "AAPL"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "USD"),
+				Date:    &seedDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-200", "USD")},
+	)
+
+	// Transaction: +5 AAPL (cash, no cost) to Assets:Exchange (Pass 1, AAPL
+	// weight) + auto-posting at Assets:Stock (nil Amount).
+	// Pass 2: residual = -5 AAPL. bookOne(-5 AAPL, Assets:Stock) →
+	// classify sees 2 AAPL{USD} (positive lot), negative posting → kindReduce.
+	// bookReduce: 5 > 2 (lot-bearing check) → CodeReductionExceedsInventory
+	// → markForDrop("AAPL") → pr.unknownDesc[0].currency = "AAPL".
+	txn := mkTxn(txnDate,
+		&ast.Posting{Account: "Assets:Exchange", Amount: mkAmountPtr(t, "5", "AAPL")},
+		&ast.Posting{Account: "Assets:Stock"}, // auto-posting: will fail in Pass 2
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Exchange", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Stock", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		seed,
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	var txnVisited bool
+	var txnBefore, txnAfter map[ast.Account]*Inventory
+	dirs, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		if got == txn {
+			txnVisited = true
+			txnBefore = before
+			txnAfter = after
+		}
+		return true
+	})
+
+	// Expect exactly 1 error: CodeReductionExceedsInventory from Pass 2 bookOne.
+	if len(errs) != 1 {
+		t.Fatalf("Walk errs = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", errs, len(errs))
+	}
+	if errs[0].Code != CodeReductionExceedsInventory {
+		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", errs[0].Code)
+	}
+
+	// All postings belong to the AAPL group (now dropped in Pass 2), so the
+	// visitor is not called for the failed txn.
+	if txnVisited {
+		t.Errorf("txn visitor was called; want no visit (all postings in dropped AAPL group)")
+	}
+	// txnBefore/txnAfter are nil because the visitor was never called for txn.
+	if len(txnBefore) != 0 {
+		t.Errorf("txnBefore has %d entries, want 0 (visitor not called)", len(txnBefore))
+	}
+	if len(txnAfter) != 0 {
+		t.Errorf("txnAfter has %d entries, want 0 (visitor not called)", len(txnAfter))
+	}
+
+	// The transaction must appear in directive output with empty Postings.
+	var bookedTxn *ast.Transaction
+	for _, d := range dirs {
+		tx, ok := d.(*ast.Transaction)
+		if ok && tx.Date.Equal(txnDate) {
+			bookedTxn = tx
+			break
+		}
+	}
+	if bookedTxn == nil {
+		t.Fatalf("txn not found in Walk directive output")
+	}
+	if len(bookedTxn.Postings) != 0 {
+		t.Errorf("booked txn.Postings len = %d, want 0 (AAPL group dropped in Pass 2)", len(bookedTxn.Postings))
+	}
+
+	// Assets:Stock must still hold its 2 AAPL from the seed transaction.
+	// The Pass 2 bookOne failed before mutating the inventory, so Assets:Stock
+	// is rolled back to its pre-txn state by prepareForRollback + diff exclusion.
+	stock := r.Final("Assets:Stock")
+	if stock == nil {
+		t.Fatalf("r.Final(Assets:Stock) is nil; seed should have established it")
+	}
+	if stock.Len() != 1 {
+		t.Errorf("r.Final(Assets:Stock) has %d positions, want 1 (2 AAPL from seed, unchanged)", stock.Len())
+	}
+
+	// Assets:Exchange was augmented in Pass 1 and then reversed by applyDrops.
+	// Its inventory must be empty (it had no pre-transaction state).
+	exchange := r.Final("Assets:Exchange")
+	if exchange != nil && !exchange.IsEmpty() {
+		t.Errorf("r.Final(Assets:Exchange) = non-empty; Pass-1 augment must have been reversed by applyDrops")
+	}
+}
+
+// TestReducerWalk_MultiLotReductionPartialGroupDrop is a regression test for
+// the cross-boundary partial drop path in applyDrops: a single -N COMMODITY {}
+// posting expands into multiple child postings (one per matched lot) via
+// addMultiLotReduction, and only the children whose weight currency matches a
+// dropped group are excluded. Children of surviving groups remain in
+// txn.Postings and their inventory mutations are preserved.
+//
+// Scenario: buy 10 AAPL @ 100 USD and 10 AAPL @ 90 EUR. Also buy 5 STOCK @
+// 100 USD. A sell transaction has:
+//   - -20 AAPL {} from Assets:Brokerage (expands to USD child + EUR child)
+//   - -10 STOCK{buyDate} from Assets:BrokerB (fails: only 5 available)
+//     → CodeReductionExceedsInventory → USD group dropped
+//
+// applyDrops: USD child of AAPL reduction is reversed (10 AAPL{USD} restored);
+// EUR child of AAPL reduction survives (10 AAPL{EUR} consumed). The STOCK
+// reduction is also reversed. Only the EUR child posting appears in txn.Postings.
+func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyUSDDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+	buyEURDate := time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC)
+	buySTOCKDate := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2024, 9, 1, 0, 0, 0, 0, time.UTC)
+
+	// Buy 10 AAPL @ 100 USD.
+	buyUSD := mkTxn(buyUSDDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "10", "AAPL"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "USD"),
+				Date:    &buyUSDDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "USD")},
+	)
+
+	// Buy 10 AAPL @ 90 EUR (different cost currency).
+	buyEUR := mkTxn(buyEURDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "10", "AAPL"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "90", "EUR"),
+				Date:    &buyEURDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-900", "EUR")},
+	)
+
+	// Buy 5 STOCK @ 100 USD (the other account for the failing USD posting).
+	buySTOCK := mkTxn(buySTOCKDate,
+		&ast.Posting{
+			Account: "Assets:BrokerB",
+			Amount:  mkAmountPtr(t, "5", "STOCK"),
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "USD"),
+				Date:    &buySTOCKDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
+	)
+
+	// Sell: -20 AAPL {} (multi-lot: USD child + EUR child) + failing STOCK
+	// reduction (only 5 available → CodeReductionExceedsInventory → USD group
+	// dropped). The STOCK posting has a PerUnit cost so weightCurrencyFallback
+	// returns "USD", placing it in the same USD group as the AAPL{USD} child.
+	sell := mkTxn(sellDate,
+		&ast.Posting{
+			Account: "Assets:Brokerage",
+			Amount:  mkAmountPtr(t, "-20", "AAPL"),
+			Cost:    &ast.CostSpec{}, // matches all lots: expands to USD + EUR children
+		},
+		&ast.Posting{
+			Account: "Assets:BrokerB",
+			Amount:  mkAmountPtr(t, "-10", "STOCK"), // fails: only 5 available
+			Cost: &ast.CostSpec{
+				PerUnit: mkAmountPtr(t, "100", "USD"), // USD weight → same group as AAPL{USD}
+				Date:    &buySTOCKDate,
+			},
+		},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Brokerage", ast.BookingFIFO),
+		mkOpen(openDate, "Assets:BrokerB", ast.BookingFIFO),
+		mkOpen(openDate, "Equity:Opening", ast.BookingDefault),
+		buyUSD,
+		buyEUR,
+		buySTOCK,
+		sell,
+	)
+
+	r := NewReducer(ledger.All())
+	var sellBooked []BookedPosting
+	var sellBefore, sellAfter map[ast.Account]*Inventory
+	var bookedDirectives []ast.Directive
+	var walkErrs []Error
+	bookedDirectives, walkErrs = r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		if got == sell {
+			sellBefore = before
+			sellAfter = after
+			sellBooked = append([]BookedPosting(nil), booked...)
+		}
+		return true
+	})
+
+	// Exactly one error: the STOCK reduction failure.
+	if len(walkErrs) != 1 {
+		t.Fatalf("Walk errs = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", walkErrs, len(walkErrs))
+	}
+	if walkErrs[0].Code != CodeReductionExceedsInventory {
+		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", walkErrs[0].Code)
+	}
+
+	// The EUR child of the AAPL reduction must survive; the USD child and
+	// STOCK posting must be dropped.
+	var eurBookings, usdBookings, stockBookings int
+	for _, bp := range sellBooked {
+		if bp.Account == "Assets:Brokerage" && bp.Reduction != nil {
+			switch bp.Reduction.Lot.Currency {
+			case "EUR":
+				eurBookings++
+			case "USD":
+				usdBookings++
+			}
+		}
+		if bp.Account == "Assets:BrokerB" {
+			stockBookings++
+		}
+	}
+	if eurBookings != 1 {
+		t.Errorf("Walk(sell): EUR AAPL BookedPosting count = %d, want 1 (EUR child survives)", eurBookings)
+	}
+	if usdBookings != 0 {
+		t.Errorf("Walk(sell): USD AAPL BookedPosting count = %d, want 0 (USD child dropped)", usdBookings)
+	}
+	if stockBookings != 0 {
+		t.Errorf("Walk(sell): STOCK BookedPosting count = %d, want 0 (STOCK posting dropped)", stockBookings)
+	}
+
+	// The sell transaction in directive output must contain only the EUR child.
+	var bookedSell *ast.Transaction
+	for _, d := range bookedDirectives {
+		tx, ok := d.(*ast.Transaction)
+		if ok && tx.Date.Equal(sellDate) {
+			bookedSell = tx
+			break
+		}
+	}
+	if bookedSell == nil {
+		t.Fatalf("sell transaction not found in Walk directive output")
+	}
+	if got := len(bookedSell.Postings); got != 1 {
+		t.Fatalf("booked sell txn.Postings len = %d, want 1 (only EUR AAPL child survives)", got)
+	}
+	if bookedSell.Postings[0].Account != "Assets:Brokerage" {
+		t.Errorf("booked sell txn.Postings[0].Account = %q, want Assets:Brokerage (EUR AAPL child)", bookedSell.Postings[0].Account)
+	}
+
+	// Assets:BrokerB must not appear in before/after (its STOCK reduction
+	// was rolled back; it is back to its pre-transaction state of 5 STOCK).
+	if _, ok := sellBefore["Assets:BrokerB"]; ok {
+		t.Errorf("Walk(sell): before[Assets:BrokerB] present; dropped USD group must suppress the account")
+	}
+	if _, ok := sellAfter["Assets:BrokerB"]; ok {
+		t.Errorf("Walk(sell): after[Assets:BrokerB] present; dropped USD group must suppress the account")
+	}
+
+	// Assets:Brokerage in after must show only the EUR lot consumed.
+	// The USD lot (10 AAPL @ 100 USD) must be fully restored by applyDrops.
+	// The EUR lot (10 AAPL @ 90 EUR) must be gone (fully consumed).
+	brokerage := r.Final("Assets:Brokerage")
+	if brokerage == nil {
+		t.Fatalf("r.Final(Assets:Brokerage) is nil; buy transactions should have seeded it")
+	}
+	// Exactly 1 position should remain: the USD lot (10 AAPL @ 100 USD).
+	if brokerage.Len() != 1 {
+		t.Errorf("r.Final(Assets:Brokerage) has %d positions, want 1 (USD lot restored, EUR lot consumed)", brokerage.Len())
+	}
+	for p := range brokerage.All() {
+		if p.Cost == nil || p.Cost.Currency != "USD" {
+			t.Errorf("r.Final(Assets:Brokerage): remaining position has cost %v, want USD cost lot", p.Cost)
+		}
+		wantQty := decimalVal(t, "10")
+		if p.Units.Number.Cmp(&wantQty) != 0 {
+			t.Errorf("r.Final(Assets:Brokerage): remaining lot units = %s, want 10", p.Units.Number.Text('f'))
+		}
+	}
+
+	// Assets:BrokerB must still hold its 5 STOCK (failed reduction, rolled back).
+	brokerB := r.Final("Assets:BrokerB")
+	if brokerB == nil {
+		t.Fatalf("r.Final(Assets:BrokerB) is nil; buySTOCK should have seeded it")
+	}
+	if brokerB.Len() != 1 {
+		t.Errorf("r.Final(Assets:BrokerB) has %d positions, want 1 (5 STOCK unaffected)", brokerB.Len())
+	}
+
+	// The EUR child's Source must point into the booked txn.Postings.
+	if len(sellBooked) == 1 {
+		bp := sellBooked[0]
+		if bp.Source != &bookedSell.Postings[0] {
+			t.Errorf("EUR child BookedPosting.Source does not point into booked txn.Postings[0]")
+		}
+	}
+}
+
 // TestReverseBooking_AugmentationInverse verifies that reversing an
 // augmentation (bp.Reduction == nil) removes the added lot from the
 // inventory.
