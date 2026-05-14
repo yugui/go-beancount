@@ -61,6 +61,222 @@
   - Group が 1 つだけの大多数 txn ではオーバーヘッドが O(touched accounts) の clone 1 回相当に留まる
   - 既存の `before` map 契約は破らない
 
+### Detailed Design
+
+#### Contract
+
+##### 新規メソッドのシグネチャ
+
+`stateTrace` に以下 3 メソッドを追加する。`groupToken` は `stateTrace` が払い出す
+opaque なハンドル型（comparable であること以外は内部実装）。
+
+```go
+// enterGroup opens a checkpoint scope. Until the matching
+// commitGroup/rollbackGroup, every prepareForEdit call that touches an
+// account for the first time *within this scope* records a restore
+// snapshot for that account. enterGroup takes no group identifier:
+// the weight currency that names the group is only known after bookOne
+// runs, so it is supplied later, at commitGroup time. Returns an
+// opaque token identifying the scope.
+func (st *stateTrace) enterGroup() groupToken
+
+// commitGroup closes the scope opened by tok and files the scope's
+// snapshots under key (the group's weight currency string). The live
+// mutations in st.state are NOT undone. Snapshots are retained, not
+// discarded: a currency group may span several enter/commit cycles
+// (one per posting in input order), and a later rollbackGroup(key)
+// must still be able to undo all of them. Filing is first-touch-wins:
+// if an account already has a snapshot under key (from an earlier
+// cycle of the same group), the new scope's snapshot for that account
+// is dropped, because the earlier one is closer to the group's true
+// pre-state.
+func (st *stateTrace) commitGroup(tok groupToken, key string)
+
+// rollbackGroup undoes every mutation filed under key, restoring each
+// affected account's inventory in st.state to the snapshot taken when
+// that group first touched it. It is idempotent and safe to call with
+// a key that was never committed (no-op). After rollbackGroup the
+// group's snapshots under key are consumed.
+func (st *stateTrace) rollbackGroup(key string)
+```
+
+##### ライフサイクル規則（ロック対象）
+
+1. **enter → commit/rollback のペアリング**: `enterGroup` で開いた scope は、その
+   token を引数に取る `commitGroup` で閉じる。呼び出し側（Step 3/4）は
+   **1 posting につき `enterGroup` → `bookOne` → `commitGroup`** を必ず完結させる
+   規約とする。失敗 posting も例外ではない: 失敗時も `commitGroup(tok, key)` を
+   呼んで snapshot を key 配下に file し、その後 drop は `postingResolution` 側の
+   mark で表現する（Step 2/5）。`stateTrace` は「token を直接 rollback する」
+   経路を **提供しない** — rollback は常に key 単位（`rollbackGroup(key)`）。
+2. **group の非ネスト性**: 同時に open 状態の scope は高々 1 つ。`enterGroup` を
+   commit せずに再度 `enterGroup` するのは規約違反であり、`stateTrace` は
+   panic してよい（misuse の早期検出）。
+3. **二重 commit / 二重 rollback**: 同一 token に対する 2 回目の `commitGroup` は
+   規約違反（panic 可）。同一 key に対する 2 回目以降の `rollbackGroup` は no-op。
+4. **enter せずに commit**: 規約違反（panic 可）。
+5. **scope 外の `prepareForEdit`**: `enterGroup` していない状態での
+   `prepareForEdit` は **従来どおりの挙動**（`st.before` への lazy snapshot のみ、
+   group snapshot は記録しない）。既存の `state_trace_test.go` のテストは
+   この経路を通り、無改変で合格しなければならない。
+
+##### `prepareForEdit` の externally observable な挙動
+
+`prepareForEdit` の戻り値・`st.before` への副作用・冪等性は **一切変わらない**。
+group scope が open 中は内部的に追加の group snapshot を取るが、これは
+`prepareForEdit` の戻り値にも `st.before` の内容にも影響しない。
+
+##### `before` map / `diff()` 契約の維持（ロック対象）
+
+- `st.before` の各エントリは「そのアカウントを *transaction 内で* 最初に touch
+  した時点」の値を保持する。`rollbackGroup` は `st.before` を **読みも書きもしない**。
+  group rollback が起きても `before` の値（nil = 新規アカウントの signal を含む）は
+  不変。
+- `diff()` の `after` は `st.state` を clone して構築する。Step 5 は drop 対象の
+  全 group について `rollbackGroup` を **`diff()` 呼び出しより前** に実行する
+  規約なので、`after` は commit された（生存）group の mutation のみを反映する。
+- あるアカウントを drop された group だけが touch していた場合、そのアカウントは
+  `before`/`after` の key 集合から **除去されない**。`rollbackGroup` は
+  `st.state` の map から key を削除せず、値を snapshot へ書き戻すだけ。
+  `diff()` の既存の defensive 分岐（`st.state[acct] == nil` → 空 Inventory）が
+  この境界を引き続きカバーする。
+
+##### Step 3 / 4 / 5 がこの API をどう呼ぶか（cross-step coupling の固定点）
+
+- **Step 3（Pass 1）**: 各明示 posting について
+  `tok := trace.enterGroup()` → `inv := trace.prepareForEdit(p.Account)` →
+  `bookOne(inv, …)` → 成否に応じて group key（成功時 `PostingWeight` の
+  Currency、失敗時 `p.Amount.Currency` フォールバック）を決定 →
+  `trace.commitGroup(tok, key)`。`addMultiLotReduction` の child posting は
+  inventory を追加で mutate しないので追加の enter/commit は不要。
+- **Step 4（Pass 2）**: auto-posting / deferred unknown について
+  `tok := trace.enterGroup()` → `prepareForEdit` → `bookOne` →
+  `commitGroup(tok, residual.Currency)`。residual currency が drop 済み group の
+  key と一致する場合（D6）、その key への commit は同じ bucket にマージされ、
+  Step 5 の `rollbackGroup(key)` で auto-posting の mutation も巻き戻る。
+- **Step 5（finalize）**: `postingResolution` 上で drop マークされた各 key に
+  ついて `trace.rollbackGroup(key)` を呼ぶ。これは `trace.diff()` を呼ぶ **前** に
+  完了させる。mark 時即時か finalize 一括かは Step 5 の実装裁量。
+
+##### 新規ファイルを増やさない
+
+3 メソッド・`groupToken` 型・snapshot フィールドはすべて `reducer.go` 内に追加する。
+Bazel/Gazelle の再生成は不要。
+
+#### Suggested Internals
+
+以下は generator が実装中に変更してよい助言。
+
+##### snapshot のデータ構造（案 S1 推奨）
+
+pending スロット 1 つ + key 配下 bucket:
+
+```go
+type stateTrace struct {
+    state  map[ast.Account]*Inventory
+    before map[ast.Account]*Inventory
+
+    // pending holds the open scope's snapshots. nil when no group is
+    // open. enterGroup allocates it, commitGroup files it into groups
+    // and clears it back to nil.
+    pending map[ast.Account]*Inventory
+    // groups maps weight-currency key -> per-account restore snapshot,
+    // accumulated across all commit cycles of that group.
+    groups map[string]map[ast.Account]*Inventory
+}
+```
+
+group がネストしないので `pending != nil` で「open scope は高々 1」を表現でき、
+stack も map も要らない。代替案 S2（`enterGroup` が `*groupSnapshot` を確保）は
+ネスト無しが確定方針のため不要な一般化。
+
+##### lazy snapshot のタイミングと緊張1の解消
+
+`prepareForEdit` 内、`st.before` の lazy snapshot ロジックの直後に
+「`pending != nil` かつ `pending` に acct が未登録なら、この group がこの acct を
+触る直前の state を `pending[acct]` に記録」を足す。snapshot を取る時点では key を
+一切要求せず pending に匿名で溜め、key は `commitGroup` で初めて bind する。
+
+##### 緊張2（1 group 複数 posting）の解消
+
+`commitGroup` の **first-touch-wins マージ**で解決。posting A（key=USD）の commit が
+`groups["USD"][acct]` を埋め、後続 posting B（同 key・同 acct）の commit 時は既存を
+優先し B の pending snapshot を破棄する。`rollbackGroup("USD")` が `groups["USD"]`
+全体を restore することで「A 成功 → B 失敗 → A も巻き戻す」が自然に成立。
+
+##### snapshot のクローン回数最適化（性能要件）
+
+`prepareForEdit` がそのアカウントの `st.before` エントリを **今まさに生成した**
+（この group がそのアカウントの transaction 内初回 toucher）場合、`pending[acct]` は
+`st.before[acct]` を **alias** してよい（clone しない）。`st.before` は read-only な
+値であり `rollbackGroup` もそこから読むだけなので安全。これで single-group txn の
+追加 clone は 0 になる。実装するかは generator 判断。
+
+##### 緊張3（group をまたぐ同一アカウント mutation）の扱い — 既知の限界
+
+`rollbackGroup` は「dropped group が触ったアカウントを、その group の snapshot へ
+full restore」する。これは **「currency group の inventory 効果は互いに独立」** と
+いう不変条件に依拠する。
+
+- **独立が成り立つ通常ケース**: cost-bearing な reduction は同一 cost currency の
+  lot しか match せず、augmentation は cost currency の lot を追加する。異なる
+  weight group は通常、異なる commodity または異なる cost currency の Position slot
+  を占めるため、ある group の rollback が別 group の Position を壊さない。
+- **既知の反例**: cost も price も持たない plain cash posting（weight = amount
+  currency）と、price 注釈付きで同じ commodity を扱う posting（weight = price
+  currency）は、同一 cash Position row（commodity 一致・Cost nil）を共有しうる。
+  例 `+100 USD @ 0.9 EUR`（EUR group）と `-100 USD`（USD group）。
+- **反例を許容する根拠**: rollback は group が drop されたとき＝その group の
+  posting が `bookOne` で失敗したときのみ発生する。上記反例の group は cash の
+  augment/reduce のみで構成され、`Inventory.Add` は内部算術エラー以外を返さず、
+  cash の `Reduce` は overdraft をエラーにしない。したがってこの種の group が
+  `bookOne` で失敗し rollback 対象になることは実務上ほぼ起きない。さらに上流
+  beancount は inventory を「生存 posting から再構築」する方式で incremental
+  rollback を持たないため、本設計は incremental 方式の近似として既知の境界を
+  1 つ持つに留まる。
+- generator は、もしこの反例が現実のテストで問題化するなら「drop された group の
+  アカウントを `st.before` から再構築 + 生存 posting を replay」する案（R3）へ
+  切り替えてよい。
+
+##### 単体テスト（`state_trace_test.go` に追加）
+
+- `enterGroup` → `prepareForEdit` で mutate → `rollbackGroup(key)` で `st.state` が
+  enter 前へ戻る。
+- `enterGroup` → mutate → `commitGroup` → `rollbackGroup` しない → mutation が残る。
+- 独立 2 group: group A が acct X を、group B が acct Y を touch →
+  `rollbackGroup(A)` が Y を壊さない。
+- 同一 group の 2 posting（2 回 enter/commit、同 key・同 acct）→
+  `rollbackGroup(key)` で 1 つ目の posting の前まで戻る（first-touch-wins の検証）。
+- `rollbackGroup` を未知 key で no-op、同 key 2 回で 2 回目 no-op。
+- group scope 外の `prepareForEdit` が従来どおり動く。
+
+#### Alternatives discussed
+
+- **API 形状**: `enterGroup()` 引数なし + commit 時 key（採用）vs
+  `enterGroup(provisionalKey)` + commit で re-key（却下: cost-bearing posting は
+  provisional≠final で余計な状態遷移）vs token 無し単一フィールド（許容範囲だが
+  誤用検出が弱い）。
+- **rollback 正しさモデル**: R1 独立性不変条件 + per-(group,account) snapshot
+  restore（採用）vs R2 deferred commit（却下: `bookOne` の in-place mutate
+  シグネチャと衝突、C3 として却下済み）vs R3 drop 時 rebuild（却下: Step 3-5 の
+  incremental rollback 前提と非整合、Step 1 の責務超過。ただし R1 が問題化時の
+  退避先）。
+- **snapshot 保持ポリシー**: commit でも保持（採用、緊張2の解）vs commit で破棄
+  （却下: 先行成功 posting を巻き戻せない）。
+
+#### Recommendation
+
+採用: **A1（`enterGroup()` 引数なし + opaque token + `commitGroup(tok,key)`）＋
+R1（独立性不変条件に依拠した per-(group,account) snapshot restore）＋ snapshot 保持
+ポリシー＝保持 ＋ データ構造 S1（pending スロット + key 配下 bucket）**。
+
+計画との差分（明示）: 計画 Step 1 スケッチの「`enterGroup(id)`」「commit で破棄」は
+それぞれ A1・保持ポリシーに置き換える。いずれも計画が後段で挙げた緊張 1・2 を解く
+ために必要な訂正であり、確定方針 C2/D4 や Step 3-5 の incremental rollback 構造とは
+矛盾しない。R1 は通常ケースで正しく、唯一の反例（cash commodity を price-group と
+plain-group が共有）は当該 group が `bookOne` で失敗しない＝rollback されないため
+実務上問題化しない。
+
 ### Step 2: `postingResolution` を group-aware に再構築
 
 - **機能要件**:
