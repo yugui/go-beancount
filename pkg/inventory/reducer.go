@@ -173,6 +173,25 @@ func needsBookingClone(txn *ast.Transaction) bool {
 	return false
 }
 
+// currencyGroupBucket tracks which entries in a postingResolution's flat
+// postings/booked slices belong to a single weight-currency group. Indices
+// are offsets into the flat slices; no copies are held. The dropped flag is
+// set by addPreserved (bookOne failure) to signal that the entire group
+// should be excluded from the final txn.Postings. At this stage the flag
+// is recorded but the drop-application pass that acts on it — rebuilding
+// txn.Postings to exclude dropped groups — is not yet wired; the dropped
+// flag is a no-op until that pass is added.
+//
+// unknownIdx is populated once solveResidual determines the residual currency
+// for an auto-posting or deferred-augment posting; it is left empty until
+// that point.
+type currencyGroupBucket struct {
+	postingsIdx []int // offsets into postingResolution.postings
+	bookedIdx   []int // offsets into postingResolution.booked
+	unknownIdx  []int // offsets into postingResolution.postings for unknowns joined to this group
+	dropped     bool
+}
+
 // postingResolution accumulates the per-transaction outcome of routing
 // each ast.Posting through bookOne into the rebuilt txn.Postings list
 // and the parallel []BookedPosting visitTxn returns. It is the single
@@ -195,6 +214,14 @@ func needsBookingClone(txn *ast.Transaction) bool {
 // unknownAt offsets defer pointer binding until [finalize], which runs
 // after all appends are done.
 //
+// groups maps a weight-currency key to the bucket of postings,
+// BookedPostings, and unknowns belonging to that currency group. The
+// flat postings/booked slices remain the source of truth for ordering
+// and Source-pointer binding; buckets hold only indices. The map is
+// populated by add* methods; the dropped flags are recorded here but
+// not yet acted on — the drop-application pass that rebuilds
+// txn.Postings to exclude failed groups is a future step.
+//
 // The zero value is usable; [newPostingResolution] pre-sizes the
 // slices for the common no-expansion case.
 type postingResolution struct {
@@ -213,6 +240,26 @@ type postingResolution struct {
 	// any deferred-augment posting that the residual pass will
 	// resolve.
 	unknownAt []int
+
+	// groups maps weight-currency key to the currency group bucket for
+	// that key. Populated by add* methods. The drop-application pass
+	// will read dropped flags to rebuild txn.Postings without failed
+	// groups; that pass is not yet implemented.
+	groups map[string]*currencyGroupBucket
+}
+
+// bucketFor returns the currencyGroupBucket for the given weight-currency key,
+// creating it on first access.
+func (pr *postingResolution) bucketFor(weightCurrency string) *currencyGroupBucket {
+	if pr.groups == nil {
+		pr.groups = make(map[string]*currencyGroupBucket)
+	}
+	b, ok := pr.groups[weightCurrency]
+	if !ok {
+		b = &currencyGroupBucket{}
+		pr.groups[weightCurrency] = b
+	}
+	return b
 }
 
 // newPostingResolution returns a postingResolution whose internal
@@ -241,15 +288,17 @@ func (pr *postingResolution) addUnknown(p *ast.Posting) {
 
 // addPreserved records a posting whose bookOne returned errors. The
 // posting is appended unchanged for the printer; no BookedPosting is
-// emitted and the residual pass does not see it.
-//
-// TODO(failed-posting-removal): upstream beancount removes the entire
-// currency group from txn.Postings when book_reductions returns
-// errors. Matching upstream requires structurally removing failing
-// postings here; this is a wider semantic change than the current
-// slice scope.
-func (pr *postingResolution) addPreserved(p *ast.Posting) {
+// emitted and the residual pass does not see it. The posting's index is
+// registered in the group bucket and the bucket is marked dropped so
+// the drop-application pass can exclude the entire currency group from
+// txn.Postings. Setting dropped is idempotent: if another posting in
+// the same group was already marked dropped, this call re-marks it and
+// adds the new index, which is harmless.
+func (pr *postingResolution) addPreserved(p *ast.Posting, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
+	b := pr.bucketFor(weightCurrency)
+	b.postingsIdx = append(b.postingsIdx, len(pr.postings)-1)
+	b.dropped = true
 }
 
 // addAlreadyBooked records a posting that arrived carrying a booked
@@ -260,15 +309,19 @@ func (pr *postingResolution) addPreserved(p *ast.Posting) {
 // non-nil — they are recorded in the BookedPosting so downstream
 // consumers can read the matched lot identity — but no Cost is
 // installed on the posting because p.Cost already reflects it.
-func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep) {
+func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
-	pr.bookedAt = append(pr.bookedAt, len(pr.postings)-1)
+	postIdx := len(pr.postings) - 1
+	pr.bookedAt = append(pr.bookedAt, postIdx)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account:   p.Account,
 		Units:     *p.Amount.Clone(),
 		Lot:       lot,
 		Reduction: step,
 	})
+	b := pr.bucketFor(weightCurrency)
+	b.postingsIdx = append(b.postingsIdx, postIdx)
+	b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
 }
 
 // addLotAugmentation records a first-run augmentation that carried a
@@ -276,7 +329,7 @@ func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *Re
 // lot, replacing the parse-tier *ast.CostSpec; the BookedPosting
 // keeps lot in its Lot field so consumers can read it without
 // re-resolving.
-func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot) {
+func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
 	pr.postings[i].Cost = lot.Clone()
@@ -286,19 +339,26 @@ func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot) {
 		Units:   *p.Amount.Clone(),
 		Lot:     lot,
 	})
+	b := pr.bucketFor(weightCurrency)
+	b.postingsIdx = append(b.postingsIdx, i)
+	b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
 }
 
 // addCashAugmentation records an augmentation that carries no cost
 // spec (a cash-leg posting). The rebuilt posting's Cost holder
 // (typically nil) is preserved verbatim — synthesizing a degenerate
 // *ast.Cost would change weight semantics for downstream consumers.
-func (pr *postingResolution) addCashAugmentation(p *ast.Posting) {
+func (pr *postingResolution) addCashAugmentation(p *ast.Posting, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
-	pr.bookedAt = append(pr.bookedAt, len(pr.postings)-1)
+	postIdx := len(pr.postings) - 1
+	pr.bookedAt = append(pr.bookedAt, postIdx)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account: p.Account,
 		Units:   *p.Amount.Clone(),
 	})
+	b := pr.bucketFor(weightCurrency)
+	b.postingsIdx = append(b.postingsIdx, postIdx)
+	b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
 }
 
 // addSingleLotReduction records a reduction whose matcher selected
@@ -306,7 +366,7 @@ func (pr *postingResolution) addCashAugmentation(p *ast.Posting) {
 // installed, except for the cash-sentinel step (zero-value Lot): in
 // that case the parse-tier Cost holder is left alone so
 // [PostingWeight] falls through to the price branch.
-func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep) {
+func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
 	if step.Lot.Currency != "" || step.Lot.Number.Sign() != 0 {
@@ -318,6 +378,9 @@ func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step Reductio
 		Units:     *p.Amount.Clone(),
 		Reduction: &step,
 	})
+	b := pr.bucketFor(weightCurrency)
+	b.postingsIdx = append(b.postingsIdx, i)
+	b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
 }
 
 // addMultiLotReduction expands a reduction that matched multiple lots
@@ -330,6 +393,12 @@ func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step Reductio
 // cash sentinel — cost-bearing and cash positions of the same
 // commodity cannot coexist on a single inventory row — so step.Lot is
 // installed unconditionally here.
+//
+// Each child is registered under step.Lot.Currency (its weight
+// currency), which may differ across steps when the parent posting
+// matched lots with different cost currencies (e.g. -20 AAPL {} can
+// reduce both AAPL{USD} and AAPL{EUR} lots). step.Lot.Currency is
+// always non-empty for multi-step results.
 func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep) {
 	// step (the range value) is a fresh per-iteration variable in
 	// Go 1.22+, so &step is heap-owned by the BookedPosting below and
@@ -350,6 +419,9 @@ func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []Reduct
 			Units:     *child.Amount.Clone(),
 			Reduction: &step,
 		})
+		b := pr.bucketFor(step.Lot.Currency)
+		b.postingsIdx = append(b.postingsIdx, i)
+		b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
 	}
 }
 
@@ -430,7 +502,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 		if len(errs) > 0 {
 			r.errs = append(r.errs, errs...)
-			pr.addPreserved(p)
+			pr.addPreserved(p, weightCurrencyFallback(p))
 			continue
 		}
 		switch {
@@ -447,16 +519,16 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 					Account: p.Account,
 					Message: "already-booked posting produced a multi-lot reduction; tight-matcher invariant violated",
 				})
-				pr.addPreserved(p)
+				pr.addPreserved(p, weightCurrencyFallback(p))
 				continue
 			}
-			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps))
+			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps), weightCurrencyFallback(p))
 		case lot != nil:
-			pr.addLotAugmentation(p, lot)
+			pr.addLotAugmentation(p, lot, lot.Currency)
 		case len(steps) == 0:
-			pr.addCashAugmentation(p)
+			pr.addCashAugmentation(p, cashGroupKey(p))
 		case len(steps) == 1:
-			pr.addSingleLotReduction(p, steps[0])
+			pr.addSingleLotReduction(p, steps[0], reductionGroupKey(p, steps[0]))
 		default:
 			pr.addMultiLotReduction(p, steps)
 		}
@@ -564,6 +636,46 @@ func firstStepOrNil(steps []ReductionStep) *ReductionStep {
 		return nil
 	}
 	return &steps[0]
+}
+
+// weightCurrencyFallback returns the weight currency of p using
+// PostingWeight, falling back to p.Amount.Currency on error. It is
+// used for the already-booked path (p.Cost.IsBooked() is true, so
+// PostingWeight uses the cost branch) and for error paths where the
+// posting's cost may or may not be set.
+//
+// The w == nil branch (PostingWeight returns nil, nil) is only reachable
+// when p.Amount == nil (auto-posting). All current callers are invoked
+// only on postings where p.Amount != nil, so this branch is unreachable
+// in practice; the fallback is retained for safety.
+func weightCurrencyFallback(p *ast.Posting) string {
+	w, err := PostingWeight(p)
+	if err != nil || w == nil {
+		return p.Amount.Currency
+	}
+	return w.Currency
+}
+
+// cashGroupKey returns the weight currency for a cash-augmentation
+// posting (no cost, no lot). Price annotation takes precedence over
+// plain amount currency, matching PostingWeight's precedence rules.
+func cashGroupKey(p *ast.Posting) string {
+	if p.Price != nil {
+		return p.Price.Amount.Currency
+	}
+	return p.Amount.Currency
+}
+
+// reductionGroupKey returns the weight currency for a single-lot
+// reduction. For non-sentinel lots (cost-bearing), the key is the lot
+// currency. For the cash-sentinel step (zero-value Lot), PostingWeight
+// falls through to price or amount currency.
+func reductionGroupKey(p *ast.Posting, step ReductionStep) string {
+	if step.Lot.Currency != "" || step.Lot.Number.Sign() != 0 {
+		return step.Lot.Currency
+	}
+	// Cash-sentinel: no lot installed; use price or amount currency.
+	return cashGroupKey(p)
 }
 
 // validateStructure rejects transactions whose auto-posting structure
