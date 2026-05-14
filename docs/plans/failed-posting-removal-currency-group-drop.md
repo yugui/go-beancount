@@ -236,6 +236,75 @@ Step 4 は drop を適用しない。追加変更は全て `pr.bookedDesc` / `pr
 - **(b) inventory 逆操作**: drop された各 group の `BookedPosting` について `trace.prepareForRollback(bp.Account)` で live inventory を取り inverse `Add` で巻き戻す。逆操作 helper（例 `reverseBooking(inv, bp)`）を Step 5 で導入
 - **Phase 4 で詰める**: drop 適用と `Source` 束縛のタイミング（Pass 2 完了後）、rebuild の旧→新 index remap
 
+#### Detailed Design
+
+##### 緊張1の決着: `finalize` を分割し drop 適用を Pass 2 完了後の新メソッドへ
+
+`finalize` を 2 メソッドに分割し、`visitTxn` の制御フローを固定する:
+1. **Pass 1 ループ**（変更なし）
+2. **`booked, unknowns = pr.bindAndCollect()`** — 現 `finalize` 本体と同一（drop 非考慮の Source 全束縛 + `unknowns` 収集）。**呼び出し位置は現状維持（Pass 2 の前）** — `solveResidual` が Pass 1 booked の `Source` 経由で `PostingWeight` を読むため
+3. **`txn.Postings = pr.postings` の代入はここでは行わない**（現状位置から削除）。Pass 2 中 `unknownP` は `&pr.postings[k]` のままで安定
+4. **Pass 2**（Step 4 確定済み配線、変更なし）。`pr.dropped` / `pr.bookedDesc` / `pr.unknownDesc[k].currency` を増やしうる
+5. **`booked = pr.applyDrops(booked, trace)`** — **新メソッド**、Pass 2 完了後に呼ぶ。責務: (a) `pr.postings` を drop 除外で rebuild、(b) drop された group の `BookedPosting` を inverse `Add` で巻き戻し（`trace.prepareForRollback(bp.Account)` で live inventory 取得）、(c) 生存 `BookedPosting` だけを返し `Source` を rebuild 後アドレスへ再束縛。**`pr.dropped` が nil/空なら即 return（完全 no-op、新規 allocation 無し）**
+6. **`txn.Postings = pr.postings`** — `applyDrops` 後に代入
+7. **`before, after = trace.diff()`** — `applyDrops` の後（`prepareForRollback` の効果を `diff()` が観測できる順序）
+8. **`return before, after, booked, false`**
+
+`bindAndCollect` シグネチャ = 現 `finalize` と同一。`finalize` 名は廃止可。
+
+##### 緊張2の決着: rebuild は postingAt 昇順の単一走査、Source 再束縛は同一ループ内
+
+別途「旧→新 index map」は構築しない。`applyDrops` は:
+1. **生存 postingAt 判定**: `bookedDesc[j]` / `unknownDesc[k]` を走査、`pr.dropped[ref.currency]` が真なら該当 `postingAt` を drop。`currency == ""` の未解決 unknown は `dropped[""]` 常に false で生存。同一 `postingAt` が両 descriptor に出る「生存 resolved unknown」は両者で `currency` 一致するので判定一致
+2. **rebuild**: `len(pr.postings)` 長の `bool survives` で生存可否を立て、`pr.postings` を index 昇順（= 入力順 = D5）で走査し生存エントリだけ新 slice へコピー
+3. **新 index 確定 + Source 再束縛**: 同じ昇順走査で「旧 postingAt → 新 index」を `len(pr.postings)` 長の `int newIdx` slice（drop は -1 番兵）で表現 — これは rebuild の自然な副産物で「別途構築する index map」の禁止対象ではない（`applyDrops` 局所、`bookedDesc`/`unknownDesc` を破壊しない）。`bookedDesc` を走査し生存エントリ `j` について `booked[j].Source = &newPostings[newIdx[bookedDesc[j].postingAt]]`
+4. **生存 `BookedPosting` 収集**: `bookedDesc[j]` が生存なら `booked[j]` を出力 slice へ（`bookedDesc` と `booked` は parallel）。出力順は `bookedDesc` の順を維持
+5. `pr.postings = newPostings`
+
+##### 緊張3の決着: 逆操作 helper `reverseBooking`
+
+```go
+// reverseBooking undoes the inventory mutation a single BookedPosting
+// applied, by issuing the inverse Inventory.Add. inv must be the live
+// inventory for bp.Account (obtained via trace.prepareForRollback).
+func reverseBooking(inv *Inventory, bp BookedPosting) error
+```
+- **augmentation の逆**（`bp.Reduction == nil`）: `inv.Add(Position{Units: <bp.Units 符号反転>, Cost: bp.Lot})`。cash augmentation は `bp.Lot == nil` で `Position.Cost == nil` 同士マージ
+- **reduction の逆**（`bp.Reduction != nil`）: `inv.Add(Position{Units: <bp.Reduction.Units、正の magnitude そのまま>, Cost: <下記>})`。`Cost`: cash sentinel（`bp.Reduction.Lot` が zero-value）→ `nil`、非 sentinel → `&<bp.Reduction.Lot のコピー>`（`Clone()`）
+- `Inventory.Add` の error はそのまま返し、`applyDrops` 経由で `r.errs` に append（`CodeInternalError` 相当、正常入力では発生しない）
+- 適用対象: `applyDrops` が `bookedDesc` を走査し `pr.dropped[bookedDesc[j].currency]` 真の `booked[j]`。account ごとに `trace.prepareForRollback(booked[j].Account)`（冪等）
+- 逆操作の順序は最終状態に影響しない（`Add` は可換マージ）。完全消費で削除された lot も `Add` が新規 Position として再生成
+
+##### 緊張4の決着: D2 と Walk skip 条件
+
+`Walk` の skip 条件 `if len(bookedPostings) == 0 && len(before) == 0 { continue }` は **変更しない**。D2 の「空 `txn.Postings` の transaction が emit される」は directive 出力（`out = append(out, booked)` は skip より前・無条件）で満たされる。skip が抑止するのは visitor コールバックだけで、全 posting drop の no-op transaction を visitor に流さないのは既存方針と整合。
+
+##### Step 5 完了時点の externally observable な挙動
+
+**変わるもの（失敗を含む transaction のみ）**: 失敗した weight currency group の posting が `txn.Postings`（directive 出力・visitor の `txn` 両方）から物理的に消える（生存 posting は入力順保持）。drop された group の inventory mutation が巻き戻る（`r.Final` / `after` に反映されない、drop された account が他 group と非共有なら `diff()` から除外）。返却 `[]BookedPosting` は生存分のみ、全 `Source` が rebuild 後の `txn.Postings` を正しく指す。全 group drop の transaction は空 `txn.Postings` で directive 出力に現れる（D2）。
+
+**変わらないもの**: error-free transaction の出力は **byte-identical に不変**（`dropped` nil → `applyDrops` 即 return、新規 allocation 無し）。`r.errs` の内容は不変（例外: `reverseBooking` の `Inventory.Add` error のみ — 正常入力では発生しない既知の限界経路）。`Walk` の skip 条件、`bookOne`/`Inventory.Add`/`Inventory.Reduce` の API。
+
+##### 既存テストの更新（ロック対象）
+
+- **`TestReducerWalk_Step3_FailedGroupDroppedFlagSet`（`reducer_test.go`）は更新必須**。`CodeReductionExceedsInventory`（consume 前に error 返す経路）なので実 partial mutation は無いが、AAPL group の account `Assets:Brokerage` が `prepareForRollback` で `rolledBack` に入り、AAPL group の `BookedPosting` は存在しない（Pass 1 失敗 posting は `booked` 未追加）ので inventory は実質不変 → `state == before` → `diff()` 除外規則で `before`/`after` から `Assets:Brokerage` が消える。更新方針: `Assets:Brokerage` が `before`/`after` に現れないことの確認 + `r.Final("Assets:Brokerage")` が buy の 5 AAPL を保持していることの別途確認へ。EUR group のアサーションは有効。
+- `TestReducerWalk_Step3_MultiCurrencyMultiLotReductionGrouping` は error-free なので無改変合格。
+- Step 4 で追加されたテストがあれば、drop 実適用に合わせ `txn.Postings` 長 / inventory のアサーションを新 semantics へ更新。
+- error-free テスト全件（`TestReducerRun_OutputIsFixedPoint` / `TestReducerWalk_DoesNotMutateInput` 等）は無改変合格が回帰の主検証。
+
+##### Suggested Internals
+
+- `applyDrops` 構造案（推奨）: `len(pr.dropped) == 0` で即 `return booked`（no-op）。`survives []bool` + `newIdx []int`（番兵 -1）で単一走査 rebuild。`bookedDesc` を 1 回走査して「drop なら `reverseBooking` + skip」「生存なら `Source` 再束縛 + 出力 append」。`reverseBooking` の error は `applyDrops` に `*Reducer` を渡して `r.errs` に append するか戻り値で返すかは generator 判断（前者が他経路と一貫）。
+- `reverseBooking` は `reducer.go` 内のパッケージレベル関数（既存 helper 群の近く）。`bp.Units` の符号反転は `apd.BaseContext.Neg` で素直に。`bp.Reduction.Units` は非負 magnitude なので符号操作不要。
+- `bindAndCollect` への改名（`finalize` の doc は維持、名前だけ）。
+- 新規テスト（最小限）: `TestReducerWalk_DroppedGroupOmittedFromTxnPostings`（失敗 group の posting が消え生存 posting が入力順、`Source` が新 slice を指す）/ `TestReducerWalk_DroppedGroupRollsBackInventory`（同 group 内で先に成功した mutation も巻き戻る、augmentation 逆・reduction 逆の両 fixture）/ `TestReducerWalk_AllPostingsDroppedEmitsEmptyTxn`（D2）/ `reverseBooking` 単体相当（cash/lot augmentation 逆、cash sentinel/非 sentinel reduction 逆、完全消費 lot 再生成）/ 既存 `TestReducerWalk_Step3_FailedGroupDroppedFlagSet` の更新。主検証は既存テスト全件再合格。
+
+##### 採用しなかった代替案（要約）
+
+- 緊張1: 案B（`finalize` を丸ごと Pass 2 後へ移動）は `solveResidual` の Pass 1 Source 依存を壊すため却下。案C（`finalize` 無改変 + 新メソッド追加）は「最終化」を名乗る `finalize` の後段でさらに rebuild が走り命名が嘘になるため、改名コストゼロの案A を採用。
+- 緊張2: 案B（descriptor を生存だけに in-place filter）は「生存 resolved unknown が両 descriptor に同一 postingAt」で二箇所一貫更新が必要で誤りやすいため却下。案C（`slices.Delete` で物理削除 + 逐次 index 減算）は複数 drop で二次的計算量のため却下。
+- 緊張3: 案B（currency→[]bookedIndex の逆引きインデックスを Pass 1/2 中に構築）は `bookedDesc` 走査で十分なところに新状態を足す過剰として却下。
+
 ## Steps（順序付き）
 
 > 以下 Step 1〜7 は当初計画の記録。Step 2-3 の Detailed Design は `currencyGroupBucket` 方式でコミット済みだが「改訂」セクションの Refactor-1 で置換済み。Step 1 の `stateTrace` Detailed Design と Step 3 の enter/commit 配線・`commitGroupMulti` は「改訂2」セクションの Refactor-2 で撤回される。Step 4-5 は「改訂2」セクションを正とする。
