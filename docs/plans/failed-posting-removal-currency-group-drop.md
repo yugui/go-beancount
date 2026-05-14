@@ -41,7 +41,86 @@
 - **D5**: Posting の出力順は入力順を維持。Group はメタ情報のみで `txn.Postings` slice の並びには影響しない。
 - **D6**: Pass 2 で auto-posting の residual currency が **drop 済み** group と一致する場合、auto-posting も同 group に join して drop する（upstream の `interpolate_group` と意味的に等価）。
 
+## 改訂 (2026-05-14): postingResolution を descriptor 設計に作り直す
+
+> ⚠️ **この改訂セクションが Step 2-3 以降の正となる。** Step 1 の Detailed Design（`stateTrace` の group API）は有効なまま。下の「### Step 2」「### Step 3」の Detailed Design は `currencyGroupBucket` 方式でコミット済み（`7715ac4` / `e8b0742`）の歴史的記録であり、下記 **Refactor** で置き換えられる。「### Step 4」「### Step 5」の旧記述も本セクションの改訂版を正とする。
+
+### 改訂の理由
+
+Step 1-3 コミット後の設計レビューで、Step 2-3 が導入した `currencyGroupBucket` ベースの状態管理が実ワークロード（99% が error-free、大半が `len(postings) ≤ 2`、複数 weight currency を持つ txn は稀）に対して過剰に複雑と判明。grouped 版（`bucket.bookedIdx` 等）と ungrouped 版（`pr.bookedAt` 等）の index list が二重化し見通しが悪い。`postingResolution` を descriptor ベースの平坦な構造に作り直してから Step 4-5 を実装する。
+
+### 新しい postingResolution 設計
+
+```go
+// groupRef は postings への参照と、その posting が属する weight currency
+// group を 1 つにまとめる。bookedDesc / unknownDesc の要素。
+type groupRef struct {
+    currency  string // weight currency。未解決 unknown では "" （Pass 2 で確定）
+    postingAt int    // index into postings
+}
+
+type postingResolution struct {
+    postings    []ast.Posting
+    booked      []BookedPosting
+    bookedDesc  []groupRef       // booked と parallel。bookedDesc[j].postingAt が旧 bookedAt[j]
+    unknownDesc []groupRef       // unknown postings と parallel。currency は Pass 2 で埋める
+    dropped     map[string]bool  // drop された weight currency の集合。最初の drop まで nil
+}
+```
+
+**削除するもの**: `currencyGroupBucket` 型 / `groups map[string]*currencyGroupBucket` / `bucketFor` / `bookedAt` / `unknownAt` / `addPreserved`。
+
+設計の要点:
+- `bookedDesc` は `booked` と parallel で、各 booked posting の weight currency を直接持つ。`add*` メソッドは「1 回の append」で済む（現状は flat slice + bucket の 3 回 append）。
+- `unknownDesc` は unknown postings と parallel。`currency` は Pass 1 では `""`、Pass 2 で `residual.Currency` を書き込む。
+- `dropped` は drop された weight currency の集合。error-free txn では nil のまま（ゼロ確保）。
+- **失敗 posting は `pr.postings` に入れない。** 失敗 posting は定義上 drop group に属し出力に絶対残らず、`booked`/`unknown` エントリも持たず、`solveResidual`（`pr.booked` のみ参照）にも `stateTrace`（currency 文字列で keyed）にも不要。したがって `addPreserved` は「`markForDrop(currency)` で drop を記録するだけ」になり `markForDrop` と完全に同一処理 → **統合**。preserved 専用の 3 本目 descriptor は不要。
+- Step 5 の drop 適用: `bookedDesc`/`unknownDesc` を走査し `dropped[ref.currency]` が真のエントリを除外して `pr.postings` を rebuild、Source ポインタを再束縛。drop された currency 集合を `stateTrace.rollbackGroup` に渡して inventory を巻き戻す。
+
+**確認済み事実**: 「失敗 posting が `txn.Postings` に残る」ことを assert している既存テストは存在しない（`reducer_test.go` の唯一の visitTxn レベル失敗テスト `TestReducerWalk_Step3_FailedGroupDroppedFlagSet` は `BookedPosting` 数と inventory 状態で検証）。`booking_test.go` / `inventory_test.go` の失敗系は `bookOne` / `Inventory.Reduce` を直接叩き `postingResolution` を通らない。
+
+**この改訂の代償**: 失敗 posting が出力から消えるのは Refactor commit の時点であり Step 5 ではない。Refactor / Step 4 commit 時点では「失敗 posting は消えたが同 group の成功 posting は残り inventory も未 rollback」という部分適用状態になる（完全な atomic drop は Step 5 完了時）。該当 transaction は既に `r.errs` でエラー扱いされており errored txn の `txn.Postings` の正確な中身は下流の判断材料ではないため、許容範囲と判断した。
+
+### Refactor: postingResolution を descriptor 設計に作り直す
+
+- **影響モジュール**: `pkg/inventory/reducer.go`
+  - `currencyGroupBucket` 型を削除、`groupRef` 型を追加
+  - `postingResolution` struct を新フィールド構成に
+  - `newPostingResolution`: `bookedDesc` を pre-size（`bookedAt` の代わり）
+  - `bucketFor` を削除
+  - `markForDrop`: `dropped` map の lazy init + 直接代入に簡素化
+  - `addPreserved` を削除
+  - `addUnknown`: `unknownDesc` に append（`currency: ""`）
+  - `addAlreadyBooked` / `addLotAugmentation` / `addCashAugmentation` / `addSingleLotReduction`: `bookedDesc` に 1 回 append
+  - `addMultiLotReduction`: child ごとに `bookedDesc` へ `step.Lot.Currency` で append
+  - `finalize`: `bookedDesc` / `unknownDesc` から Source ポインタ・unknown ポインタを束縛（drop 適用は Step 5、ここでは現状の束縛と等価）
+  - `visitTxn` Pass 1: 失敗経路（`len(errs) > 0` と already-booked invariant violation）を `pr.addPreserved(p, key)` → `pr.markForDrop(key)` に変更し、posting を `pr.postings` に append しない。`trace.commitGroup(tok, key)` は維持
+  - `distinctStepCurrencies` は維持（`commitGroupMulti` 用）
+- **`stateTrace` は変更しない**（Step 1 の group API はそのまま）
+- **検証**: `bazel test //pkg/inventory/...` 全件 green。既存テストは `txn.Postings` に失敗 posting が残ることを assert していないためテストファイル無改変で合格するはず。万一 assert している既存テストがあれば新 semantics に合わせて更新
+- **品質要件**: error-free txn では `dropped` は nil（ゼロ確保）。`add*` は 1 回 append
+
+### Step 4 (改訂): Pass 2 — unknown を group へ join
+
+- `solveResidual` 成功後、`residual.Currency` を当該 unknown の `unknownDesc[k].currency` に書き込む
+- `residual.Currency` が `dropped` に既にある（drop 済み group）→ D6: `unknownDesc[k].currency` をセットすれば Step 5 で自動除外（追加の `markForDrop` 不要）
+- drop 済みでない → unknown を `enterGroup`→`prepareForEdit`→`bookOne`→`commitGroup(tok, residual.Currency)`。`bookOne` 失敗時は `markForDrop(residual.Currency)`
+- `flagAmbiguousUnknowns` / `solveResidual` 自体の挙動は不変。`bookOne` を通らない経路（`solveResidual` 失敗・複数 unknown）の scope 後始末（enterGroup したら必ず commit）を Phase 4 で明確化
+- Pass 2 で `commitGroupMulti` が必要かは Phase 4 で確認（auto-posting / deferred は単一 residual currency なので原則単一 key）
+- Step 4 完了時点では `finalize` がまだ `dropped` を見ないので drop 適用は未実施（Refactor 後状態に対して behavior-preserving）
+
+### Step 5 (改訂): drop 適用 + Source ポインタ整合性確保
+
+- **Contract**:
+  1. `bookedDesc`/`unknownDesc` のうち `dropped[currency]` が真のエントリを除外し、生存 posting だけで `txn.Postings` を入力順に rebuild
+  2. drop されない `BookedPosting` だけを返却
+  3. drop された各 currency について `stateTrace.rollbackGroup(currency)` で inventory mutation を巻き戻す
+  4. 返却される全 `BookedPosting.Source` が rebuild 後の `txn.Postings` 内の対応 posting を正しく指す
+- **Phase 4 で決める未確定事項**: drop 適用と Source ポインタ束縛のタイミング（現状 `finalize` は Pass 2 の前に走るが、Pass 2 が `dropped` を増やしうるので drop 適用は Pass 2 完了後でなければならない — `finalize` の責務分割 / 呼び出し位置の再構成）。rebuild 時の旧→新 index 対応（`groupRef.postingAt` の remap）。「旧→新 index map を別途構築する」ことを前提化しない
+
 ## Steps（順序付き）
+
+> 以下 Step 1〜7 は当初計画の記録。Step 2-3 の Detailed Design は `currencyGroupBucket` 方式でコミット済み、上記「改訂」セクションの Refactor で置換される。Step 4-5 は上記「改訂」セクションを正とする。
 
 ### Step 1: `stateTrace` に group checkpoint / rollback を導入
 
