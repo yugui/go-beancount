@@ -1672,7 +1672,7 @@ func TestReducerWalk_Step3_FailedGroupDroppedFlagSet(t *testing.T) {
 	if eurBooked != 1 {
 		t.Errorf("Walk(sell): EUR BookedPosting count = %d, want 1 (surviving group)", eurBooked)
 	}
-	// The failing AAPL posting produces no BookedPosting (addPreserved path).
+	// The failing AAPL posting produces no BookedPosting (markForDrop path; posting is not appended to pr.postings).
 	if aaplBooked != 0 {
 		t.Errorf("Walk(sell): AAPL BookedPosting count = %d, want 0 (failing group gets no BookedPosting)", aaplBooked)
 	}

@@ -173,23 +173,11 @@ func needsBookingClone(txn *ast.Transaction) bool {
 	return false
 }
 
-// currencyGroupBucket tracks which entries in a postingResolution's flat
-// postings/booked slices belong to a single weight-currency group. Indices
-// are offsets into the flat slices; no copies are held. The dropped flag is
-// set by addPreserved (bookOne failure) to signal that the entire group
-// should be excluded from the final txn.Postings. At this stage the flag
-// is recorded but the drop-application pass that acts on it — rebuilding
-// txn.Postings to exclude dropped groups — is not yet wired; the dropped
-// flag is a no-op until that pass is added.
-//
-// unknownIdx is populated once solveResidual determines the residual currency
-// for an auto-posting or deferred-augment posting; it is left empty until
-// that point.
-type currencyGroupBucket struct {
-	postingsIdx []int // offsets into postingResolution.postings
-	bookedIdx   []int // offsets into postingResolution.booked
-	unknownIdx  []int // offsets into postingResolution.postings for unknowns joined to this group
-	dropped     bool
+// groupRef pairs a posting's index in [postingResolution.postings] with
+// the weight-currency key of its booking group.
+type groupRef struct {
+	currency  string // weight currency; "" until Pass 2 resolves an unknown
+	postingAt int    // index into postingResolution.postings
 }
 
 // postingResolution accumulates the per-transaction outcome of routing
@@ -210,17 +198,13 @@ type currencyGroupBucket struct {
 //
 // Concern (1) is why pointers cannot be assigned eagerly: a later
 // append in the same loop may reallocate the postings backing array
-// and invalidate any &postings[k] taken earlier. The bookedAt /
-// unknownAt offsets defer pointer binding until [finalize], which runs
-// after all appends are done.
+// and invalidate any &postings[k] taken earlier. bookedDesc / unknownDesc
+// carry posting offsets into postings and defer pointer binding until
+// [finalize], which runs after all appends are done.
 //
-// groups maps a weight-currency key to the bucket of postings,
-// BookedPostings, and unknowns belonging to that currency group. The
-// flat postings/booked slices remain the source of truth for ordering
-// and Source-pointer binding; buckets hold only indices. The map is
-// populated by add* methods; the dropped flags are recorded here but
-// not yet acted on — the drop-application pass that rebuilds
-// txn.Postings to exclude failed groups is a future step.
+// dropped records weight-currency keys whose currency group failed
+// bookOne. It is nil for error-free transactions. The drop-application
+// pass that rebuilds txn.Postings to exclude failed groups reads this map.
 //
 // The zero value is usable; [newPostingResolution] pre-sizes the
 // slices for the common no-expansion case.
@@ -230,36 +214,27 @@ type postingResolution struct {
 	// so BookedPosting.Source pointers alias the caller-visible slice.
 	postings []ast.Posting
 
-	// booked is parallel to bookedAt: each entry's Source field is
-	// filled by finalize from postings[bookedAt[i]]. Until then the
-	// field is left zero.
-	booked   []BookedPosting
-	bookedAt []int
+	// booked holds the BookedPosting records whose Source fields are
+	// filled by finalize once all appends are done.
+	booked []BookedPosting
 
-	// unknownAt holds offsets into postings for the auto-posting and
-	// any deferred-augment posting that the residual pass will
-	// resolve.
-	unknownAt []int
+	// bookedDesc is parallel to booked: bookedDesc[j].postingAt is the
+	// index into postings whose address becomes booked[j].Source, and
+	// bookedDesc[j].currency is the weight-currency group key for that
+	// entry.
+	bookedDesc []groupRef
 
-	// groups maps weight-currency key to the currency group bucket for
-	// that key. Populated by add* methods. The drop-application pass
-	// will read dropped flags to rebuild txn.Postings without failed
-	// groups; that pass is not yet implemented.
-	groups map[string]*currencyGroupBucket
-}
+	// unknownDesc is parallel to the unknown postings (auto-posting and
+	// deferred-augment). currency is "" in Pass 1 and filled in by Pass 2
+	// once the residual currency is determined. postingAt indexes into
+	// postings.
+	unknownDesc []groupRef
 
-// bucketFor returns the currencyGroupBucket for the given weight-currency key,
-// creating it on first access.
-func (pr *postingResolution) bucketFor(weightCurrency string) *currencyGroupBucket {
-	if pr.groups == nil {
-		pr.groups = make(map[string]*currencyGroupBucket)
-	}
-	b, ok := pr.groups[weightCurrency]
-	if !ok {
-		b = &currencyGroupBucket{}
-		pr.groups[weightCurrency] = b
-	}
-	return b
+	// dropped is the set of weight-currency keys whose bookOne call
+	// failed. nil until the first failure. The drop-application pass
+	// reads this to rebuild txn.Postings without failed groups and to
+	// call stateTrace.rollbackGroup for each dropped currency.
+	dropped map[string]bool
 }
 
 // newPostingResolution returns a postingResolution whose internal
@@ -268,37 +243,37 @@ func (pr *postingResolution) bucketFor(weightCurrency string) *currencyGroupBuck
 // multi-lot expansion, no bookOne failures). hint should be the
 // input transaction's posting count; over-allocation is harmless and
 // under-allocation just falls back to append's normal growth.
-// unknownAt is left nil: most transactions carry at most one unknown
-// and the first append allocates a tight-fit slice anyway.
+// unknownDesc and dropped are left nil: most transactions carry at most
+// one unknown and zero failures; the first use allocates a tight-fit
+// slice or map respectively.
 func newPostingResolution(hint int) postingResolution {
 	return postingResolution{
-		postings: make([]ast.Posting, 0, hint),
-		booked:   make([]BookedPosting, 0, hint),
-		bookedAt: make([]int, 0, hint),
+		postings:   make([]ast.Posting, 0, hint),
+		booked:     make([]BookedPosting, 0, hint),
+		bookedDesc: make([]groupRef, 0, hint),
 	}
 }
 
 // addUnknown records p as either the auto-posting or a deferred-augment
 // posting. The posting is appended unchanged; the residual pass
-// resolves its Amount or Cost from the transaction's residual.
+// resolves its Amount or Cost from the transaction's residual. The
+// descriptor currency is left empty until Pass 2 fills it in.
 func (pr *postingResolution) addUnknown(p *ast.Posting) {
 	pr.postings = append(pr.postings, *p)
-	pr.unknownAt = append(pr.unknownAt, len(pr.postings)-1)
+	pr.unknownDesc = append(pr.unknownDesc, groupRef{postingAt: len(pr.postings) - 1})
 }
 
-// addPreserved records a posting whose bookOne returned errors. The
-// posting is appended unchanged for the printer; no BookedPosting is
-// emitted and the residual pass does not see it. The posting's index is
-// registered in the group bucket and the bucket is marked dropped so
-// the drop-application pass can exclude the entire currency group from
-// txn.Postings. Setting dropped is idempotent: if another posting in
-// the same group was already marked dropped, this call re-marks it and
-// adds the new index, which is harmless.
-func (pr *postingResolution) addPreserved(p *ast.Posting, weightCurrency string) {
-	pr.postings = append(pr.postings, *p)
-	b := pr.bucketFor(weightCurrency)
-	b.postingsIdx = append(b.postingsIdx, len(pr.postings)-1)
-	b.dropped = true
+// markForDrop records the given weight-currency group as dropped. The
+// failed posting is not appended to pr.postings — it will not appear in
+// the output or in the residual computation. The dropped map is
+// lazily initialized on first use so error-free transactions pay no
+// allocation cost. Marking is idempotent: re-marking an already-dropped
+// currency is a no-op.
+func (pr *postingResolution) markForDrop(weightCurrency string) {
+	if pr.dropped == nil {
+		pr.dropped = make(map[string]bool)
+	}
+	pr.dropped[weightCurrency] = true
 }
 
 // addAlreadyBooked records a posting that arrived carrying a booked
@@ -311,17 +286,13 @@ func (pr *postingResolution) addPreserved(p *ast.Posting, weightCurrency string)
 // installed on the posting because p.Cost already reflects it.
 func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
-	postIdx := len(pr.postings) - 1
-	pr.bookedAt = append(pr.bookedAt, postIdx)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account:   p.Account,
 		Units:     *p.Amount.Clone(),
 		Lot:       lot,
 		Reduction: step,
 	})
-	b := pr.bucketFor(weightCurrency)
-	b.postingsIdx = append(b.postingsIdx, postIdx)
-	b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: weightCurrency, postingAt: len(pr.postings) - 1})
 }
 
 // addLotAugmentation records a first-run augmentation that carried a
@@ -333,15 +304,12 @@ func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, weight
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
 	pr.postings[i].Cost = lot.Clone()
-	pr.bookedAt = append(pr.bookedAt, i)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account: p.Account,
 		Units:   *p.Amount.Clone(),
 		Lot:     lot,
 	})
-	b := pr.bucketFor(weightCurrency)
-	b.postingsIdx = append(b.postingsIdx, i)
-	b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: weightCurrency, postingAt: i})
 }
 
 // addCashAugmentation records an augmentation that carries no cost
@@ -350,15 +318,11 @@ func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, weight
 // *ast.Cost would change weight semantics for downstream consumers.
 func (pr *postingResolution) addCashAugmentation(p *ast.Posting, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
-	postIdx := len(pr.postings) - 1
-	pr.bookedAt = append(pr.bookedAt, postIdx)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account: p.Account,
 		Units:   *p.Amount.Clone(),
 	})
-	b := pr.bucketFor(weightCurrency)
-	b.postingsIdx = append(b.postingsIdx, postIdx)
-	b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: weightCurrency, postingAt: len(pr.postings) - 1})
 }
 
 // addSingleLotReduction records a reduction whose matcher selected
@@ -372,15 +336,12 @@ func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step Reductio
 	if step.Lot.Currency != "" || step.Lot.Number.Sign() != 0 {
 		pr.postings[i].Cost = step.Lot.Clone()
 	}
-	pr.bookedAt = append(pr.bookedAt, i)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account:   p.Account,
 		Units:     *p.Amount.Clone(),
 		Reduction: &step,
 	})
-	b := pr.bucketFor(weightCurrency)
-	b.postingsIdx = append(b.postingsIdx, i)
-	b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: weightCurrency, postingAt: i})
 }
 
 // addMultiLotReduction expands a reduction that matched multiple lots
@@ -413,43 +374,32 @@ func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []Reduct
 			Currency: p.Amount.Currency,
 		}
 		child.Cost = step.Lot.Clone()
-		pr.bookedAt = append(pr.bookedAt, i)
 		pr.booked = append(pr.booked, BookedPosting{
 			Account:   p.Account,
 			Units:     *child.Amount.Clone(),
 			Reduction: &step,
 		})
-		b := pr.bucketFor(step.Lot.Currency)
-		b.postingsIdx = append(b.postingsIdx, i)
-		b.bookedIdx = append(b.bookedIdx, len(pr.booked)-1)
+		pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: step.Lot.Currency, postingAt: i})
 	}
 }
 
-// finalize binds the Source pointers on every BookedPosting and the
-// unknown pointers to indices into pr.postings, which by this point
-// must be the slice the caller intends to publish (typically already
-// assigned to txn.Postings). It must run after every add* call,
-// because intermediate appends may have grown the backing array.
+// finalize binds the Source pointers on every BookedPosting and
+// collects the unknown posting pointers, both via offsets in
+// bookedDesc/unknownDesc. It must run after every add* call because
+// intermediate appends may have grown the backing array, invalidating
+// any earlier &pr.postings[k] addresses. Drop application (reading
+// pr.dropped to exclude failed groups) is handled by a later
+// drop-application pass; finalize binds all entries unconditionally.
 func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast.Posting) {
 	booked = pr.booked
-	for i, off := range pr.bookedAt {
-		booked[i].Source = &pr.postings[off]
+	for i, ref := range pr.bookedDesc {
+		booked[i].Source = &pr.postings[ref.postingAt]
 	}
-	unknowns = make([]*ast.Posting, len(pr.unknownAt))
-	for i, off := range pr.unknownAt {
-		unknowns[i] = &pr.postings[off]
+	unknowns = make([]*ast.Posting, len(pr.unknownDesc))
+	for i, ref := range pr.unknownDesc {
+		unknowns[i] = &pr.postings[ref.postingAt]
 	}
 	return booked, unknowns
-}
-
-// markForDrop marks the currency group identified by weightCurrency as
-// dropped, creating the bucket if it does not yet exist. Unlike
-// addPreserved it appends no posting: it is the entry point for marking
-// a group whose drop was decided by something other than a freshly
-// preserved posting — e.g. Pass 2 joining an auto-posting onto an
-// already-failed group (D6). Marking is idempotent.
-func (pr *postingResolution) markForDrop(weightCurrency string) {
-	pr.bucketFor(weightCurrency).dropped = true
 }
 
 // distinctStepCurrencies returns the distinct step.Lot.Currency values
@@ -535,7 +485,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		if len(errs) > 0 {
 			r.errs = append(r.errs, errs...)
 			key := weightCurrencyFallback(p)
-			pr.addPreserved(p, key) // sets bucket.dropped = true
+			pr.markForDrop(key)
 			trace.commitGroup(tok, key)
 			continue
 		}
@@ -554,7 +504,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 					Account: p.Account,
 					Message: "already-booked posting produced a multi-lot reduction; tight-matcher invariant violated",
 				})
-				pr.addPreserved(p, key)
+				pr.markForDrop(key)
 				trace.commitGroup(tok, key)
 				continue
 			}
