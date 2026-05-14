@@ -592,6 +592,295 @@ cash/plain は `p.Amount.Currency`、price は `p.Price.Amount.Currency`、alrea
 - **品質要件**:
   - 失敗 posting に対する `r.errs` 追加は現状と同等（失敗ごと 1 件）。drop された他 posting への追加 diagnostic は出さない（upstream 準拠）
 
+### Detailed Design
+
+#### Contract
+
+##### 緊張1 の決着: 「1 posting・複数 group」の扱い — Step 1 API は変更しない
+
+`bookOne` が複数 currency group にまたがって inventory を mutate しうるのは `addMultiLotReduction`
+経路のみ（空 `{}` cost spec の reduction が `AAPL{USD}` と `AAPL{EUR}` の lot を両方消費する等）。
+これを **Step 1 の `stateTrace` API を一切変更せず**に扱う。決定:
+
+- **1 posting は引き続き 1 つの `enterGroup` scope で開始する。** `bookOne` 実行中に open な
+  scope は常に高々 1（Step 1 の非ネスト規約を維持）。
+- `bookOne` 成功後、その posting が生んだ **distinct な weight currency key の集合**を確定する:
+  - augmentation (`lot != nil`): `{ lot.Currency }`（単一）
+  - cash augmentation (`len(steps) == 0`): `{ cashGroupKey(p) }`（単一）
+  - single-lot reduction (`len(steps) == 1`): `{ reductionGroupKey(p, steps[0]) }`（単一）
+  - already-booked: `{ weightCurrencyFallback(p) }`（単一）
+  - multi-lot reduction (`len(steps) > 1`): `{ step.Lot.Currency for each step }` の **重複排除した集合**（1 個以上）
+- **複数 key が出た場合の commit 規約（ロック対象）**: open scope を `commitGroupMulti(tok, keys)`
+  で閉じ、その posting が touch したアカウントの snapshot を **各 distinct key の bucket に
+  行き渡らせる**（実装手段は Suggested Internals）。単一 key の場合は従来どおり
+  `commitGroup(tok, key)`。
+- **Contract としてロックするのは 1 点のみ**: *multi-lot reduction が複数 currency にまたがる
+  場合、drop 対象になりうる **各** distinct currency key について、`rollbackGroup(key)` を
+  呼べばその key の lot 消費が `st.state` から巻き戻る状態が、Pass 1 完了時点で成立して
+  いること。* この不変条件を満たす限り、配分の実装手段は Suggested Internals。
+- **`stateTrace` への追加（ロック対象）**: `commitGroupMulti(tok groupToken, keys []string)` を
+  `stateTrace` に追加する。これは Step 1 の既存 3 メソッド（`enterGroup`/`commitGroup`/
+  `rollbackGroup`）を**変更しない**追加であり、Step 1 単体テストは無改変で合格する。
+  シグネチャ: `func (st *stateTrace) commitGroupMulti(tok groupToken, keys []string)` —
+  open scope を閉じ、その scope の pending snapshot を `keys` の各 key 配下に（first-touch-wins
+  で）file する。`keys` が単一要素なら `commitGroup` と等価。
+
+##### `markForDrop` のシグネチャと配置（ロック対象）
+
+drop マークは **`postingResolution` 側**に置く。`stateTrace` は drop の概念を持たない
+（rollback 対象 key は Step 5 が `postingResolution` から読んで `stateTrace.rollbackGroup` に渡す）。
+`reducer.go` に追加:
+
+```go
+// markForDrop marks the currency group identified by weightCurrency as
+// dropped, creating the bucket if it does not yet exist. Unlike
+// addPreserved it appends no posting: it is the entry point for marking
+// a group whose drop was decided by something other than a freshly
+// preserved posting — e.g. Pass 2 joining an auto-posting onto an
+// already-failed group (D6). Marking is idempotent.
+func (pr *postingResolution) markForDrop(weightCurrency string)
+```
+
+実装は実質 `pr.bucketFor(weightCurrency).dropped = true` の 1 行。**Step 3 自身は
+`markForDrop` を Pass 1 から呼ばない**（`addPreserved` がすでに `dropped = true` を立てる）。
+Step 3 で導入する理由は Step 4 の依存 surface を先に固定し、Step 4 の diff を純 additive に
+するため。ロックされる surface: シグネチャと「呼ぶと `pr.groups[weightCurrency].dropped ==
+true` になる」「冪等」「posting を append しない」。
+
+##### `visitTxn` Pass 1 配線後の構造（ロック対象）
+
+Pass 1 ループの各 posting イテレーションは配線後、以下の経路を取る:
+
+- **auto-posting (`p.Amount == nil`)**: 現状どおり `pr.addUnknown(p); continue`。
+  **`enterGroup`/`commitGroup` で囲まない**（`prepareForEdit` を呼ばないので snapshot 対象なし）。
+- **deferred-unknown (`CodeAugmentationRequiresCost` + `costNumberMissing`)**: `enterGroup` →
+  `prepareForEdit` → `bookOne` → 失敗判定までは scope に入る。deferred と判明したら
+  `pr.addUnknown(p)` してから **`commitGroup(tok, weightCurrencyFallback(p))` で scope を閉じる**
+  （drop は **マークしない**）→ `continue`。根拠: `ResolveCost` 失敗時点で `inv.Add` 未到達 →
+  inventory 未 mutate。`commitGroup` は scope を正しく閉じるためだけ。
+- **失敗 posting (`len(errs) > 0`、上記 deferred を除く)**: `r.errs = append(...)`（現状不変）→
+  `key := weightCurrencyFallback(p)` → `pr.addPreserved(p, key)`（posting append +
+  `bucket.dropped = true`）→ **`commitGroup(tok, key)`** → `continue`。`key` を 1 回計算して
+  `addPreserved` と `commitGroup` の **両方に同一文字列**を渡すこと。
+- **already-booked multi-step invariant violation（`CodeInternalError` 経路）**: 失敗扱い。
+  `r.errs` append → `pr.addPreserved(p, key)` → `commitGroup(tok, key)` → `continue`。
+- **成功 posting（`switch` の各 case）**: 既存の `add*` 呼び出しはそのまま。**追加で
+  `commitGroup`/`commitGroupMulti` を呼ぶ**:
+  - augmentation / cash augmentation / single-lot reduction / already-booked:
+    `commitGroup(tok, key)` を 1 回。`key` は対応する `add*` に渡したのと **同じ文字列**。
+  - multi-lot reduction: `commitGroupMulti(tok, distinctStepCurrencies(steps))`。
+
+**`enterGroup` の呼び出し位置（ロック対象）**: `tok := trace.enterGroup()` は
+`inv := trace.prepareForEdit(p.Account)` の直前に置く。auto-posting 経路は `enterGroup` の前に
+`continue` するので scope に入らない。
+
+**ループ終了時の不変条件（ロック対象）**: Pass 1 ループを抜けた時点で **open な scope は
+存在しない**（全 posting が `commitGroup`/`commitGroupMulti` で scope を閉じる、または scope に
+入らない）。これは Pass 2（Step 4）が自分の `enterGroup` を安全に呼べる前提。
+
+##### Step 3 完了時点の externally observable な挙動（ロック対象）
+
+**Step 3 は behavior-preserving。** `markForDrop`/`addPreserved` が `bucket.dropped` を立て、
+`commitGroup`/`commitGroupMulti` が snapshot を `stateTrace.groups` に file するが、`finalize` は
+まだ `dropped` を参照せず、**`rollbackGroup` は Step 3 では呼ばれない**。drop された group の
+mutation は Step 3 完了時点ではまだ live state に残る。`txn.Postings`、返却される
+`[]BookedPosting`、`before`/`after` map、`r.errs` はすべて Step 3 前と同一。
+
+**既存テストへの影響（ロック対象）**: `bazel test //pkg/inventory/...` がテストファイル無改変で
+完全 green。`commitGroup`/`commitGroupMulti` の追加呼び出しは `stateTrace.groups` を populate
+するだけで `st.state` にも `st.before` にも影響しない。
+
+**計画 Step 3 の検証セクションとの差分（明示）**: 計画は `TestReducerWalk_FailedReductionDropsGroup`
+/ `TestReducerWalk_FailedReductionRollsBackInventory` / `TestReducerWalk_FailureInOneGroupPreservesOther`
+を Step 3 の検証に挙げているが、これらは **drop が実際に適用されないと green にならない** =
+Step 5 完了後でないと意味を持たない。**Step 3 commit 時点の検証は下記「検証方法」に置き換える。**
+計画の 3 テストは Step 5（または Step 6）で追加する。
+
+##### Step 4 / Step 5 への cross-step coupling 固定点（ロック対象）
+
+- **Step 4 が依存するもの**:
+  - `pr.markForDrop(weightCurrency string)` — drop 済み group に join した auto-posting を drop に
+    巻き込む (D6) ための entry point。
+  - Pass 1 ループ終了後に **open な scope が無い**こと（Step 4 が自分の `enterGroup` を呼べる）。
+  - `pr.groups[key]` が `nil` でも `pr.bucketFor(key)` / `pr.markForDrop(key)` が安全に bucket を
+    lazy 生成すること。
+  - `pr.groups[key].dropped` を読んで「この residual currency の group はすでに drop 済みか」を
+    判定できること（D6 の生存/drop 分岐）。
+- **Step 5 が依存するもの**:
+  - `pr.groups` の各 `key` について `bucket.dropped` を読み、drop 済み key の集合を得られること。
+  - その各 key について `trace.rollbackGroup(key)` を呼べば、Pass 1（および Step 4 の Pass 2）で
+    その group が行った inventory mutation が `st.state` から巻き戻ること。multi-key posting も
+    含め、drop 対象の各 key が独立に rollback 可能（緊張1 の Contract 不変条件）。
+  - `bucket.postingsIdx` / `bucket.bookedIdx` で生存 group の posting/booked を partition できる
+    こと（Step 2 で確定済み、Step 3 は触らない）。
+
+##### 新規ファイルなし
+
+`markForDrop` メソッド、Pass 1 の配線変更、`commitGroupMulti`、新規 helper
+（`distinctStepCurrencies` 等）はすべて `reducer.go` 内。Gazelle 再生成不要。
+
+#### Suggested Internals
+
+以下は generator が実装中の発見に応じて採用・改変・置換してよい助言。
+
+##### 緊張1 の配分: multi-key posting の snapshot を各 key に行き渡らせる（案 I-a 推奨）
+
+`commitGroup` の first-touch-wins は「**異なる** posting が同 key を共有するとき」の正しさの
+ためのものであって、「1 posting が複数 key を持つとき」には逆に働く（同一 `pending` を 2 回
+commit しても 2 個目の key には入らない）。推奨実装:
+
+`stateTrace` に `commitGroupMulti(tok groupToken, keys []string)` を 1 つ足す。最初の key には
+`pending` をそのまま file（`commitGroup` と同様、ownership 移譲可）、2 個目以降の key には
+各 `pending` snapshot の **clone** を first-touch-wins で file する。これは Step 1 の既存
+メソッドを変えず追加するだけなので「Step 1 単体テストを壊さない」要件を満たす。`keys` が
+単一要素なら `commitGroup` と同じ振る舞いになるよう実装してよい（Pass 1 から常に
+`commitGroupMulti` を呼ぶ簡素化も可 — generator 判断）。
+
+却下案: `commitGroup` を可変長 `keys ...string` に変更（コミット済み API の破壊的変更）。
+multi-key posting を child ごとに別 scope（`bookOne` が atomic に 1 回実行されるため不可能）。
+合成キー（D3 の plain-currency key モデルと Step 4/5 を壊す）。
+
+実務的注記: multi-currency multi-lot reduction は空 `{}` cost spec の reduction が異なる cost
+currency の lot を total-match で消費するケースに限られ稀。generator は `reducer_test.go` に
+「`-20 AAPL {}` が `AAPL{USD}` と `AAPL{EUR}` を消費し、片方を rollback できる」白box テストを
+1 本足して配分の正しさを pin すること。
+
+##### 緊張2 の解消: 失敗 posting の rollback と weight currency
+
+- **weight currency 決定**: 失敗 posting は `weightCurrencyFallback(p)` をそのまま使う（Step 2 で
+  `addPreserved` に渡しているのと同一文字列）。`commitGroup(tok, key)` の `key` も **必ず同じ
+  文字列**。`key` を 1 回計算して `addPreserved` と `commitGroup` の両方に渡す（変数に束ねる）。
+- **失敗時の partial mutation rollback**: 現状コード調査の結論 — `bookAugment` の `ResolveCost`
+  失敗 / `inv.Add` 失敗、`bookReduce` の通常エラー（`CodeNoMatchingLot` 等）はすべて mutation
+  **前**に返る。`fillRealizedGain` のエラーと `Reduce` consumption ループ内 arithmetic error
+  （`CodeInternalError` 系）のみ partial mutation を残しうる。**Step 3 は失敗時専用の即時
+  rollback 経路を実装しない** — 失敗 posting も成功 posting と同じく `commitGroup` するだけ。
+  `commitGroup` で snapshot を file しておけば mutation の有無にかかわらず Step 5 の
+  `rollbackGroup` が正しく動く（mutation ゼロなら snapshot == 現 state で実質 no-op）。
+
+##### 緊張3 の解消: enterGroup/commitGroup のライフサイクル配線（具体案）
+
+Pass 1 ループ本体の推奨構造（擬似コード、generator は再構成可）:
+
+```go
+for i := range txn.Postings {
+    p := &txn.Postings[i]
+    if p.Amount == nil {
+        pr.addUnknown(p)
+        continue            // scope に入らない
+    }
+    tok := trace.enterGroup()
+    inv := trace.prepareForEdit(p.Account)
+    method := r.booking[p.Account]
+    lot, steps, errs := bookOne(inv, p, method, txn.Date)
+
+    if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
+        pr.addUnknown(p)
+        trace.commitGroup(tok, weightCurrencyFallback(p)) // scope を閉じるだけ、drop しない
+        continue
+    }
+    if len(errs) > 0 {
+        r.errs = append(r.errs, errs...)
+        key := weightCurrencyFallback(p)
+        pr.addPreserved(p, key)            // bucket.dropped = true
+        trace.commitGroup(tok, key)        // 同じ key で file
+        continue
+    }
+    switch {
+    case p.Cost != nil && p.Cost.IsBooked():
+        key := weightCurrencyFallback(p)
+        if len(steps) > 1 {
+            r.errs = append(r.errs, Error{... CodeInternalError ...})
+            pr.addPreserved(p, key)
+            trace.commitGroup(tok, key)
+            continue
+        }
+        pr.addAlreadyBooked(p, lot, firstStepOrNil(steps), key)
+        trace.commitGroup(tok, key)
+    case lot != nil:
+        pr.addLotAugmentation(p, lot, lot.Currency)
+        trace.commitGroup(tok, lot.Currency)
+    case len(steps) == 0:
+        key := cashGroupKey(p)
+        pr.addCashAugmentation(p, key)
+        trace.commitGroup(tok, key)
+    case len(steps) == 1:
+        key := reductionGroupKey(p, steps[0])
+        pr.addSingleLotReduction(p, steps[0], key)
+        trace.commitGroup(tok, key)
+    default: // multi-lot reduction
+        pr.addMultiLotReduction(p, steps)
+        trace.commitGroupMulti(tok, distinctStepCurrencies(steps))
+    }
+}
+```
+
+- 各経路で `commitGroup`/`commitGroupMulti` が **必ず 1 回**呼ばれる（panic 回避: Step 1 は
+  二重 commit / commit-without-enter を panic 可とする）。
+- `key` を変数に束ねて `add*` と `commitGroup` で **同一文字列**を使うのが緊張2 の要。
+- 小 helper `distinctStepCurrencies(steps []ReductionStep) []string`（`reducer.go` に追加、
+  入力順保持で重複排除）を足すと multi-lot 経路が読みやすい。
+
+##### helper の再利用
+
+- `weightCurrencyFallback` / `cashGroupKey` / `reductionGroupKey`（Step 2 で導入済み）を
+  そのまま再利用。**計画 Step 3 が挙げた新規 helper `groupCurrencyFor(p, succeeded)` は新設
+  しない** — Step 2 の経路別 key helper と二重実装になる。
+- `PostingWeight` は `weightCurrencyFallback` 経由で間接利用。Pass 1 から直接呼ばない。
+
+#### Alternatives discussed
+
+- **緊張1（1 posting・複数 group の commit）**: A1（posting は 1 scope で開始、multi-key 時は
+  `commitGroupMulti` で per-key clone-file）を採用。A2（`commitGroup` を可変長引数に変更）は
+  却下 — コミット済み API の破壊的変更で利得なし。A3（multi-currency reduction を Pass 1 で
+  検出し currency 部分を別 posting 群に完全分離）は却下 — `bookOne`/`Inventory.Reduce` の
+  atomic 実行モデルと両立せず `bookOne` 内部改修は Scope 外。A4（multi-key posting を合成
+  キーの「代表 group」として posting 単位 drop 判定）は却下 — Step 4 の `residual.Currency`
+  lookup と Step 5 の partition を壊し D3 と非整合。
+- **`markForDrop` の配置**: B1（`postingResolution` に配置）を採用。B2（`stateTrace` に
+  drop フラグ）は却下 — `stateTrace` が posting/booked slice を知らず drop 除外責務を果たせ
+  ない。B3（両方に持たせる）は却下 — 状態の二重管理。
+- **失敗時 rollback のタイミング**: C1（失敗 posting も成功 posting と同じく `commitGroup`
+  のみ、実 rollback は Step 5 が key 単位で）を採用。C2（失敗判明直後に即時 rollback）は
+  却下 — Step 1 は token 直接 rollback を提供せず、同一 group に成功+失敗 posting が混在する
+  場合 group atomic な巻き戻しは「全 posting 処理後に key 単位で 1 回」が正しい意味論。
+
+#### Recommendation
+
+採用: **A1（posting は 1 scope で開始、multi-currency multi-lot reduction のみ
+`commitGroupMulti` で per-key clone-file）＋ B1（`markForDrop` は `postingResolution`）＋
+C1（失敗 posting も `commitGroup` のみ、実 rollback は Step 5 に集約）。**
+
+- **A1**: 緊張1 の本質は「`bookOne` は atomic に複数 group を mutate しうるが、group identity
+  （drop 単位・rollback 単位）は currency ごと」という非対称性。A1 は `stateTrace` に
+  **追加のみ**（既存メソッド不変、Step 1 単体テスト無改変）で、Step 4 の plain-currency lookup
+  と Step 5 の per-key rollback の両方を壊さない唯一の案。
+- **B1**: drop は posting/booked slice の最終形に関する決定であり、その slice を所有する
+  `postingResolution` が持つのが自然。`stateTrace` は inventory checkpoint 専任のまま。
+- **C1**: Step 1 Contract が意図的に「rollback は key 単位、token 直接 rollback は無し」と
+  設計しており、失敗時即時 rollback はこのモデルに逆らう。group atomic な巻き戻しは「全
+  posting 処理後に key 単位で 1 回」が正しい意味論。
+
+**計画 Step 3 との差分（明示）**:
+1. 新規 helper `groupCurrencyFor(p, succeeded bool)` は **新設しない**（Step 2 の経路別 key
+   helper と二重実装になる）。代わりに `distinctStepCurrencies(steps)` を multi-lot 経路用に足す。
+2. 計画 Step 3 の検証テスト（`TestReducerWalk_FailedReductionDropsGroup` 等）は drop 適用後
+   （Step 5）でないと green にならない。Step 3 の検証は下記に置き換える。
+3. `stateTrace` に `commitGroupMulti` を追加（Step 1 Contract の拡張ではなく補完、既存
+   メソッドは不変）。
+
+**Step 3 完了時点の検証方法（計画の検証セクションを置き換え）**:
+- 既存 `bazel test //pkg/inventory/...` 全件がテスト無改変で green（behavior-preserving の回帰検知）。
+- 新規白box テスト（`reducer_test.go`）: 失敗 reduction を含む 2-currency-group txn を
+  `visitTxn` に通し、`pr.groups[failedKey].dropped == true` かつ
+  `pr.groups[survivingKey].dropped == false` を assert。`txn.Postings` と `booked` は drop 未適用
+  なので従来どおりであることも併せて assert。
+- 新規白box テスト: multi-currency multi-lot reduction（`-20 AAPL {}` が `AAPL{USD}` と
+  `AAPL{EUR}` を消費）を通し、`trace.rollbackGroup("USD")` で USD lot のみが巻き戻り EUR が
+  残ること（緊張1 の配分の正しさを pin）。
+- `state_trace_test.go` に `commitGroupMulti` の単体テスト（複数 key に同 snapshot が file され、
+  各 key を独立に rollback できる）。
+
 ### Step 4: Pass 2 — unknown を group へ join、失敗 group との接続
 
 - **機能要件**:
