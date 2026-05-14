@@ -360,11 +360,27 @@ func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *Re
 func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, group string)
 func (pr *postingResolution) addCashAugmentation(p *ast.Posting, group string)
 func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep, group string)
-func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep, group string)
+func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep)  // group 引数なし — child ごとに step.Lot.Currency へ振り分け
 ```
 
 `addUnknown` は `group` 引数を **取らない**。`addUnknown` が呼ばれる時点（Pass 1）で
 unknown の weight currency は未確定（D3: Pass 2 が `residual.Currency` で決定）。
+
+`addMultiLotReduction` も `group` 引数を **取らない**（Step 2 レビューで判明した訂正）。
+multi-lot reduction は **異なる cost currency の lot にまたがりうる**: 空 `{}` cost spec の
+reduction は `IsEmpty()` な matcher を生み、`Inventory.Reduce` は commodity のみで candidate を
+フィルタするため、例えば `-20 AAPL {}` は `AAPL{USD}` と `AAPL{EUR}` の両方を total match で
+消費し、cost currency の異なる multi-step 結果を返しうる。各 child は `child.Cost =
+step.Lot.Clone()` を持つので weight currency は `step.Lot.Currency`（child ごとに異なりうる）。
+したがって `addMultiLotReduction` は child ごとに `step.Lot.Currency` をキーに bucket へ
+振り分ける（`Inventory.Reduce` は multi-step 結果に cash sentinel を含めないので
+`step.Lot.Currency` は常に非空）。
+
+**Step 3 への申し送り（cross-step note）**: 1 つの posting の `bookOne` が複数 currency group
+にまたがって inventory を mutate しうる（上記 multi-currency multi-lot reduction）。Step 3 の
+Phase 4 detailed design は、`enterGroup`/`commitGroup`（Step 1 の Contract は「1 scope を
+単一 key で commit」）を、こうした「1 posting・複数 group」のケースでどう使うか決めること。
+Step 1 の `stateTrace` API 自体の変更が必要かもここで判断する。
 
 ##### `addPreserved` の新責務（ロック対象、observable）
 
@@ -503,10 +519,11 @@ func (pr *postingResolution) bucketFor(group string) *currencyGroupBucket {
 ##### Multi-lot expansion の child 登録（緊張C）
 
 `addMultiLotReduction` は N 個の child を `pr.postings` に、N 個のエントリを `pr.booked` に
-append する。全て **同じ** group（親の weight currency）に属する。既存の
+append する。各 child は **その step の cost currency** の group に属する（child ごとに
+異なりうる — 上記 Contract の `addMultiLotReduction` 注記参照）。既存の
 `for _, step := range steps` ループ内で、各 child append 後にその `pr.postings` index を
-`bucketFor(group).postingsIdx` に、`pr.booked` index を `bookedIdx` に push する。特別扱い
-不要。`bookedAt` が既に 1 親 posting に対し N offset を記録するのと同じ。
+`bucketFor(step.Lot.Currency).postingsIdx` に、`pr.booked` index を同 bucket の `bookedIdx` に
+push する。`bookedAt` は従来どおり 1 親 posting に対し N offset を記録する（変更なし）。
 
 ##### Pass 1 の provisional group-key 計算（案 K1 推奨）
 
