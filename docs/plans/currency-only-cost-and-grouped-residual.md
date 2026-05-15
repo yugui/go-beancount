@@ -132,6 +132,156 @@ callers stop discriminating with type assertions.
   remain legitimate where the caller needs to *write* CostSpec
   fields, e.g. reducer mutators.)
 
+### Detailed Design
+
+#### Contract
+
+**Package: `pkg/ast`**
+
+`CostSpec` struct, exact field order (godoc-readability: span first, then the three "what" fields, then the two optional "which lot" fields):
+
+```go
+type CostSpec struct {
+    Span     Span
+    PerUnit  *apd.Decimal
+    Total    *apd.Decimal
+    Currency string
+    Date     *time.Time
+    Label    string
+}
+```
+
+- `PerUnit` and `Total` are **numbers only**; they share the single `Currency` field.
+- `Currency == ""` means "currency unspecified". A non-empty `Currency` is valid even when both `PerUnit` and `Total` are nil (this is the `{ CUR }` form Step 2 will introduce; this step's lowerer never produces it, but the type must accept it).
+- Either or both number pointers may be nil. The four shapes that existed before (per-unit only / total only / combined / empty) plus the new currency-only shape are all representable.
+
+`CostHolder` interface (existing) keeps `GetCurrency() string` with this locked contract:
+
+```
+// GetCurrency returns the cost currency, or "" if unspecified.
+// MUST NOT allocate; MUST NOT synthesize an Amount; MUST NOT
+// consult PerUnit / Total. For *CostSpec it returns the Currency
+// field verbatim. For *Cost it returns the Currency field verbatim.
+```
+
+`(*CostSpec).GetPerUnit() *Amount` synthesis contract:
+
+- Returns `nil` when `c.PerUnit == nil`.
+- Returns `nil` when `c.Currency == ""` (even if `c.PerUnit != nil`). A partially-constructed spec with a number but no currency is treated as "no per-unit Amount available"; callers needing the raw number can field-access `c.PerUnit` directly.
+- When both are set, returns a **freshly allocated** `*Amount{Number: *CloneDecimal(c.PerUnit), Currency: c.Currency}`. No caching; each call allocates. The decimal is cloned so callers may mutate without disturbing the spec.
+
+`(*CostSpec).GetTotal() *Amount` is symmetric.
+
+`(*Cost).GetPerUnit` / `GetTotal` / `GetCurrency` semantics are unchanged — they continue to read the `*Amount` retention fields and the `Currency` field directly on the booked struct.
+
+`(*CostSpec).Clone() *CostSpec` deep-copies independently:
+- nil-safe (nil receiver returns nil).
+- `PerUnit` and `Total` cloned via `CloneDecimal` (each may be nil).
+- `Currency` is a string (value copy).
+- `Date` cloned via fresh `*time.Time` allocation when non-nil.
+- `Span`, `Label` copied by value.
+- Result must not alias the receiver in any decimal coefficient buffer.
+
+**Package: `pkg/inventory`**
+
+`costNumberMissing` semantics: **unchanged**. Confirmed by reading `pkg/inventory/booking.go:32`: it already routes `c.GetPerUnit() == nil && c.GetTotal() == nil`, and post-refactor those return nil whenever the number pointer is nil OR the currency is empty. The desired predicate is "the spec carries no concrete per-unit or total *number*". Two cases need attention:
+
+1. A currency-only spec (`PerUnit == nil && Total == nil && Currency == "JPY"`) → both accessors return nil → predicate returns true. Correct: this is exactly the "deferred, currency known" case Step 3 will route through the per-currency residual logic.
+2. A `PerUnit != nil && Currency == ""` spec (only constructible by direct AST authorship, never by the lowerer) → `GetPerUnit()` returns nil under the synthesis rule → predicate returns true. This is acceptable: `costNumberMissing`'s caller treats true as "needs interpolation", which will then run interpolation against this number-having posting and produce a downstream error when the currency cannot be matched. The Contract does not regress for the in-tree call paths.
+
+The Contract therefore locks: `costNumberMissing(c) == c.GetPerUnit() == nil && c.GetTotal() == nil && !c.IsBooked()` after the refactor, and the existing implementation (booking.go lines 44-52) stands without edit.
+
+**Cross-step coupling**
+
+- Step 2 (parser) will produce `CostSpec{Currency: "JPY"}` (no number pointers) for `{ JPY }`. The Contract above guarantees `GetCurrency()` returns `"JPY"` and both `GetPerUnit()` / `GetTotal()` return nil for this value, which is exactly what Step 3 needs from `unknownCandidateCurrency`.
+- Step 3's `unknownCandidateCurrency` will read `p.Cost.GetCurrency()`. The "no allocation" guarantee on `GetCurrency` matters: it is called once per posting in a hot path during reducer Pass 2.
+- The existing `(*Posting).TotalCost` (`pkg/ast/cost.go:34`) is unchanged in signature. It already consumes via the accessors, so it adapts transparently. The "combined cost currencies differ" defensive branch (line 43) becomes structurally unreachable through the accessors (a single `Currency` field cannot disagree with itself), but the check stays as a guard against direct field manipulation in tests.
+
+**Allocation guarantees recap (locked):**
+
+| Method                              | Allocates? |
+|-------------------------------------|------------|
+| `(*CostSpec).GetCurrency()`         | No         |
+| `(*Cost).GetCurrency()`             | No         |
+| `(*CostSpec).GetPerUnit()`          | Yes (Amount + Decimal clone) when non-nil result |
+| `(*CostSpec).GetTotal()`            | Yes (Amount + Decimal clone) when non-nil result |
+| `(*Cost).GetPerUnit() / GetTotal()` | No (returns retained pointer) |
+
+This **breaks pointer-identity tests** like `pkg/ast/cost_holder_test.go:85-89`: `if got := h.GetPerUnit(); got != tc.spec.PerUnit`. The Contract requires those tests to be rewritten to compare values, not pointers, for `*CostSpec`. They keep the pointer-identity check for the `*Cost` branch.
+
+**Public API surface that is removed:**
+
+- `CostSpec.PerUnit` field of type `*Amount` (becomes `*apd.Decimal`).
+- `CostSpec.Total` field of type `*Amount` (becomes `*apd.Decimal`).
+
+**Public API surface that is added:**
+
+- `CostSpec.Currency` field of type `string`.
+
+No other exported names change. `CostHolder.GetCurrency` already exists; only its allocation contract is being locked here.
+
+#### Suggested Internals
+
+These are advisory. The implementer may reorganize freely as long as the Contract above holds and the test suite passes.
+
+**Migration order for read sites that today access `cost.PerUnit.Number` / `cost.PerUnit.Currency` / `cost.Total.Number` / `cost.Total.Currency`:**
+
+1. **`pkg/ast/lower.go::lowerCostSpec`** — must change first; this is the only constructor of `CostSpec` from CST. Replace the current branch structure with one that resolves `Currency` once and assigns `PerUnit` / `Total` as bare `*apd.Decimal` from the lowered amounts.
+
+2. **`pkg/ast/cost.go`** — update `(*CostSpec).GetCurrency` to return `c.Currency` directly (drop the derive-from-PerUnit-or-Total switch). Add the synthesis logic to `GetPerUnit` and `GetTotal`. The `(*Posting).TotalCost` body needs no edit because it already uses the accessors.
+
+3. **`pkg/ast/clone.go::(*CostSpec).Clone`** — switch from `c.PerUnit.Clone()` (Amount-method) to `CloneDecimal(c.PerUnit)` for both number pointers; copy `Currency` by struct assignment.
+
+4. **`pkg/inventory/cost.go::ResolveCost`** — replaces `spec.PerUnit.Number` with `*spec.PerUnit`, `spec.PerUnit.Currency` with `spec.Currency`, etc. The currency-mismatch defensive check (`spec.PerUnit.Currency != spec.Total.Currency`, line 111) is **deleted**; structurally impossible after the refactor. Remove the dead `CodeInternalError` arm.
+
+5. **`pkg/inventory/matcher.go::NewCostMatcher`** — same mechanical rewrite. The two switch arms (`spec.PerUnit != nil && spec.Total == nil` and `spec.Total != nil`) become field-direct reads.
+
+6. **`pkg/inventory/booking.go::classify`** — the `perUnit, total *ast.Amount` locals (lines 147-159) are doing the work `GetCurrency` was designed to do. Replace with `hintCcy := p.Cost.GetCurrency()` etc. Also fix the doc comment on line 106 (`p.Cost.PerUnit.Currency or p.Cost.Total.Currency`) to read `p.Cost.GetCurrency()`.
+
+7. **`pkg/compat/beancompat/serialize.go::costSpecPayload`** (lines 917-945) — drop the dual-source switch (lines 931-936); rewrite as direct field reads. Leave the existing TODO(beancompat) comment.
+
+8. **`pkg/inventory/reducer.go`** at line 1077 — the `if spec, ok := p.Cost.(*ast.CostSpec); ok && spec != nil` block reads `spec.Date` and `spec.Label`, both unchanged. No edit needed.
+
+9. **`pkg/ext/postproc/std/implicitprices/plugin.go::costPerUnit`** — already uses `c.GetPerUnit()` / `c.GetTotal()` accessors and reads `.Number` and `.Currency` off the *returned synthesized Amounts*. After the refactor those Amounts are freshly allocated; the code paths still work, but they each do an extra Decimal clone per call. **Recommendation: leave as-is**; the per-posting allocation is negligible.
+
+10. **Test files** that read fields (`pkg/ast/cost_test.go` family, `pkg/ast/clone_test.go`, `pkg/ast/total_cost_test.go`, `pkg/ast/lower_integration_test.go`, `pkg/loader/booking/plugin_test.go:178`) — mechanical: `cs.PerUnit.Number.String()` becomes `cs.PerUnit.String()`; `cs.PerUnit.Currency` becomes `cs.Currency`. Tests like `cost_holder_test.go:85` that assert pointer identity on `GetPerUnit` against `tc.spec.PerUnit` must change to value comparison.
+
+**Test-fixture migration strategy for `*CostSpec{...}` literals:**
+
+Roughly fifteen test files construct `&ast.CostSpec{PerUnit: amt(...)}` style literals. **Recommended strategy: per-file mechanical rewrite.** Replace `PerUnit: &ast.Amount{Number: dec(...), Currency: "USD"}` with `PerUnit: decPtr(...), Currency: "USD"`. Implementers may opt for a `costSpecPerUnit(...)` helper if they find themselves repeating the literal more than ~5 times in one file (only `pkg/inventory/reducer_test.go` qualifies; it has ~40 such literals).
+
+**Should `(*CostSpec).GetPerUnit` return nil when `Currency == ""` even if `PerUnit != nil`?**
+
+The Contract says yes (return nil). Rationale: a bare `*Amount` with `Currency == ""` is not a valid amount — `lowerAmount` enforces non-empty currency at line 642. Returning a synthesized `*Amount{Currency: ""}` from the accessor would be the only place in the codebase that produces a currency-less Amount, contradicting the package's invariant.
+
+**Suggested ordering for the commit (single PR, single commit per Step 1):**
+
+1. Rewrite `directives.go` (struct shape).
+2. Rewrite `cost.go` (accessor synthesis + `GetCurrency` simplification).
+3. Rewrite `clone.go::(*CostSpec).Clone`.
+4. Rewrite `lower.go::lowerCostSpec`.
+5. Update `pkg/ast/*_test.go` so `pkg/ast` builds and tests pass in isolation.
+6. Update each downstream package in topological order: `pkg/inventory/cost.go`, `matcher.go`, `booking.go`, `reducer.go` (only the dead doc comment), then `pkg/compat/beancompat/serialize.go`, then test fixtures across `pkg/inventory/`, `pkg/validation/`, `pkg/printer/`, `pkg/distribute/`, `pkg/ext/postproc/std/`, `pkg/loader/`.
+7. `bazel run //:gazelle` then `bazel build //...` then `bazel test //...`.
+
+#### Alternatives
+
+**A1. Keep `*Amount` fields and add a parallel `Currency` field.** Rejected: two-source-of-truth problem; every read site has to remember which one is canonical; round-trip between forms requires invariant maintenance the type system cannot enforce. User's stated preference rules this out.
+
+**A2. Make `Amount.Number` a `*apd.Decimal` instead of changing CostSpec.** Rejected: massive blast radius across every Amount user; gain is needed only in cost specs.
+
+**A3. Drop the `Currency` field; derive it from `PerUnit`/`Total` only.** Rejected: cannot represent `{ JPY }` — both `PerUnit` and `Total` are nil so there is nowhere for the currency to live. Fatal for Step 2.
+
+**A4. Pointer-identity contract on `GetPerUnit` synthesis (cache the synthesized Amount).** Rejected: adds mutable per-spec state; cache invalidation if `PerUnit`/`Currency` ever mutate; concurrency surprises. Allocation cost is negligible (cold path).
+
+**A5. Return-non-nil-when-Currency-empty for `GetPerUnit` synthesis.** Rejected: would produce a `*Amount{Currency: ""}`, violating the codebase's "Amount has both Number and Currency" invariant.
+
+#### Recommendation + rationale
+
+Adopt the Contract as stated. A1's smaller blast radius is illusory — every read site already routes through accessors today, so the "fewer call-site edits" claim only applies to the half-dozen places (matcher, cost, booking, beancompat) that field-access directly. Those sites need rewriting anyway to support `{ JPY }`. A4's allocation optimization solves a non-problem; the simplicity of "no caching, no aliasing" outweighs the micro-optimization. A5 would break a codebase-wide invariant.
+
+**One concrete pain point flagged for the implementer's awareness, not blocking:** The combined `{X # Y CUR}` form's lowerer today has a special-case where `lowerAmountOptionalCurrency` permits the per-unit side to omit its currency and inherit from the total side (`lower.go:1107-1116`). With the refactored layout, currency is a single field, so that inheritance becomes trivial. The existing parser also (incorrectly — see Step 2) lets the per-unit side carry its own currency, in which case the lowerer detects mismatch with the total currency. **For Step 1, preserve this lowerer-side check**: until Step 2 fixes the parser, the lowerer must still cope with per-unit-bearing-currency CST input — accept matching currencies, error on mismatch — to keep the existing parser tests passing during this behavior-neutral refactor. Step 2 makes the per-unit-with-currency case unreachable; the lowerer's mismatch check then becomes dead defensive code (which the implementer of Step 2 may either remove or leave as a guard).
+
 ### Step 2 — Parser, lower, and printer support for `{ CUR }`
 
 #### Functional requirements
@@ -140,6 +290,16 @@ callers stop discriminating with type assertions.
   leading `CURRENCY` token, consuming it as the cost currency. The
   same logic applies inside `{{ ... }}` (total braces) — currency-only
   is a property of the contents, not of the brace flavor.
+- **Reject per-unit currency in the combined form.** Today's parser
+  uses `parseAmountOptionalCurrency` for the per-unit side of
+  `{X # Y CUR}`, which silently accepts `{2.50 USD # 9.95 USD}` and
+  `{2.50 USD # 9.95 EUR}`. Both are syntax errors per upstream
+  beancount: the per-unit side is a bare expression, never a full
+  amount. The parser must emit a diagnostic when a CURRENCY token
+  follows the per-unit number before `#`. The existing positive test
+  `TestParsePostingWithCombinedCostExplicitPerUnitCurrency`
+  (`pkg/syntax/parser_test.go:1240`) is wrong and must be deleted /
+  inverted to a negative test.
 - `parseCostElement` (trailing comma-separated) is unchanged:
   currency-only is only valid as the first / sole element.
 - A currency-only spec may be combined with a date and/or label
@@ -148,19 +308,24 @@ callers stop discriminating with type assertions.
 - `lowerCostSpec` (`pkg/ast/lower.go`) populates `CostSpec.Currency`
   from the `CURRENCY` token when no `Amount` node is present. When
   an `Amount` node is present, `Currency` is set from the amount's
-  currency (or, in the combined `{X # Y CUR}` form, from the total
-  side's currency).
+  currency. With the parser fix above, the per-unit side of the
+  combined form is guaranteed currency-less, so the Step 1 mismatch
+  check becomes structurally unreachable — Step 2 may remove it or
+  leave it as a defensive `unreachable` guard.
 - The printer round-trips currency-only specs as `{CUR}` (or
   `{{CUR}}` when only `Total` was set) without injecting a numeric
   zero.
 
 #### Modules
 
-- `pkg/syntax/parser.go` — `parseCostContents` switch.
+- `pkg/syntax/parser.go` — `parseCostContents` switch (CURRENCY-leading
+  case + per-unit currency rejection in combined form).
 - `pkg/syntax/parser_test.go` — new tests for `{ JPY }`, `{{ USD }}`,
-  `{ JPY, 2024-01-01 }`, `{ JPY, 2024-01-01, "lot" }`.
+  `{ JPY, 2024-01-01 }`, `{ JPY, 2024-01-01, "lot" }`; invert
+  `TestParsePostingWithCombinedCostExplicitPerUnitCurrency`; ensure
+  `{X CUR # Y CUR}` and `{X CUR # Y OTHER}` both error.
 - `pkg/ast/lower.go` — currency-only path; consolidated `Currency`
-  population.
+  population; mismatch arm cleanup.
 - `pkg/ast/lower_test.go` — assert resulting `CostSpec` field shape.
 - `pkg/printer/...` — currency-only emission.
 - `pkg/printer/..._test.go` — round-trip cases.
@@ -168,7 +333,10 @@ callers stop discriminating with type assertions.
 #### Verification
 
 - New parser tests assert no errors and the expected `CostSpec`
-  shape.
+  shape for `{ CUR }` family.
+- Inverted test asserts that `{X CUR # Y CUR}` produces a syntax
+  error containing a recognizable substring (e.g. "currency",
+  "combined").
 - Round-trip test: a source containing `{ JPY }` parses, lowers,
   prints, re-parses identically (same `CostSpec` shape).
 - The reducer still rejects the user's full example at this step
@@ -180,6 +348,9 @@ callers stop discriminating with type assertions.
 - Parser error wording for malformed currency-only specs (e.g.
   `{ JPY, JPY }` — currency in trailing position) keeps the existing
   "expected amount, date, or label" message.
+- Parser error wording for per-unit-with-currency in combined form
+  states the rule plainly (e.g. "per-unit amount in combined cost
+  form must not carry a currency").
 - The new test cases cover `{ CUR }`, `{{ CUR }}`, and the
   currency-with-date / currency-with-label combinations explicitly,
   not relying on a single golden file.
