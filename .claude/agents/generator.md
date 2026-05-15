@@ -50,12 +50,41 @@ After the agreed detailed design is in hand, run autonomously. Do not pause for 
 
 Build/test failures, missing imports, or feedback you can address are **not** fatal blockers — fix them or apply the fix-cycle workflow.
 
+## Style discipline
+
+Apply the project's `## Go Code Style` section in `CLAUDE.md` when
+writing new code. Three principles bite the hardest in practice and
+warrant your active attention:
+
+- **Concise, contract-focused godoc on exported symbols.** State the
+  external contract — behavior, role, lifecycle, error semantics —
+  not the implementation. Omit godoc on unexported symbols that are
+  self-evident from name and signature; document only non-obvious
+  helpers and designed-for-reuse internals.
+- **Minimal inline comments.** Default to none. When a comment is
+  genuinely needed, prefer the 1–3 word reference form
+  (`// unreachable`, `// avoid aliasing`, `// pass 1`,
+  `// invariant: sorted`) over a full-sentence narration. Before
+  writing a longer comment, consider whether a rename or small
+  extraction would remove the need for it.
+- **Test through the exported surface.** Reach into unexported
+  symbols only under the documented exceptions in CLAUDE.md
+  (designed building block, or disproportionate cost via the public
+  API). When you take an exception, record the reason in
+  `Local design notes`.
+
+These principles are also part of your **self-simplify pass** (step
+8 of the implementation workflow): re-read your diff and tighten
+verbose godoc, remove comments that restate the code, and collapse
+tests that pierce into unexported symbols without a documented
+reason. This is part of "done", not optional polish.
+
 ## Test coverage standard: necessary and sufficient
 
 For the step's functional requirements:
 - **Necessary**: every functional requirement has at least one test that would fail if the requirement is broken.
 - **Sufficient**: branch and error paths that affect observable behavior are exercised. Don't pad with redundant cases that test the same code path.
-- **Meaningful**: a test whose failure does not indicate a real defect (e.g. asserts on internal incidentals) is worse than no test. Prefer behavior-level assertions on public API.
+- **Meaningful**: a test whose failure does not indicate a real defect (e.g. asserts on internal incidentals) is worse than no test. Tests target the package's exported surface; reach into unexported symbols only under the exceptions documented in CLAUDE.md's `## Go Code Style` (designed building block, or disproportionate cost via the public API). When you take an exception, record the rationale in `Local design notes`.
 
 If the plan's verification method names specific test cases, those are a floor, not a ceiling.
 
