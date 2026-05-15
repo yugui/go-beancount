@@ -775,6 +775,24 @@ func TestInventoryEqual(t *testing.T) {
 	if a.Equal(c) {
 		t.Error("cash vs. non-cash positions should not be equal")
 	}
+
+	// A nil inventory is treated as empty.
+	var nilInv *Inventory
+	if !nilInv.Equal(NewInventory()) {
+		t.Error("nil inventory should equal an empty inventory")
+	}
+	if !NewInventory().Equal(nilInv) {
+		t.Error("empty inventory should equal a nil inventory")
+	}
+	if !nilInv.Equal(nil) {
+		t.Error("two nil inventories should be equal")
+	}
+	if nilInv.Equal(a) {
+		t.Error("nil inventory should not equal a non-empty inventory")
+	}
+	if a.Equal(nilInv) {
+		t.Error("non-empty inventory should not equal a nil inventory")
+	}
 }
 
 func TestInventoryAllIterator(t *testing.T) {

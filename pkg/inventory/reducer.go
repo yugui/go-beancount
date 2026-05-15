@@ -173,6 +173,15 @@ func needsBookingClone(txn *ast.Transaction) bool {
 	return false
 }
 
+// groupRef pairs a posting's index in [postingResolution.postings] with
+// the weight-currency key of its booking group. For auto-postings and
+// deferred augments, currency is "" until Pass 2 resolves the residual
+// and fills it in.
+type groupRef struct {
+	currency  string // weight currency
+	postingAt int    // index into postingResolution.postings
+}
+
 // postingResolution accumulates the per-transaction outcome of routing
 // each ast.Posting through bookOne into the rebuilt txn.Postings list
 // and the parallel []BookedPosting visitTxn returns. It is the single
@@ -191,28 +200,44 @@ func needsBookingClone(txn *ast.Transaction) bool {
 //
 // Concern (1) is why pointers cannot be assigned eagerly: a later
 // append in the same loop may reallocate the postings backing array
-// and invalidate any &postings[k] taken earlier. The bookedAt /
-// unknownAt offsets defer pointer binding until [finalize], which runs
-// after all appends are done.
+// and invalidate any &postings[k] taken earlier. bookedDesc / unknownDesc
+// carry posting offsets into postings and defer pointer binding until
+// [bindAndCollect], which runs after all appends are done.
+//
+// dropped records weight-currency keys whose currency group failed
+// bookOne. It is nil for error-free transactions. The drop-application
+// pass that rebuilds txn.Postings to exclude failed groups reads this map.
 //
 // The zero value is usable; [newPostingResolution] pre-sizes the
 // slices for the common no-expansion case.
 type postingResolution struct {
 	// postings is the rebuilt list of postings for this transaction.
-	// visitTxn assigns txn.Postings = postings before calling finalize
-	// so BookedPosting.Source pointers alias the caller-visible slice.
+	// bindAndCollect binds Source pointers to addresses within this
+	// backing array. txn.Postings = pr.postings is assigned after
+	// applyDrops, which may rebuild the slice to exclude failed groups.
 	postings []ast.Posting
 
-	// booked is parallel to bookedAt: each entry's Source field is
-	// filled by finalize from postings[bookedAt[i]]. Until then the
-	// field is left zero.
-	booked   []BookedPosting
-	bookedAt []int
+	// booked holds the BookedPosting records whose Source fields are
+	// filled by bindAndCollect once all appends are done.
+	booked []BookedPosting
 
-	// unknownAt holds offsets into postings for the auto-posting and
-	// any deferred-augment posting that the residual pass will
-	// resolve.
-	unknownAt []int
+	// bookedDesc is parallel to booked: bookedDesc[j].postingAt is the
+	// index into postings whose address becomes booked[j].Source, and
+	// bookedDesc[j].currency is the weight-currency group key for that
+	// entry.
+	bookedDesc []groupRef
+
+	// unknownDesc is parallel to the unknown postings (auto-posting and
+	// deferred-augment). currency is "" in Pass 1 and filled in by Pass 2
+	// once the residual currency is determined. postingAt indexes into
+	// postings.
+	unknownDesc []groupRef
+
+	// dropped is the set of weight-currency keys whose bookOne call
+	// failed. nil until the first failure. The drop-application pass
+	// reads this to rebuild txn.Postings without failed groups and to
+	// apply inverse bookings to roll back each dropped currency.
+	dropped map[string]bool
 }
 
 // newPostingResolution returns a postingResolution whose internal
@@ -221,35 +246,42 @@ type postingResolution struct {
 // multi-lot expansion, no bookOne failures). hint should be the
 // input transaction's posting count; over-allocation is harmless and
 // under-allocation just falls back to append's normal growth.
-// unknownAt is left nil: most transactions carry at most one unknown
-// and the first append allocates a tight-fit slice anyway.
+// unknownDesc and dropped are left nil: most transactions carry at most
+// one unknown and zero failures; the first use allocates a tight-fit
+// slice or map respectively.
 func newPostingResolution(hint int) postingResolution {
 	return postingResolution{
-		postings: make([]ast.Posting, 0, hint),
-		booked:   make([]BookedPosting, 0, hint),
-		bookedAt: make([]int, 0, hint),
+		postings:   make([]ast.Posting, 0, hint),
+		booked:     make([]BookedPosting, 0, hint),
+		bookedDesc: make([]groupRef, 0, hint),
 	}
 }
 
 // addUnknown records p as either the auto-posting or a deferred-augment
 // posting. The posting is appended unchanged; the residual pass
-// resolves its Amount or Cost from the transaction's residual.
+// resolves its Amount or Cost from the transaction's residual. The
+// descriptor currency is left empty until Pass 2 fills it in.
 func (pr *postingResolution) addUnknown(p *ast.Posting) {
 	pr.postings = append(pr.postings, *p)
-	pr.unknownAt = append(pr.unknownAt, len(pr.postings)-1)
+	pr.unknownDesc = append(pr.unknownDesc, groupRef{postingAt: len(pr.postings) - 1})
 }
 
-// addPreserved records a posting whose bookOne returned errors. The
-// posting is appended unchanged for the printer; no BookedPosting is
-// emitted and the residual pass does not see it.
+// markForDrop records the given weight-currency group as dropped. The
+// failed posting is not appended to pr.postings — it will not appear in
+// the output or in the residual computation. The dropped map is lazily
+// initialized on first use so error-free transactions pay no allocation
+// cost. Marking is idempotent: re-marking an already-dropped currency
+// is a no-op.
 //
-// TODO(failed-posting-removal): upstream beancount removes the entire
-// currency group from txn.Postings when book_reductions returns
-// errors. Matching upstream requires structurally removing failing
-// postings here; this is a wider semantic change than the current
-// slice scope.
-func (pr *postingResolution) addPreserved(p *ast.Posting) {
-	pr.postings = append(pr.postings, *p)
+// Callers must also call trace.prepareForRollback for every account
+// involved in the failure, to ensure the state-diff pass can apply its
+// exclusion rule (state == before → suppress) even when the booking
+// failed before mutating the inventory.
+func (pr *postingResolution) markForDrop(weightCurrency string) {
+	if pr.dropped == nil {
+		pr.dropped = make(map[string]bool)
+	}
+	pr.dropped[weightCurrency] = true
 }
 
 // addAlreadyBooked records a posting that arrived carrying a booked
@@ -260,15 +292,15 @@ func (pr *postingResolution) addPreserved(p *ast.Posting) {
 // non-nil — they are recorded in the BookedPosting so downstream
 // consumers can read the matched lot identity — but no Cost is
 // installed on the posting because p.Cost already reflects it.
-func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep) {
+func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
-	pr.bookedAt = append(pr.bookedAt, len(pr.postings)-1)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account:   p.Account,
 		Units:     *p.Amount.Clone(),
 		Lot:       lot,
 		Reduction: step,
 	})
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: weightCurrency, postingAt: len(pr.postings) - 1})
 }
 
 // addLotAugmentation records a first-run augmentation that carried a
@@ -276,29 +308,29 @@ func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *Re
 // lot, replacing the parse-tier *ast.CostSpec; the BookedPosting
 // keeps lot in its Lot field so consumers can read it without
 // re-resolving.
-func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot) {
+func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
 	pr.postings[i].Cost = lot.Clone()
-	pr.bookedAt = append(pr.bookedAt, i)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account: p.Account,
 		Units:   *p.Amount.Clone(),
 		Lot:     lot,
 	})
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: weightCurrency, postingAt: i})
 }
 
 // addCashAugmentation records an augmentation that carries no cost
 // spec (a cash-leg posting). The rebuilt posting's Cost holder
 // (typically nil) is preserved verbatim — synthesizing a degenerate
 // *ast.Cost would change weight semantics for downstream consumers.
-func (pr *postingResolution) addCashAugmentation(p *ast.Posting) {
+func (pr *postingResolution) addCashAugmentation(p *ast.Posting, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
-	pr.bookedAt = append(pr.bookedAt, len(pr.postings)-1)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account: p.Account,
 		Units:   *p.Amount.Clone(),
 	})
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: weightCurrency, postingAt: len(pr.postings) - 1})
 }
 
 // addSingleLotReduction records a reduction whose matcher selected
@@ -306,18 +338,18 @@ func (pr *postingResolution) addCashAugmentation(p *ast.Posting) {
 // installed, except for the cash-sentinel step (zero-value Lot): in
 // that case the parse-tier Cost holder is left alone so
 // [PostingWeight] falls through to the price branch.
-func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep) {
+func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
 	if step.Lot.Currency != "" || step.Lot.Number.Sign() != 0 {
 		pr.postings[i].Cost = step.Lot.Clone()
 	}
-	pr.bookedAt = append(pr.bookedAt, i)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account:   p.Account,
 		Units:     *p.Amount.Clone(),
 		Reduction: &step,
 	})
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: weightCurrency, postingAt: i})
 }
 
 // addMultiLotReduction expands a reduction that matched multiple lots
@@ -330,6 +362,12 @@ func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step Reductio
 // cash sentinel — cost-bearing and cash positions of the same
 // commodity cannot coexist on a single inventory row — so step.Lot is
 // installed unconditionally here.
+//
+// Each child is registered under step.Lot.Currency (its weight
+// currency), which may differ across steps when the parent posting
+// matched lots with different cost currencies (e.g. -20 AAPL {} can
+// reduce both AAPL{USD} and AAPL{EUR} lots). step.Lot.Currency is
+// always non-empty for multi-step results.
 func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep) {
 	// step (the range value) is a fresh per-iteration variable in
 	// Go 1.22+, so &step is heap-owned by the BookedPosting below and
@@ -344,60 +382,188 @@ func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []Reduct
 			Currency: p.Amount.Currency,
 		}
 		child.Cost = step.Lot.Clone()
-		pr.bookedAt = append(pr.bookedAt, i)
 		pr.booked = append(pr.booked, BookedPosting{
 			Account:   p.Account,
 			Units:     *child.Amount.Clone(),
 			Reduction: &step,
 		})
+		pr.bookedDesc = append(pr.bookedDesc, groupRef{currency: step.Lot.Currency, postingAt: i})
 	}
 }
 
-// finalize binds the Source pointers on every BookedPosting and the
-// unknown pointers to indices into pr.postings, which by this point
-// must be the slice the caller intends to publish (typically already
-// assigned to txn.Postings). It must run after every add* call,
-// because intermediate appends may have grown the backing array.
-func (pr *postingResolution) finalize() (booked []BookedPosting, unknowns []*ast.Posting) {
+// bindAndCollect binds the Source pointers on every BookedPosting and
+// collects the unknown posting pointers, both via offsets in
+// bookedDesc/unknownDesc. It must run after every add* call because
+// intermediate appends may have grown the backing array, invalidating
+// any earlier &pr.postings[k] addresses. Drop application (reading
+// pr.dropped to exclude failed groups) is handled by a later
+// applyDrops call; bindAndCollect binds all entries unconditionally.
+func (pr *postingResolution) bindAndCollect() (booked []BookedPosting, unknowns []*ast.Posting) {
 	booked = pr.booked
-	for i, off := range pr.bookedAt {
-		booked[i].Source = &pr.postings[off]
+	for i, ref := range pr.bookedDesc {
+		booked[i].Source = &pr.postings[ref.postingAt]
 	}
-	unknowns = make([]*ast.Posting, len(pr.unknownAt))
-	for i, off := range pr.unknownAt {
-		unknowns[i] = &pr.postings[off]
+	unknowns = make([]*ast.Posting, len(pr.unknownDesc))
+	for i, ref := range pr.unknownDesc {
+		unknowns[i] = &pr.postings[ref.postingAt]
 	}
 	return booked, unknowns
 }
 
-// visitTxn performs the per-transaction booking pass, mutating the
-// reducer's per-account state in place and returning the before/after
-// snapshots plus the booked postings. The stop return value is reserved
-// for future use (e.g. fatal structural errors); today it is always
-// false when the function returns normally.
+// applyDrops rebuilds txn.Postings to exclude all currency groups that
+// failed bookOne, rolls back their inventory mutations via inverse Add
+// calls, and returns only the surviving BookedPosting records with
+// Source pointers re-bound to the rebuilt slice.
 //
-// The body runs two passes:
+// If pr.dropped is nil or empty, applyDrops is a complete no-op: it
+// returns booked unchanged without any allocation. This is the hot path
+// for the vast majority of error-free transactions.
 //
-//   - Pass 1 books each explicit posting via [bookOne] and routes the
-//     outcome through a [postingResolution] helper that rebuilds
-//     txn.Postings, installs the resolved *ast.Cost where needed,
-//     expands multi-lot reductions into per-lot children, and
-//     constructs the BookedPosting records. Unknowns (auto-posting,
-//     deferred augmentation) are recorded by offset for Pass 2.
-//   - Pass 2 solves the residual and books the single unknown.
+// The rebuild preserves input posting order. Survival is determined by
+// scanning bookedDesc and unknownDesc: a posting survives iff its
+// currency is "" (unresolved unknown) or its currency is not in
+// pr.dropped. A postingAt that appears in both descriptors (a resolved
+// unknown that was also booked) is treated consistently because both
+// entries carry the same currency after Pass 2.
 //
-// PostingWeight on every booked Source is well-defined for Pass 2's
-// residual computation because Pass 1 installs *ast.Cost on every
-// posting that needs one before finalize binds Source pointers.
+// For each dropped booked entry, reverseBooking is called to undo the
+// inventory mutation. Errors from reverseBooking are CodeInternalError
+// from apd arithmetic and do not occur for normal ledger inputs.
+//
+// Source pointers on surviving BookedPostings are re-bound to their new
+// addresses in the rebuilt postings slice.
+func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrace, r *Reducer) []BookedPosting {
+	if len(pr.dropped) == 0 {
+		return booked
+	}
+
+	// Phase 1: determine which posting indices survive.
+	// Failed postings were never appended to pr.postings (markForDrop does
+	// not call append), so the scan covers exactly the entries that need a
+	// survival decision.
+	// currency == "" (unresolved unknown) is never in pr.dropped; those always survive.
+	survives := make([]bool, len(pr.postings))
+	for _, ref := range pr.bookedDesc {
+		if !pr.dropped[ref.currency] {
+			survives[ref.postingAt] = true
+		}
+	}
+	for _, ref := range pr.unknownDesc {
+		if !pr.dropped[ref.currency] {
+			survives[ref.postingAt] = true
+		}
+	}
+
+	// Phase 2: rebuild pr.postings in ascending index order (= input order).
+	// Build newIdx[old] = new index, or -1 if the posting is dropped.
+	newIdx := make([]int, len(pr.postings))
+	for i := range newIdx {
+		newIdx[i] = -1 // sentinel: dropped
+	}
+	newPostings := make([]ast.Posting, 0, len(pr.postings))
+	for i, p := range pr.postings {
+		if survives[i] {
+			newIdx[i] = len(newPostings)
+			newPostings = append(newPostings, p)
+		}
+	}
+	pr.postings = newPostings
+
+	// Phase 3: reverse mutations for dropped entries; re-bind Source for survivors.
+	out := make([]BookedPosting, 0, len(booked))
+	for j, ref := range pr.bookedDesc {
+		if pr.dropped[ref.currency] {
+			inv := trace.prepareForRollback(booked[j].Account)
+			if err := reverseBooking(inv, booked[j]); err != nil {
+				r.errs = append(r.errs, asError(err, booked[j].Account))
+			}
+			continue
+		}
+		// Surviving entry: re-bind Source to the rebuilt slice.
+		bp := booked[j]
+		bp.Source = &pr.postings[newIdx[ref.postingAt]]
+		out = append(out, bp)
+	}
+
+	return out
+}
+
+// asError returns err as an inventory Error: an existing Error passes
+// through, anything else becomes CodeInternalError on account.
+func asError(err error, account ast.Account) Error {
+	if typed, ok := err.(Error); ok {
+		return typed
+	}
+	return Error{Code: CodeInternalError, Account: account, Message: err.Error()}
+}
+
+// reverseBooking undoes a BookedPosting's effect on inv with the
+// inverse Inventory.Add. An augmentation (bp.Reduction == nil) has its
+// units negated; a reduction restores bp.Reduction.Units to the lot
+// (the cash sentinel maps to a nil Cost so the cash slot merges).
+//
+// inv must be the live inventory for bp.Account, obtained via
+// trace.prepareForRollback so diff() records the rollback. Errors are
+// CodeInternalError from apd arithmetic and do not occur for normal
+// ledger inputs.
+func reverseBooking(inv *Inventory, bp BookedPosting) error {
+	if bp.Reduction == nil {
+		var neg apd.Decimal
+		if _, err := apd.BaseContext.Neg(&neg, &bp.Units.Number); err != nil {
+			return Error{
+				Code:    CodeInternalError,
+				Account: bp.Account,
+				Message: "reverseBooking: negate augmentation units: " + err.Error(),
+			}
+		}
+		return inv.Add(Position{
+			Units: ast.Amount{Number: neg, Currency: bp.Units.Currency},
+			Cost:  bp.Lot,
+		})
+	}
+	var cost *Cost
+	if bp.Reduction.Lot.Currency != "" || bp.Reduction.Lot.Number.Sign() != 0 {
+		// Non-sentinel lot: clone to avoid aliasing the step's Lot value.
+		lotCopy := bp.Reduction.Lot
+		cost = lotCopy.Clone()
+	}
+	return inv.Add(Position{
+		Units: ast.Amount{
+			Number:   *ast.CloneDecimal(&bp.Reduction.Units), // positive magnitude; no sign flip
+			Currency: bp.Units.Currency,                      // consumed commodity, from the posting's amount
+		},
+		Cost: cost,
+	})
+}
+
+// visitTxn books a single transaction: it mutates the reducer's
+// per-account inventory and returns the before/after snapshots and the
+// surviving BookedPosting records. stop is reserved for future use; it
+// is always false in the current implementation.
+//
+// A structurally-invalid transaction is rejected with a diagnostic without
+// touching any inventory.
+//
+// Booking runs in two passes. Pass 1 books every explicit posting; Pass
+// 2 resolves the single auto-balanced or deferred-cost unknown from the
+// residual of the others (more than one unknown is ambiguous and yields
+// one diagnostic per unknown).
+//
+// When a posting's booking fails, its whole weight-currency group is
+// dropped: every posting sharing that currency is removed from
+// txn.Postings and from the returned BookedPosting slice, and the
+// group's inventory mutations are rolled back. Other currency groups in
+// the same transaction are unaffected, and the transaction is still
+// emitted even if every group was dropped. A posting that fails only
+// because its cost number is deferred is the exception — it is retried
+// in Pass 2 rather than dropped.
 func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	before map[ast.Account]*Inventory,
 	after map[ast.Account]*Inventory,
 	booked []BookedPosting,
 	stop bool,
 ) {
-	// Reject structurally-invalid transactions before mutating any
-	// account state, so a rejected transaction leaves inventory
-	// untouched.
+	// Reject structurally-invalid input.
 	if !r.validateStructure(txn) {
 		return map[ast.Account]*Inventory{}, nil, nil, false
 	}
@@ -405,18 +571,11 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	trace := newStateTrace(r.state)
 	pr := newPostingResolution(len(txn.Postings))
 
-	// Pass 1: classify each posting via bookOne and route the outcome
-	// through pr. A posting that fails with CodeAugmentationRequiresCost
-	// AND has a cost spec without a number is held back as a deferred
-	// unknown (Pass 2 may infer its per-unit cost from the residual).
-	// The auto-posting (Amount == nil) is also an unknown. If more
-	// than one unknown is collected, the transaction is ambiguous and
-	// is reported below.
+	// Pass 1: book each explicit posting; hold auto/deferred postings as unknowns.
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount == nil {
-			// Auto-posting (validated single & no cost/price by
-			// validateStructure).
+			// Auto-posting: booked in Pass 2 once the residual is known.
 			pr.addUnknown(p)
 			continue
 		}
@@ -425,21 +584,21 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		method := r.booking[p.Account] // zero value = BookingDefault
 		lot, steps, errs := bookOne(inv, p, method, txn.Date)
 		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
+			// Deferred cost: retried in Pass 2 (bookOne returned before mutating inventory).
 			pr.addUnknown(p)
 			continue
 		}
 		if len(errs) > 0 {
 			r.errs = append(r.errs, errs...)
-			pr.addPreserved(p)
+			pr.markForDrop(weightCurrencyFallback(p))
+			trace.prepareForRollback(p.Account)
 			continue
 		}
 		switch {
 		case p.Cost != nil && p.Cost.IsBooked():
-			// Already-booked second-run path: bookOne's tight matcher
-			// produces either a single-step reduction or an
-			// augmentation lot, never multi-step. The guard is
-			// defensive — if the invariant ever broke, firstStepOrNil
-			// would silently drop the extra steps.
+			// Second-run fixed-point path. Defensive guard: tight matcher
+			// must not return multi-step; a violation would otherwise silently truncate.
+			key := weightCurrencyFallback(p)
 			if len(steps) > 1 {
 				r.errs = append(r.errs, Error{
 					Code:    CodeInternalError,
@@ -447,31 +606,30 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 					Account: p.Account,
 					Message: "already-booked posting produced a multi-lot reduction; tight-matcher invariant violated",
 				})
-				pr.addPreserved(p)
+				pr.markForDrop(key)
+				trace.prepareForRollback(p.Account)
 				continue
 			}
-			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps))
+			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps), key)
 		case lot != nil:
-			pr.addLotAugmentation(p, lot)
+			pr.addLotAugmentation(p, lot, lot.Currency)
 		case len(steps) == 0:
-			pr.addCashAugmentation(p)
+			pr.addCashAugmentation(p, cashGroupKey(p))
 		case len(steps) == 1:
-			pr.addSingleLotReduction(p, steps[0])
+			pr.addSingleLotReduction(p, steps[0], reductionGroupKey(p, steps[0]))
 		default:
 			pr.addMultiLotReduction(p, steps)
 		}
 	}
 
-	txn.Postings = pr.postings
+	// Source pointers must be bound before Pass 2's residual solve.
 	var unknowns []*ast.Posting
-	booked, unknowns = pr.finalize()
+	booked, unknowns = pr.bindAndCollect()
 
-	// Pass 2: resolve the single unknown, if any.
+	// Pass 2: resolve the unknown against the residual.
 	switch {
 	case len(unknowns) > 1:
-		// Ambiguous: too many unknowns for a single residual to pin
-		// down. Emit one diagnostic per unknown so the user sees every
-		// site they need to fix.
+		// Too many unknowns to solve a single residual; flag each so users see every site to fix.
 		r.flagAmbiguousUnknowns(unknowns)
 	case len(unknowns) == 1:
 		unknownP := unknowns[0]
@@ -479,58 +637,64 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		if !ok {
 			break // solveResidual already appended the diagnostic
 		}
+		// Residual currency already dropped: the unknown joins that group.
+		if pr.dropped[residual.Currency] {
+			pr.unknownDesc[0].currency = residual.Currency
+			break
+		}
 		inferred := unknownP.Amount == nil
 		if inferred {
 			// Auto-posting: write the inferred Amount. validateStructure
-			// guarantees unknownP.Cost is nil, and this branch must
-			// preserve that — even if bookOne below ends up matching a
-			// held-at-cost lot, the auto-posting's Cost is deliberately
-			// not written.
+			// guarantees Cost nil; preserve it — bookOne must not write Cost here.
 			unknownP.Amount = residual
 		} else if err := r.resolveCostFromResidual(unknownP, residual, txn.Date); err != nil {
 			r.errs = append(r.errs, *err)
 			break
 		}
-		// The deferred branch pre-installed *ast.Cost above, so bookOne
-		// takes the ResolveCost(*ast.Cost) short-circuit path; the
-		// auto-posting branch left Cost nil. No post-bookOne install is
-		// needed in either case.
 		inv := trace.prepareForEdit(unknownP.Account)
 		lot, steps, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date)
 		r.errs = append(r.errs, errs...)
-		if len(errs) == 0 {
-			if len(steps) > 1 {
-				// Multi-lot reductions from the residual pass would
-				// need to expand txn.Postings after Source pointers are
-				// already bound, which is not safe. The deferred-
-				// augment branch installs a tight *ast.Cost so its
-				// matcher returns a single lot; the auto-posting branch
-				// is typically a cash residual that augments. If we
-				// ever land here we want a diagnostic, not a silently-
-				// truncated BookedPosting.
-				r.errs = append(r.errs, Error{
-					Code:    CodeInternalError,
-					Span:    unknownP.Span,
-					Account: unknownP.Account,
-					Message: "residual pass produced a multi-lot reduction; expansion is not supported here",
-				})
-				break
-			}
-			// The unknown is already at its final offset in txn.Postings,
-			// so its address is stable: appending one BookedPosting here
-			// does not invalidate any of the Source pointers finalize
-			// just bound.
-			booked = append(booked, BookedPosting{
-				Source:       unknownP,
-				Account:      unknownP.Account,
-				Units:        *unknownP.Amount.Clone(),
-				Lot:          lot,
-				Reduction:    firstStepOrNil(steps),
-				InferredAuto: inferred,
-			})
+		if len(errs) > 0 {
+			// Pass 2's own booking failed: drop the residual currency along with any Pass 1 postings sharing it.
+			pr.markForDrop(residual.Currency)
+			trace.prepareForRollback(unknownP.Account)
+			pr.unknownDesc[0].currency = residual.Currency
+			break
 		}
+		if len(steps) > 1 {
+			// Expanding a multi-lot reduction here would mutate txn.Postings after Source pointers are bound.
+			// The deferred branch installs a tight Cost so the matcher returns one lot; this branch should be unreachable.
+			r.errs = append(r.errs, Error{
+				Code:    CodeInternalError,
+				Span:    unknownP.Span,
+				Account: unknownP.Account,
+				Message: "residual pass produced a multi-lot reduction; expansion is not supported here",
+			})
+			break
+		}
+		// The unknown already sits at its final offset; appending here does
+		// not invalidate the Source pointers bindAndCollect already bound.
+		// booked and bookedDesc must remain parallel.
+		booked = append(booked, BookedPosting{
+			Source:       unknownP,
+			Account:      unknownP.Account,
+			Units:        *unknownP.Amount.Clone(),
+			Lot:          lot,
+			Reduction:    firstStepOrNil(steps),
+			InferredAuto: inferred,
+		})
+		pr.bookedDesc = append(pr.bookedDesc, groupRef{
+			currency:  residual.Currency,
+			postingAt: pr.unknownDesc[0].postingAt,
+		})
+		pr.unknownDesc[0].currency = residual.Currency
 	}
 
+	// Apply the currency-group drop, then compute the visitor diff.
+	booked = pr.applyDrops(booked, trace, r)
+	txn.Postings = pr.postings
+
+	// diff observes prepareForRollback marks recorded by applyDrops.
 	before, after = trace.diff()
 	return before, after, booked, false
 }
@@ -564,6 +728,46 @@ func firstStepOrNil(steps []ReductionStep) *ReductionStep {
 		return nil
 	}
 	return &steps[0]
+}
+
+// weightCurrencyFallback returns the weight currency of p using
+// PostingWeight, falling back to p.Amount.Currency on error. It is
+// used for the already-booked path (p.Cost.IsBooked() is true, so
+// PostingWeight uses the cost branch) and for error paths where the
+// posting's cost may or may not be set.
+//
+// The w == nil branch (PostingWeight returns nil, nil) is only reachable
+// when p.Amount == nil (auto-posting). All current callers are invoked
+// only on postings where p.Amount != nil, so this branch is unreachable
+// in practice; the fallback is retained for safety.
+func weightCurrencyFallback(p *ast.Posting) string {
+	w, err := PostingWeight(p)
+	if err != nil || w == nil {
+		return p.Amount.Currency
+	}
+	return w.Currency
+}
+
+// cashGroupKey returns the weight currency for a cash-augmentation
+// posting (no cost, no lot). Price annotation takes precedence over
+// plain amount currency, matching PostingWeight's precedence rules.
+func cashGroupKey(p *ast.Posting) string {
+	if p.Price != nil {
+		return p.Price.Amount.Currency
+	}
+	return p.Amount.Currency
+}
+
+// reductionGroupKey returns the weight currency for a single-lot
+// reduction. For non-sentinel lots (cost-bearing), the key is the lot
+// currency. For the cash-sentinel step (zero-value Lot), PostingWeight
+// falls through to price or amount currency.
+func reductionGroupKey(p *ast.Posting, step ReductionStep) string {
+	if step.Lot.Currency != "" || step.Lot.Number.Sign() != 0 {
+		return step.Lot.Currency
+	}
+	// Cash-sentinel: no lot installed; use price or amount currency.
+	return cashGroupKey(p)
 }
 
 // validateStructure rejects transactions whose auto-posting structure
@@ -612,14 +816,21 @@ func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
 // A nil before-value records that the account had no inventory prior
 // to this trace — that nil is the visitor-contract signal for "newly
 // touched account".
+//
+// rolledBack records accounts whose currency group was fully rolled back
+// via inverse-operation bookings during applyDrops. diff() uses this
+// set to suppress accounts that are back to their pre-transaction state
+// from the visitor output.
 type stateTrace struct {
-	state  map[ast.Account]*Inventory
-	before map[ast.Account]*Inventory
+	state      map[ast.Account]*Inventory
+	before     map[ast.Account]*Inventory
+	rolledBack map[ast.Account]struct{} // lazily initialized; nil until first prepareForRollback
 }
 
 // newStateTrace begins recording edits against state. before-snapshots
 // are scoped to this trace; state is shared with the caller and is
-// mutated in place by [stateTrace.prepareForEdit].
+// mutated in place by [stateTrace.prepareForEdit]. rolledBack is left
+// nil and initialized lazily by the first [stateTrace.prepareForRollback] call.
 func newStateTrace(state map[ast.Account]*Inventory) *stateTrace {
 	return &stateTrace{
 		state:  state,
@@ -634,18 +845,36 @@ func newStateTrace(state map[ast.Account]*Inventory) *stateTrace {
 // inventory if one did not exist. Subsequent calls return the same
 // inventory pointer without re-snapshotting.
 func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
-	if _, seen := st.before[acct]; seen {
-		return st.state[acct]
+	if _, seen := st.before[acct]; !seen {
+		inv := st.state[acct]
+		if inv == nil {
+			inv = NewInventory()
+			st.state[acct] = inv
+			st.before[acct] = nil
+		} else {
+			st.before[acct] = inv.Clone()
+		}
 	}
-	inv := st.state[acct]
-	if inv == nil {
-		inv = NewInventory()
-		st.state[acct] = inv
-		st.before[acct] = nil
-	} else {
-		st.before[acct] = inv.Clone()
+	return st.state[acct]
+}
+
+// prepareForRollback records acct in the rolledBack set and returns the
+// live inventory for acct. It is called when a failed currency group's
+// account needs to be marked so diff() can suppress it if no net
+// mutation occurred. The rolledBack set is used by diff() to suppress
+// accounts whose state is back to its pre-transaction value from the
+// visitor output.
+//
+// The rolledBack map is lazily initialized on first call. If acct has
+// not yet been touched in this trace, prepareForEdit semantics apply
+// (the account is added to before with a nil snapshot and a fresh
+// inventory is installed if absent).
+func (st *stateTrace) prepareForRollback(acct ast.Account) *Inventory {
+	if st.rolledBack == nil {
+		st.rolledBack = make(map[ast.Account]struct{})
 	}
-	return inv
+	st.rolledBack[acct] = struct{}{}
+	return st.prepareForEdit(acct)
 }
 
 // diff returns the (before, after) pair for the visitor callback.
@@ -654,10 +883,25 @@ func (st *stateTrace) prepareForEdit(acct ast.Account) *Inventory {
 // single visitTxn invocation and is discarded immediately after.
 // after is freshly constructed as clones of the current state for
 // every account first touched by this trace.
+//
+// Exclusion rule: if acct is in rolledBack and its state equals its
+// before-snapshot (meaning all mutations were successfully reversed),
+// the account is omitted from both before and after. Inventory.Equal
+// treats a nil before-snapshot as empty, so a newly-touched account
+// rolled back to nothing is excluded. Accounts in rolledBack that still
+// differ (partial mutation residue) are included as usual, so they
+// remain visible in the diff output.
 func (st *stateTrace) diff() (before, after map[ast.Account]*Inventory) {
 	after = make(map[ast.Account]*Inventory, len(st.before))
 	for acct := range st.before {
-		if inv := st.state[acct]; inv != nil {
+		if _, rolled := st.rolledBack[acct]; rolled && st.state[acct].Equal(st.before[acct]) {
+			// The account was fully rolled back to its pre-transaction
+			// state; suppress it so the visitor does not see a no-op diff.
+			delete(st.before, acct) // Deleting the current key during a map range is safe per the Go spec.
+			continue
+		}
+		inv := st.state[acct]
+		if inv != nil {
 			after[acct] = inv.Clone()
 		} else {
 			// Defensive: prepareForEdit always installs a non-nil

@@ -11,8 +11,15 @@ import (
 // inventory to verify clone independence.
 func seedInventory(t *testing.T, num string) *Inventory {
 	t.Helper()
+	return seedInventoryOf(t, num, "USD")
+}
+
+// seedInventoryOf returns a fresh Inventory pre-populated with a single
+// position of the given amount and currency.
+func seedInventoryOf(t *testing.T, num, currency string) *Inventory {
+	t.Helper()
 	inv := NewInventory()
-	if err := inv.Add(Position{Units: mkAmount(t, num, "USD")}); err != nil {
+	if err := inv.Add(Position{Units: mkAmount(t, num, currency)}); err != nil {
 		t.Fatalf("seed inventory: %v", err)
 	}
 	return inv
@@ -182,5 +189,180 @@ func TestStateTrace_Diff_Empty(t *testing.T) {
 	}
 	if len(after) != 0 {
 		t.Errorf("diff(): after has %d entries, want 0", len(after))
+	}
+}
+
+// ---- prepareForRollback tests ----
+
+// TestStateTrace_PrepareForRollback_RecordsAndReturnsLive verifies that
+// prepareForRollback records the account in the rolledBack set and returns
+// the live inventory pointer for that account.
+func TestStateTrace_PrepareForRollback_RecordsAndReturnsLive(t *testing.T) {
+	seed := seedInventory(t, "100")
+	state := map[ast.Account]*Inventory{"Assets:A": seed}
+	trace := newStateTrace(state)
+
+	// Touch the account first so it has a live inventory.
+	live := trace.prepareForEdit("Assets:A")
+
+	inv := trace.prepareForRollback("Assets:A")
+
+	if inv != live {
+		t.Errorf("prepareForRollback returned %p, want live pointer %p", inv, live)
+	}
+	if trace.rolledBack == nil {
+		t.Fatalf("rolledBack map is nil after prepareForRollback")
+	}
+	if _, ok := trace.rolledBack["Assets:A"]; !ok {
+		t.Errorf("rolledBack does not contain Assets:A after prepareForRollback")
+	}
+}
+
+// TestStateTrace_PrepareForRollback_LazyInit verifies that the rolledBack
+// map is nil before the first prepareForRollback call and non-nil after.
+func TestStateTrace_PrepareForRollback_LazyInit(t *testing.T) {
+	state := map[ast.Account]*Inventory{}
+	trace := newStateTrace(state)
+
+	if trace.rolledBack != nil {
+		t.Errorf("prepareForRollback: rolledBack should be nil before any call, got non-nil")
+	}
+
+	trace.prepareForRollback("Assets:A")
+
+	if trace.rolledBack == nil {
+		t.Errorf("prepareForRollback: rolledBack should be non-nil after first call, got nil")
+	}
+}
+
+// TestStateTrace_PrepareForRollback_NewAccount verifies that prepareForRollback
+// on an account not yet touched by prepareForEdit still initializes the
+// before-snapshot (nil) and creates a live inventory, mirroring prepareForEdit.
+func TestStateTrace_PrepareForRollback_NewAccount(t *testing.T) {
+	state := map[ast.Account]*Inventory{}
+	trace := newStateTrace(state)
+
+	inv := trace.prepareForRollback("Assets:A")
+
+	if inv == nil {
+		t.Fatalf("prepareForRollback returned nil for new account")
+	}
+	if state["Assets:A"] != inv {
+		t.Errorf("prepareForRollback: state[acct] = %p, want same pointer as returned inv %p", state["Assets:A"], inv)
+	}
+	snap, present := trace.before["Assets:A"]
+	if !present {
+		t.Fatalf("before map lacks entry after prepareForRollback on new account")
+	}
+	if snap != nil {
+		t.Errorf("prepareForRollback: before[acct] = %v, want nil for new account", snap)
+	}
+	if _, ok := trace.rolledBack["Assets:A"]; !ok {
+		t.Errorf("prepareForRollback: rolledBack does not contain Assets:A")
+	}
+}
+
+// ---- diff() exclusion rule tests ----
+
+// TestStateTrace_Diff_RolledBack_EqualNonNil verifies that an account in
+// rolledBack whose live state equals the before-snapshot is excluded from
+// both before and after.
+func TestStateTrace_Diff_RolledBack_EqualNonNil(t *testing.T) {
+	seed := seedInventory(t, "100")
+	state := map[ast.Account]*Inventory{"Assets:A": seed}
+	trace := newStateTrace(state)
+
+	inv := trace.prepareForEdit("Assets:A")
+	// Mutate, then undo by subtracting the same amount.
+	if err := inv.Add(Position{Units: mkAmount(t, "50", "USD")}); err != nil {
+		t.Fatalf("Add(50): %v", err)
+	}
+	if err := inv.Add(Position{Units: mkAmount(t, "-50", "USD")}); err != nil {
+		t.Fatalf("Add(-50): %v", err)
+	}
+	// Live state is now equal to before (100 USD).
+	trace.rolledBack = map[ast.Account]struct{}{"Assets:A": {}}
+
+	before, after := trace.diff()
+
+	if _, ok := before["Assets:A"]; ok {
+		t.Errorf("diff(): before contains rolledBack+equal account Assets:A; want excluded")
+	}
+	if _, ok := after["Assets:A"]; ok {
+		t.Errorf("diff(): after contains rolledBack+equal account Assets:A; want excluded")
+	}
+}
+
+// TestStateTrace_Diff_RolledBack_EqualNilBeforeEmptyState verifies that an
+// account in rolledBack with before==nil and an empty live state is excluded.
+func TestStateTrace_Diff_RolledBack_EqualNilBeforeEmptyState(t *testing.T) {
+	state := map[ast.Account]*Inventory{}
+	trace := newStateTrace(state)
+
+	// prepareForRollback on a new account records before==nil and creates empty inv.
+	trace.prepareForRollback("Assets:A")
+	// Live state is empty (no mutations applied).
+
+	before, after := trace.diff()
+
+	if _, ok := before["Assets:A"]; ok {
+		t.Errorf("diff(): before contains rolledBack+empty account; want excluded")
+	}
+	if _, ok := after["Assets:A"]; ok {
+		t.Errorf("diff(): after contains rolledBack+empty account; want excluded")
+	}
+}
+
+// TestStateTrace_Diff_RolledBack_NotEqual verifies that an account in
+// rolledBack that still differs from its before-snapshot is included in
+// both before and after (partial mutation residue must remain visible).
+func TestStateTrace_Diff_RolledBack_NotEqual(t *testing.T) {
+	seed := seedInventory(t, "100")
+	state := map[ast.Account]*Inventory{"Assets:A": seed}
+	trace := newStateTrace(state)
+
+	inv := trace.prepareForEdit("Assets:A")
+	// Mutate but do not undo — live state diverges from before.
+	if err := inv.Add(Position{Units: mkAmount(t, "50", "USD")}); err != nil {
+		t.Fatalf("Add(50): %v", err)
+	}
+	trace.rolledBack = map[ast.Account]struct{}{"Assets:A": {}}
+
+	before, after := trace.diff()
+
+	if _, ok := before["Assets:A"]; !ok {
+		t.Errorf("diff(): before missing rolledBack+unequal account Assets:A; want included")
+	}
+	if _, ok := after["Assets:A"]; !ok {
+		t.Errorf("diff(): after missing rolledBack+unequal account Assets:A; want included")
+	}
+}
+
+// TestStateTrace_Diff_NotRolledBack_NetZero verifies that an account NOT in
+// rolledBack is included even if its live state happens to equal its
+// before-snapshot (net-zero change). rolledBack is the only signal for
+// "intentionally suppressed"; net-zero without rollback is still surfaced.
+func TestStateTrace_Diff_NotRolledBack_NetZero(t *testing.T) {
+	seed := seedInventory(t, "100")
+	state := map[ast.Account]*Inventory{"Assets:A": seed}
+	trace := newStateTrace(state)
+
+	inv := trace.prepareForEdit("Assets:A")
+	// Mutate then undo — net-zero, but account is not in rolledBack.
+	if err := inv.Add(Position{Units: mkAmount(t, "50", "USD")}); err != nil {
+		t.Fatalf("Add(50): %v", err)
+	}
+	if err := inv.Add(Position{Units: mkAmount(t, "-50", "USD")}); err != nil {
+		t.Fatalf("Add(-50): %v", err)
+	}
+	// rolledBack is nil — not marked.
+
+	before, after := trace.diff()
+
+	if _, ok := before["Assets:A"]; !ok {
+		t.Errorf("diff(): before missing net-zero (not rolledBack) account; want included")
+	}
+	if _, ok := after["Assets:A"]; !ok {
+		t.Errorf("diff(): after missing net-zero (not rolledBack) account; want included")
 	}
 }
