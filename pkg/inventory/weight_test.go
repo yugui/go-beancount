@@ -31,12 +31,12 @@ func amtStr(t *testing.T, s, cur string) ast.Amount {
 // `{per # total CUR}` weight: units*per + sign(units)*total.
 func TestPostingWeight_CombinedCost(t *testing.T) {
 	units := amt(10, "GOOG")
-	perUnit := amtStr(t, "502.12", "USD")
-	total := amtStr(t, "9.95", "USD")
+	perUnit := decimalFromString(t, "502.12")
+	total := decimalFromString(t, "9.95")
 	p := &ast.Posting{
 		Account: "Assets:Brokerage",
 		Amount:  &units,
-		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total},
+		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total, Currency: "USD"},
 	}
 	w, err := PostingWeight(p)
 	if err != nil {
@@ -56,12 +56,12 @@ func TestPostingWeight_CombinedCost(t *testing.T) {
 // sum = -5031.15.
 func TestPostingWeight_CombinedCostNegativeUnits(t *testing.T) {
 	units := amt(-10, "GOOG")
-	perUnit := amtStr(t, "502.12", "USD")
-	total := amtStr(t, "9.95", "USD")
+	perUnit := decimalFromString(t, "502.12")
+	total := decimalFromString(t, "9.95")
 	p := &ast.Posting{
 		Account: "Assets:Brokerage",
 		Amount:  &units,
-		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total},
+		Cost:    &ast.CostSpec{PerUnit: &perUnit, Total: &total, Currency: "USD"},
 	}
 	w, err := PostingWeight(p)
 	if err != nil {
@@ -83,11 +83,11 @@ func TestPostingWeight_CombinedCostNegativeUnits(t *testing.T) {
 // JPY tolerance to 10⁻³⁴ and reject a balanced auto-posting.
 func TestPostingWeight_TotalCostExact(t *testing.T) {
 	units := amt(3, "STOCK")
-	total := amt(1, "JPY")
+	total := amt(1, "JPY").Number
 	p := &ast.Posting{
 		Account: "Assets:A",
 		Amount:  &units,
-		Cost:    &ast.CostSpec{Total: &total},
+		Cost:    &ast.CostSpec{Total: &total, Currency: "JPY"},
 	}
 	w, err := PostingWeight(p)
 	if err != nil {
@@ -116,12 +116,12 @@ func TestPostingWeight_TotalCostExact(t *testing.T) {
 // recorded by another posting in the transaction.
 func TestPostingWeight_CostAndPriceUsesCost(t *testing.T) {
 	units := amt(-10, "IVV")
-	cost := amtStr(t, "183.07", "USD")
+	cost := decimalFromString(t, "183.07")
 	price := amtStr(t, "197.90", "USD")
 	p := &ast.Posting{
 		Account: "Assets:ETrade:IVV",
 		Amount:  &units,
-		Cost:    &ast.CostSpec{PerUnit: &cost},
+		Cost:    &ast.CostSpec{PerUnit: &cost, Currency: "USD"},
 		Price:   &ast.PriceAnnotation{Amount: price, IsTotal: false},
 	}
 	w, err := PostingWeight(p)
@@ -141,12 +141,12 @@ func TestPostingWeight_CostAndPriceUsesCost(t *testing.T) {
 // (1979 USD) is irrelevant for balancing; only the cost matters.
 func TestPostingWeight_CostAndTotalPriceUsesCost(t *testing.T) {
 	units := amt(-10, "IVV")
-	cost := amtStr(t, "183.07", "USD")
+	cost := decimalFromString(t, "183.07")
 	totalPrice := amtStr(t, "1979.00", "USD")
 	p := &ast.Posting{
 		Account: "Assets:ETrade:IVV",
 		Amount:  &units,
-		Cost:    &ast.CostSpec{PerUnit: &cost},
+		Cost:    &ast.CostSpec{PerUnit: &cost, Currency: "USD"},
 		Price:   &ast.PriceAnnotation{Amount: totalPrice, IsTotal: true},
 	}
 	w, err := PostingWeight(p)

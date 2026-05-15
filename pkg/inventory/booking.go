@@ -103,8 +103,7 @@ const (
 //
 // The cost-currency hint is computed from the posting:
 //
-//   - explicit p.Cost.PerUnit.Currency or p.Cost.Total.Currency (the
-//     lowerer guarantees they agree when both are present);
+//   - p.Cost.GetCurrency() when non-empty;
 //   - fallback: a structurally-empty cost spec (absent or "{}") paired
 //     with a price annotation uses p.Price.Amount.Currency. This keeps
 //     classify's hint in sync with the matcher's empty-spec fallback in
@@ -144,17 +143,10 @@ func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 	// purposes: the price annotation supplies the currency so the
 	// matcher's empty-{} fallback is reachable from bookOne.
 	hintCcy := ""
-	var perUnit, total *ast.Amount
 	if p.Cost != nil {
-		perUnit = p.Cost.GetPerUnit()
-		total = p.Cost.GetTotal()
+		hintCcy = p.Cost.GetCurrency()
 	}
-	switch {
-	case perUnit != nil:
-		hintCcy = perUnit.Currency
-	case total != nil:
-		hintCcy = total.Currency
-	case specIsEmpty(p.Cost) && p.Price != nil:
+	if hintCcy == "" && specIsEmpty(p.Cost) && p.Price != nil {
 		hintCcy = p.Price.Amount.Currency
 	}
 

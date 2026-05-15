@@ -22,6 +22,13 @@ func mkAmountPtr(t *testing.T, num, currency string) *ast.Amount {
 	return &a
 }
 
+// decimalPtr returns a fresh *apd.Decimal parsed from num.
+func decimalPtr(t *testing.T, num string) *apd.Decimal {
+	t.Helper()
+	d := decimalVal(t, num)
+	return &d
+}
+
 // mkPosting builds a minimal ast.Posting for booking tests.
 func mkPosting(t *testing.T, account string, units ast.Amount, cost ast.CostHolder, price *ast.PriceAnnotation) *ast.Posting {
 	t.Helper()
@@ -205,7 +212,7 @@ func TestClassify_EmptyCostSpecWithPriceHint(t *testing.T) {
 func TestBookOne_AugmentPerUnitCost(t *testing.T) {
 	inv := NewInventory()
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	spec := &ast.CostSpec{PerUnit: mkAmountPtr(t, "100", "USD")}
+	spec := &ast.CostSpec{PerUnit: decimalPtr(t, "100"), Currency: "USD"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
 	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
@@ -236,8 +243,9 @@ func TestBookOne_AugmentCombinedCost(t *testing.T) {
 	inv := NewInventory()
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	spec := &ast.CostSpec{
-		PerUnit: mkAmountPtr(t, "100", "USD"),
-		Total:   mkAmountPtr(t, "50", "USD"),
+		PerUnit:  decimalPtr(t, "100"),
+		Total:    decimalPtr(t, "50"),
+		Currency: "USD",
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
@@ -257,7 +265,7 @@ func TestBookOne_AugmentCombinedCost(t *testing.T) {
 func TestBookOne_AugmentTotalCost(t *testing.T) {
 	inv := NewInventory()
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	spec := &ast.CostSpec{Total: mkAmountPtr(t, "500", "USD")}
+	spec := &ast.CostSpec{Total: decimalPtr(t, "500"), Currency: "USD"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
 	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
@@ -311,7 +319,7 @@ func TestBookOne_AugmentEmptyCostSpecErrors(t *testing.T) {
 func TestBookOne_AugmentDateDefaultsToTxnDate(t *testing.T) {
 	inv := NewInventory()
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	spec := &ast.CostSpec{PerUnit: mkAmountPtr(t, "100", "USD")} // no Date
+	spec := &ast.CostSpec{PerUnit: decimalPtr(t, "100"), Currency: "USD"} // no Date
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
 	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
@@ -327,8 +335,9 @@ func TestBookOne_AugmentLabelCopied(t *testing.T) {
 	inv := NewInventory()
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	spec := &ast.CostSpec{
-		PerUnit: mkAmountPtr(t, "100", "USD"),
-		Label:   "lot-A",
+		PerUnit:  decimalPtr(t, "100"),
+		Currency: "USD",
+		Label:    "lot-A",
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 

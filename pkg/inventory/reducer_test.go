@@ -1029,9 +1029,10 @@ func TestReducerWalk_InterpolatesSingleDeferred_DateLabel(t *testing.T) {
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
-				Label:   "label",
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
+				Label:    "label",
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1127,9 +1128,10 @@ func TestReducerWalk_InterpolatesSingleDeferred_EmptyBraces(t *testing.T) {
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
-				Label:   "label",
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
+				Label:    "label",
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1247,8 +1249,9 @@ func TestReducerWalk_InterpolationAmbiguousMultipleDeferred(t *testing.T) {
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1307,8 +1310,9 @@ func TestReducerWalk_InterpolationAmbiguousDeferredPlusAutoPosting(t *testing.T)
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1369,8 +1373,9 @@ func TestReducerWalk_AutoPostingResidualUsesBookedReductions(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1434,8 +1439,9 @@ func TestReducerWalk_InterpolationZeroUnits(t *testing.T) {
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1504,8 +1510,9 @@ func TestReducerWalk_DoesNotMutateInput(t *testing.T) {
 			Account: "Assets:Investments",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1516,8 +1523,9 @@ func TestReducerWalk_DoesNotMutateInput(t *testing.T) {
 			Account: "Assets:Investments",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "110", "JPY"),
-				Date:    &buy2Date,
+				PerUnit:  decimalPtr(t, "110"),
+				Currency: "JPY",
+				Date:     &buy2Date,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1100", "JPY")},
@@ -1607,8 +1615,9 @@ func TestReducerWalk_FailedGroupDroppedAtomically(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -1727,8 +1736,9 @@ func TestReducerWalk_MultiCurrencyMultiLotReductionGrouping(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyUSDDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyUSDDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "USD")},
@@ -1740,8 +1750,9 @@ func TestReducerWalk_MultiCurrencyMultiLotReductionGrouping(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "90", "EUR"),
-				Date:    &buyEURDate,
+				PerUnit:  decimalPtr(t, "90"),
+				Currency: "EUR",
+				Date:     &buyEURDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-900", "EUR")},
@@ -1845,8 +1856,9 @@ func TestReducerWalk_DroppedGroupOmittedFromTxnPostings(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -1947,8 +1959,9 @@ func TestReducerWalk_DroppedGroupRollsBackAugmentation(t *testing.T) {
 			Account: "Assets:Broker",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -1964,8 +1977,9 @@ func TestReducerWalk_DroppedGroupRollsBackAugmentation(t *testing.T) {
 			Account: "Assets:Broker",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &txnDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &txnDate,
 			},
 		},
 		&ast.Posting{
@@ -1974,8 +1988,9 @@ func TestReducerWalk_DroppedGroupRollsBackAugmentation(t *testing.T) {
 			Account: "Assets:Broker",
 			Amount:  mkAmountPtr(t, "-20", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 	)
@@ -2031,8 +2046,9 @@ func TestReducerWalk_DroppedGroupMultipleFailedAccounts(t *testing.T) {
 			Account: "Assets:BrokerA",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -2042,8 +2058,9 @@ func TestReducerWalk_DroppedGroupMultipleFailedAccounts(t *testing.T) {
 			Account: "Assets:BrokerB",
 			Amount:  mkAmountPtr(t, "3", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-300", "USD")},
@@ -2139,8 +2156,9 @@ func TestReducerWalk_AllPostingsDroppedEmitsEmptyTxn(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -2229,8 +2247,9 @@ func TestReducerWalk_Pass2UnknownJoinsDroppedGroup(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -2249,8 +2268,9 @@ func TestReducerWalk_Pass2UnknownJoinsDroppedGroup(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "-10", "AAPL"), // fails: only 5 available
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"), // weight = USD → USD group dropped
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"), // weight = USD → USD group dropped
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{
@@ -2375,8 +2395,9 @@ func TestReducerWalk_Pass2UnknownBookOneFailsDropsCurrency(t *testing.T) {
 			Account: "Assets:Stock",
 			Amount:  mkAmountPtr(t, "2", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &seedDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &seedDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-200", "USD")},
@@ -2498,8 +2519,9 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyUSDDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyUSDDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "USD")},
@@ -2511,8 +2533,9 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "90", "EUR"),
-				Date:    &buyEURDate,
+				PerUnit:  decimalPtr(t, "90"),
+				Currency: "EUR",
+				Date:     &buyEURDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-900", "EUR")},
@@ -2524,8 +2547,9 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 			Account: "Assets:BrokerB",
 			Amount:  mkAmountPtr(t, "5", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buySTOCKDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buySTOCKDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -2545,8 +2569,9 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 			Account: "Assets:BrokerB",
 			Amount:  mkAmountPtr(t, "-10", "STOCK"), // fails: only 5 available
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"), // USD weight → same group as AAPL{USD}
-				Date:    &buySTOCKDate,
+				PerUnit:  decimalPtr(t, "100"), // USD weight → same group as AAPL{USD}
+				Currency: "USD",
+				Date:     &buySTOCKDate,
 			},
 		},
 	)

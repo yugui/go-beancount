@@ -49,6 +49,13 @@ func amountp(num, cur string) *ast.Amount {
 	return &a
 }
 
+// decp returns a freshly allocated *apd.Decimal parsed from s. Used
+// by CostSpec test fixtures where PerUnit / Total are decimal pointers.
+func decp(s string) *apd.Decimal {
+	d := decimal(s)
+	return &d
+}
+
 func print(t *testing.T, node any, opts ...format.Option) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -466,9 +473,10 @@ func TestCostSpecPerUnit(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amountp("10", "AAPL"),
 				Cost: &ast.CostSpec{
-					PerUnit: amountp("150.00", "USD"),
-					Date:    datep("2024-01-15"),
-					Label:   "lot1",
+					PerUnit:  decp("150.00"),
+					Currency: "USD",
+					Date:     datep("2024-01-15"),
+					Label:    "lot1",
 				},
 			},
 			{Account: "Assets:Bank"},
@@ -493,7 +501,8 @@ func TestCostSpecTotal(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amountp("10", "AAPL"),
 				Cost: &ast.CostSpec{
-					Total: amountp("1500.00", "USD"),
+					Total:    decp("1500.00"),
+					Currency: "USD",
 				},
 			},
 			{Account: "Assets:Bank"},
@@ -518,8 +527,9 @@ func TestCostSpecCombined(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amountp("10", "AAPL"),
 				Cost: &ast.CostSpec{
-					PerUnit: amountp("502.12", "USD"),
-					Total:   amountp("9.95", "USD"),
+					PerUnit:  decp("502.12"),
+					Total:    decp("9.95"),
+					Currency: "USD",
 				},
 			},
 			{Account: "Assets:Bank"},
@@ -535,9 +545,12 @@ func TestCostSpecCombined(t *testing.T) {
 }
 
 func TestCostSpecCombinedExplicitCurrencies(t *testing.T) {
-	// Defensive case: mismatched currencies. The lowerer rejects this, but
-	// a directly-constructed AST should still produce a valid-looking
-	// rendering with both currencies emitted explicitly, never a panic.
+	// Defensive case: mismatched currencies. *CostSpec carries a single
+	// Currency field so a mismatch is unrepresentable, but a booked
+	// *Cost retains separate PerUnit / Total Amount fields whose
+	// currencies can disagree (e.g. a ledger that booked an early
+	// run with one currency and a later run with another). The
+	// printer must emit both currencies explicitly rather than panic.
 	got := print(t, &ast.Transaction{
 		Date:      date("2024-01-15"),
 		Flag:      '*',
@@ -546,9 +559,11 @@ func TestCostSpecCombinedExplicitCurrencies(t *testing.T) {
 			{
 				Account: "Assets:Brokerage",
 				Amount:  amountp("10", "AAPL"),
-				Cost: &ast.CostSpec{
-					PerUnit: amountp("502.12", "EUR"),
-					Total:   amountp("9.95", "USD"),
+				Cost: &ast.Cost{
+					Number:   decimal("502.12"),
+					Currency: "EUR",
+					PerUnit:  amountp("502.12", "EUR"),
+					Total:    amountp("9.95", "USD"),
 				},
 			},
 			{Account: "Assets:Bank"},
@@ -573,10 +588,11 @@ func TestCostSpecCombinedWithDateAndLabel(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amountp("10", "AAPL"),
 				Cost: &ast.CostSpec{
-					PerUnit: amountp("502.12", "USD"),
-					Total:   amountp("9.95", "USD"),
-					Date:    datep("2024-01-15"),
-					Label:   "lot1",
+					PerUnit:  decp("502.12"),
+					Total:    decp("9.95"),
+					Currency: "USD",
+					Date:     datep("2024-01-15"),
+					Label:    "lot1",
 				},
 			},
 			{Account: "Assets:Bank"},

@@ -1683,13 +1683,12 @@ func txnCostWantJSON(costJSON string) string {
 func TestSerializeTransaction(t *testing.T) {
 	t.Run("cost_spec_per_unit", func(t *testing.T) {
 		// {X CUR}: PerUnit-only cost. Asserts that number_per is emitted,
-		// number_total is OMITTED (not null), and currency is sourced from
-		// PerUnit.Currency.
+		// number_total is OMITTED (not null), and currency is read from
+		// CostSpec.Currency.
+		perUnit := mustDecimal(t, "150.00")
 		txn := txnWithCost(t, &ast.CostSpec{
-			PerUnit: &ast.Amount{
-				Number:   mustDecimal(t, "150.00"),
-				Currency: "USD",
-			},
+			PerUnit:  &perUnit,
+			Currency: "USD",
 		})
 		assertSerializeMatches(
 			t,
@@ -1700,15 +1699,11 @@ func TestSerializeTransaction(t *testing.T) {
 
 	t.Run("cost_spec_total", func(t *testing.T) {
 		// {{X CUR}}: Total-only cost. Asserts that number_total is emitted,
-		// number_per is OMITTED, and currency falls back to Total.Currency.
-		// Distinct from cost_spec_per_unit: the Total branch of the
-		// PerUnit-or-Total currency selection must be exercised, and a
-		// regression that always read PerUnit.Currency would NPE here.
+		// number_per is OMITTED, and currency reads from CostSpec.Currency.
+		total := mustDecimal(t, "1500.00")
 		txn := txnWithCost(t, &ast.CostSpec{
-			Total: &ast.Amount{
-				Number:   mustDecimal(t, "1500.00"),
-				Currency: "USD",
-			},
+			Total:    &total,
+			Currency: "USD",
 		})
 		assertSerializeMatches(
 			t,
@@ -1718,23 +1713,14 @@ func TestSerializeTransaction(t *testing.T) {
 	})
 
 	t.Run("cost_spec_combined", func(t *testing.T) {
-		// {X # Y CUR}: combined per-unit + total form. Both number_per and
-		// number_total must be emitted. Currency must come from PerUnit
-		// (not Total) per the documented sourcing precedence in
-		// costSpecPayload's doc comment. We use deliberately mismatched
-		// currencies — which a real parser would have rejected — so the
-		// JSON output unambiguously pins down which AST field the
-		// serializer reads from. A regression that swapped to Total's
-		// currency would diff on this key.
+		// {X # Y CUR}: combined per-unit + total form. Both number_per
+		// and number_total must be emitted under the shared currency.
+		perUnit := mustDecimal(t, "150.00")
+		total := mustDecimal(t, "9.95")
 		txn := txnWithCost(t, &ast.CostSpec{
-			PerUnit: &ast.Amount{
-				Number:   mustDecimal(t, "150.00"),
-				Currency: "USD",
-			},
-			Total: &ast.Amount{
-				Number:   mustDecimal(t, "9.95"),
-				Currency: "EUR",
-			},
+			PerUnit:  &perUnit,
+			Total:    &total,
+			Currency: "USD",
 		})
 		assertSerializeMatches(
 			t,
@@ -1762,13 +1748,12 @@ func TestSerializeTransaction(t *testing.T) {
 		// from the directive Date so a regression that aliased the two
 		// would surface), and the label passes through verbatim.
 		acquired := mustDate(t, "2023-06-15")
+		perUnit := mustDecimal(t, "150.00")
 		txn := txnWithCost(t, &ast.CostSpec{
-			PerUnit: &ast.Amount{
-				Number:   mustDecimal(t, "150.00"),
-				Currency: "USD",
-			},
-			Date:  &acquired,
-			Label: "tax-lot-A",
+			PerUnit:  &perUnit,
+			Currency: "USD",
+			Date:     &acquired,
+			Label:    "tax-lot-A",
 		})
 		assertSerializeMatches(
 			t,
@@ -1785,12 +1770,11 @@ func TestSerializeTransaction(t *testing.T) {
 		// key on the EXPECTED side, but emitting "label": "" on the
 		// ACTUAL side would surface as a value mismatch against any
 		// fixture that intentionally omits the label field.
+		perUnit := mustDecimal(t, "150.00")
 		txn := txnWithCost(t, &ast.CostSpec{
-			PerUnit: &ast.Amount{
-				Number:   mustDecimal(t, "150.00"),
-				Currency: "USD",
-			},
-			Label: "",
+			PerUnit:  &perUnit,
+			Currency: "USD",
+			Label:    "",
 		})
 		assertSerializeMatches(
 			t,

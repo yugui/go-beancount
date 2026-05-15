@@ -18,6 +18,13 @@ func dec(t *testing.T, s string) apd.Decimal {
 	return d
 }
 
+// decPtr returns a fresh *apd.Decimal parsed from s.
+func decPtr(t *testing.T, s string) *apd.Decimal {
+	t.Helper()
+	d := dec(t, s)
+	return &d
+}
+
 func amount(t *testing.T, num, cur string) *Amount {
 	t.Helper()
 	return &Amount{Number: dec(t, num), Currency: cur}
@@ -52,7 +59,8 @@ func TestPostingTotalCost(t *testing.T) {
 			posting: &Posting{
 				Amount: amount(t, "10", "HOOL"),
 				Cost: &CostSpec{
-					PerUnit: amount(t, "100", "USD"),
+					PerUnit:  decPtr(t, "100"),
+					Currency: "USD",
 				},
 			},
 			want: amount(t, "1000", "USD"),
@@ -62,7 +70,8 @@ func TestPostingTotalCost(t *testing.T) {
 			posting: &Posting{
 				Amount: amount(t, "-10", "HOOL"),
 				Cost: &CostSpec{
-					PerUnit: amount(t, "100", "USD"),
+					PerUnit:  decPtr(t, "100"),
+					Currency: "USD",
 				},
 			},
 			want: amount(t, "-1000", "USD"),
@@ -72,7 +81,8 @@ func TestPostingTotalCost(t *testing.T) {
 			posting: &Posting{
 				Amount: amount(t, "-3", "STOCK"),
 				Cost: &CostSpec{
-					Total: amount(t, "1", "JPY"),
+					Total:    decPtr(t, "1"),
+					Currency: "JPY",
 				},
 			},
 			want: amount(t, "-1", "JPY"),
@@ -82,7 +92,8 @@ func TestPostingTotalCost(t *testing.T) {
 			posting: &Posting{
 				Amount: amount(t, "3", "STOCK"),
 				Cost: &CostSpec{
-					Total: amount(t, "-1", "JPY"),
+					Total:    decPtr(t, "-1"),
+					Currency: "JPY",
 				},
 			},
 			want: amount(t, "1", "JPY"),
@@ -92,8 +103,9 @@ func TestPostingTotalCost(t *testing.T) {
 			posting: &Posting{
 				Amount: amount(t, "10", "HOOL"),
 				Cost: &CostSpec{
-					PerUnit: amount(t, "502.12", "USD"),
-					Total:   amount(t, "9.95", "USD"),
+					PerUnit:  decPtr(t, "502.12"),
+					Total:    decPtr(t, "9.95"),
+					Currency: "USD",
 				},
 			},
 			want: amount(t, "5031.15", "USD"), // 10 * 502.12 + 9.95
@@ -103,20 +115,28 @@ func TestPostingTotalCost(t *testing.T) {
 			posting: &Posting{
 				Amount: amount(t, "-10", "HOOL"),
 				Cost: &CostSpec{
-					PerUnit: amount(t, "502.12", "USD"),
-					Total:   amount(t, "9.95", "USD"),
+					PerUnit:  decPtr(t, "502.12"),
+					Total:    decPtr(t, "9.95"),
+					Currency: "USD",
 				},
 			},
 			// -10 * 502.12 = -5021.2; sign(-) * |9.95| = -9.95; sum = -5031.15
 			want: amount(t, "-5031.15", "USD"),
 		},
 		{
+			// Mismatched currencies via *Cost (CostSpec carries a
+			// single Currency field, so the mismatch is only
+			// constructible through the booked Cost's two retention
+			// Amount fields). The defensive check in TotalCost still
+			// fires here.
 			name: "combined currencies disagree",
 			posting: &Posting{
 				Amount: amount(t, "10", "HOOL"),
-				Cost: &CostSpec{
-					PerUnit: amount(t, "100", "USD"),
-					Total:   amount(t, "5", "EUR"),
+				Cost: &Cost{
+					Number:   dec(t, "100"),
+					Currency: "USD",
+					PerUnit:  amount(t, "100", "USD"),
+					Total:    amount(t, "5", "EUR"),
 				},
 			},
 			wantErr: true,
@@ -128,7 +148,8 @@ func TestPostingTotalCost(t *testing.T) {
 			posting: &Posting{
 				Amount: amount(t, "3", "STOCK"),
 				Cost: &CostSpec{
-					Total: amount(t, "1", "JPY"),
+					Total:    decPtr(t, "1"),
+					Currency: "JPY",
 				},
 			},
 			want: amount(t, "1", "JPY"),
@@ -159,7 +180,7 @@ func TestPostingTotalCost_ResultIsFreshAmount(t *testing.T) {
 	// posting's CostSpec.
 	p := &Posting{
 		Amount: amount(t, "1", "STOCK"),
-		Cost:   &CostSpec{PerUnit: amount(t, "5", "USD")},
+		Cost:   &CostSpec{PerUnit: decPtr(t, "5"), Currency: "USD"},
 	}
 	got, err := p.TotalCost()
 	if err != nil {
@@ -170,7 +191,7 @@ func TestPostingTotalCost_ResultIsFreshAmount(t *testing.T) {
 	}
 	got.Number.Set(&apd.Decimal{}) // overwrite to zero
 	cs := p.Cost.(*CostSpec)
-	if cs.PerUnit.Number.String() != "5" {
-		t.Errorf("TotalCost() mutating result corrupted CostSpec: PerUnit.Number = %s", cs.PerUnit.Number.String())
+	if cs.PerUnit.String() != "5" {
+		t.Errorf("TotalCost() mutating result corrupted CostSpec: PerUnit = %s", cs.PerUnit.String())
 	}
 }

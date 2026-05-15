@@ -105,8 +105,10 @@ func TestNewCostMatcherNilWithHint(t *testing.T) {
 }
 
 func TestNewCostMatcherPerUnit(t *testing.T) {
+	perUnit := decimalVal(t, "100")
 	spec := &ast.CostSpec{
-		PerUnit: &ast.Amount{Number: decimalVal(t, "100"), Currency: "USD"},
+		PerUnit:  &perUnit,
+		Currency: "USD",
 	}
 	m := NewCostMatcher(spec, "")
 	if !m.HasPerUnit {
@@ -122,8 +124,10 @@ func TestNewCostMatcherPerUnit(t *testing.T) {
 }
 
 func TestNewCostMatcherTotalOnly(t *testing.T) {
+	total := decimalVal(t, "500")
 	spec := &ast.CostSpec{
-		Total: &ast.Amount{Number: decimalVal(t, "500"), Currency: "USD"},
+		Total:    &total,
+		Currency: "USD",
 	}
 	m := NewCostMatcher(spec, "")
 	if m.HasPerUnit {
@@ -142,9 +146,12 @@ func TestNewCostMatcherCombinedForm(t *testing.T) {
 	// PerUnit alone — it would never match the lot it helped create.
 	// The Total is informational for gain calculation, and lot
 	// selection is currency-only.
+	perUnit := decimalVal(t, "100")
+	total := decimalVal(t, "500")
 	spec := &ast.CostSpec{
-		PerUnit: &ast.Amount{Number: decimalVal(t, "100"), Currency: "USD"},
-		Total:   &ast.Amount{Number: decimalVal(t, "500"), Currency: "USD"},
+		PerUnit:  &perUnit,
+		Total:    &total,
+		Currency: "USD",
 	}
 	m := NewCostMatcher(spec, "")
 	if m.HasPerUnit {
@@ -173,10 +180,12 @@ func TestNewCostMatcherCombinedForm(t *testing.T) {
 
 func TestNewCostMatcherDateAndLabel(t *testing.T) {
 	date := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	perUnit := decimalVal(t, "100")
 	spec := &ast.CostSpec{
-		PerUnit: &ast.Amount{Number: decimalVal(t, "100"), Currency: "USD"},
-		Date:    &date,
-		Label:   "lot-a",
+		PerUnit:  &perUnit,
+		Currency: "USD",
+		Date:     &date,
+		Label:    "lot-a",
 	}
 	m := NewCostMatcher(spec, "")
 	if !m.HasDate {

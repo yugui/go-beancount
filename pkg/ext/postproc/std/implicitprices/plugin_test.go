@@ -65,7 +65,7 @@ func filterPrices(ds []ast.Directive) []*ast.Price {
 // transaction date with the cost as price.
 func TestSimpleCostBased(t *testing.T) {
 	units := amt(t, "10", "HOOL")
-	per := amt(t, "564.20", "USD")
+	per := dec(t, "564.20")
 	txDate := time.Date(2024, 1, 5, 0, 0, 0, 0, time.UTC)
 	tx := &ast.Transaction{
 		Date: txDate,
@@ -74,7 +74,7 @@ func TestSimpleCostBased(t *testing.T) {
 			{
 				Account: "Assets:Brokerage",
 				Amount:  &units,
-				Cost:    &ast.CostSpec{PerUnit: &per},
+				Cost:    &ast.CostSpec{PerUnit: &per, Currency: "USD"},
 			},
 		},
 	}
@@ -174,7 +174,7 @@ func TestTotalPriceAnnotation(t *testing.T) {
 // yields a Price with per-unit derived from total/|units|.
 func TestTotalCostAnnotation(t *testing.T) {
 	units := amt(t, "10", "HOOL")
-	tot := amt(t, "5642", "USD")
+	tot := dec(t, "5642")
 	txDate := time.Date(2024, 4, 1, 0, 0, 0, 0, time.UTC)
 	tx := &ast.Transaction{
 		Date: txDate,
@@ -183,7 +183,7 @@ func TestTotalCostAnnotation(t *testing.T) {
 			{
 				Account: "Assets:Brokerage",
 				Amount:  &units,
-				Cost:    &ast.CostSpec{Total: &tot},
+				Cost:    &ast.CostSpec{Total: &tot, Currency: "USD"},
 			},
 		},
 	}
@@ -240,7 +240,7 @@ func TestNoCostNoPriceNoEmission(t *testing.T) {
 // preserving posting order.
 func TestMultiplePostingsMultipleEmissions(t *testing.T) {
 	units1 := amt(t, "10", "HOOL")
-	per1 := amt(t, "100", "USD")
+	per1 := dec(t, "100")
 	units2 := amt(t, "5", "AAPL")
 	pa2 := &ast.PriceAnnotation{Amount: amt(t, "150", "USD"), IsTotal: false}
 	txDate := time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC)
@@ -248,7 +248,7 @@ func TestMultiplePostingsMultipleEmissions(t *testing.T) {
 		Date: txDate,
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Brokerage", Amount: &units1, Cost: &ast.CostSpec{PerUnit: &per1}},
+			{Account: "Assets:Brokerage", Amount: &units1, Cost: &ast.CostSpec{PerUnit: &per1, Currency: "USD"}},
 			{Account: "Assets:Brokerage", Amount: &units2, Price: pa2},
 		},
 	}
@@ -287,12 +287,12 @@ func TestPreservesOriginalDirectives(t *testing.T) {
 		Comment: "year start",
 	}
 	units := amt(t, "10", "HOOL")
-	per := amt(t, "100", "USD")
+	per := dec(t, "100")
 	tx := &ast.Transaction{
 		Date: time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per}},
+			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per, Currency: "USD"}},
 		},
 	}
 	input := []ast.Directive{openDir, priceDir, noteDir, tx}
@@ -375,8 +375,8 @@ func TestCanceledContext(t *testing.T) {
 // synthesized prices must not share pointers with input data.
 func TestNoDirectiveMutation(t *testing.T) {
 	units := amt(t, "10", "HOOL")
-	per := amt(t, "100", "USD")
-	cost := &ast.CostSpec{PerUnit: &per}
+	per := dec(t, "100")
+	cost := &ast.CostSpec{PerUnit: &per, Currency: "USD"}
 	tx := &ast.Transaction{
 		Date: time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
@@ -389,7 +389,7 @@ func TestNoDirectiveMutation(t *testing.T) {
 	origAccount := tx.Postings[0].Account
 	origCostPtr := tx.Postings[0].Cost
 	origAmtPtr := tx.Postings[0].Amount
-	origPerNum := per.Number
+	origPerNum := per
 
 	in := api.Input{Directives: seqOf([]ast.Directive{tx})}
 	res, err := apply(context.Background(), in)
@@ -409,8 +409,8 @@ func TestNoDirectiveMutation(t *testing.T) {
 	if tx.Postings[0].Amount != origAmtPtr {
 		t.Errorf("apply mutated tx.Postings[0].Amount pointer")
 	}
-	if per.Number.Cmp(&origPerNum) != 0 {
-		t.Errorf("apply mutated cost per-unit number: %s -> %s", origPerNum.String(), per.Number.String())
+	if per.Cmp(&origPerNum) != 0 {
+		t.Errorf("apply mutated cost per-unit number: %s -> %s", origPerNum.String(), per.String())
 	}
 
 	// The synthesized Price's Amount.Number must be a freshly
@@ -421,8 +421,8 @@ func TestNoDirectiveMutation(t *testing.T) {
 		t.Fatalf("len(prices) = %d, want 1", len(prices))
 	}
 	prices[0].Amount.Number.SetInt64(99999)
-	if per.Number.Cmp(&origPerNum) != 0 {
-		t.Errorf("mutating synthesized Price.Amount.Number leaked into input cost: %s vs original %s", per.Number.String(), origPerNum.String())
+	if per.Cmp(&origPerNum) != 0 {
+		t.Errorf("mutating synthesized Price.Amount.Number leaked into input cost: %s vs original %s", per.String(), origPerNum.String())
 	}
 }
 
@@ -432,13 +432,13 @@ func TestNoDirectiveMutation(t *testing.T) {
 // quote; transaction date → emission date).
 func TestExactPriceFields(t *testing.T) {
 	units := amt(t, "10", "HOOL")
-	per := amt(t, "564.20", "USD")
+	per := dec(t, "564.20")
 	txDate := time.Date(2024, 7, 4, 0, 0, 0, 0, time.UTC)
 	tx := &ast.Transaction{
 		Date: txDate,
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per}},
+			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per, Currency: "USD"}},
 		},
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx})}
@@ -473,7 +473,7 @@ func TestExactPriceFields(t *testing.T) {
 // A posting whose units currency is empty is similarly skipped.
 func TestZeroUnitsHandledGracefully(t *testing.T) {
 	zeroUnits := amt(t, "0", "HOOL")
-	tot := amt(t, "0", "USD")
+	tot := dec(t, "0")
 	emptyUnits := ast.Amount{Number: dec(t, "1"), Currency: ""}
 	pa := &ast.PriceAnnotation{Amount: amt(t, "1.10", "CAD"), IsTotal: true}
 	txDate := time.Date(2024, 8, 1, 0, 0, 0, 0, time.UTC)
@@ -482,7 +482,7 @@ func TestZeroUnitsHandledGracefully(t *testing.T) {
 		Flag: '*',
 		Postings: []ast.Posting{
 			// Zero units with a total-cost annotation.
-			{Account: "Assets:Brokerage", Amount: &zeroUnits, Cost: &ast.CostSpec{Total: &tot}},
+			{Account: "Assets:Brokerage", Amount: &zeroUnits, Cost: &ast.CostSpec{Total: &tot, Currency: "USD"}},
 			// Zero units with a total-price annotation.
 			{Account: "Assets:Brokerage", Amount: &zeroUnits, Price: pa},
 			// Empty-currency units (any annotation is skipped).
@@ -509,7 +509,7 @@ func TestZeroUnitsHandledGracefully(t *testing.T) {
 // `__implicit_prices__` metadata.
 func TestSynthesizedPriceSpan(t *testing.T) {
 	units1 := amt(t, "10", "HOOL")
-	per1 := amt(t, "100", "USD")
+	per1 := dec(t, "100")
 	units2 := amt(t, "5", "AAPL")
 	pa2 := &ast.PriceAnnotation{Amount: amt(t, "150", "USD"), IsTotal: false}
 	txSpan := ast.Span{
@@ -521,7 +521,7 @@ func TestSynthesizedPriceSpan(t *testing.T) {
 		Date: time.Date(2024, 5, 1, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Brokerage", Amount: &units1, Cost: &ast.CostSpec{PerUnit: &per1}},
+			{Account: "Assets:Brokerage", Amount: &units1, Cost: &ast.CostSpec{PerUnit: &per1, Currency: "USD"}},
 			{Account: "Assets:Brokerage", Amount: &units2, Price: pa2},
 		},
 	}
@@ -547,8 +547,8 @@ func TestSynthesizedPriceSpan(t *testing.T) {
 // T = 2 USD, units = 10 HOOL, the expected per-unit price is 1.2 USD.
 func TestCombinedCostForm(t *testing.T) {
 	units := amt(t, "10", "HOOL")
-	per := amt(t, "1", "USD")
-	tot := amt(t, "2", "USD")
+	per := dec(t, "1")
+	tot := dec(t, "2")
 	txDate := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	tx := &ast.Transaction{
 		Date: txDate,
@@ -557,7 +557,7 @@ func TestCombinedCostForm(t *testing.T) {
 			{
 				Account: "Assets:Brokerage",
 				Amount:  &units,
-				Cost:    &ast.CostSpec{PerUnit: &per, Total: &tot},
+				Cost:    &ast.CostSpec{PerUnit: &per, Total: &tot, Currency: "USD"},
 			},
 		},
 	}
@@ -589,7 +589,7 @@ func TestCombinedCostForm(t *testing.T) {
 // the expected per-unit price is +20 USD.
 func TestNegativeUnitsTotalForm(t *testing.T) {
 	units := amt(t, "-10", "HOOL")
-	tot := amt(t, "200", "USD")
+	tot := dec(t, "200")
 	txDate := time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC)
 	tx := &ast.Transaction{
 		Date: txDate,
@@ -598,7 +598,7 @@ func TestNegativeUnitsTotalForm(t *testing.T) {
 			{
 				Account: "Assets:Brokerage",
 				Amount:  &units,
-				Cost:    &ast.CostSpec{Total: &tot},
+				Cost:    &ast.CostSpec{Total: &tot, Currency: "USD"},
 			},
 		},
 	}
@@ -626,12 +626,12 @@ func TestNegativeUnitsTotalForm(t *testing.T) {
 // exercising the in-loop cancellation poll.
 func TestCanceledContextMidLoop(t *testing.T) {
 	units := amt(t, "10", "HOOL")
-	per := amt(t, "100", "USD")
+	per := dec(t, "100")
 	tx := &ast.Transaction{
 		Date: time.Date(2024, 8, 1, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per}},
+			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per, Currency: "USD"}},
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -650,14 +650,14 @@ func TestCanceledContextMidLoop(t *testing.T) {
 // Upstream maintains the same dedup map; this test pins the behavior.
 func TestDeduplication(t *testing.T) {
 	units := amt(t, "10", "HOOL")
-	per := amt(t, "100", "USD")
+	per := dec(t, "100")
 	txDate := time.Date(2024, 9, 1, 0, 0, 0, 0, time.UTC)
 	tx := &ast.Transaction{
 		Date: txDate,
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per}},
-			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per}},
+			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per, Currency: "USD"}},
+			{Account: "Assets:Brokerage", Amount: &units, Cost: &ast.CostSpec{PerUnit: &per, Currency: "USD"}},
 		},
 	}
 	in := api.Input{Directives: seqOf([]ast.Directive{tx})}

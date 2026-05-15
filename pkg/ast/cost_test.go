@@ -31,11 +31,11 @@ func TestLowerCostSpec_PerUnit(t *testing.T) {
 	if cs.PerUnit == nil {
 		t.Fatal("PerUnit is nil")
 	}
-	if got := cs.PerUnit.Number.String(); got != "100" {
-		t.Errorf("PerUnit.Number = %q, want %q", got, "100")
+	if got := cs.PerUnit.String(); got != "100" {
+		t.Errorf("PerUnit = %q, want %q", got, "100")
 	}
-	if cs.PerUnit.Currency != "USD" {
-		t.Errorf("PerUnit.Currency = %q, want %q", cs.PerUnit.Currency, "USD")
+	if cs.Currency != "USD" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
 	}
 	if cs.Date != nil {
 		t.Errorf("Date = %v, want nil", cs.Date)
@@ -70,11 +70,11 @@ func TestLowerCostSpec_Total(t *testing.T) {
 	if cs.Total == nil {
 		t.Fatal("Total is nil")
 	}
-	if got := cs.Total.Number.String(); got != "1000" {
-		t.Errorf("Total.Number = %q, want %q", got, "1000")
+	if got := cs.Total.String(); got != "1000" {
+		t.Errorf("Total = %q, want %q", got, "1000")
 	}
-	if cs.Total.Currency != "USD" {
-		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
+	if cs.Currency != "USD" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
 	}
 }
 
@@ -100,8 +100,11 @@ func TestLowerCostSpec_WithDateAndLabel(t *testing.T) {
 	if cs.PerUnit == nil {
 		t.Fatal("PerUnit is nil")
 	}
-	if got := cs.PerUnit.Number.String(); got != "100" {
-		t.Errorf("PerUnit.Number = %q, want %q", got, "100")
+	if got := cs.PerUnit.String(); got != "100" {
+		t.Errorf("PerUnit = %q, want %q", got, "100")
+	}
+	if cs.Currency != "USD" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
 	}
 	if cs.Date == nil {
 		t.Fatal("Date is nil")
@@ -139,11 +142,11 @@ func TestLowerCostSpec_TotalWithDateAndLabel(t *testing.T) {
 	if cs.Total == nil {
 		t.Fatal("Total is nil")
 	}
-	if got := cs.Total.Number.String(); got != "1000" {
-		t.Errorf("Total.Number = %q, want %q", got, "1000")
+	if got := cs.Total.String(); got != "1000" {
+		t.Errorf("Total = %q, want %q", got, "1000")
 	}
-	if cs.Total.Currency != "USD" {
-		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
+	if cs.Currency != "USD" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
 	}
 	if cs.Date == nil {
 		t.Fatal("Date is nil")
@@ -247,20 +250,17 @@ func TestLowerCostSpec_Combined(t *testing.T) {
 	if cs.PerUnit == nil {
 		t.Fatal("PerUnit is nil")
 	}
-	if got := cs.PerUnit.Number.String(); got != "502.12" {
-		t.Errorf("PerUnit.Number = %q, want %q", got, "502.12")
-	}
-	if cs.PerUnit.Currency != "USD" {
-		t.Errorf("PerUnit.Currency = %q, want %q (inherited)", cs.PerUnit.Currency, "USD")
+	if got := cs.PerUnit.String(); got != "502.12" {
+		t.Errorf("PerUnit = %q, want %q", got, "502.12")
 	}
 	if cs.Total == nil {
 		t.Fatal("Total is nil")
 	}
-	if got := cs.Total.Number.String(); got != "9.95" {
-		t.Errorf("Total.Number = %q, want %q", got, "9.95")
+	if got := cs.Total.String(); got != "9.95" {
+		t.Errorf("Total = %q, want %q", got, "9.95")
 	}
-	if cs.Total.Currency != "USD" {
-		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
+	if cs.Currency != "USD" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
 	}
 }
 
@@ -274,17 +274,14 @@ func TestLowerCostSpec_CombinedExplicitPerUnitCurrency(t *testing.T) {
 	if cs.PerUnit == nil || cs.Total == nil {
 		t.Fatalf("PerUnit=%v Total=%v, want both set", cs.PerUnit, cs.Total)
 	}
-	if cs.PerUnit.Currency != "USD" {
-		t.Errorf("PerUnit.Currency = %q, want %q", cs.PerUnit.Currency, "USD")
+	if cs.Currency != "USD" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
 	}
-	if cs.Total.Currency != "USD" {
-		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
+	if got := cs.PerUnit.String(); got != "502.12" {
+		t.Errorf("PerUnit = %q, want %q", got, "502.12")
 	}
-	if got := cs.PerUnit.Number.String(); got != "502.12" {
-		t.Errorf("PerUnit.Number = %q, want %q", got, "502.12")
-	}
-	if got := cs.Total.Number.String(); got != "9.95" {
-		t.Errorf("Total.Number = %q, want %q", got, "9.95")
+	if got := cs.Total.String(); got != "9.95" {
+		t.Errorf("Total = %q, want %q", got, "9.95")
 	}
 }
 
@@ -298,17 +295,14 @@ func TestLowerCostSpec_CombinedWithDateAndLabel(t *testing.T) {
 	if cs.PerUnit == nil || cs.Total == nil {
 		t.Fatalf("PerUnit=%v Total=%v, want both set", cs.PerUnit, cs.Total)
 	}
-	if got := cs.PerUnit.Number.String(); got != "502.12" {
-		t.Errorf("PerUnit.Number = %q, want %q", got, "502.12")
+	if got := cs.PerUnit.String(); got != "502.12" {
+		t.Errorf("PerUnit = %q, want %q", got, "502.12")
 	}
-	if cs.PerUnit.Currency != "USD" {
-		t.Errorf("PerUnit.Currency = %q, want %q", cs.PerUnit.Currency, "USD")
+	if cs.Currency != "USD" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
 	}
-	if got := cs.Total.Number.String(); got != "9.95" {
-		t.Errorf("Total.Number = %q, want %q", got, "9.95")
-	}
-	if cs.Total.Currency != "USD" {
-		t.Errorf("Total.Currency = %q, want %q", cs.Total.Currency, "USD")
+	if got := cs.Total.String(); got != "9.95" {
+		t.Errorf("Total = %q, want %q", got, "9.95")
 	}
 	if cs.Date == nil {
 		t.Fatal("Date is nil")
@@ -497,11 +491,11 @@ func TestLowerPosting_WithCostAndPrice(t *testing.T) {
 	if cs.PerUnit == nil {
 		t.Fatal("Cost.PerUnit is nil")
 	}
-	if got := cs.PerUnit.Number.String(); got != "100" {
-		t.Errorf("Cost.PerUnit.Number = %q, want %q", got, "100")
+	if got := cs.PerUnit.String(); got != "100" {
+		t.Errorf("Cost.PerUnit = %q, want %q", got, "100")
 	}
-	if cs.PerUnit.Currency != "USD" {
-		t.Errorf("Cost.PerUnit.Currency = %q, want %q", cs.PerUnit.Currency, "USD")
+	if cs.Currency != "USD" {
+		t.Errorf("Cost.Currency = %q, want %q", cs.Currency, "USD")
 	}
 	if p.Price == nil {
 		t.Fatal("Price is nil")

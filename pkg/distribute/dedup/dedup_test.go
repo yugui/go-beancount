@@ -22,6 +22,14 @@ func dec(t *testing.T, s string) apd.Decimal {
 	return d
 }
 
+// decp returns a freshly allocated *apd.Decimal parsed from s. Used
+// by CostSpec test fixtures where PerUnit / Total are decimal pointers.
+func decp(t *testing.T, s string) *apd.Decimal {
+	t.Helper()
+	d := dec(t, s)
+	return &d
+}
+
 // txn builds a Transaction with the given narration, payee, and
 // postings — enough to drive equality tests without going through the
 // parser, which keeps Unicode encoding under direct control.
@@ -579,8 +587,8 @@ func TestEquivalent_CostDifference(t *testing.T) {
 		return p
 	}
 	t.Run("Label", func(t *testing.T) {
-		a := txn("buy", "", stock(&ast.CostSpec{PerUnit: &ast.Amount{Number: dec(t, "10"), Currency: "USD"}, Label: "lot-A"}), cash)
-		b := txn("buy", "", stock(&ast.CostSpec{PerUnit: &ast.Amount{Number: dec(t, "10"), Currency: "USD"}, Label: "lot-B"}), cash)
+		a := txn("buy", "", stock(&ast.CostSpec{PerUnit: decp(t, "10"), Currency: "USD", Label: "lot-A"}), cash)
+		b := txn("buy", "", stock(&ast.CostSpec{PerUnit: decp(t, "10"), Currency: "USD", Label: "lot-B"}), cash)
 		if k := equivalent(a, b, "route-account", nil); k != MatchNone {
 			t.Errorf("equivalent across diverging Cost.Label: got %v, want MatchNone", k)
 		}
@@ -588,8 +596,8 @@ func TestEquivalent_CostDifference(t *testing.T) {
 	t.Run("Date", func(t *testing.T) {
 		tA := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 		tB := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-		a := txn("buy", "", stock(&ast.CostSpec{PerUnit: &ast.Amount{Number: dec(t, "10"), Currency: "USD"}, Date: &tA}), cash)
-		b := txn("buy", "", stock(&ast.CostSpec{PerUnit: &ast.Amount{Number: dec(t, "10"), Currency: "USD"}, Date: &tB}), cash)
+		a := txn("buy", "", stock(&ast.CostSpec{PerUnit: decp(t, "10"), Currency: "USD", Date: &tA}), cash)
+		b := txn("buy", "", stock(&ast.CostSpec{PerUnit: decp(t, "10"), Currency: "USD", Date: &tB}), cash)
 		if k := equivalent(a, b, "route-account", nil); k != MatchNone {
 			t.Errorf("equivalent across diverging Cost.Date: got %v, want MatchNone", k)
 		}

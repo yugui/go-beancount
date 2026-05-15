@@ -70,12 +70,12 @@ func amt(t *testing.T, number, currency string) ast.Amount {
 func salePosting(t *testing.T, account, units, unitsCur, costPerUnit, costCur, price, priceCur string) ast.Posting {
 	t.Helper()
 	a := amt(t, units, unitsCur)
-	c := amt(t, costPerUnit, costCur)
+	c := dec(t, costPerUnit)
 	pr := amt(t, price, priceCur)
 	return ast.Posting{
 		Account: ast.Account(account),
 		Amount:  &a,
-		Cost:    &ast.CostSpec{PerUnit: &c},
+		Cost:    &ast.CostSpec{PerUnit: &c, Currency: costCur},
 		Price:   &ast.PriceAnnotation{Amount: pr},
 	}
 }
@@ -86,12 +86,12 @@ func salePosting(t *testing.T, account, units, unitsCur, costPerUnit, costCur, p
 func saleTotalPosting(t *testing.T, account, units, unitsCur, costPerUnit, costCur, total, totalCur string) ast.Posting {
 	t.Helper()
 	a := amt(t, units, unitsCur)
-	c := amt(t, costPerUnit, costCur)
+	c := dec(t, costPerUnit)
 	pr := amt(t, total, totalCur)
 	return ast.Posting{
 		Account: ast.Account(account),
 		Amount:  &a,
-		Cost:    &ast.CostSpec{PerUnit: &c},
+		Cost:    &ast.CostSpec{PerUnit: &c, Currency: costCur},
 		Price:   &ast.PriceAnnotation{Amount: pr, IsTotal: true},
 	}
 }
@@ -229,11 +229,11 @@ func TestNonSaleTxnIgnored(t *testing.T) {
 // guard.
 func TestCostWithoutPrice(t *testing.T) {
 	a := amt(t, "-10", "AAPL")
-	cost := amt(t, "150.00", "USD")
+	cost := dec(t, "150.00")
 	cur := ast.Posting{
 		Account: ast.Account("Assets:Inv"),
 		Amount:  &a,
-		Cost:    &ast.CostSpec{PerUnit: &cost},
+		Cost:    &ast.CostSpec{PerUnit: &cost, Currency: "USD"},
 	}
 	tx := txn(2024, 6, 1,
 		cur,

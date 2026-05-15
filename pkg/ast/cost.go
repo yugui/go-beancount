@@ -8,26 +8,25 @@ import (
 )
 
 // TotalCost computes the cost-currency contribution of this posting,
-// resolving CostSpec.PerUnit and CostSpec.Total uniformly so callers do
-// not need to branch on which field is populated.
+// resolving the CostSpec's per-unit and total numbers uniformly so
+// callers do not need to branch on which field is populated.
 //
 // The result is signed: the sign of p.Amount.Number propagates so the
 // returned weight cancels against the per-currency totals of a balanced
 // transaction. The mapping is:
 //
 //   - p.Amount == nil (auto-posting): (nil, nil).
-//   - p.Cost == nil, or p.Cost has neither PerUnit nor Total: (nil, nil).
-//     Callers treat this as "no cost contribution" and fall back to
-//     units in the posting's commodity currency.
-//   - PerUnit only: units * PerUnit, in PerUnit.Currency.
-//   - Total only: sign(units) * |Total|, in Total.Currency. Mirrors the
-//     "{{T CUR}}" balance rule; the formulation is exact (no division)
-//     so values like {{1 JPY}} on 3 STOCK round-trip without precision
-//     loss.
+//   - p.Cost == nil, or both [CostHolder.GetPerUnit] and
+//     [CostHolder.GetTotal] return nil: (nil, nil). Callers treat this
+//     as "no cost contribution" and fall back to units in the posting's
+//     commodity currency.
+//   - PerUnit only: units * PerUnit, in the cost currency.
+//   - Total only: sign(units) * |Total|, in the cost currency. Mirrors
+//     the "{{T CUR}}" balance rule; the formulation is exact (no
+//     division) so values like {{1 JPY}} on 3 STOCK round-trip without
+//     precision loss.
 //   - Both set ({X # T CUR}): units*PerUnit + sign(units)*|Total|, in
-//     the shared cost currency. Returns an error if the PerUnit and
-//     Total currencies disagree (lowering enforces equality; the check
-//     is defensive).
+//     the shared cost currency.
 //
 // The returned Amount is freshly allocated; the caller may mutate its
 // fields without affecting the receiver.
@@ -194,19 +193,15 @@ type CostHolder interface {
 	// [*Cost], both defined in this package, satisfy it.
 	isCostHolder()
 
-	// GetPerUnit returns the user-written per-unit literal, or nil if
-	// none was specified. For a booked [*Cost] the field is also
-	// populated for lot-driven reductions, so the printer renders the
-	// resolved canonical form.
+	// GetPerUnit returns the user-written per-unit literal as an
+	// [Amount], or nil if none was specified.
 	GetPerUnit() *Amount
-	// GetTotal returns the user-written surcharge total, or nil if
-	// none was specified. Distinguishes `{{Y CUR}}` (PerUnit nil,
-	// Total non-nil) and `{X CUR, # CUR}` (both non-nil) from
-	// `{X CUR}` (PerUnit non-nil, Total nil).
+	// GetTotal returns the user-written surcharge total as an
+	// [Amount], or nil if none was specified.
 	GetTotal() *Amount
-	// GetCurrency returns the cost currency. For [*CostSpec] it is
-	// derived from whichever of PerUnit / Total is non-nil and is
-	// "" if neither is set. For [*Cost] it is the Currency field.
+	// GetCurrency returns the cost currency, or "" if unspecified.
+	// Callers may rely on this being a constant-time, allocation-free
+	// read; safe to call in hot paths.
 	GetCurrency() string
 	// GetDate returns the acquisition date and a boolean indicating
 	// whether the date is set. The comma-ok return unifies the two
@@ -229,25 +224,26 @@ var (
 
 func (*CostSpec) isCostHolder() {}
 
-// GetPerUnit returns the user-written per-unit literal, or nil.
-func (c *CostSpec) GetPerUnit() *Amount { return c.PerUnit }
-
-// GetTotal returns the user-written surcharge total, or nil.
-func (c *CostSpec) GetTotal() *Amount { return c.Total }
-
-// GetCurrency derives the cost currency from whichever of PerUnit /
-// Total is non-nil; returns "" if neither is set. The combined form
-// requires the two currencies to agree, enforced elsewhere; this
-// accessor returns PerUnit's currency when both are set.
-func (c *CostSpec) GetCurrency() string {
-	if c.PerUnit != nil {
-		return c.PerUnit.Currency
+// GetPerUnit returns the per-unit number as an [Amount], or nil if
+// either the number or currency is unset.
+func (c *CostSpec) GetPerUnit() *Amount {
+	if c.PerUnit == nil || c.Currency == "" {
+		return nil
 	}
-	if c.Total != nil {
-		return c.Total.Currency
-	}
-	return ""
+	return &Amount{Number: *c.PerUnit, Currency: c.Currency}
 }
+
+// GetTotal returns the total number as an [Amount], or nil if either
+// the number or currency is unset.
+func (c *CostSpec) GetTotal() *Amount {
+	if c.Total == nil || c.Currency == "" {
+		return nil
+	}
+	return &Amount{Number: *c.Total, Currency: c.Currency}
+}
+
+// GetCurrency returns the cost currency, or "" if unspecified.
+func (c *CostSpec) GetCurrency() string { return c.Currency }
 
 // GetDate returns the user-written acquisition date and whether it
 // was set; the boolean is false iff the Date field is nil.
@@ -274,8 +270,7 @@ func (c *Cost) GetPerUnit() *Amount { return c.PerUnit }
 // GetTotal returns the retained surcharge total, or nil.
 func (c *Cost) GetTotal() *Amount { return c.Total }
 
-// GetCurrency returns the cost currency, which is always set after
-// booking.
+// GetCurrency returns the cost currency, always set after booking.
 func (c *Cost) GetCurrency() string { return c.Currency }
 
 // GetDate returns the acquisition date and whether it is set. The

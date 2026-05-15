@@ -48,15 +48,19 @@ func samplePriceAnnotation() *PriceAnnotation {
 }
 
 // sampleCostSpec builds a fully populated *CostSpec including
-// PerUnit, Total, Date, and Label so all branches of Clone exercise.
+// PerUnit, Total, Currency, Date, and Label so all branches of Clone
+// exercise.
 func sampleCostSpec() *CostSpec {
 	d := time.Date(2024, time.March, 15, 0, 0, 0, 0, time.UTC)
+	per := cloneTestDecimal("100")
+	tot := cloneTestDecimal("1.50")
 	return &CostSpec{
-		Span:    Span{Start: Position{Filename: "f.bean", Line: 5}},
-		PerUnit: &Amount{Number: cloneTestDecimal("100"), Currency: "USD"},
-		Total:   &Amount{Number: cloneTestDecimal("1.50"), Currency: "USD"},
-		Date:    &d,
-		Label:   "lot-a",
+		Span:     Span{Start: Position{Filename: "f.bean", Line: 5}},
+		PerUnit:  &per,
+		Total:    &tot,
+		Currency: "USD",
+		Date:     &d,
+		Label:    "lot-a",
 	}
 }
 
@@ -169,12 +173,12 @@ func TestCostSpecClone(t *testing.T) {
 
 	// Mutating clone fields must not affect the original.
 	mutated := cloneTestDecimal("777")
-	got.PerUnit.Number.Set(&mutated)
-	if orig.PerUnit.Number.Cmp(&got.PerUnit.Number) == 0 {
+	got.PerUnit.Set(&mutated)
+	if orig.PerUnit.Cmp(got.PerUnit) == 0 {
 		t.Errorf("CostSpec.Clone: mutating clone PerUnit changed original; want independent buffers")
 	}
-	got.Total.Number.Set(&mutated)
-	if orig.Total.Number.Cmp(&got.Total.Number) == 0 {
+	got.Total.Set(&mutated)
+	if orig.Total.Cmp(got.Total) == 0 {
 		t.Errorf("CostSpec.Clone: mutating clone Total changed original; want independent buffers")
 	}
 	*got.Date = time.Date(2099, time.December, 31, 0, 0, 0, 0, time.UTC)

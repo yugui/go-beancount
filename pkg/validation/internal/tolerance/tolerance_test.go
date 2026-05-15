@@ -96,13 +96,13 @@ func TestInfer_CostBased(t *testing.T) {
 	// Cost-based = |1| * 0.5 * 10^-2 = 0.005.
 	// Max = 0.5.
 	units := amtStr(t, "1", "GOOG")
-	perUnit := amtStr(t, "1.00", "USD")
+	perUnit := decimalFromString(t, "1.00")
 	cash := amtStr(t, "-1", "USD")
 	postings := []ast.Posting{
 		{
 			Account: "Assets:Brokerage",
 			Amount:  &units,
-			Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			Cost:    &ast.CostSpec{PerUnit: &perUnit, Currency: "USD"},
 		},
 		{Account: "Assets:Cash", Amount: &cash},
 	}
@@ -129,13 +129,13 @@ func TestInfer_CostDominatesWhenCashIsPrecise(t *testing.T) {
 	// Cost-based  = |1| * 0.5 * 10^-2 = 0.005.
 	// Max = 0.005.
 	units := amtStr(t, "1", "GOOG")
-	perUnit := amtStr(t, "1.00", "USD")
+	perUnit := decimalFromString(t, "1.00")
 	cash := amtStr(t, "-1.000000", "USD")
 	postings := []ast.Posting{
 		{
 			Account: "Assets:Brokerage",
 			Amount:  &units,
-			Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			Cost:    &ast.CostSpec{PerUnit: &perUnit, Currency: "USD"},
 		},
 		{Account: "Assets:Cash", Amount: &cash},
 	}
@@ -158,13 +158,13 @@ func TestInfer_CostDominatesWhenCashIsPrecise(t *testing.T) {
 // only the units-based tolerance drives the result.
 func TestInfer_CostDisabledIgnoresCost(t *testing.T) {
 	units := amtStr(t, "1", "GOOG")
-	perUnit := amtStr(t, "1.00", "USD")
+	perUnit := decimalFromString(t, "1.00")
 	cash := amtStr(t, "-1.000000", "USD") // exp -6
 	postings := []ast.Posting{
 		{
 			Account: "Assets:Brokerage",
 			Amount:  &units,
-			Cost:    &ast.CostSpec{PerUnit: &perUnit},
+			Cost:    &ast.CostSpec{PerUnit: &perUnit, Currency: "USD"},
 		},
 		{Account: "Assets:Cash", Amount: &cash},
 	}
