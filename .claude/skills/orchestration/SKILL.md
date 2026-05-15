@@ -1,14 +1,14 @@
 ---
 name: orchestration
 description: Orchestrate a complex development task end-to-end (clarify goal → high-level design → persist plan → per-step detailed design → implement → multi-perspective review → converge → commit) via specialized subagents
-allowed-tools: Read Glob Grep Write Edit
+allowed-tools: Read Glob Grep Write Edit ExitPlanMode
 ---
 
 # Orchestration
 
 This skill drives a structured, multi-phase workflow for non-trivial development tasks. You — the orchestrator — never write code. You own all dialog with the user, delegate work to specialized subagents, integrate their outputs, and persist the agreed plan as a reviewable artifact.
 
-`Write` and `Edit` permissions in this skill exist for **two purposes only**: (1) writing the plan document at `docs/plans/<slug>.md` in Phase 3, and (2) appending per-step detailed-design subsections to the same plan file in Phase 4. Do not edit any other file. Implementation and fix-up are exclusively the `generator` subagent's job.
+`Write` and `Edit` permissions in this skill exist for **three purposes only**: (1) writing the plan document at `docs/plans/<slug>.md` in Phase 3, (2) appending per-step detailed-design subsections to the same plan file in Phase 4, and (3) under plan-mode entry, building up the plan in the harness-designated plan file (whose path the plan-mode preamble names; varies by environment) across Phases 1 and 2 — that path is the only writable target while plan mode is active. Do not edit any other file. Implementation and fix-up are exclusively the `generator` subagent's job.
 
 ## Subagents you orchestrate
 
@@ -16,7 +16,7 @@ This skill drives a structured, multi-phase workflow for non-trivial development
 |---|---|---|
 | `Explore` (built-in) | Read-only code reconnaissance | Phase 1, light context lookup |
 | `planner` | Design consultant — produces alternative-aware plans | Phase 2 (full plan) and Phase 4 (per-step detailed design) |
-| `generator` | Implementer of one plan step (one session reused across that step's fix-cycles via SendMessage) | Phases 5 and 7 |
+| `generator` | Implementer of one plan step (one session reused across that step's fix-cycles via SendMessage when reachable; fresh spawn with explicit `Fix-cycle context` as fallback) | Phases 5 and 7 |
 | `evaluator` | Architectural / requirement-fit reviewer | Phase 6 (parallel with go-code-reviewer) |
 | `go-code-reviewer` (skill) | Go language style reviewer | Phase 6 (parallel with evaluator) |
 
@@ -28,9 +28,22 @@ This skill drives a structured, multi-phase workflow for non-trivial development
 - **Treat user-supplied solutions as hints, not requirements.** Goals are goals; solutions are negotiable. Push back when goal and proposed solution mismatch.
 - **Critical of all proposals — including the user's.** Diplomatic, not deferential. If the user's idea is worse than an alternative, surface that.
 - **Protect your own context.** Detailed design payloads pass through your context once on the way to the plan file. Do not re-quote them in subsequent turns; reference the file path instead. The arbiter step in Phase 7 is the one place you read code directly — keep those reads narrow (specific line ranges).
-- **Preserve implementer context across fix-cycles.** The same generator session implements a step and addresses its review feedback (via SendMessage), so it remembers what it tried and why. Don't spawn a fresh generator mid-step.
+- **Preserve implementer context across fix-cycles when possible.** Try `SendMessage` to the same generator session first (it remembers what it tried and why); on failure — session terminated, not addressable, or error — spawn a fresh `generator` and pass a `Fix-cycle context` payload (current diff, prior findings with their dispositions, one-line notes on prior rounds) so the new session can reconstruct what was tried. Don't split a step across multiple sessions on purpose; the fallback is a recovery path, not the routine.
 - **You arbitrate High/Critical rejections; you do not arbitrate Medium/Low.** Generators may finalize Medium/Low rejections autonomously. High/Critical rejections come back to you as `Disputed Findings`; resolve obvious cases, escalate only genuine judgment calls.
 - **Tune subagent model per invocation when warranted.** Each subagent declares a default model; you may override it by passing `model: opus` or `model: sonnet` to the Agent tool when invoking. Defaults: `planner` and `evaluator` on opus (design judgment and review depth), `generator` on sonnet (volume implementation work). Override upward to opus when invoking `generator` for a step that touches public API design, when a step is on its 2nd-or-later fix-cycle (subtlety suspected), or when generator self-reported difficulty in a prior round. Override downward to sonnet for `planner`/`evaluator` only when the step is genuinely simple and the default's depth would be wasted.
+
+---
+
+## Plan mode integration
+
+This skill accepts two entry paths:
+
+- **Plan mode entry.** When the harness has activated plan mode (look for a `Plan mode is active` system-reminder, which names the designated plan-file path the harness wants you to write to — the absolute location varies by environment), Phases 1 and 2 are naturally compatible: they are read-only design activities. Use the designated plan file as your incremental scratchpad — it is the **only** path the harness lets you write while plan mode is on. Phase 3 then calls `ExitPlanMode` to request user approval and exit plan mode, after which you copy the agreed plan to `docs/plans/<slug>.md`.
+- **Coding mode entry.** When plan mode is not active, Phases 1 and 2 keep the draft plan in your working context (no file write yet). Phase 3 writes directly to `docs/plans/<slug>.md` without invoking `ExitPlanMode`.
+
+Detection: rely on the `Plan mode is active` system-reminder when present, or on the designated plan-file path mentioned in plan-mode preamble. If ambiguous, an early Write attempt that the harness refuses confirms plan mode is on.
+
+Phases 4-8 are identical for both entry paths — once Phase 3 finishes, you are always in coding mode with `docs/plans/<slug>.md` as the persistent plan reference.
 
 ---
 
@@ -58,6 +71,8 @@ This skill drives a structured, multi-phase workflow for non-trivial development
 
 This summary is the input to Phase 2.
 
+**Where to record the summary:** in **plan-mode entry**, write the summary as the first section of the harness-designated plan file (path given in the plan-mode preamble) — this is your only writable path until Phase 3. In **coding-mode entry**, keep the summary in your working context.
+
 ---
 
 ## Phase 2 — High-level design
@@ -77,20 +92,34 @@ This summary is the input to Phase 2.
 - Make design decisions yourself. Your role is moderator and integrator.
 - Pre-design step-internal API or abstraction choices — those are Phase 4's job, deferred until each step is about to be implemented (later steps inform later detailed designs).
 
+**Where to record the plan:** in **plan-mode entry**, append each planner revision to the harness-designated plan file — overwrite or edit in place across refinement rounds so the file always reflects the latest agreed shape. In **coding-mode entry**, keep the plan in your working context.
+
 **Exit when** the user approves the plan structure (steps, per-step detail, recommended approach).
 
 ---
 
-## Phase 3 — Persist plan
+## Phase 3 — Persist plan (and exit plan mode if active)
 
 **Participants:** orchestrator only.
 
 **Do:**
-- Derive a slug from the goal: kebab-case, ≤50 chars, alphanumeric + hyphens only.
-- Write the agreed plan to `docs/plans/<slug>.md`. Create the `docs/plans/` directory if it does not exist.
-- If the slug collides with an existing file, append a numeric suffix (`-2`, `-3`, …).
-- The plan document **must contain**: Goal, Scope, ordered Steps, per-step detail (functional requirements, modules, verification, quality requirements), Alternatives discussed, Recommended approach + rationale.
-- The per-step detail (functional requirements / modules / verification / quality requirements) is what `generator` and `evaluator` rely on to scope and judge their work. Do not skip these fields — agent definitions stay loose intentionally; the structural guarantee lives here.
+
+1. **Derive a slug** from the goal: kebab-case, ≤50 chars, alphanumeric + hyphens only. If the slug collides with an existing file under `docs/plans/`, append a numeric suffix (`-2`, `-3`, …).
+
+2. **Branch on entry path:**
+
+   - **Plan-mode entry:**
+     1. Load the `ExitPlanMode` schema once: `ToolSearch` with query `select:ExitPlanMode` (it is a deferred tool).
+     2. Finalize the harness-designated plan file so its contents are the exact plan to persist. The plan document **must contain**: Goal, Scope, ordered Steps, per-step detail (functional requirements, modules, verification, quality requirements), Alternatives discussed, Recommended approach + rationale.
+     3. Call `ExitPlanMode`. The tool reads the designated file and presents it to the user for approval; it does not take the plan content as a parameter.
+     4. After approval (plan mode is now off, Write is allowed for any path), create `docs/plans/` if it does not exist and Write the designated file's contents to `docs/plans/<slug>.md`. The designated file itself is harness-managed — leave it alone.
+
+   - **Coding-mode entry:**
+     1. Create `docs/plans/` if it does not exist.
+     2. Write the agreed plan (held in your working context) to `docs/plans/<slug>.md`. Same required sections as above.
+     3. Do **not** call `ExitPlanMode` — plan mode is not active.
+
+3. The per-step detail (functional requirements / modules / verification / quality requirements) is what `generator` and `evaluator` rely on to scope and judge their work. Do not skip these fields — agent definitions stay loose intentionally; the structural guarantee lives here.
 
 Phase 4 will append `### Detailed Design` subsections under each step section as they are picked up. Otherwise the plan is a stable reference for all later phases — do not edit it during Phases 4-8 unless the user explicitly asks for a re-plan; in that case go back to Phase 2.
 
@@ -151,7 +180,7 @@ If you skip, briefly inform the user ("Step N: skipping detailed design — inte
 **Participants:** orchestrator + `generator` subagent.
 
 **Do:**
-- Spawn a **new** `generator` agent via the Agent tool for this step. Record its agent id/name — you will reuse the same session for Phase 7 fix-cycles on this step (see Phase 7). Each step gets its own generator session; do not reuse a generator across steps.
+- Spawn a **new** `generator` agent via the Agent tool for this step. Record its agent id/name — Phase 7 will attempt SendMessage to it first for fix-cycles, and fall back to a fresh spawn with `Fix-cycle context` if SendMessage is no longer reachable (see Phase 7). Each step gets its own generator session; do not reuse a generator across steps.
 - Invoke with the following invocation header (matches Phase 4's header so the agent reads the same step section, which now contains `### Detailed Design`):
   ```
   Plan: docs/plans/<slug>.md
@@ -161,7 +190,7 @@ If you skip, briefly inform the user ("Step N: skipping detailed design — inte
 - The generator implements per the agreed detailed design (Contract is locked; Suggested Internals are advisory), runs Bazel + Gazelle, runs all tests, performs its self-simplify pass, and reports.
 - Generator may make local design decisions autonomously (and must note them in its report). It pauses for user input only when it detects a **fatal blocker** — the agreed detailed design cannot meet the step's functional requirements, or the step exposes a goal-level contradiction.
 
-**On fatal blocker:** surface to the user, then return to **Phase 4** with the blocker report as additional input to the planner. Do not attempt to patch the design from the orchestrator seat. When you return to Phase 5 after re-design, you may continue the same generator session via SendMessage with the updated Detailed Design — its prior exploration context is still useful.
+**On fatal blocker:** surface to the user, then return to **Phase 4** with the blocker report as additional input to the planner. Do not attempt to patch the design from the orchestrator seat. When you return to Phase 5 after re-design, try SendMessage to the same generator session with the updated Detailed Design first — its prior exploration context is still useful — and fall back to a fresh spawn (with the updated design and a brief "prior blocker: …" note in the prompt) if SendMessage is no longer reachable.
 
 **On non-fatal report (build/tests broken, scope blocker, or normal completion):** if broken, surface to the user; otherwise proceed to Phase 6.
 
@@ -192,14 +221,31 @@ The integrated finding list and tally drive Phase 7.
 
 ## Phase 7 — Converge
 
-**Participants:** orchestrator + `generator` subagent (continued via SendMessage) + (looping back to) Phase 6.
+**Participants:** orchestrator + `generator` subagent (continued via SendMessage when reachable, fresh spawn with `Fix-cycle context` as fallback) + (looping back to) Phase 6.
 
 **Generator continuity (important):**
-- Re-invoke `generator` for this step's fix-cycles by **SendMessage to the same agent session** spawned in Phase 5 — not a fresh `Agent` call. This preserves the implementer's context (what was tried, what was rejected and why, the shape of the code as actually written) so the fix-cycle does not have to rebuild that understanding from the diff.
-- Only spawn a new `generator` when advancing to a new step's Phase 5, or when the user explicitly asks for a fresh implementer perspective.
+- **First, try `SendMessage` to the same generator session** spawned in Phase 5 (or in this step's most recent successful fix-cycle). When it works, this preserves the implementer's context — what was tried, what was rejected and why, the shape of the code as actually written — so the fix-cycle does not have to rebuild that understanding from the diff.
+- **If SendMessage fails** (session no longer addressable, returns an error, or the runtime reports the agent terminated), fall back to spawning a **fresh `generator`** with an explicit `Fix-cycle context` payload (see step 1 below). The fix-cycle workflow in the generator's agent definition accepts both invocation shapes — what matters is that the new generator can see (a) the current diff, (b) what reviewers have already said and how prior rounds disposed of it, (c) what the new findings are.
+- Only spawn a new `generator` for non-recovery reasons when advancing to a new step's Phase 5, or when the user explicitly asks for a fresh implementer perspective.
 
 **Loop:**
-1. SendMessage the existing `generator` agent with the same `Plan: …` / `Step <N>: <title>` header and the integrated findings as the `Review feedback:` section.
+1. **Send the fix-cycle invocation to the generator:**
+
+   - **SendMessage path (preferred):** SendMessage the existing `generator` agent with the same `Plan: …` / `Step <N>: <title>` header and the integrated findings as the `Review feedback:` section.
+   - **Fresh-spawn fallback (when SendMessage fails):** spawn a new `generator` via the Agent tool with this invocation prompt shape:
+     ```
+     Plan: docs/plans/<slug>.md
+     Step <N>: <title>
+     Fix-cycle context (the prior generator session is no longer addressable):
+       - Current diff: see `git diff HEAD`
+       - Prior findings and dispositions:
+         <list with 対応 / 延期 / 却下 / Disputed, location, gist>
+       - Prior fix-cycle attempts:
+         <one-liner per round: round, what was changed, what remained>
+     Review feedback:
+       <integrated findings from this round of Phase 6>
+     ```
+     Record the new agent's id/name and use it as the SendMessage target for the **next** fix-cycle round; if that also fails, fall back again. Falling back is a recovery path, not a routine — do not pre-emptively respawn.
 2. Generator classifies each finding as **対応 / 延期 / 却下 / Disputed (High-Critical)** (per its agent definition; High/Critical rejections cannot be finalized inside the generator), applies 対応 items, runs its self-simplify pass on the new diff, re-runs tests, and reports all four buckets.
 3. **Arbiter step (orchestrator) — only when `Disputed Findings` is non-empty.** For each disputed High/Critical finding:
    - Read the relevant file/lines yourself (Read tool, narrow range).
@@ -240,11 +286,11 @@ The integrated finding list and tally drive Phase 7.
 
 | Phase | Output |
 |---|---|
-| 1 | Goal/scope summary (in-memory, confirmed by user) |
-| 2 | Approved high-level plan (in-memory, confirmed by user) |
-| 3 | `docs/plans/<slug>.md` written |
+| 1 | Goal/scope summary confirmed by user (in plan-mode designated file under plan-mode entry; otherwise in working context) |
+| 2 | Approved high-level plan (in plan-mode designated file under plan-mode entry; otherwise in working context) |
+| 3 | `docs/plans/<slug>.md` written (and plan mode exited via `ExitPlanMode` if it was active) |
 | 4 | `### Detailed Design` (Contract + Suggested Internals) appended to step; user informed (or asked); or skipped with note if skip condition met |
-| 5 | Working implementation (generator session retained for fix-cycles), all tests green, self-simplify pass done |
+| 5 | Working implementation (generator agent id recorded for SendMessage-first fix-cycles), all tests green, self-simplify pass done |
 | 6 | Integrated findings list with tally |
 | 7 | Convergence (Critical/High = 0); High/Critical disputes arbitrated by orchestrator or escalated; all dispositions surfaced |
 | 8 | Commit landed, ready for next step |
