@@ -465,3 +465,103 @@ func TestLoadFile_OverrideFilename(t *testing.T) {
 		t.Errorf("Files[0].Filename = %q, want %q", got, "virtual")
 	}
 }
+
+func TestLoadOptionsBuildsValuesAndDiagnostics(t *testing.T) {
+	t.Run("valid options accessible", func(t *testing.T) {
+		src := `option "operating_currency" "USD"
+option "inferred_tolerance_multiplier" "0.25"
+option "infer_tolerance_from_cost" "TRUE"
+`
+		ledger, err := ast.Load(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ledger.Options.StringList("operating_currency"); len(got) != 1 || got[0] != "USD" {
+			t.Errorf("operating_currency = %v, want [USD]", got)
+		}
+		d := ledger.Options.Decimal("inferred_tolerance_multiplier")
+		if d == nil {
+			t.Fatal("inferred_tolerance_multiplier is nil")
+		}
+		if got := d.String(); got != "0.25" {
+			t.Errorf("inferred_tolerance_multiplier = %q, want %q", got, "0.25")
+		}
+		if got := ledger.Options.Bool("infer_tolerance_from_cost"); !got {
+			t.Errorf("infer_tolerance_from_cost = %v, want true", got)
+		}
+	})
+
+	t.Run("malformed option produces exactly one diagnostic", func(t *testing.T) {
+		src := `option "inferred_tolerance_multiplier" "not-a-decimal"` + "\n"
+		ledger, err := ast.Load(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Locate the Option directive to get its span for identity comparison.
+		var opt *ast.Option
+		for _, d := range ledger.All() {
+			if o, ok := d.(*ast.Option); ok {
+				opt = o
+				break
+			}
+		}
+		if opt == nil {
+			t.Fatal("no Option directive found in ledger")
+		}
+		var invalids []ast.Diagnostic
+		for _, d := range ledger.Diagnostics {
+			if d.Code == "invalid-option" {
+				invalids = append(invalids, d)
+			}
+		}
+		if len(invalids) != 1 {
+			t.Fatalf("invalid-option diagnostics = %d, want 1; all diagnostics: %+v", len(invalids), ledger.Diagnostics)
+		}
+		got := invalids[0]
+		if got.Span != opt.Span {
+			t.Errorf("Span = %v, want %v (span of the option directive)", got.Span, opt.Span)
+		}
+		wantPrefix := `invalid option "inferred_tolerance_multiplier":`
+		if !strings.HasPrefix(got.Message, wantPrefix) {
+			t.Errorf("Message = %q, want prefix %q", got.Message, wantPrefix)
+		}
+	})
+
+	t.Run("last-wins for scalar", func(t *testing.T) {
+		src := `option "infer_tolerance_from_cost" "TRUE"
+option "infer_tolerance_from_cost" "FALSE"
+`
+		ledger, err := ast.Load(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ledger.Options.Bool("infer_tolerance_from_cost"); got {
+			t.Errorf("infer_tolerance_from_cost = %v, want false (last-wins)", got)
+		}
+	})
+
+	t.Run("append for StringList", func(t *testing.T) {
+		src := `option "operating_currency" "USD"
+option "operating_currency" "JPY"
+`
+		ledger, err := ast.Load(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"USD", "JPY"}
+		got := ledger.Options.StringList("operating_currency")
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("operating_currency mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("empty ledger has non-nil Options", func(t *testing.T) {
+		ledger, err := ast.Load("")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ledger.Options == nil {
+			t.Error("Options is nil, want non-nil")
+		}
+	})
+}

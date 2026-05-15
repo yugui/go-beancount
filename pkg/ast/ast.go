@@ -126,9 +126,16 @@ type File struct {
 // directives only through chronological iteration via All, Len, and At, and
 // maintains them in canonical order as an invariant. Use Insert or InsertAll
 // to add plugin-generated directives without breaking that invariant.
+//
+// Options is the typed snapshot of option directives, populated once at load
+// time. Insert, InsertAll, and ReplaceAll do not refresh it. After a
+// successful Load*, it is non-nil (registry defaults when no option directives
+// were present). It may be nil on a hand-built &Ledger{}; [OptionValues]
+// accessors are nil-safe and fall back to registry defaults.
 type Ledger struct {
 	Files       []*File      // all files in load order (root first)
 	Diagnostics []Diagnostic // merged diagnostics from all files
+	Options     *OptionValues
 
 	// entries holds directives in canonical (sortKey) order. The slice is
 	// kept sorted as an invariant; Insert and InsertAll preserve it.

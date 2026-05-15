@@ -74,6 +74,9 @@ func (ld *loader) finish() *Ledger {
 		Diagnostics: ld.diagnostics,
 	}
 	ledger.InsertAll(ld.directives)
+	opts, diags := ParseOptions(ledger)
+	ledger.Options = opts
+	ledger.Diagnostics = append(ledger.Diagnostics, diags...)
 	return ledger
 }
 
