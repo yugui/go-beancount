@@ -606,6 +606,393 @@ On the printer: the existing `formatCostHolder` is already structured as a `swit
   switch arms speak for themselves through the case labels.
 - No new exported symbols outside what the contract above lists.
 
+### Detailed Design
+
+#### Contract
+
+**New helper: `unknownCandidateCurrency`**
+
+```go
+// unknownCandidateCurrency returns the weight currency a still-unknown
+// posting will absorb in Pass 2's residual solve, or "" when the
+// currency is not yet determinable from the posting alone.
+//
+// Precedence (matches PostingWeight's selection order, restricted to
+// fields available on a posting whose Amount or cost-number is missing):
+//
+//   1. p.Cost != nil && p.Cost.GetCurrency() != "" → that currency.
+//   2. p.Price != nil → p.Price.Amount.Currency.
+//   3. otherwise "".
+//
+// MUST NOT allocate (GetCurrency is allocation-free by the Step 1
+// contract). Called once per unknown posting during Pass 1.
+func unknownCandidateCurrency(p *ast.Posting) string
+```
+
+Precedence is locked. The function is a package-internal building block
+reused by `addUnknown` and `groupForResidual` (justifies direct unit
+testing under the test-policy exception).
+
+**New type: `unknownGroup`**
+
+```go
+// unknownGroup is one (weight currency, postings) bucket produced by
+// (*postingResolution).groupForResidual. Pass 2 solves the per-currency
+// residual against booked alone and applies it to the single unknown in
+// unknown; if unknown carries more than one entry the group is reported
+// as ambiguous and dropped.
+type unknownGroup struct {
+    currency string         // weight currency; non-empty for committed groups
+    booked   []*ast.Posting // booked postings whose weight currency == currency
+    unknown  []*ast.Posting // unknown postings whose candidate currency == currency
+}
+```
+
+Field names, types, and order are locked. Zero value is meaningful:
+`currency == ""`, both slices nil. `booked` and `unknown` are aliases
+into the rebuilt `pr.postings` backing array (the same addresses
+`bindAndCollect` bound for `BookedPosting.Source`), so callers must
+treat them as read-only-during-Pass-2 pointers.
+
+**New method: `(*postingResolution).groupForResidual`**
+
+```go
+// groupForResidual partitions Pass 1's output into:
+//
+//   - committed: one unknownGroup per non-empty weight currency that
+//     has at least one unknown posting assigned to it. For each group,
+//     booked lists every booked posting whose weight currency equals
+//     the group currency, and unknown lists every unknown posting
+//     whose candidate currency (per unknownCandidateCurrency) equals
+//     the group currency. Groups whose unknown slice is empty are
+//     omitted (Pass 2 has nothing to solve for them; residual balance
+//     is the validator's concern).
+//
+//   - free: unknown postings whose candidate currency is "". An auto-
+//     posting with no price annotation is the canonical free entry; a
+//     deferred CostSpec with non-empty Currency never lands here.
+//
+// Together, committed[].unknown ∪ free covers every entry in
+// pr.unknownDesc exactly once. groupForResidual does not consult
+// pr.dropped; Pass 1 failures were never appended to pr.postings and
+// therefore have no descriptor to partition.
+func (pr *postingResolution) groupForResidual() (committed []unknownGroup, free []*ast.Posting)
+```
+
+Signature, return shape, and partition rules are locked. The "groups
+with empty unknown slice are omitted" rule is deliberate: solving a
+per-currency residual for a balanced group with no unknown to absorb it
+adds nothing (the validator already reports unbalanced transactions).
+Including them would force every consumer to re-check
+`len(g.unknown) > 0`.
+
+**Narrowed method: `(*postingResolution).bindAndCollect`**
+
+```go
+// bindAndCollect binds the Source pointers on every BookedPosting via
+// bookedDesc and returns the bound slice. Unknown-posting addresses
+// are exposed through groupForResidual instead.
+func (pr *postingResolution) bindAndCollect() []BookedPosting
+```
+
+Name retained (rename would touch every test that exercises the
+resolution path; the narrower contract is documented through the
+godoc). The old `(_, unknowns)` second return is gone.
+
+**Extended method: `(*postingResolution).addUnknown`**
+
+`addUnknown` is extended to call `unknownCandidateCurrency(p)` once at
+insertion time and stamp the result onto `unknownDesc[i].currency`. The
+descriptor's `currency` field carries the candidate from Pass 1 onward;
+Pass 2 overwrites it when it resolves the residual (so `applyDrops`'s
+"currency stamping" reads the resolved value, not the candidate, for
+committed groups).
+
+**`visitTxn` Pass 2 end-to-end behavior**
+
+After `bindAndCollect` returns the booked slice, `visitTxn` invokes
+`groupForResidual` and dispatches as follows. The branching is locked;
+helper-function decomposition is in Suggested Internals.
+
+1. **Committed groups.** For each `g` in `committed`:
+   - If `len(g.unknown) > 1`: emit `flagAmbiguousUnknowns(g.unknown)`
+     (existing function, existing per-posting wording) and continue.
+     The group's unknown postings are *not* dropped from `pr.postings`;
+     their `unknownDesc` entries already carry `g.currency`, so
+     `applyDrops` will exclude them only if some other failure marked
+     `g.currency` for drop.
+   - Otherwise (`len(g.unknown) == 1`): compute the per-currency
+     negated sum of `g.booked`'s weights in `g.currency`. Three
+     sub-cases:
+     - Internal-error path (`PostingWeight` or `apd.Add` failed): emit
+       `CodeInternalError` with the existing wording
+       (`"interpolate: posting weight: <err>"` or `"interpolate:
+       accumulate weight: <err>"`) and `markForDrop(g.currency)`.
+     - Zero sum: emit `CodeUnresolvableInterpolation` with one of the
+       existing zero-residual messages —
+       `"auto-balanced posting has no residual to absorb; every
+       currency already balances"` when the unknown's `Amount == nil`,
+       `"deferred cost cannot be interpolated: every currency already
+       balances"` otherwise. `markForDrop(g.currency)`.
+     - Non-zero sum: build `residual := &ast.Amount{Number: -sum,
+       Currency: g.currency}`. Auto-posting case (`unknown.Amount ==
+       nil`): write `unknown.Amount = residual`. Deferred-cost case:
+       `resolveCostFromResidual(unknown, residual, txn.Date)`; on error
+       append it and `markForDrop(g.currency)`. On success, re-book the
+       unknown via `bookOne` and append a `BookedPosting` to `booked`
+       mirroring today's Pass-2-single-unknown handling.
+   - Track `g.currency` in a `claimed` set regardless of outcome
+     (success, ambiguous, zero-residual): a currency is claimed as
+     soon as any committed unknown bid for it, so the free-unknown
+     dispatch in step (3) never re-tries it.
+
+2. **Compute unclaimed currencies.** After all committed groups have
+   been processed, sum the weights of *all* booked postings (including
+   the freshly-booked Pass 2 ones from step 1) by currency. The set of
+   non-zero residual currencies minus `claimed` minus `pr.dropped`
+   is `unclaimed`.
+
+3. **Free-unknown dispatch.** Branch on `len(free)`:
+   - `len(free) == 0`: no further action. Any unclaimed residual is
+     the validator's problem.
+   - `len(free) > 1`: `flagAmbiguousUnknowns(free)` (existing wording).
+   - `len(free) == 1`:
+     - `len(unclaimed) == 1`: resolve `free[0]` against the single
+       unclaimed currency exactly as today's single-unknown path.
+     - `len(unclaimed) == 0`: emit `CodeUnresolvableInterpolation` with
+       the existing zero-residual wording (auto-posting variant when
+       `Amount == nil`, deferred-cost variant otherwise — the
+       deferred-cost variant is unreachable since a deferred cost
+       would be committed, but the branch is retained for parity and
+       as a defensive guard).
+     - `len(unclaimed) > 1`: emit `CodeUnresolvableInterpolation` with
+       the existing multi-currency wording
+       `fmt.Sprintf("residual spans %d currencies %v but a single
+       unknown can only absorb one", len(unclaimed), unclaimed)`. The
+       wording, currency list, and Sprintf format string are locked
+       verbatim from today's `solveResidual` line 1007.
+
+4. **applyDrops and txn.Postings rewrite** run unchanged at the end of
+   Pass 2.
+
+**End-to-end behavior on the user's example**
+
+For the user's exact ledger, after Step 2's parser fix:
+- `Assets:A`: `Amount{10, A}`, `Cost = &CostSpec{Currency: "JPY"}`.
+- `Assets:B`: `Amount{10, B}`, `Cost = &CostSpec{Currency: "USD"}`.
+- Both Cash postings: explicit `Amount`, no Cost.
+
+Pass 1 routes both costed postings to `addUnknown` via the existing
+`CodeAugmentationRequiresCost && costNumberMissing(p.Cost)` guard.
+`unknownCandidateCurrency` returns `"JPY"` and `"USD"` respectively.
+Both Cash postings book cleanly under `addCashAugmentation`.
+
+`groupForResidual` returns:
+- `committed = [{currency: "JPY", booked: [&cash-jpy], unknown: [&A]}, {currency: "USD", booked: [&cash-usd], unknown: [&B]}]`
+- `free = nil`
+
+Pass 2 step 1 processes each committed group:
+- JPY: `-(-100) = 100 JPY` → `100 / 10 = 10` → `p.Cost = &Cost{Number:
+  10, Currency: "JPY", Date: 1970-01-01, ...}`.
+- USD: `-(-1.00) = 1.00 USD` → `1.00 / 10 = 0.10` → `p.Cost = &Cost{Number:
+  0.10, Currency: "USD", Date: 1970-01-01, ...}`.
+
+Steps 2-3 find `unclaimed = {}` and `free = []`, so no further action.
+The reducer emits zero errors.
+
+**Error codes and exact wording (locked, all reused verbatim — no new codes)**
+
+| Trigger | Code | Message |
+|---|---|---|
+| `len(committed[i].unknown) > 1` | `CodeUnresolvableInterpolation` | `flagAmbiguousUnknowns` per-posting: `"cannot interpolate cost: ..."` when deferred |
+| `len(free) > 1` | `CodeUnresolvableInterpolation` | `flagAmbiguousUnknowns` per-posting |
+| Committed group, zero residual, deferred | `CodeUnresolvableInterpolation` | `"deferred cost cannot be interpolated: every currency already balances"` |
+| Free unknown, zero `unclaimed` | `CodeUnresolvableInterpolation` | `"auto-balanced posting has no residual to absorb; every currency already balances"` |
+| Free unknown, `len(unclaimed) > 1` | `CodeUnresolvableInterpolation` | `fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(unclaimed), unclaimed)` |
+| Internal arithmetic failure | `CodeInternalError` | existing `"interpolate: ..."` family verbatim |
+
+`flagAmbiguousUnknowns` is reused without edits. Its two-arm branch on
+`p.Amount == nil` is sufficient for both the committed-multi-unknown
+case (always `Amount != nil`, deferred) and the multi-free case
+(always `Amount == nil`, auto).
+
+**Cross-step coupling**
+
+- Reads `p.Cost.GetCurrency()` (Step 1 contract, allocation-free).
+- Step 2's parser produces `CostSpec{Currency: "JPY"}` for `{ JPY }`.
+- The combined-form `{X CUR # Y CUR}` is now a parse error (Step 2).
+
+**No new exported symbols.** `unknownCandidateCurrency`, `unknownGroup`,
+`groupForResidual` are all package-private.
+
+**Second-run fixed-point invariant**
+
+`addAlreadyBooked` is invoked only when `p.Cost != nil &&
+p.Cost.IsBooked()` is true. `costNumberMissing` returns false for any
+`IsBooked` holder, so already-booked postings never reach `addUnknown`.
+`pr.unknownDesc` contains only first-run unknowns, as today.
+
+#### Suggested Internals
+
+**Splitting `solveResidual`** (Option A, recommended):
+
+```go
+// sumBookedWeights returns the per-currency net of booked weights and
+// the deterministic order currencies were first seen.
+func (r *Reducer) sumBookedWeights(booked []BookedPosting) (sums map[string]*apd.Decimal, order []string, ok bool)
+
+// negatedResidual returns -sums[currency] as a freshly allocated
+// Amount, or nil if currency is absent / sums to zero.
+func negatedResidual(sums map[string]*apd.Decimal, currency string) *ast.Amount
+```
+
+Pass 2 step 1 calls these per committed group; step 2 calls
+`sumBookedWeights` once over the full booked slice (including Pass-2
+results) to compute `unclaimed`.
+
+**Pass 2 dispatch layout in `visitTxn`**
+
+Replace today's `switch` at line 630 with:
+
+```go
+booked := pr.bindAndCollect()
+committed, free := pr.groupForResidual()
+
+claimed := make(map[string]bool, len(committed))
+for _, g := range committed {
+    claimed[g.currency] = true
+    booked = r.resolveCommittedGroup(g, booked, pr, trace, txn.Date)
+}
+
+booked = r.resolveFreeUnknown(free, booked, pr, claimed, trace, txn.Date)
+
+booked = pr.applyDrops(booked, trace, r)
+txn.Postings = pr.postings
+```
+
+`resolveCommittedGroup` and `resolveFreeUnknown` are private methods on
+`*Reducer`. Each returns the (possibly extended) `booked` slice. Either
+may call `pr.markForDrop`.
+
+**Tracking claimed currencies**
+
+`claimed[g.currency] = true` runs *regardless of outcome*. If a JPY
+committed group fails and a free auto-posting is also present, the
+free unknown must not silently bid for JPY — the user's expressed
+intent on the JPY-deferred posting wins, even when that intent failed.
+
+**`pr.unknownDesc[].currency` stamping during Pass 2 — Option a (linear scan):**
+
+For each committed group's resolved-successfully unknown, scan
+`pr.unknownDesc` for the matching `postingAt` (O(unknowns) per
+resolution). Option b (descriptor index in `unknownGroup`) was
+rejected — Pass 2 is already O(unknowns × postings) for
+`groupForResidual` itself.
+
+**`weight.go` defensive guard (recommended):**
+
+```go
+if p.Cost != nil && !p.Cost.IsBooked() && cost == nil && p.Cost.GetCurrency() != "" {
+    return nil, errors.New("PostingWeight: cost spec carries currency but no number; reducer must resolve before weighing")
+}
+```
+
+Place between line 53 and line 54. Converts the silent miscalculation
+on currency-only-spec postings into an explicit error.
+
+**Test plan**
+
+New tests in `pkg/inventory/reducer_test.go`:
+
+1. `TestReducerWalk_InterpolatesMultipleDeferred_DistinctWeightCurrency`
+   — the user's exact ledger as AST. Assert no errors and the two
+   booked Costs.
+2. `TestReducerWalk_AmbiguousMultipleDeferred_SameWeightCurrency` —
+   `10 A { JPY }`, `10 C { JPY }`, `-100 JPY` — assert two
+   `CodeUnresolvableInterpolation` errors with substring
+   `"multiple unknown posting values"`.
+3. `TestReducerWalk_CommittedPlusFree` — a `{ JPY }` deferred plus an
+   auto-posting plus mixed residuals. Assert no errors and both
+   unknowns receive the right resolution.
+4. `TestReducerWalk_CommittedPlusFree_FreeMultiResidual` — `{ JPY }`
+   deferred plus auto plus *two* unclaimed residual currencies.
+   Assert one `CodeUnresolvableInterpolation` on the auto with
+   substring `"residual spans"`.
+
+Existing interpolation tests (`TestReducerWalk_InterpolationAmbiguousMultipleDeferred`,
+`InterpolationAmbiguousMultipleResidualCurrencies`,
+`InterpolationAmbiguousDeferredPlusAutoPosting`,
+`InterpolationZeroUnits`) all use empty-Currency `{}` deferred or
+`Amount == nil` auto postings — they route to `free` and continue to
+produce the same diagnostics. No fixture changes needed.
+
+New end-to-end test in `pkg/loader/loader_test.go`:
+
+```go
+func TestLoad_CurrencyOnlyCostDistinctWeightCurrencyBalances(t *testing.T) {
+    const src = `1970-01-01 open Assets:A
+1970-01-01 open Assets:B
+1970-01-01 open Assets:Cash
+
+1970-01-01 * "txn"
+  Assets:A          10 A { JPY }
+  Assets:B          10 B { USD }
+  Assets:Cash     -100 JPY
+  Assets:Cash    -1.00 USD
+`
+    // loader.Load, assert no error-severity diagnostics.
+}
+```
+
+**Doc comments**
+
+- `unknownGroup`, `groupForResidual`, `unknownCandidateCurrency`,
+  `sumBookedWeights`, `negatedResidual` each get a 2-4 line godoc per
+  Quality Requirements; contract is short, godoc is short.
+- `bindAndCollect`'s docstring loses its "and collects the unknown
+  posting pointers" clause and gains a one-line pointer to
+  `groupForResidual`.
+- The `visitTxn` doc updates the "more than one unknown is ambiguous"
+  sentence to reflect the per-currency rule.
+
+#### Alternatives
+
+**A1. Return a single `[]unknownGroup` containing free as `currency == ""`.** Rejected: every caller re-discriminates `g.currency == ""`, defeating the partition.
+
+**A2. Include `len(unknown) == 0` groups in `committed`.** Rejected: the reducer only cares about currencies that need residual resolution; the validator runs its own pass.
+
+**A3. Solve the free unknown *before* the committed groups.** Rejected: today's invariant is "committed unknowns claim their currencies first; the auto absorbs whatever is left." Reversing would let the auto absorb a committed group's residual.
+
+**A4. Solve once over all booked, then split the residual across committed and free.** Rejected: per-currency residual is cheap; routing each committed group through its own solve keeps `resolveCostFromResidual` colocated with intent.
+
+**A5. Pre-filter `pr.dropped` inside `groupForResidual`.** Rejected: pre-filtering hides dropped currencies from the multi-residual diagnostic's `%v` printout.
+
+**A6. New diagnostic wording for committed-multi-unknown ("two deferred postings target the same weight currency").** Rejected: out of scope per the plan's "Out of scope: New error code / new diagnostic categories — error wording reuses existing strings". Logged as follow-up.
+
+**A7. Keep `bindAndCollect`'s two-return signature.** Rejected: dead-return-value bait; `groupForResidual` already exposes the unknown pointers in a more structured form.
+
+**A8. Descriptor-index field on `unknownGroup` (Option b for stamping).** Rejected: linear scan is O(unknowns); Pass 2 is already O(unknowns × postings) for `groupForResidual` itself; constant-factor win does not justify the wider contract.
+
+#### Recommendation + rationale
+
+Adopt the Contract as stated. Splitting `bindAndCollect`'s output into
+a typed partition produced by `groupForResidual` removes two
+re-discrimination passes from `visitTxn`. The free/committed split
+mirrors upstream beancount's `interpolate_group`, which is the spec
+we're targeting.
+
+Every existing diagnostic string is reused verbatim, honoring the
+"Out of scope: new diagnostic categories" clause. Tests that match on
+substrings of those wordings continue to pass.
+
+`solveResidual` split into `sumBookedWeights` + `negatedResidual`
+(Option A) beats parallel per-currency solver (Option B): the committed
+and free paths share the per-currency sum.
+
+Including the `weight.go` defensive guard is recommended — three lines
+that convert a class of silent miscalculations into explicit errors
+for third-party `PostingWeight` callers.
+
 ### Step 4 — Cleanup
 
 #### Functional requirements
