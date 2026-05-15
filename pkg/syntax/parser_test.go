@@ -1237,8 +1237,35 @@ func TestParsePostingWithCombinedCost(t *testing.T) {
 	assertRoundTrip(t, src, f)
 }
 
-func TestParsePostingWithCombinedCostExplicitPerUnitCurrency(t *testing.T) {
-	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {502.12 USD # 9.95 USD}\n  Assets:Cash\n"
+func TestParsePostingWithCombinedCostPerUnitCurrencyIsError(t *testing.T) {
+	tests := []struct {
+		name string
+		src  string
+	}{
+		{
+			name: "matching currencies",
+			src:  "2024-01-15 *\n  Assets:Investments  10 HOOL {502.12 USD # 9.95 USD}\n  Assets:Cash\n",
+		},
+		{
+			name: "mismatched currencies",
+			src:  "2024-01-15 *\n  Assets:Investments  10 HOOL {502.12 USD # 9.95 EUR}\n  Assets:Cash\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			f := Parse(tc.src)
+			if len(f.Errors) == 0 {
+				t.Fatalf("Parse(%q): expected parse error for per-unit currency in combined form", tc.src)
+			}
+			if msg := f.Errors[0].Msg; !strings.Contains(msg, "per-unit") {
+				t.Fatalf("Parse(%q): error message %q should contain 'per-unit'", tc.src, msg)
+			}
+		})
+	}
+}
+
+func TestParsePostingWithCurrencyOnlyCost(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL { JPY }\n  Assets:Cash\n"
 	f := Parse(src)
 	assertNoErrors(t, f)
 	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
@@ -1246,20 +1273,86 @@ func TestParsePostingWithCombinedCostExplicitPerUnitCurrency(t *testing.T) {
 	if cost == nil {
 		t.Fatalf("Parse(%q): expected CostSpecNode", src)
 	}
-	amounts := cost.FindAllNodes(AmountNode)
-	if len(amounts) != 2 {
-		t.Fatalf("Parse(%q): cost has %d AmountNodes, want 2", src, len(amounts))
+	if amts := cost.FindAllNodes(AmountNode); len(amts) != 0 {
+		t.Fatalf("Parse(%q): cost has %d AmountNodes, want 0", src, len(amts))
 	}
-	if amounts[0].FindToken(CURRENCY) == nil {
-		t.Errorf("Parse(%q): per-unit amount should have a currency token", src)
+	if cost.FindToken(CURRENCY) == nil {
+		t.Fatalf("Parse(%q): expected CURRENCY token child in cost spec", src)
 	}
-	if amounts[1].FindToken(CURRENCY) == nil {
-		t.Errorf("Parse(%q): total amount should have a currency token", src)
+}
+
+func TestParsePostingWithCurrencyOnlyTotalCost(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL {{ USD }}\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
 	}
-	if cost.FindToken(HASH) == nil {
-		t.Fatalf("Parse(%q): expected HASH token child in cost spec", src)
+	if amts := cost.FindAllNodes(AmountNode); len(amts) != 0 {
+		t.Fatalf("Parse(%q): cost has %d AmountNodes, want 0", src, len(amts))
 	}
-	assertRoundTrip(t, src, f)
+	if cost.FindToken(CURRENCY) == nil {
+		t.Fatalf("Parse(%q): expected CURRENCY token child in cost spec", src)
+	}
+	if cost.FindToken(LBRACE2) == nil {
+		t.Fatalf("Parse(%q): expected LBRACE2 token child in cost spec", src)
+	}
+}
+
+func TestParsePostingWithCurrencyOnlyCostAndDate(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL { JPY, 2024-01-01 }\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	if cost.FindToken(CURRENCY) == nil {
+		t.Errorf("Parse(%q): expected CURRENCY token child", src)
+	}
+	if cost.FindToken(DATE) == nil {
+		t.Errorf("Parse(%q): expected DATE token child", src)
+	}
+}
+
+func TestParsePostingWithCurrencyOnlyCostAndLabel(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL { JPY, \"lot1\" }\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	if cost.FindToken(CURRENCY) == nil {
+		t.Errorf("Parse(%q): expected CURRENCY token child", src)
+	}
+	if cost.FindToken(STRING) == nil {
+		t.Errorf("Parse(%q): expected STRING token child", src)
+	}
+}
+
+func TestParsePostingWithCurrencyOnlyCostAndDateAndLabel(t *testing.T) {
+	src := "2024-01-15 *\n  Assets:Investments  10 HOOL { JPY, 2024-01-01, \"lot1\" }\n  Assets:Cash\n"
+	f := Parse(src)
+	assertNoErrors(t, f)
+	posting := f.Root.FindNode(TransactionDirective).FindAllNodes(PostingNode)[0]
+	cost := posting.FindNode(CostSpecNode)
+	if cost == nil {
+		t.Fatalf("Parse(%q): expected CostSpecNode", src)
+	}
+	if cost.FindToken(CURRENCY) == nil {
+		t.Errorf("Parse(%q): expected CURRENCY token child", src)
+	}
+	if cost.FindToken(DATE) == nil {
+		t.Errorf("Parse(%q): expected DATE token child", src)
+	}
+	if cost.FindToken(STRING) == nil {
+		t.Errorf("Parse(%q): expected STRING token child", src)
+	}
 }
 
 func TestParsePostingCombinedCostInTotalBracesIsError(t *testing.T) {

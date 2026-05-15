@@ -751,6 +751,85 @@ func TestCostSpecTotalOnlyRoundTrip(t *testing.T) {
 	roundTripCostSpec(t, src, want)
 }
 
+func TestCostSpecCurrencyOnly(t *testing.T) {
+	got := print(t, &ast.Transaction{
+		Date:      date("2024-01-15"),
+		Flag:      '*',
+		Narration: "Buy stock currency-only",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amountp("10", "HOOL"),
+				Cost:    &ast.CostSpec{Currency: "JPY"},
+			},
+			{Account: "Assets:Bank"},
+		},
+	})
+	want := `2024-01-15 * "Buy stock currency-only"
+  Assets:Brokerage                           10 HOOL {JPY}
+  Assets:Bank
+`
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestCostSpecCurrencyOnlyWithDateAndLabel(t *testing.T) {
+	got := print(t, &ast.Transaction{
+		Date:      date("2024-01-15"),
+		Flag:      '*',
+		Narration: "Buy stock currency-only annotated",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amountp("10", "HOOL"),
+				Cost: &ast.CostSpec{
+					Currency: "JPY",
+					Date:     datep("2024-01-15"),
+					Label:    "lot1",
+				},
+			},
+			{Account: "Assets:Bank"},
+		},
+	})
+	want := `2024-01-15 * "Buy stock currency-only annotated"
+  Assets:Brokerage                           10 HOOL {JPY, 2024-01-15, "lot1"}
+  Assets:Bank
+`
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// TestCostSpecCurrencyOnlyRoundTrip pins the canonical no-inner-padding form:
+// source `{ JPY }` lowers and re-prints as `{JPY}`.
+func TestCostSpecCurrencyOnlyRoundTrip(t *testing.T) {
+	src := `2025-01-01 * "test"
+  Assets:Foo  -1 ABC { JPY }
+  Expenses:Bar  10 USD
+`
+	want := `2025-01-01 * "test"
+  Assets:Foo                                  -1 ABC {JPY}
+  Expenses:Bar                                10 USD
+`
+	roundTripCostSpec(t, src, want)
+}
+
+// TestCostSpecCurrencyOnlyTotalRoundTrip pins the brace-collapse:
+// source `{{ USD }}` lowers and re-prints as `{USD}`, consistent with
+// the `{{}}` → `{}` collapse for empty cost specs.
+func TestCostSpecCurrencyOnlyTotalRoundTrip(t *testing.T) {
+	src := `2025-01-01 * "test"
+  Assets:Foo  -1 ABC {{ USD }}
+  Expenses:Bar  10 USD
+`
+	want := `2025-01-01 * "test"
+  Assets:Foo                                  -1 ABC {USD}
+  Expenses:Bar                                10 USD
+`
+	roundTripCostSpec(t, src, want)
+}
+
 // TestCostSpecEmptyRoundTrip exercises the parse → lower → print pipeline
 // for a fully empty cost annotation "{}". The pre-existing TestCostSpecEmpty
 // builds the AST manually; this case pins the full source-to-source

@@ -264,27 +264,6 @@ func TestLowerCostSpec_Combined(t *testing.T) {
 	}
 }
 
-func TestLowerCostSpec_CombinedExplicitPerUnitCurrency(t *testing.T) {
-	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {502.12 USD # 9.95 USD}\n  Expenses:Other\n")
-	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
-	cs, ok := l.lowerCostSpec(costNode)
-	if !ok {
-		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
-	}
-	if cs.PerUnit == nil || cs.Total == nil {
-		t.Fatalf("PerUnit=%v Total=%v, want both set", cs.PerUnit, cs.Total)
-	}
-	if cs.Currency != "USD" {
-		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
-	}
-	if got := cs.PerUnit.String(); got != "502.12" {
-		t.Errorf("PerUnit = %q, want %q", got, "502.12")
-	}
-	if got := cs.Total.String(); got != "9.95" {
-		t.Errorf("Total = %q, want %q", got, "9.95")
-	}
-}
-
 func TestLowerCostSpec_CombinedWithDateAndLabel(t *testing.T) {
 	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {502.12 # 9.95 USD, 2024-01-15, \"lot1\"}\n  Expenses:Other\n")
 	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
@@ -315,14 +294,62 @@ func TestLowerCostSpec_CombinedWithDateAndLabel(t *testing.T) {
 	}
 }
 
-func TestLowerCostSpec_CombinedMismatchedCurrenciesError(t *testing.T) {
-	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {502.12 EUR # 9.95 USD}\n  Expenses:Other\n")
+func TestLowerCostSpec_CurrencyOnly(t *testing.T) {
+	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL { JPY }\n  Expenses:Other\n")
 	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
-	if _, ok := l.lowerCostSpec(costNode); ok {
-		t.Fatal("lowerCostSpec succeeded, want failure due to mismatched currencies")
+	cs, ok := l.lowerCostSpec(costNode)
+	if !ok {
+		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
 	}
-	if len(l.file.Diagnostics) == 0 {
-		t.Fatal("expected a diagnostic for mismatched currencies, got none")
+	if cs.PerUnit != nil {
+		t.Errorf("PerUnit = %v, want nil", cs.PerUnit)
+	}
+	if cs.Total != nil {
+		t.Errorf("Total = %v, want nil", cs.Total)
+	}
+	if cs.Currency != "JPY" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "JPY")
+	}
+}
+
+func TestLowerCostSpec_CurrencyOnlyTotalBraces(t *testing.T) {
+	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL {{ USD }}\n  Expenses:Other\n")
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+	cs, ok := l.lowerCostSpec(costNode)
+	if !ok {
+		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
+	}
+	// Brace flavor is irrelevant for the currency-only form: with no
+	// number, there is nothing to attach per-unit-vs-total to.
+	if cs.PerUnit != nil {
+		t.Errorf("PerUnit = %v, want nil", cs.PerUnit)
+	}
+	if cs.Total != nil {
+		t.Errorf("Total = %v, want nil", cs.Total)
+	}
+	if cs.Currency != "USD" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "USD")
+	}
+}
+
+func TestLowerCostSpec_CurrencyOnlyWithDateAndLabel(t *testing.T) {
+	_, costNode := parseCostNodeForTest(t, "2024-01-01 * \"Test\"\n  Assets:Bank 10 HOOL { JPY, 2024-05-14, \"lot1\" }\n  Expenses:Other\n")
+	l := &lowerer{filename: "test.beancount", file: &File{Filename: "test.beancount"}}
+	cs, ok := l.lowerCostSpec(costNode)
+	if !ok {
+		t.Fatalf("lowerCostSpec failed: %v", l.file.Diagnostics)
+	}
+	if cs.Currency != "JPY" {
+		t.Errorf("Currency = %q, want %q", cs.Currency, "JPY")
+	}
+	if cs.Date == nil {
+		t.Fatal("Date is nil")
+	}
+	if got := cs.Date.Format("2006-01-02"); got != "2024-05-14" {
+		t.Errorf("Date = %q, want %q", got, "2024-05-14")
+	}
+	if cs.Label != "lot1" {
+		t.Errorf("Label = %q, want %q", cs.Label, "lot1")
 	}
 }
 

@@ -332,13 +332,18 @@ func (p *printer) formatDecimal(d *apd.Decimal) string {
 	return s
 }
 
-// formatCostSpec renders a CostSpec back to source form.
+// formatCostHolder renders either a parse-tier *ast.CostSpec or a
+// booked *ast.Cost. The two variants are dispatched through the
+// [ast.CostHolder] interface; the printer reads the user's syntactic
+// form (per-unit, total, surcharge) from GetPerUnit / GetTotal so a
+// booked Cost that retained its original PerUnit / Total round-trips
+// through the same code path as the equivalent CostSpec.
 //
 // Brace selection: "{{...}}" is used iff the cost has a Total component and
 // no PerUnit (the legacy total-only form). Every other case—including a
-// completely empty CostSpec and the combined "{X # Y CUR}" form—uses single
-// braces. As a consequence an empty CostSpec is normalized to "{}", so a
-// source "{{}}" parses, lowers, and re-prints as "{}".
+// fully empty CostSpec, a currency-only spec, and the combined
+// "{X # Y CUR}" form—uses single braces. Sources "{{}}" and "{{CUR}}"
+// therefore round-trip to "{}" and "{CUR}" respectively.
 //
 // Combined form: when both PerUnit and Total are present, the rendering is
 // "perUnit # total". When the per-unit and total currencies match (the common
@@ -347,12 +352,11 @@ func (p *printer) formatDecimal(d *apd.Decimal) string {
 // "{502.12 # 9.95 USD}". If the currencies happen to differ — a defensive
 // branch that the lowerer rejects — both currencies are emitted explicitly
 // rather than panicking.
-// formatCostHolder renders either a parse-tier *ast.CostSpec or a
-// booked *ast.Cost. The two variants are dispatched through the
-// [ast.CostHolder] interface; the printer reads the user's syntactic
-// form (per-unit, total, surcharge) from GetPerUnit / GetTotal so a
-// booked Cost that retained its original PerUnit / Total round-trips
-// through the same code path as the equivalent CostSpec.
+//
+// Currency-only form: when both GetPerUnit and GetTotal return nil but
+// GetCurrency returns a non-empty string, the spec renders as "{CUR}"
+// without inner padding, matching the codebase's "{}", "{100 USD}", and
+// "{2024-01-01}" conventions.
 func (p *printer) formatCostHolder(h ast.CostHolder) string {
 	perUnit := h.GetPerUnit()
 	total := h.GetTotal()
@@ -380,6 +384,8 @@ func (p *printer) formatCostHolder(h ast.CostHolder) string {
 		parts = append(parts, p.formatAmount(*perUnit))
 	case total != nil:
 		parts = append(parts, p.formatAmount(*total))
+	case h.GetCurrency() != "":
+		parts = append(parts, h.GetCurrency())
 	}
 	if date, ok := h.GetDate(); ok {
 		parts = append(parts, date.Format("2006-01-02"))

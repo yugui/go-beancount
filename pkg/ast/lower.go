@@ -1101,18 +1101,9 @@ func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
 			return CostSpec{}, false
 		}
 
-		// Lower the per-unit side. The parser allows it to omit its currency
-		// (the typical {X # Y CUR} form) or to carry its own currency token.
-		// TODO: per-unit-bearing-currency is structurally invalid; remove
-		// the matching/mismatch arm below once the parser rejects it.
-		// Until then, accept matching currencies and reject mismatches so
-		// existing fixtures keep working.
+		// per-unit: bare expression (parser rejects a currency token here).
 		perUnit, ok := l.lowerAmountOptionalCurrency(amountNodes[0])
 		if !ok {
-			return CostSpec{}, false
-		}
-		if perUnit.Currency != "" && perUnit.Currency != total.Currency {
-			l.addDiagnostic(n, fmt.Sprintf("mismatched currencies in combined cost form: %q and %q", perUnit.Currency, total.Currency))
 			return CostSpec{}, false
 		}
 
@@ -1132,6 +1123,12 @@ func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
 		} else {
 			cs.PerUnit = num
 		}
+	} else if curToks := findTokens(n, syntax.CURRENCY); len(curToks) > 0 {
+		// Currency-only form: `{ CUR }` or `{{ CUR }}`. Brace flavor is
+		// irrelevant — without a number there is no per-unit/total to pick.
+		// Use direct-children scan (findTokens) so we only match the token
+		// the parser attaches to the CostSpecNode itself, not any sub-node.
+		cs.Currency = curToks[0].Raw
 	}
 
 	// Extract optional date.
