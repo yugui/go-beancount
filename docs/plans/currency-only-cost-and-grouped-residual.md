@@ -355,6 +355,170 @@ Adopt the Contract as stated. A1's smaller blast radius is illusory — every re
   currency-with-date / currency-with-label combinations explicitly,
   not relying on a single golden file.
 
+### Detailed Design
+
+#### Contract
+
+**Parser-accepted forms (new):**
+
+| Source | Lowered `CostSpec` shape |
+|---|---|
+| `{CUR}` / `{ CUR }` | `{PerUnit: nil, Total: nil, Currency: "CUR"}` |
+| `{{CUR}}` / `{{ CUR }}` | `{PerUnit: nil, Total: nil, Currency: "CUR"}` |
+| `{ CUR, 2024-01-01 }` | `{Currency: "CUR", Date: &t}` |
+| `{ CUR, "lot" }` | `{Currency: "CUR", Label: "lot"}` |
+| `{ CUR, 2024-01-01, "lot" }` | `{Currency: "CUR", Date: &t, Label: "lot"}` |
+
+The brace flavor (`{}` vs `{{}}`) does **not** change the lowered shape for the currency-only form: with no number pointers, there is nothing for the per-unit-vs-total distinction to attach to. The lowerer must therefore not branch on `isTotal` for this form.
+
+**Parser branch:** the leading `CURRENCY` token enters `parseCostContents` (`pkg/syntax/parser.go:460`) as a new top-level `case CURRENCY:` arm in the leading-element switch (line 470). The arm consumes exactly one `CURRENCY` token, attaches it as a child token of the `CostSpecNode` (not wrapped in an `AmountNode`), and returns to the trailing-element loop unchanged.
+
+**Parser-rejected forms (new):**
+
+`{X CUR # Y CUR}` and `{X USD # Y EUR}` and any `{X CUR # ...}` shape — i.e. any combined form whose per-unit side carries a `CURRENCY` token — must produce at least one parser error. The exact diagnostic string is locked as:
+
+```
+per-unit amount in combined cost form must not carry a currency
+```
+
+Substrings `"per-unit"` and `"currency"` (lowercase) both appear. Tests assert on `strings.Contains(err.Msg, "per-unit")`. Error position may anchor at either the `CURRENCY` token or the `HASH` token; tests do not pin position.
+
+**Error recovery:** the offending `CURRENCY` token is already consumed by `parseAmountOptionalCurrency`. Subsequent parsing of `#` and the total amount proceeds without cascading diagnostics. The `CostSpecNode` retains the consumed token as a child for span/round-trip purposes.
+
+**Trigger condition:** during the leading per-unit amount parse in `parseCostContents`, after `parseAmountOptionalCurrency` returns, if the resulting `AmountNode` contains a `CURRENCY` token *and* the next token is `HASH`, the parser emits the diagnostic.
+
+The existing positive test `TestParsePostingWithCombinedCostExplicitPerUnitCurrency` (`pkg/syntax/parser_test.go:1240`) is **deleted** and a new negative test `TestParsePostingWithCombinedCostExplicitPerUnitCurrencyIsError` takes its place. A second negative test `TestParsePostingWithCombinedCostMismatchedCurrenciesIsError` covers `{2.50 USD # 9.95 EUR}`.
+
+**Lowerer Contract (`pkg/ast/lower.go::lowerCostSpec`):**
+
+- The `if n.FindToken(syntax.HASH) != nil` arm: the per-unit-currency mismatch check is **removed** (not left as defensive `unreachable` guard). The Step 1 TODO comment is also removed. With the parser fix, `perUnit.Currency` is guaranteed to be `""` whenever the parent node carries a `HASH`. The lowerer continues to use `total.Currency` as the spec currency.
+- The single-amount arm is unchanged in logic but extended: when the `CostSpecNode` contains no `AmountNode` and no `HASH` but does contain a direct-child `CURRENCY` token, populate `cs.Currency` from that token's text and leave both number pointers nil. Order of branches: HASH first, AmountNode second, CURRENCY-only third, otherwise empty.
+- The brace flavor (`isTotal`) is still only consulted in the AmountNode branch (where it picks `cs.Total` vs `cs.PerUnit`). It does not influence the currency-only branch.
+
+**Printer Contract (`pkg/printer/printer.go::formatCostHolder`):**
+
+Currency-only `*CostSpec` (both `GetPerUnit()` and `GetTotal()` return nil; `GetCurrency()` returns non-empty) renders as:
+
+| AST | Output |
+|---|---|
+| `{PerUnit: nil, Total: nil, Currency: "JPY"}` | `{JPY}` |
+| same, with `Date` set | `{JPY, 2024-01-01}` |
+| same, with `Label` set | `{JPY, "lot"}` |
+
+**Critical spacing rule:** the canonical output is `{JPY}` (no inner padding), matching the printer's existing convention for `{}`, `{100.00 USD}`, `{2024-01-01}`, `{"lot"}`. Source variants like `{ JPY }` round-trip to `{JPY}` after parse → lower → print.
+
+The `{{...}}` flavor is **not** used for currency-only specs. The existing `totalOnly := total != nil && perUnit == nil` rule keeps single braces when both pointers are nil. A source `{{ JPY }}` therefore round-trips to `{JPY}`. Consistent with the existing `{{}}` → `{}` collapse.
+
+The printer code change lands in `formatCostHolder` as a new entry in the `switch` (case `h.GetCurrency() != ""`, append the currency to `parts`). The function godoc is updated to document the currency-only case and the brace-normalization rule.
+
+**Cross-step coupling:**
+
+- Step 1's CostSpec layout is reused as-is.
+- Step 2 produces `CostSpec{Currency: "JPY"}` which Step 3's `unknownCandidateCurrency` consumes via `p.Cost.GetCurrency()`.
+
+**Behavior-change risk (must appear in commit message):** any third-party ledger containing `{X CUR # Y CUR}` becomes a parse error after this commit. User has confirmed this is intended.
+
+#### Suggested Internals
+
+**Per-unit-currency rejection — approach (a):**
+
+Inside the existing `case NUMBER, MINUS, PLUS, LPAREN:` arm of `parseCostContents`, immediately after `amt := p.parseAmountOptionalCurrency()`:
+
+```go
+if p.peek() == HASH && amt.FindToken(CURRENCY) != nil {
+    p.errorf("per-unit amount in combined cost form must not carry a currency")
+}
+```
+
+The two checks become symmetric — line 499's `if amt.FindToken(CURRENCY) == nil` rejects "missing currency outside combined form", the new check rejects "present currency inside combined form" — and read together they fully specify the per-unit-amount currency rule.
+
+**Currency-only `{ CUR }` — leading switch arm:**
+
+```go
+case CURRENCY:
+    cur := p.advance()
+    node.AddToken(&cur)
+```
+
+Subtleties:
+1. The trailing `for p.peek() == COMMA` loop does not need to change — `parseCostElement` already covers `DATE` and `STRING`. A trailing currency (e.g. `{ JPY, USD }`) falls through to `parseCostElement`'s default arm with the existing "expected amount, date, or label" diagnostic.
+2. The arm does not look at `isTotalBraces`. `{{CUR}}` reaches the same code path.
+3. `{ JPY # 9.95 USD }`: leading-currency arm consumes `JPY`, the loop sees `HASH` (not `COMMA`), exits, and the cost spec closer expects `RBRACE` — generating the existing "expected '}'" diagnostic. Acceptable.
+
+**Lowerer cleanup:**
+
+Branch order in `lowerCostSpec`:
+```
+if HASH child:
+    ... combined form (Step 1 mismatch arm REMOVED) ...
+else if AmountNode child:
+    ... existing single-amount logic ...
+else if CURRENCY child token:
+    cs.Currency = the CURRENCY token's text
+else:
+    // empty cost spec
+```
+
+**Printer change:**
+
+Add a fourth case to the switch in `formatCostHolder`:
+
+```go
+case h.GetCurrency() != "":
+    parts = append(parts, h.GetCurrency())
+```
+
+Place after the existing `case total != nil:` arm. The `totalOnly` brace selection remains correct (false for currency-only specs, so single braces).
+
+**Test plan (recommended minimum: 1, 6, 8, 10, 12; full set: all 13):**
+
+*Parser tests* (`pkg/syntax/parser_test.go`):
+1. `TestParsePostingWithCurrencyOnlyCost` — `{ JPY }`
+2. `TestParsePostingWithCurrencyOnlyTotalCost` — `{{ USD }}`
+3. `TestParsePostingWithCurrencyOnlyCostAndDate` — `{ JPY, 2024-01-01 }`
+4. `TestParsePostingWithCurrencyOnlyCostAndLabel` — `{ JPY, "lot1" }`
+5. `TestParsePostingWithCurrencyOnlyCostAndDateAndLabel` — `{ JPY, 2024-01-01, "lot1" }`
+6. `TestParsePostingWithCombinedCostExplicitPerUnitCurrencyIsError` — `{502.12 USD # 9.95 USD}`, asserts substring `"per-unit"`
+7. `TestParsePostingWithCombinedCostMismatchedCurrenciesIsError` — `{502.12 USD # 9.95 EUR}`
+
+*Lower tests*:
+8. Assert CostSpec field shape for each new positive parser case.
+9. Optionally assert diagnostic-free path for `{{ USD }}`.
+
+*Printer tests* (`pkg/printer/printer_test.go`):
+10. `TestCostSpecCurrencyOnly` — `&ast.CostSpec{Currency: "JPY"}` → `{JPY}`
+11. `TestCostSpecCurrencyOnlyWithDateAndLabel`
+12. `TestCostSpecCurrencyOnlyRoundTrip` — source `{ JPY }`, expected `{JPY}`
+13. `TestCostSpecCurrencyOnlyTotalRoundTrip` — source `{{ USD }}`, expected `{USD}` (brace-collapse documented)
+
+**Test-fixture migration risk:** grep for `# .* USD}` / `# .* EUR}` across `pkg/syntax`, `pkg/ast`, `pkg/inventory`, `pkg/loader`, `pkg/validation` should turn up nothing else outside the deleted positive test. If anything appears, migrate to bare `{X # Y CUR}` form.
+
+#### Alternatives
+
+**A1. Leave the lowerer's mismatch arm as `// unreachable` defensive code or panic.** Rejected: dead code that pretends to handle a structurally-impossible case; the parser invariant is one function away. Test suite catches regressions earlier and more clearly.
+
+**A2. Render currency-only as `{ JPY }` (with inner spaces).** Rejected: inconsistent with all other cost-spec rendering (`{}`, `{100 USD}`, `{2024-01-01}` have no inner padding).
+
+**A3. Preserve `{{CUR}}` brace flavor through to the printer.** Rejected: requires a new flag on `CostSpec` with no semantic meaning. Existing `{{}}` → `{}` collapse sets the precedent.
+
+**A4. Use approach (b) (replace `parseAmountOptionalCurrency` with bare-expression parse).** Rejected (reasonable but heavier): forces a new helper and splits the diagnostic logic across two paths. Approach (a) is ~4 lines and centralizes the rule.
+
+**A5. Anchor the per-unit-currency error at the `CURRENCY` token's position rather than the `HASH` position.** Implementer choice; tests do not pin position.
+
+**A6. Inverted-test substring choice — `"combined"` vs `"per-unit"`.** Selected `"per-unit"` as the stable substring.
+
+#### Recommendation + rationale
+
+Adopt the Contract as stated: parser switch arm for `CURRENCY`, approach (a) for per-unit-currency rejection, **remove** the lowerer's mismatch arm cleanly, render currency-only as `{CUR}` with the standard no-inner-padding convention.
+
+On removing the mismatch arm: deletion beats `// unreachable` because (i) the parser invariant that produces it is one function away and easy to verify; (ii) the codebase's Quality Requirements favor removing structurally dead code rather than annotating it; (iii) future parser regressions are caught by the inverted negative test, a clearer signal than a lowerer diagnostic.
+
+On approach (a): wins on minimum-edit-surface and on keeping the new rule colocated with the existing `if amt.FindToken(CURRENCY) == nil` check at line 499.
+
+On the printer: the existing `formatCostHolder` is already structured as a `switch` with a `parts` accumulator that handles date and label uniformly. Adding a fourth `case` arm is the minimum mechanical change.
+
+**Commit message must state plainly:** "Per-unit-with-currency in combined cost form (`{X CUR # Y CUR}`) is now a syntax error, matching upstream beancount. Ledgers using this form must migrate to `{X # Y CUR}`."
+
 ### Step 3 — Reducer per-weight-currency residual resolution
 
 #### Functional requirements
