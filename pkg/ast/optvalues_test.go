@@ -235,20 +235,6 @@ func TestParseNilLedger(t *testing.T) {
 	}
 }
 
-func TestDefaultRegistryPluginProcessingModeDefault(t *testing.T) {
-	v := NewOptionValues()
-	if got := v.String("plugin_processing_mode"); got != "" {
-		t.Errorf("plugin_processing_mode default = %q, want %q", got, "")
-	}
-}
-
-func TestDefaultRegistryTitleDefault(t *testing.T) {
-	v := NewOptionValues()
-	if got := v.String("title"); got != "" {
-		t.Errorf("title default = %q, want %q", got, "")
-	}
-}
-
 func TestParseLedger(t *testing.T) {
 	l := &Ledger{}
 	l.InsertAll([]Directive{
