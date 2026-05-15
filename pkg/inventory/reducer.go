@@ -174,9 +174,14 @@ func needsBookingClone(txn *ast.Transaction) bool {
 }
 
 // groupRef pairs a posting's index in [postingResolution.postings] with
-// the weight-currency key of its booking group. For auto-postings and
-// deferred augments, currency is "" until Pass 2 resolves the residual
-// and fills it in.
+// the weight-currency key of its booking group. For unknowns, currency
+// is the candidate stamped at insertion time by
+// [postingResolution.addUnknown] — non-empty when the posting commits
+// to a specific currency ({ CUR } deferred, price-annotated auto), ""
+// for fully free unknowns. Pass 2 overwrites it with the resolved
+// currency once the residual is bound (a committed-group success keeps
+// the same value; an applyResidualToUnknown failure path still stamps
+// it so finalize can match the entry).
 type groupRef struct {
 	currency  string // weight currency
 	postingAt int    // index into postingResolution.postings
@@ -201,24 +206,30 @@ type groupRef struct {
 // Concern (1) is why pointers cannot be assigned eagerly: a later
 // append in the same loop may reallocate the postings backing array
 // and invalidate any &postings[k] taken earlier. bookedDesc / unknownDesc
-// carry posting offsets into postings and defer pointer binding until
-// [bindAndCollect], which runs after all appends are done.
+// carry posting offsets into postings; Source pointers stay nil on
+// pr.booked until [postingResolution.finalize] runs after Pass 2 (and
+// after any drop-application rebuild of pr.postings). Callers never
+// observe a half-bound BookedPosting: completeness is pr's invariant.
 //
 // dropped records weight-currency keys whose currency group failed
-// bookOne. It is nil for error-free transactions. The drop-application
-// pass that rebuilds txn.Postings to exclude failed groups reads this map.
+// bookOne. It is nil for error-free transactions. finalize uses it to
+// exclude failed groups when rebuilding pr.postings and to drive the
+// inverse-booking rollback.
 //
 // The zero value is usable; [newPostingResolution] pre-sizes the
 // slices for the common no-expansion case.
 type postingResolution struct {
 	// postings is the rebuilt list of postings for this transaction.
-	// bindAndCollect binds Source pointers to addresses within this
-	// backing array. txn.Postings = pr.postings is assigned after
-	// applyDrops, which may rebuild the slice to exclude failed groups.
+	// finalize binds Source pointers to addresses within this backing
+	// array; on drop, finalize rebuilds the slice to exclude failed
+	// groups and binds Source on survivors only. txn.Postings =
+	// pr.postings is assigned by visitTxn after finalize returns.
 	postings []ast.Posting
 
-	// booked holds the BookedPosting records whose Source fields are
-	// filled by bindAndCollect once all appends are done.
+	// booked holds the BookedPosting records whose Source fields stay
+	// nil until [postingResolution.finalize] binds them. Each entry is
+	// otherwise complete (Account, Units, Lot, Reduction, InferredAuto
+	// already populated by the add* method or by Pass 2).
 	booked []BookedPosting
 
 	// bookedDesc is parallel to booked: bookedDesc[j].postingAt is the
@@ -228,9 +239,13 @@ type postingResolution struct {
 	bookedDesc []groupRef
 
 	// unknownDesc is parallel to the unknown postings (auto-posting and
-	// deferred-augment). currency is "" in Pass 1 and filled in by Pass 2
-	// once the residual currency is determined. postingAt indexes into
-	// postings.
+	// deferred-augment). currency carries the candidate weight currency
+	// stamped at insertion time by addUnknown via
+	// unknownCandidateCurrency: non-empty for committed unknowns
+	// ({ CUR } deferred, price-annotated), "" for free ones. Pass 2
+	// overwrites it with the resolved currency once a residual is bound
+	// (committed-group success keeps the same value). postingAt indexes
+	// into postings.
 	unknownDesc []groupRef
 
 	// dropped is the set of weight-currency keys whose bookOne call
@@ -260,10 +275,17 @@ func newPostingResolution(hint int) postingResolution {
 // addUnknown records p as either the auto-posting or a deferred-augment
 // posting. The posting is appended unchanged; the residual pass
 // resolves its Amount or Cost from the transaction's residual. The
-// descriptor currency is left empty until Pass 2 fills it in.
+// descriptor currency is the candidate weight currency from
+// [unknownCandidateCurrency] — non-empty when Pass 1 can already
+// commit the unknown to a specific currency (cost-spec currency or
+// price annotation), "" otherwise. Pass 2 overwrites it with the
+// resolved currency once a residual is bound.
 func (pr *postingResolution) addUnknown(p *ast.Posting) {
 	pr.postings = append(pr.postings, *p)
-	pr.unknownDesc = append(pr.unknownDesc, groupRef{postingAt: len(pr.postings) - 1})
+	pr.unknownDesc = append(pr.unknownDesc, groupRef{
+		currency:  unknownCandidateCurrency(p),
+		postingAt: len(pr.postings) - 1,
+	})
 }
 
 // markForDrop records the given weight-currency group as dropped. The
@@ -391,57 +413,134 @@ func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []Reduct
 	}
 }
 
-// bindAndCollect binds the Source pointers on every BookedPosting and
-// collects the unknown posting pointers, both via offsets in
-// bookedDesc/unknownDesc. It must run after every add* call because
-// intermediate appends may have grown the backing array, invalidating
-// any earlier &pr.postings[k] addresses. Drop application (reading
-// pr.dropped to exclude failed groups) is handled by a later
-// applyDrops call; bindAndCollect binds all entries unconditionally.
-func (pr *postingResolution) bindAndCollect() (booked []BookedPosting, unknowns []*ast.Posting) {
-	booked = pr.booked
+// bookedPostings returns the live addresses of every booked posting
+// in input order. The result aliases pr.postings; callers must not
+// retain it past a finalize that rebuilds the backing array. Used by
+// Pass 2 to feed [Reducer.sumBookedWeights] without exposing the
+// (still-incomplete) pr.booked slice.
+func (pr *postingResolution) bookedPostings() []*ast.Posting {
+	out := make([]*ast.Posting, len(pr.bookedDesc))
 	for i, ref := range pr.bookedDesc {
-		booked[i].Source = &pr.postings[ref.postingAt]
+		out[i] = &pr.postings[ref.postingAt]
 	}
-	unknowns = make([]*ast.Posting, len(pr.unknownDesc))
-	for i, ref := range pr.unknownDesc {
-		unknowns[i] = &pr.postings[ref.postingAt]
-	}
-	return booked, unknowns
+	return out
 }
 
-// applyDrops rebuilds txn.Postings to exclude all currency groups that
-// failed bookOne, rolls back their inventory mutations via inverse Add
-// calls, and returns only the surviving BookedPosting records with
-// Source pointers re-bound to the rebuilt slice.
+// unknownGroup is one (weight currency, postings) bucket produced by
+// [postingResolution.groupForResidual]. Pass 2 solves the per-currency
+// residual against booked alone and applies it to the single unknown
+// in unknown; if unknown carries more than one entry the group is
+// reported as ambiguous and dropped. booked and unknown are aliases
+// into pr.postings — read-only during Pass 2.
+type unknownGroup struct {
+	currency string         // weight currency; non-empty for committed groups
+	booked   []*ast.Posting // booked postings whose weight currency == currency
+	unknown  []*ast.Posting // unknown postings whose candidate currency == currency
+}
+
+// groupForResidual partitions Pass 1's output into committed groups
+// and free unknowns. A committed group covers one non-empty weight
+// currency with at least one bidding unknown; its booked slice lists
+// every booked posting whose weight currency matches. Groups with no
+// bidding unknown are omitted (the validator owns the unbalanced
+// case). free holds unknown postings whose candidate currency is "".
+// Together committed[].unknown ∪ free covers every pr.unknownDesc
+// entry exactly once; committed order is first-appearance.
+func (pr *postingResolution) groupForResidual() (committed []unknownGroup, free []*ast.Posting) {
+	if len(pr.unknownDesc) == 0 {
+		return nil, nil
+	}
+
+	// Bucket unknowns by candidate currency, recording first-appearance
+	// order so the returned committed slice is deterministic.
+	bid := make(map[string][]*ast.Posting)
+	var order []string
+	for _, ref := range pr.unknownDesc {
+		p := &pr.postings[ref.postingAt]
+		if ref.currency == "" {
+			free = append(free, p)
+			continue
+		}
+		if _, seen := bid[ref.currency]; !seen {
+			order = append(order, ref.currency)
+		}
+		bid[ref.currency] = append(bid[ref.currency], p)
+	}
+	if len(bid) == 0 {
+		return nil, free
+	}
+
+	// Group bookings by weight currency, but only for currencies the
+	// unknown bid set claims.
+	booked := make(map[string][]*ast.Posting, len(bid))
+	for _, ref := range pr.bookedDesc {
+		if _, want := bid[ref.currency]; !want {
+			continue
+		}
+		booked[ref.currency] = append(booked[ref.currency], &pr.postings[ref.postingAt])
+	}
+
+	committed = make([]unknownGroup, 0, len(order))
+	for _, cur := range order {
+		committed = append(committed, unknownGroup{
+			currency: cur,
+			booked:   booked[cur],
+			unknown:  bid[cur],
+		})
+	}
+	return committed, free
+}
+
+// unknownCandidateCurrency returns the weight currency a still-unknown
+// posting will absorb in Pass 2's residual solve, or "" when the
+// posting itself does not pin one. Precedence:
 //
-// If pr.dropped is nil or empty, applyDrops is a complete no-op: it
-// returns booked unchanged without any allocation. This is the hot path
-// for the vast majority of error-free transactions.
+//  1. p.Cost != nil && p.Cost.GetCurrency() != "" → that currency.
+//  2. p.Price != nil → p.Price.Amount.Currency.
+//  3. otherwise "".
+func unknownCandidateCurrency(p *ast.Posting) string {
+	if p.Cost != nil {
+		if cur := p.Cost.GetCurrency(); cur != "" {
+			return cur
+		}
+	}
+	if p.Price != nil {
+		return p.Price.Amount.Currency
+	}
+	return ""
+}
+
+// finalize closes the per-transaction resolution: it applies any
+// currency-group drops, binds Source pointers on the survivors, and
+// returns the complete []BookedPosting. After this call pr.postings
+// reflects only the surviving postings (caller assigns
+// txn.Postings = pr.postings); pr is not used further.
 //
-// The rebuild preserves input posting order. Survival is determined by
-// scanning bookedDesc and unknownDesc: a posting survives iff its
-// currency is "" (unresolved unknown) or its currency is not in
-// pr.dropped. A postingAt that appears in both descriptors (a resolved
-// unknown that was also booked) is treated consistently because both
-// entries carry the same currency after Pass 2.
+// Hot path: if pr.dropped is empty, finalize binds Source on every
+// pr.booked entry against the current pr.postings backing array (which
+// is stable past Pass 1) and returns. No allocation beyond the slice
+// header.
 //
-// For each dropped booked entry, reverseBooking is called to undo the
-// inventory mutation. Errors from reverseBooking are CodeInternalError
-// from apd arithmetic and do not occur for normal ledger inputs.
+// Drop path: pr.postings is rebuilt in input order to exclude every
+// currency group in pr.dropped, inverse bookings are applied for each
+// dropped entry (recorded against trace via prepareForRollback so the
+// state-diff pass observes the rollback), and Source on survivors is
+// bound to the rebuilt slice. Survival is "currency not in pr.dropped";
+// the "" key is never in pr.dropped, so Pass 2-unresolved free unknowns
+// always survive. Failed postings were never appended to pr.postings
+// (markForDrop does not append), so they need no separate exclusion.
 //
-// Source pointers on surviving BookedPostings are re-bound to their new
-// addresses in the rebuilt postings slice.
-func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrace, r *Reducer) []BookedPosting {
+// Errors from reverseBooking are CodeInternalError from apd arithmetic
+// and do not occur for normal ledger inputs.
+func (pr *postingResolution) finalize(trace *stateTrace, r *Reducer) []BookedPosting {
 	if len(pr.dropped) == 0 {
+		booked := pr.booked
+		for i, ref := range pr.bookedDesc {
+			booked[i].Source = &pr.postings[ref.postingAt]
+		}
 		return booked
 	}
 
-	// Phase 1: determine which posting indices survive.
-	// Failed postings were never appended to pr.postings (markForDrop does
-	// not call append), so the scan covers exactly the entries that need a
-	// survival decision.
-	// currency == "" (unresolved unknown) is never in pr.dropped; those always survive.
 	survives := make([]bool, len(pr.postings))
 	for _, ref := range pr.bookedDesc {
 		if !pr.dropped[ref.currency] {
@@ -454,11 +553,9 @@ func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrac
 		}
 	}
 
-	// Phase 2: rebuild pr.postings in ascending index order (= input order).
-	// Build newIdx[old] = new index, or -1 if the posting is dropped.
 	newIdx := make([]int, len(pr.postings))
 	for i := range newIdx {
-		newIdx[i] = -1 // sentinel: dropped
+		newIdx[i] = -1
 	}
 	newPostings := make([]ast.Posting, 0, len(pr.postings))
 	for i, p := range pr.postings {
@@ -469,22 +566,19 @@ func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrac
 	}
 	pr.postings = newPostings
 
-	// Phase 3: reverse mutations for dropped entries; re-bind Source for survivors.
-	out := make([]BookedPosting, 0, len(booked))
+	out := make([]BookedPosting, 0, len(pr.booked))
 	for j, ref := range pr.bookedDesc {
 		if pr.dropped[ref.currency] {
-			inv := trace.prepareForRollback(booked[j].Account)
-			if err := reverseBooking(inv, booked[j]); err != nil {
-				r.errs = append(r.errs, asError(err, booked[j].Account))
+			inv := trace.prepareForRollback(pr.booked[j].Account)
+			if err := reverseBooking(inv, pr.booked[j]); err != nil {
+				r.errs = append(r.errs, asError(err, pr.booked[j].Account))
 			}
 			continue
 		}
-		// Surviving entry: re-bind Source to the rebuilt slice.
-		bp := booked[j]
+		bp := pr.booked[j]
 		bp.Source = &pr.postings[newIdx[ref.postingAt]]
 		out = append(out, bp)
 	}
-
 	return out
 }
 
@@ -544,10 +638,14 @@ func reverseBooking(inv *Inventory, bp BookedPosting) error {
 // A structurally-invalid transaction is rejected with a diagnostic without
 // touching any inventory.
 //
-// Booking runs in two passes. Pass 1 books every explicit posting; Pass
-// 2 resolves the single auto-balanced or deferred-cost unknown from the
-// residual of the others (more than one unknown is ambiguous and yields
-// one diagnostic per unknown).
+// Booking runs in two passes. Pass 1 books every explicit posting and
+// stamps each unknown with a candidate weight currency (cost-spec
+// currency or price annotation, "" otherwise). Pass 2 partitions the
+// unknowns by candidate currency and resolves each committed group
+// against its own per-currency residual; a single free unknown
+// (candidate "") absorbs whatever currency remains unclaimed. Two
+// unknowns sharing the same weight currency, or two free unknowns,
+// remain ambiguous and yield one diagnostic per unknown.
 //
 // When a posting's booking fails, its whole weight-currency group is
 // dropped: every posting sharing that currency is removed from
@@ -622,79 +720,25 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 	}
 
-	// Source pointers must be bound before Pass 2's residual solve.
-	var unknowns []*ast.Posting
-	booked, unknowns = pr.bindAndCollect()
-
-	// Pass 2: resolve the unknown against the residual.
-	switch {
-	case len(unknowns) > 1:
-		// Too many unknowns to solve a single residual; flag each so users see every site to fix.
-		r.flagAmbiguousUnknowns(unknowns)
-	case len(unknowns) == 1:
-		unknownP := unknowns[0]
-		residual, ok := r.solveResidual(booked, unknownP)
-		if !ok {
-			break // solveResidual already appended the diagnostic
-		}
-		// Residual currency already dropped: the unknown joins that group.
-		if pr.dropped[residual.Currency] {
-			pr.unknownDesc[0].currency = residual.Currency
-			break
-		}
-		inferred := unknownP.Amount == nil
-		if inferred {
-			// Auto-posting: write the inferred Amount. validateStructure
-			// guarantees Cost nil; preserve it — bookOne must not write Cost here.
-			unknownP.Amount = residual
-		} else if err := r.resolveCostFromResidual(unknownP, residual, txn.Date); err != nil {
-			r.errs = append(r.errs, *err)
-			break
-		}
-		inv := trace.prepareForEdit(unknownP.Account)
-		lot, steps, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date)
-		r.errs = append(r.errs, errs...)
-		if len(errs) > 0 {
-			// Pass 2's own booking failed: drop the residual currency along with any Pass 1 postings sharing it.
-			pr.markForDrop(residual.Currency)
-			trace.prepareForRollback(unknownP.Account)
-			pr.unknownDesc[0].currency = residual.Currency
-			break
-		}
-		if len(steps) > 1 {
-			// Expanding a multi-lot reduction here would mutate txn.Postings after Source pointers are bound.
-			// The deferred branch installs a tight Cost so the matcher returns one lot; this branch should be unreachable.
-			r.errs = append(r.errs, Error{
-				Code:    CodeInternalError,
-				Span:    unknownP.Span,
-				Account: unknownP.Account,
-				Message: "residual pass produced a multi-lot reduction; expansion is not supported here",
-			})
-			break
-		}
-		// The unknown already sits at its final offset; appending here does
-		// not invalidate the Source pointers bindAndCollect already bound.
-		// booked and bookedDesc must remain parallel.
-		booked = append(booked, BookedPosting{
-			Source:       unknownP,
-			Account:      unknownP.Account,
-			Units:        *unknownP.Amount.Clone(),
-			Lot:          lot,
-			Reduction:    firstStepOrNil(steps),
-			InferredAuto: inferred,
-		})
-		pr.bookedDesc = append(pr.bookedDesc, groupRef{
-			currency:  residual.Currency,
-			postingAt: pr.unknownDesc[0].postingAt,
-		})
-		pr.unknownDesc[0].currency = residual.Currency
+	// Pass 2: resolve unknowns against the residual, partitioned by
+	// weight currency. Committed groups (cost-spec currency or price
+	// annotation pins the unknown to a specific currency) are solved
+	// per-currency; free unknowns absorb whatever currency remains
+	// unclaimed. All mutations land on pr; the BookedPosting slice is
+	// not materialized until finalize.
+	committed, free := pr.groupForResidual()
+	claimed := make(map[string]bool, len(committed))
+	for _, g := range committed {
+		claimed[g.currency] = true
+		r.resolveCommittedGroup(g, &pr, trace, txn.Date)
 	}
+	r.resolveFreeUnknown(free, &pr, claimed, trace, txn.Date)
 
-	// Apply the currency-group drop, then compute the visitor diff.
-	booked = pr.applyDrops(booked, trace, r)
+	// Materialize the booked slice: applies any currency-group drops,
+	// binds Source pointers on survivors. diff observes
+	// prepareForRollback marks finalize recorded for dropped groups.
+	booked = pr.finalize(trace, r)
 	txn.Postings = pr.postings
-
-	// diff observes prepareForRollback marks recorded by applyDrops.
 	before, after = trace.diff()
 	return before, after, booked, false
 }
@@ -818,7 +862,7 @@ func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
 // touched account".
 //
 // rolledBack records accounts whose currency group was fully rolled back
-// via inverse-operation bookings during applyDrops. diff() uses this
+// via inverse-operation bookings during finalize. diff() uses this
 // set to suppress accounts that are back to their pre-transaction state
 // from the visitor output.
 type stateTrace struct {
@@ -936,38 +980,25 @@ func (r *Reducer) flagAmbiguousUnknowns(unknowns []*ast.Posting) {
 	}
 }
 
-// solveResidual computes the per-currency net of the already-booked
-// postings and returns the single residual the unknown must absorb,
-// expressed as the [ast.Amount] that — added to the booked weights —
-// makes the transaction balance.
-//
-// By the time solveResidual runs, [postingResolution] has installed
-// *ast.Cost on every booked posting — augmentation in place, single-
-// lot reduction in place, multi-lot reduction as per-lot children —
-// so [PostingWeight] reads its Cost branch on every entry and yields
-// the same exact figure that [pkg/validation] will see when it
-// checks transaction balance. There is no separate booked-only
-// weight path; the reducer and validation share a single
-// formula.
-//
-// On any failure (internal arithmetic error, zero residual, or residual
-// spanning multiple currencies) a diagnostic is appended to r.errs and
-// ok is false. The zero-residual wording branches on whether the
-// unknown is an auto-posting or a deferred cost-spec.
-func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (*ast.Amount, bool) {
-	sums := map[string]*apd.Decimal{}
-	var order []string
-	for i := range booked {
-		bp := booked[i]
-		w, err := PostingWeight(bp.Source)
+// sumBookedWeights returns the per-currency net of the booked weights
+// in postings, plus the order in which currencies were first seen.
+// Each entry must be a non-nil pointer to a posting whose Amount is
+// set ([PostingWeight] returns nil with no error for an auto-posting
+// and that branch is silently skipped). On a posting-weight or
+// accumulate-weight failure, a [CodeInternalError] diagnostic is
+// appended to r.errs against the offending posting and ok is false.
+func (r *Reducer) sumBookedWeights(postings []*ast.Posting) (sums map[string]*apd.Decimal, order []string, ok bool) {
+	sums = map[string]*apd.Decimal{}
+	for _, p := range postings {
+		w, err := PostingWeight(p)
 		if err != nil {
 			r.errs = append(r.errs, Error{
 				Code:    CodeInternalError,
-				Span:    bp.Source.Span,
-				Account: bp.Account,
+				Span:    p.Span,
+				Account: p.Account,
 				Message: "interpolate: posting weight: " + err.Error(),
 			})
-			return nil, false
+			return nil, nil, false
 		}
 		if w == nil {
 			continue
@@ -976,35 +1007,90 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 			if _, err := apd.BaseContext.Add(existing, existing, &w.Number); err != nil {
 				r.errs = append(r.errs, Error{
 					Code:    CodeInternalError,
-					Span:    bp.Source.Span,
-					Account: bp.Account,
+					Span:    p.Span,
+					Account: p.Account,
 					Message: "interpolate: accumulate weight: " + err.Error(),
 				})
-				return nil, false
+				return nil, nil, false
 			}
 		} else {
 			sums[w.Currency] = &w.Number
 			order = append(order, w.Currency)
 		}
 	}
+	return sums, order, true
+}
 
-	nonZero := make([]string, 0, len(order))
-	for _, cur := range order {
-		if !sums[cur].IsZero() {
-			nonZero = append(nonZero, cur)
-		}
+// negatedResidual returns -sums[currency] as a freshly allocated
+// [ast.Amount], or nil when the entry is absent or sums to zero. The
+// returned Amount does not alias sums; callers may mutate it.
+func negatedResidual(sums map[string]*apd.Decimal, currency string) (*ast.Amount, error) {
+	v, ok := sums[currency]
+	if !ok || v.IsZero() {
+		return nil, nil
 	}
+	out := &ast.Amount{Currency: currency}
+	if _, err := apd.BaseContext.Neg(&out.Number, v); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
 
-	if len(nonZero) != 1 {
-		var msg string
-		if len(nonZero) == 0 {
-			if unknownP.Amount == nil {
-				msg = "auto-balanced posting has no residual to absorb; every currency already balances"
-			} else {
-				msg = "deferred cost cannot be interpolated: every currency already balances"
-			}
-		} else {
-			msg = fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(nonZero), nonZero)
+// resolveCommittedGroup resolves Pass 2 for a single committed
+// unknownGroup: multiple unknowns sharing the group's currency are
+// reported as ambiguous (diagnostic only; postings remain and the
+// group is *not* dropped, so the validator still sees them); a single
+// unknown absorbs the group's negated booked-weight residual. Only
+// single-unknown failures (zero residual, resolveCostFromResidual
+// error, bookOne reject) mark g.currency for drop so finalize excludes
+// the whole currency group. Mutations land on pr; the caller never
+// observes a half-built BookedPosting slice.
+func (r *Reducer) resolveCommittedGroup(
+	g unknownGroup,
+	pr *postingResolution,
+	trace *stateTrace,
+	txnDate time.Time,
+) {
+	if len(g.unknown) > 1 {
+		r.flagAmbiguousUnknowns(g.unknown)
+		return
+	}
+	unknownP := g.unknown[0]
+	residual, ok := r.residualForCurrency(g.booked, g.currency, unknownP)
+	if !ok {
+		pr.markForDrop(g.currency)
+		return
+	}
+	if !r.applyResidualToUnknown(unknownP, residual, pr, trace, txnDate) {
+		pr.markForDrop(g.currency)
+	}
+}
+
+// residualForCurrency sums postings' weights and returns the negated
+// residual in currency, or (nil, false) after appending a
+// CodeUnresolvableInterpolation / CodeInternalError diagnostic
+// attributed to unknownP. A zero residual is reported with the
+// existing zero-residual wording (auto-posting variant when
+// unknownP.Amount == nil, deferred-cost variant otherwise).
+func (r *Reducer) residualForCurrency(postings []*ast.Posting, currency string, unknownP *ast.Posting) (*ast.Amount, bool) {
+	sums, _, ok := r.sumBookedWeights(postings)
+	if !ok {
+		return nil, false
+	}
+	residual, err := negatedResidual(sums, currency)
+	if err != nil {
+		r.errs = append(r.errs, Error{
+			Code:    CodeInternalError,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: "interpolate: negate residual: " + err.Error(),
+		})
+		return nil, false
+	}
+	if residual == nil {
+		msg := "deferred cost cannot be interpolated: every currency already balances"
+		if unknownP.Amount == nil {
+			msg = "auto-balanced posting has no residual to absorb; every currency already balances"
 		}
 		r.errs = append(r.errs, Error{
 			Code:    CodeUnresolvableInterpolation,
@@ -1014,18 +1100,166 @@ func (r *Reducer) solveResidual(booked []BookedPosting, unknownP *ast.Posting) (
 		})
 		return nil, false
 	}
+	return residual, true
+}
 
-	out := &ast.Amount{Currency: nonZero[0]}
-	if _, err := apd.BaseContext.Neg(&out.Number, sums[nonZero[0]]); err != nil {
+// applyResidualToUnknown writes residual onto unknownP (auto-posting
+// → Amount; deferred-cost → Cost via [Reducer.resolveCostFromResidual]),
+// re-runs bookOne, and on success appends a [BookedPosting] (Source
+// left nil; finalize binds it) plus the parallel bookedDesc entry. ok
+// reports whether resolution succeeded. The bookOne-failure path calls
+// markForDrop(residual.Currency) here, co-located with its rollback
+// prepare; other failure paths (resolveCostFromResidual error,
+// multi-step matcher violation, descIdx-invariant violation) leave
+// drop-marking to the caller. When pr.dropped already covers
+// residual.Currency the resolution silently joins the dropped group
+// and returns ok=true.
+func (r *Reducer) applyResidualToUnknown(
+	unknownP *ast.Posting,
+	residual *ast.Amount,
+	pr *postingResolution,
+	trace *stateTrace,
+	txnDate time.Time,
+) bool {
+	// invariant: pr.unknownDesc carries unknownP at exactly one offset.
+	descIdx := pr.unknownDescIndex(unknownP)
+	if descIdx < 0 {
+		r.errs = append(r.errs, Error{
+			Code:    CodeInternalError,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: "interpolate: posting absent from unknownDesc; invariant violated",
+		})
+		return false
+	}
+	if pr.dropped[residual.Currency] {
+		pr.unknownDesc[descIdx].currency = residual.Currency
+		return true
+	}
+	inferred := unknownP.Amount == nil
+	if inferred {
+		// Auto-posting: write the inferred Amount. validateStructure
+		// guarantees Cost nil; preserve it — bookOne must not write Cost here.
+		unknownP.Amount = residual
+	} else if err := r.resolveCostFromResidual(unknownP, residual, txnDate); err != nil {
+		r.errs = append(r.errs, *err)
+		return false
+	}
+	inv := trace.prepareForEdit(unknownP.Account)
+	lot, steps, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txnDate)
+	r.errs = append(r.errs, errs...)
+	if len(errs) > 0 {
+		pr.markForDrop(residual.Currency)
+		trace.prepareForRollback(unknownP.Account)
+		pr.unknownDesc[descIdx].currency = residual.Currency
+		return false
+	}
+	if len(steps) > 1 {
+		// invariant: the deferred branch installs a tight Cost so the matcher
+		// returns one lot. Expansion would require splitting unknownP into
+		// children mid-Pass 2, which the residual model does not support.
+		r.errs = append(r.errs, Error{
+			Code:    CodeInternalError,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: "residual pass produced a multi-lot reduction; expansion is not supported here",
+		})
+		return false
+	}
+	pr.booked = append(pr.booked, BookedPosting{
+		Account:      unknownP.Account,
+		Units:        *unknownP.Amount.Clone(),
+		Lot:          lot,
+		Reduction:    firstStepOrNil(steps),
+		InferredAuto: inferred,
+	})
+	pr.bookedDesc = append(pr.bookedDesc, groupRef{
+		currency:  residual.Currency,
+		postingAt: pr.unknownDesc[descIdx].postingAt,
+	})
+	pr.unknownDesc[descIdx].currency = residual.Currency
+	return true
+}
+
+// resolveFreeUnknown handles Pass 2's free bucket: unknown postings
+// whose candidate currency was not pinned by a cost-spec currency or
+// price annotation. With more than one free entry the case is
+// ambiguous; with exactly one, the unknown absorbs the unique
+// remaining residual currency (currencies already claimed by
+// committed groups or marked for drop are excluded). Mutations land
+// on pr.
+func (r *Reducer) resolveFreeUnknown(
+	free []*ast.Posting,
+	pr *postingResolution,
+	claimed map[string]bool,
+	trace *stateTrace,
+	txnDate time.Time,
+) {
+	switch {
+	case len(free) == 0:
+		return
+	case len(free) > 1:
+		r.flagAmbiguousUnknowns(free)
+		return
+	}
+	unknownP := free[0]
+	sums, order, ok := r.sumBookedWeights(pr.bookedPostings())
+	if !ok {
+		return
+	}
+	unclaimed := make([]string, 0, len(order))
+	// invariant: pr.dropped ⊆ claimed. resolveCommittedGroup stamps
+	// claimed[g.currency] unconditionally before any markForDrop call,
+	// so filtering by claimed alone covers both "bid by a committed
+	// unknown" and "dropped by a committed-group failure".
+	for _, cur := range order {
+		if claimed[cur] {
+			continue
+		}
+		if !sums[cur].IsZero() {
+			unclaimed = append(unclaimed, cur)
+		}
+	}
+	if len(unclaimed) != 1 {
+		msg := "deferred cost cannot be interpolated: every currency already balances"
+		if unknownP.Amount == nil {
+			msg = "auto-balanced posting has no residual to absorb; every currency already balances"
+		}
+		if len(unclaimed) > 1 {
+			msg = fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(unclaimed), unclaimed)
+		}
+		r.errs = append(r.errs, Error{
+			Code:    CodeUnresolvableInterpolation,
+			Span:    unknownP.Span,
+			Account: unknownP.Account,
+			Message: msg,
+		})
+		return
+	}
+	residual, err := negatedResidual(sums, unclaimed[0])
+	if err != nil {
 		r.errs = append(r.errs, Error{
 			Code:    CodeInternalError,
 			Span:    unknownP.Span,
 			Account: unknownP.Account,
 			Message: "interpolate: negate residual: " + err.Error(),
 		})
-		return nil, false
+		return
 	}
-	return out, true
+	r.applyResidualToUnknown(unknownP, residual, pr, trace, txnDate)
+}
+
+// unknownDescIndex returns the offset in pr.unknownDesc whose
+// posting address matches p, or -1 if absent. Pass 2 uses it to
+// stamp the resolved currency back onto the descriptor for an
+// unknown that [postingResolution.groupForResidual] surfaced.
+func (pr *postingResolution) unknownDescIndex(p *ast.Posting) int {
+	for i, ref := range pr.unknownDesc {
+		if &pr.postings[ref.postingAt] == p {
+			return i
+		}
+	}
+	return -1
 }
 
 // resolveCostFromResidual constructs the booked *ast.Cost for a
