@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "booking.go",
         "cost.go",
+        "decimal.go",
         "doc.go",
         "errors.go",
         "inventory.go",

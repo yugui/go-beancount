@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"cmp"
 	"iter"
 	"slices"
 	"time"
@@ -123,6 +124,12 @@ func costsEqualForMerge(a, b *Cost) bool {
 // lot consumed. Reduce mutates i in place, decrementing or removing
 // the consumed positions.
 //
+// The booking method governs lot selection: FIFO consumes the oldest
+// lots first, LIFO the newest; STRICT and DEFAULT consume oldest-first
+// like FIFO but only when the match is unambiguous. Consumption is
+// greedy — each lot is taken in full until the requested magnitude is
+// met, so the last lot consumed may be reduced only partially.
+//
 // Reduce is lot-selection-only: it populates each step's Lot and Units
 // but leaves SalePricePer/RealizedGain/GainCurrency as the zero
 // value. The booking layer in this package (see booking.go) fills
@@ -154,51 +161,41 @@ func (i *Inventory) Reduce(
 	matcher CostMatcher,
 	m ast.BookingMethod,
 ) ([]ReductionStep, error) {
-	// BookingAverage is not yet supported.
+	// BookingAverage is unsupported; BookingNone must have been routed
+	// elsewhere by classify. Defend both invariants.
 	if m == ast.BookingAverage {
 		return nil, Error{
 			Code:    CodeInvalidBookingMethod,
 			Message: "booking method AVERAGE is not supported",
 		}
 	}
-	// BookingNone should never reach Reduce: classify routes NONE
-	// postings along a separate path. Defend the invariant here.
 	if m == ast.BookingNone {
 		return nil, Error{
 			Code:    CodeInternalError,
-			Message: "Reduce called with BookingNone; classify should have routed this posting elsewhere",
+			Message: "booking method NONE reached Reduce; classify should have routed this posting elsewhere",
 		}
 	}
 
-	// Compute the absolute magnitude to consume. Reduce accepts units
-	// with either sign — the caller typically passes a negative amount
-	// for a sale — so we work with the absolute value throughout.
+	// Reduce accepts units of either sign — a sale is typically passed
+	// as a negative amount — so work with the absolute magnitude. A
+	// zero-magnitude reduction is a no-op.
 	var remaining apd.Decimal
-	if _, err := apd.BaseContext.Abs(&remaining, &units.Number); err != nil {
-		return nil, Error{
-			Code:    CodeInternalError,
-			Message: "inventory reduce: abs units: " + err.Error(),
-		}
+	if err := absDecimal(&remaining, &units.Number, "inventory reduce: abs units"); err != nil {
+		return nil, err
 	}
 	if remaining.Sign() == 0 {
-		// A zero-magnitude reduction is a no-op. Return no steps
-		// rather than scanning for candidates: there is nothing to
-		// consume and no booking decision to make.
 		return nil, nil
 	}
 
 	commodity := units.Currency
 
-	// Collect the indices of candidate positions: same commodity and
-	// matcher-approved. We keep the indices (not copies) so we can
-	// mutate i.positions in place later.
 	type candidate struct {
-		idx int // index into i.positions
-		// ord is the original insertion order; used as a stable
-		// tie-breaker when Cost.Date is identical across lots.
-		ord int
+		pos *Position
+		ord int // tie-breaker on sort
 	}
 	var candidates []candidate
+	var totalAvailable apd.Decimal
+	allCash := true
 	for idx := range i.positions {
 		p := &i.positions[idx]
 		if p.Units.Currency != commodity {
@@ -211,7 +208,17 @@ func (i *Inventory) Reduce(
 		if !matcher.Matches(lot) {
 			continue
 		}
-		candidates = append(candidates, candidate{idx: idx, ord: idx})
+		candidates = append(candidates, candidate{pos: p, ord: idx})
+		if p.Cost != nil {
+			allCash = false
+		}
+		var mag apd.Decimal
+		if err := absDecimal(&mag, &p.Units.Number, "inventory reduce: abs lot units"); err != nil {
+			return nil, err
+		}
+		if err := addDecimal(&totalAvailable, &totalAvailable, &mag, "inventory reduce: accumulate available"); err != nil {
+			return nil, err
+		}
 	}
 
 	if len(candidates) == 0 {
@@ -221,40 +228,22 @@ func (i *Inventory) Reduce(
 		}
 	}
 
-	// Sum the magnitudes of all candidate units. Used both as an
-	// availability bound for the overdraft check below and as the
-	// "total match" predicate for the STRICT/DEFAULT ambiguity rule:
-	// when the requested magnitude equals this sum, the booking is
-	// unambiguous because every matching lot is consumed in full.
-	var totalAvailable apd.Decimal
-	for _, c := range candidates {
-		var abs apd.Decimal
-		if _, err := apd.BaseContext.Abs(&abs, &i.positions[c.idx].Units.Number); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Message: "inventory reduce: abs lot units: " + err.Error(),
-			}
+	// Overdraft check.
+	// NOTE: Cash has no lot identity. So leaving their overdraft checks to
+	// the balance assertions.
+	if !allCash && remaining.Cmp(&totalAvailable) > 0 {
+		return nil, Error{
+			Code:    CodeReductionExceedsInventory,
+			Message: "reducing posting requests more units than the matched lots contain",
 		}
-		var sum apd.Decimal
-		if _, err := apd.BaseContext.Add(&sum, &totalAvailable, &abs); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Message: "inventory reduce: accumulate available: " + err.Error(),
-			}
-		}
-		totalAvailable.Set(&sum)
 	}
 
-	// STRICT (and DEFAULT, which behaves like STRICT for the purposes
-	// of lot selection) requires the match to be unambiguous. Multiple
-	// candidates are still unambiguous when the requested magnitude
-	// equals the sum of all candidate magnitudes — the only possible
-	// booking is to consume every matching lot in full (upstream
-	// beancount calls this a "total match"). The strictly-less-than
-	// comparison is deliberate: when remaining > totalAvailable the
-	// reduction is over-drafted rather than ambiguous, and falls
-	// through to the CodeReductionExceedsInventory check below so
-	// users see the more specific diagnostic.
+	// STRICT/DEFAULT require an unambiguous match. Multiple candidates
+	// are still unambiguous on a "total match" — remaining equals the
+	// sum of all candidate magnitudes, so every lot is consumed in
+	// full. Strictly-less-than catches the genuinely ambiguous case;
+	// overdrafts were already rejected above (or, for cash candidates,
+	// allowed to proceed).
 	if (m == ast.BookingStrict || m == ast.BookingDefault) && len(candidates) > 1 {
 		if remaining.Cmp(&totalAvailable) < 0 {
 			return nil, Error{
@@ -264,99 +253,36 @@ func (i *Inventory) Reduce(
 		}
 	}
 
-	// Order the candidates per booking method. FIFO consumes oldest
-	// first, LIFO consumes newest first. The single-candidate
-	// STRICT/DEFAULT case and the multi-candidate total-match case are
-	// both order-insensitive at the consumption level (the latter
-	// always exhausts every candidate); they fall through the same
-	// ordered consumption path so the emitted ReductionStep sequence
-	// is deterministic. STRICT/DEFAULT shares the FIFO branch by
-	// default; LIFO is only selected when explicitly requested.
 	switch m {
 	case ast.BookingLIFO:
 		slices.SortStableFunc(candidates, func(a, b candidate) int {
-			// Newest first: reverse date order. Tie-break by reverse
-			// insertion order so that two lots on the same day
-			// consume the most recently added one first.
-			da := lotDate(&i.positions[a.idx])
-			db := lotDate(&i.positions[b.idx])
-			if da.After(db) {
-				return -1
+			if d := lotDate(a.pos).Compare(lotDate(b.pos)); d != 0 {
+				return -d
 			}
-			if da.Before(db) {
-				return 1
-			}
-			// Same date: prefer the higher original index.
-			if a.ord > b.ord {
-				return -1
-			}
-			if a.ord < b.ord {
-				return 1
-			}
-			return 0
+			return cmp.Compare(b.ord, a.ord)
 		})
 	default:
-		// BookingFIFO and the unambiguous STRICT/DEFAULT case.
 		slices.SortStableFunc(candidates, func(a, b candidate) int {
-			da := lotDate(&i.positions[a.idx])
-			db := lotDate(&i.positions[b.idx])
-			if da.Before(db) {
-				return -1
+			if d := lotDate(a.pos).Compare(lotDate(b.pos)); d != 0 {
+				return d
 			}
-			if da.After(db) {
-				return 1
-			}
-			// Same date: preserve original insertion order.
-			if a.ord < b.ord {
-				return -1
-			}
-			if a.ord > b.ord {
-				return 1
-			}
-			return 0
+			return cmp.Compare(a.ord, b.ord)
 		})
 	}
 
-	// Pre-check: do the candidates contain enough units to cover the
-	// reduction? totalAvailable was computed above for the total-match
-	// predicate; reuse it here to avoid partially mutating the
-	// inventory and then erroring out.
-	// Cash candidates have no lot identity (currency units are fungible),
-	// so an overdraft is the balance assertion's concern, not booking's.
-	// See package doc "# Lot identity" for the full rationale.
-	allCash := true
-	for _, c := range candidates {
-		if i.positions[c.idx].Cost != nil {
-			allCash = false
-			break
-		}
-	}
-	if !allCash && remaining.Cmp(&totalAvailable) > 0 {
-		return nil, Error{
-			Code:    CodeReductionExceedsInventory,
-			Message: "reducing posting requests more units than the matched lots contain",
-		}
-	}
-
-	// Walk the candidates in order and emit one step per consumed
-	// lot. We track the indices we need to remove after the walk to
-	// avoid invalidating the candidate indices mid-iteration.
+	// Walk the ordered candidates, consuming min(remaining, lot) from
+	// each and emitting one step per lot touched.
 	steps := make([]ReductionStep, 0, len(candidates))
 	for _, c := range candidates {
 		if remaining.Sign() == 0 {
 			break
 		}
-		p := &i.positions[c.idx]
+		p := c.pos
 
 		var available apd.Decimal
-		if _, err := apd.BaseContext.Abs(&available, &p.Units.Number); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Message: "inventory reduce: abs lot units: " + err.Error(),
-			}
+		if err := absDecimal(&available, &p.Units.Number, "inventory reduce: abs lot units"); err != nil {
+			return nil, err
 		}
-
-		// Consume min(remaining, available) from this lot.
 		var take apd.Decimal
 		if remaining.Cmp(&available) >= 0 {
 			take.Set(&available)
@@ -364,55 +290,33 @@ func (i *Inventory) Reduce(
 			take.Set(&remaining)
 		}
 
-		// Decrement the live position's Units.Number by the taken
-		// magnitude. The lot's sign (always positive for a normal
-		// long position) is preserved.
-		var newNum apd.Decimal
+		// Decrement the live position toward zero: a normal long lot
+		// subtracts the taken magnitude, a defensive short lot adds it.
+		// The decimal helpers permit dst to alias an operand.
 		if p.Units.Number.Sign() >= 0 {
-			if _, err := apd.BaseContext.Sub(&newNum, &p.Units.Number, &take); err != nil {
-				return nil, Error{
-					Code:    CodeInternalError,
-					Message: "inventory reduce: sub lot units: " + err.Error(),
-				}
+			if err := subDecimal(&p.Units.Number, &p.Units.Number, &take, "inventory reduce: sub lot units"); err != nil {
+				return nil, err
 			}
 		} else {
-			// A short position (negative units) reduces toward zero
-			// by addition. This path is defensive; normal augmentation
-			// never produces short positions in this package.
-			if _, err := apd.BaseContext.Add(&newNum, &p.Units.Number, &take); err != nil {
-				return nil, Error{
-					Code:    CodeInternalError,
-					Message: "inventory reduce: add lot units: " + err.Error(),
-				}
+			if err := addDecimal(&p.Units.Number, &p.Units.Number, &take, "inventory reduce: add lot units"); err != nil {
+				return nil, err
 			}
 		}
-		p.Units.Number.Set(&newNum)
-
-		// Update remaining = remaining - take.
-		var newRemaining apd.Decimal
-		if _, err := apd.BaseContext.Sub(&newRemaining, &remaining, &take); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Message: "inventory reduce: sub remaining: " + err.Error(),
-			}
+		if err := subDecimal(&remaining, &remaining, &take, "inventory reduce: sub remaining"); err != nil {
+			return nil, err
 		}
-		remaining.Set(&newRemaining)
 
-		// Build the step. Clone the taken magnitude so later edits to
-		// the inventory do not alias the step's Units decimal.
-		step := ReductionStep{}
+		var step ReductionStep
 		if p.Cost != nil {
-			// Deep-copy the lot so the step does not share the
-			// position's coefficient buffer.
+			// prevent aliasing the inventory's decimal
 			step.Lot = *p.Cost.Clone()
 		}
 		step.Units.Set(&take)
 		steps = append(steps, step)
 	}
 
-	// Remove positions that have been fully consumed. Walk the
-	// original slice in reverse so index deletions do not shift
-	// earlier indices.
+	// Drop fully-consumed positions. Walk in reverse so deletions do
+	// not shift indices yet to be visited.
 	for idx := len(i.positions) - 1; idx >= 0; idx-- {
 		if i.positions[idx].Units.Number.Sign() == 0 {
 			i.positions = slices.Delete(i.positions, idx, idx+1)
