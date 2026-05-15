@@ -48,7 +48,6 @@ import (
 	"slices"
 
 	"github.com/cockroachdb/apd/v3"
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
@@ -67,22 +66,11 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, err
 	}
 
-	// options.FromRaw is called for parity with the balance plugin:
-	// future option keys may affect pad behavior. The parsed *Values
-	// itself is currently unused.
-	_, optErrs := options.FromRaw(in.Options)
-	var diags []ast.Diagnostic
-	for _, perr := range optErrs {
-		diags = append(diags, ast.Diagnostic{
-			Code:    string(validation.CodeInvalidOption),
-			Span:    perr.Span,
-			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
-		})
+	if in.Directives == nil {
+		return api.Result{}, nil
 	}
 
-	if in.Directives == nil {
-		return api.Result{Diagnostics: diags}, nil
-	}
+	var diags []ast.Diagnostic
 
 	// Running per-(account, currency) balance, accumulated from every
 	// *ast.Transaction posting (real and previously synthesized). Used

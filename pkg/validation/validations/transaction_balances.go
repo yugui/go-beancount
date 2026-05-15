@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/apd/v3"
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/validation"
@@ -27,19 +26,16 @@ import (
 //   - CodeInternalError when tolerance inference itself fails (surfaced
 //     as `failed to derive transaction tolerance`).
 //
-// The validator reads the shared *options.Values so tolerance.Infer can
-// honor the ledger's `inferred_tolerance_multiplier` and
-// `infer_tolerance_from_cost` settings. Values is a read-only dependency
-// from this validator's perspective.
+// Consults *ast.OptionValues to honor `inferred_tolerance_multiplier`
+// and `infer_tolerance_from_cost`.
 type transactionBalances struct {
-	opts *options.Values
+	opts *ast.OptionValues
 }
 
 // newTransactionBalances constructs a transactionBalances validator bound
-// to the given options view. opts must be non-nil; the caller is expected
-// to obtain it via options.FromRaw (or equivalent) before constructing
-// the validator.
-func newTransactionBalances(opts *options.Values) *transactionBalances {
+// to the given options view. opts may be nil; *ast.OptionValues accessors
+// fall back to registry defaults.
+func newTransactionBalances(opts *ast.OptionValues) *transactionBalances {
 	return &transactionBalances{opts: opts}
 }
 

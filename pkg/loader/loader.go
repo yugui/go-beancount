@@ -65,7 +65,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
@@ -136,11 +135,10 @@ func LoadFile(ctx context.Context, path string, opts ...Option) (*ast.Ledger, er
 // cancellation) and returns the ledger alongside it so callers can
 // inspect partial results.
 func runPipeline(ctx context.Context, ledger *ast.Ledger) (*ast.Ledger, error) {
-	rawOpts := options.BuildRaw(ledger)
-	if rawOpts[pluginProcessingModeOption] == modeRaw {
+	if ledger.Options.String(pluginProcessingModeOption) == modeRaw {
 		return ledger, postproc.Apply(ctx, ledger)
 	}
-	return ledger, applyDefault(ctx, ledger, rawOpts)
+	return ledger, applyDefault(ctx, ledger)
 }
 
 // applyDefault runs the default pipeline:
@@ -154,20 +152,20 @@ func runPipeline(ctx context.Context, ledger *ast.Ledger) (*ast.Ledger, error) {
 //
 // Each step halts on the first system-level error and propagates it to
 // the caller; subsequent steps are skipped.
-func applyDefault(ctx context.Context, ledger *ast.Ledger, opts map[string]string) error {
+func applyDefault(ctx context.Context, ledger *ast.Ledger) error {
 	for _, p := range preBuiltins {
-		if err := runBuiltin(ctx, ledger, opts, p); err != nil {
+		if err := runBuiltin(ctx, ledger, p); err != nil {
 			return err
 		}
 	}
-	if err := runBuiltin(ctx, ledger, opts, api.PluginFunc(booking.Apply)); err != nil {
+	if err := runBuiltin(ctx, ledger, api.PluginFunc(booking.Apply)); err != nil {
 		return err
 	}
 	if err := postproc.Apply(ctx, ledger); err != nil {
 		return err
 	}
 	for _, p := range postBuiltins {
-		if err := runBuiltin(ctx, ledger, opts, p); err != nil {
+		if err := runBuiltin(ctx, ledger, p); err != nil {
 			return err
 		}
 	}
@@ -179,13 +177,13 @@ func applyDefault(ctx context.Context, ledger *ast.Ledger, opts map[string]strin
 // [ast.Ledger.Diagnostics]. A non-nil error from the plugin is treated
 // as a system-level failure and returned wrapped with a "built-in
 // plugin" prefix; ctx cancellation is also propagated.
-func runBuiltin(ctx context.Context, ledger *ast.Ledger, opts map[string]string, p api.Plugin) error {
+func runBuiltin(ctx context.Context, ledger *ast.Ledger, p api.Plugin) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	res, err := p.Apply(ctx, api.Input{
 		Directives: ledger.All(),
-		Options:    opts,
+		Options:    ledger.Options,
 	})
 	if err != nil {
 		return fmt.Errorf("built-in plugin: %w", err)

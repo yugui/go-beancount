@@ -4,27 +4,16 @@ import (
 	"testing"
 
 	"github.com/cockroachdb/apd/v3"
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/ast/asttest"
 	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
 )
 
-func mustDefaults(t *testing.T) *options.Values {
-	t.Helper()
-	v, errs := options.Parse(nil)
-	if len(errs) != 0 {
-		t.Fatalf("options.Parse(nil): unexpected errors: %v", errs)
-	}
-	return v
-}
+func mustDefaults() *ast.OptionValues { return ast.NewOptionValues() }
 
-func mustOpts(t *testing.T, raw map[string]string) *options.Values {
+func mustOpts(t *testing.T, raw map[string]string) *ast.OptionValues {
 	t.Helper()
-	v, errs := options.FromRaw(raw)
-	if len(errs) != 0 {
-		t.Fatalf("options.FromRaw(%v): unexpected errors: %v", raw, errs)
-	}
-	return v
+	return asttest.MustOptions(t, raw)
 }
 
 func decimalFromString(t *testing.T, s string) apd.Decimal {
@@ -44,7 +33,7 @@ func amtStr(t *testing.T, s, cur string) ast.Amount {
 // TestInfer_EmptyPostings verifies that Infer returns an empty tolerance
 // map when given no postings and no residual currencies.
 func TestInfer_EmptyPostings(t *testing.T) {
-	tol, err := tolerance.Infer(nil, mustDefaults(t), nil)
+	tol, err := tolerance.Infer(nil, mustDefaults(), nil)
 	if err != nil {
 		t.Fatalf("Infer(nil, defaults, nil): unexpected error: %v", err)
 	}
@@ -65,7 +54,7 @@ func TestInfer_SingleCurrencyNoCost(t *testing.T) {
 		{Account: "Assets:Cash", Amount: &coarse},
 		{Account: "Expenses:Food", Amount: &fine},
 	}
-	tol, err := tolerance.Infer(postings, mustDefaults(t), []string{"USD"})
+	tol, err := tolerance.Infer(postings, mustDefaults(), []string{"USD"})
 	if err != nil {
 		t.Fatalf("Infer: unexpected error: %v", err)
 	}
@@ -84,7 +73,7 @@ func TestInfer_SingleCurrencyNoCost(t *testing.T) {
 func TestInfer_UnknownResidualCurrencyIsZero(t *testing.T) {
 	pos := amtStr(t, "100.00", "USD")
 	postings := []ast.Posting{{Account: "Assets:Cash", Amount: &pos}}
-	tol, err := tolerance.Infer(postings, mustDefaults(t), []string{"EUR"})
+	tol, err := tolerance.Infer(postings, mustDefaults(), []string{"EUR"})
 	if err != nil {
 		t.Fatalf("Infer: unexpected error: %v", err)
 	}
@@ -180,7 +169,7 @@ func TestInfer_CostDisabledIgnoresCost(t *testing.T) {
 		{Account: "Assets:Cash", Amount: &cash},
 	}
 	// Default: infer_tolerance_from_cost = false.
-	tol, err := tolerance.Infer(postings, mustDefaults(t), []string{"USD"})
+	tol, err := tolerance.Infer(postings, mustDefaults(), []string{"USD"})
 	if err != nil {
 		t.Fatalf("Infer: unexpected error: %v", err)
 	}
@@ -204,7 +193,7 @@ func TestForAmount_Exponents(t *testing.T) {
 		{"100", "0.5"},
 		{"100.001", "0.0005"},
 	}
-	opts := mustDefaults(t)
+	opts := mustDefaults()
 	for _, tc := range cases {
 		a := amtStr(t, tc.in, "USD")
 		got := tolerance.ForAmount(opts, a)
@@ -235,9 +224,9 @@ func TestForBalanceAssertion(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var opts *options.Values
+			var opts *ast.OptionValues
 			if tc.mult == "" {
-				opts = mustDefaults(t)
+				opts = mustDefaults()
 			} else {
 				opts = mustOpts(t, map[string]string{"inferred_tolerance_multiplier": tc.mult})
 			}

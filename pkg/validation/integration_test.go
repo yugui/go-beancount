@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	gocmp "github.com/google/go-cmp/cmp"
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
@@ -44,11 +43,10 @@ func loadFixture(t *testing.T, name string) *ast.Ledger {
 func runPipeline(t *testing.T, ledger *ast.Ledger) []ast.Diagnostic {
 	t.Helper()
 	ctx := context.Background()
-	opts := options.BuildRaw(ledger)
 
 	padRes, err := pad.Apply(ctx, api.Input{
 		Directives: ledger.All(),
-		Options:    opts,
+		Options:    ledger.Options,
 	})
 	if err != nil {
 		t.Fatalf("pad.Apply: %v", err)
@@ -59,7 +57,7 @@ func runPipeline(t *testing.T, ledger *ast.Ledger) []ast.Diagnostic {
 
 	balRes, err := balance.Apply(ctx, api.Input{
 		Directives: ledger.All(),
-		Options:    opts,
+		Options:    ledger.Options,
 	})
 	if err != nil {
 		t.Fatalf("balance.Apply: %v", err)
@@ -70,7 +68,7 @@ func runPipeline(t *testing.T, ledger *ast.Ledger) []ast.Diagnostic {
 
 	valRes, err := validations.Apply(ctx, api.Input{
 		Directives: ledger.All(),
-		Options:    opts,
+		Options:    ledger.Options,
 	})
 	if err != nil {
 		t.Fatalf("validations.Apply: %v", err)

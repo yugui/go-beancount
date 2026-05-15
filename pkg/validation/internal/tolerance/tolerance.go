@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/apd/v3"
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
@@ -12,7 +11,7 @@ import (
 // least-significant digit sits at exponent e. The result is
 // `inferred_tolerance_multiplier × 10^e`; at the default multiplier 0.5
 // this yields 0.005 for e=-2 and 0.5 for e=0.
-func forExponent(opts *options.Values, e int32) *apd.Decimal {
+func forExponent(opts *ast.OptionValues, e int32) *apd.Decimal {
 	mult := opts.Decimal("inferred_tolerance_multiplier")
 	out := new(apd.Decimal)
 	out.Set(mult)
@@ -24,7 +23,7 @@ func forExponent(opts *options.Values, e int32) *apd.Decimal {
 // ForAmount returns the default Beancount tolerance for an amount based
 // on the precision of its least-significant digit and the ledger's
 // configured inferred_tolerance_multiplier.
-func ForAmount(opts *options.Values, amount ast.Amount) *apd.Decimal {
+func ForAmount(opts *ast.OptionValues, amount ast.Amount) *apd.Decimal {
 	return forExponent(opts, amount.Number.Exponent)
 }
 
@@ -39,7 +38,7 @@ func ForAmount(opts *options.Values, amount ast.Amount) *apd.Decimal {
 // transaction-balancing tolerance computed from the same amount
 // remains the un-doubled inferred_tolerance_multiplier × 10^expo via
 // ForAmount.
-func ForBalanceAssertion(opts *options.Values, amount ast.Amount) *apd.Decimal {
+func ForBalanceAssertion(opts *ast.OptionValues, amount ast.Amount) *apd.Decimal {
 	out := ForAmount(opts, amount)
 	// apd.Decimal stores sign separately and Coeff is a non-negative
 	// big.Int, so left-shifting the coefficient by 1 multiplies the
@@ -55,7 +54,7 @@ func ForBalanceAssertion(opts *options.Values, amount ast.Amount) *apd.Decimal {
 // infer_tolerance_from_cost option is enabled, cost-based
 // contributions are also included. See the package doc for the full
 // derivation.
-func Infer(postings []ast.Posting, opts *options.Values, residualCurrencies []string) (map[string]*apd.Decimal, error) {
+func Infer(postings []ast.Posting, opts *ast.OptionValues, residualCurrencies []string) (map[string]*apd.Decimal, error) {
 	// Units-based tolerance per currency: multiplier × 10^maxExp where
 	// maxExp is the *largest* (least negative) exponent observed among
 	// posting amounts in that currency. This matches upstream beancount's

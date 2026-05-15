@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 )
@@ -41,7 +40,6 @@ func Apply(ctx context.Context, ledger *ast.Ledger) error {
 	if len(plugins) == 0 {
 		return nil
 	}
-	opts := options.BuildRaw(ledger)
 
 	for _, pd := range plugins {
 		if err := ctx.Err(); err != nil {
@@ -60,7 +58,7 @@ func Apply(ctx context.Context, ledger *ast.Ledger) error {
 
 		result, err := p.Apply(ctx, api.Input{
 			Directives: ledger.All(),
-			Options:    opts,
+			Options:    ledger.Options,
 			Config:     pd.Config,
 			Directive:  pd,
 		})

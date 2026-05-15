@@ -1,0 +1,15 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "asttest",
+    srcs = ["options.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/ast/asttest",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/ast"],
+)
+
+go_test(
+    name = "asttest_test",
+    srcs = ["options_test.go"],
+    deps = [":asttest"],
+)

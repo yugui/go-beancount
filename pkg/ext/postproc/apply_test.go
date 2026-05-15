@@ -396,6 +396,11 @@ func TestApply_OptionsSnapshotLastWins(t *testing.T) {
 		&ast.Option{Key: "title", Value: "Y"},
 		&ast.Plugin{Name: "example.com/fake/opts"},
 	)
+	opts, errs := ast.ParseOptions(l)
+	if len(errs) != 0 {
+		t.Fatalf("ast.ParseOptions: %v", errs)
+	}
+	l.Options = opts
 
 	if err := Apply(context.Background(), l); err != nil {
 		t.Fatalf("Apply returned unexpected error: %v", err)
@@ -404,8 +409,8 @@ func TestApply_OptionsSnapshotLastWins(t *testing.T) {
 	if len(fake.calls) != 1 {
 		t.Fatalf("Apply called plugin %d times, want 1", len(fake.calls))
 	}
-	if got := fake.calls[0].Options["title"]; got != "Y" {
-		t.Errorf("Options[\"title\"] = %q, want %q", got, "Y")
+	if got := fake.calls[0].Options.String("title"); got != "Y" {
+		t.Errorf("Options.String(%q) = %q, want %q", "title", got, "Y")
 	}
 }
 

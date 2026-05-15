@@ -6,31 +6,16 @@ import (
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/google/go-cmp/cmp"
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/ast/asttest"
 	"github.com/yugui/go-beancount/pkg/validation"
 )
 
-// mustDefaults returns a typed *options.Values with all defaults applied.
-// Centralised here so every test avoids a duplicate FromRaw(nil) boilerplate.
-func mustDefaults(t *testing.T) *options.Values {
-	t.Helper()
-	v, errs := options.FromRaw(nil)
-	if len(errs) != 0 {
-		t.Fatalf("options.FromRaw(nil): unexpected errors: %v", errs)
-	}
-	return v
-}
+func mustDefaults() *ast.OptionValues { return ast.NewOptionValues() }
 
-// mustOpts returns a typed *options.Values built from raw key/value pairs,
-// failing the test on any parse error.
-func mustOpts(t *testing.T, raw map[string]string) *options.Values {
+func mustOpts(t *testing.T, raw map[string]string) *ast.OptionValues {
 	t.Helper()
-	v, errs := options.FromRaw(raw)
-	if len(errs) != 0 {
-		t.Fatalf("options.FromRaw(%v): unexpected errors: %v", raw, errs)
-	}
-	return v
+	return asttest.MustOptions(t, raw)
 }
 
 // amtStrDec parses s into an apd-backed ast.Amount. Preserves exponent,
@@ -49,21 +34,21 @@ func day(y, m, d int) time.Time {
 }
 
 func TestTransactionBalances_Name(t *testing.T) {
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	if got, want := v.Name(), "transaction_balances"; got != want {
 		t.Errorf("Name() = %q, want %q", got, want)
 	}
 }
 
 func TestTransactionBalances_FinishIsNoOp(t *testing.T) {
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	if got := v.Finish(); got != nil {
 		t.Errorf("Finish() = %v, want nil", got)
 	}
 }
 
 func TestTransactionBalances_BalancedSingleCurrency(t *testing.T) {
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	pos := amtDec(100, "USD")
 	neg := amtDec(-100, "USD")
 	txn := &ast.Transaction{
@@ -80,7 +65,7 @@ func TestTransactionBalances_BalancedSingleCurrency(t *testing.T) {
 }
 
 func TestTransactionBalances_UnbalancedSingleCurrency(t *testing.T) {
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	pos := amtDec(1, "USD")
 	neg := amtDec(-2, "USD")
 	span := ast.Span{Start: ast.Position{Filename: "l.beancount", Line: 12}}
@@ -109,7 +94,7 @@ func TestTransactionBalances_UnbalancedSingleCurrency(t *testing.T) {
 // diagnostics. This is the path that runs in the full pipeline, where
 // booking precedes validation.
 func TestTransactionBalances_BookedAutoPosting(t *testing.T) {
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	pos := amtDec(100, "USD")
 	neg := amtDec(-100, "USD")
 	txn := &ast.Transaction{
@@ -131,7 +116,7 @@ func TestTransactionBalances_BookedAutoPosting(t *testing.T) {
 // validator must emit one CodeAutoPostingUnresolved per such posting
 // rather than attempting to infer the missing amount itself.
 func TestTransactionBalances_AutoPostingNotBookedReports(t *testing.T) {
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	pos := amtDec(100, "USD")
 	txnSpan := ast.Span{Start: ast.Position{Filename: "l.beancount", Line: 7}}
 	txn := &ast.Transaction{
@@ -175,7 +160,7 @@ func TestTransactionBalances_AutoPostingNotBookedReports(t *testing.T) {
 
 func TestTransactionBalances_MultiCurrencyPricedBalances(t *testing.T) {
 	// 10 STOCK @ 100 USD => 1000 USD, offset by -1000 USD cash.
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	units := amtDec(10, "STOCK")
 	price := amtDec(100, "USD")
 	cash := amtDec(-1000, "USD")
@@ -202,7 +187,7 @@ func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) 
 	// posting and additionally reports the multi-currency residual as
 	// CodeUnbalancedTransaction. The legacy "cannot infer auto-posting"
 	// path is gone because validators no longer infer.
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	usd := amtDec(100, "USD")
 	eur := amtDec(50, "EUR")
 	txn := &ast.Transaction{
@@ -235,7 +220,7 @@ func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) 
 }
 
 func TestTransactionBalances_IgnoresNonTransactionDirectives(t *testing.T) {
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	for _, d := range []ast.Directive{
 		&ast.Balance{Date: day(2024, 1, 1), Account: "Assets:Cash", Amount: amtDec(0, "USD")},
 		&ast.Open{Date: day(2024, 1, 1), Account: "Assets:Cash"},
@@ -253,7 +238,7 @@ func TestTransactionBalances_IgnoresNonTransactionDirectives(t *testing.T) {
 // passes at multiplier 1. This exercises the tolerance.Infer
 // integration against v.opts.
 func TestTransactionBalances_MultiplierAffectsResidualTolerance(t *testing.T) {
-	build := func(withOption bool) (*ast.Transaction, *options.Values) {
+	build := func(withOption bool) (*ast.Transaction, *ast.OptionValues) {
 		pos := amtStrDec(t, "100.00", "USD")
 		neg := amtStrDec(t, "-99.99", "USD")
 		txn := &ast.Transaction{
@@ -264,11 +249,11 @@ func TestTransactionBalances_MultiplierAffectsResidualTolerance(t *testing.T) {
 				{Account: "Expenses:Food", Amount: &neg},
 			},
 		}
-		var opts *options.Values
+		var opts *ast.OptionValues
 		if withOption {
 			opts = mustOpts(t, map[string]string{"inferred_tolerance_multiplier": "1"})
 		} else {
-			opts = mustDefaults(t)
+			opts = mustDefaults()
 		}
 		return txn, opts
 	}
@@ -304,7 +289,7 @@ func TestTransactionBalances_MultiplierAffectsResidualTolerance(t *testing.T) {
 // "{{ total CUR }}" keeps the cost-bearing posting's weight equal to
 // the explicit total without introducing per-unit cost arithmetic.
 func TestTransactionBalances_MixedPrecisionResidualWithinCoarseTolerance(t *testing.T) {
-	v := newTransactionBalances(mustDefaults(t))
+	v := newTransactionBalances(mustDefaults())
 	stockUnits := amtStrDec(t, "-10", "STOCK")
 	totalCost := amtStrDec(t, "100.1111", "JPY")
 	cashHigh := amtStrDec(t, "200.22222222222222", "JPY")
@@ -332,7 +317,7 @@ func TestTransactionBalances_MixedPrecisionResidualWithinCoarseTolerance(t *test
 // cost-currency tolerance enough to absorb a residual that would
 // otherwise be reported as unbalanced.
 func TestTransactionBalances_InferToleranceFromCost(t *testing.T) {
-	build := func(withOption bool) (*ast.Transaction, *options.Values) {
+	build := func(withOption bool) (*ast.Transaction, *ast.OptionValues) {
 		units := amtDec(1000, "XYZ")
 		costAmt := amtStrDec(t, "1.0001", "USD")
 		cash := amtStrDec(t, "-1000.15", "USD")
@@ -348,11 +333,11 @@ func TestTransactionBalances_InferToleranceFromCost(t *testing.T) {
 				{Account: "Assets:Cash", Amount: &cash},
 			},
 		}
-		var opts *options.Values
+		var opts *ast.OptionValues
 		if withOption {
 			opts = mustOpts(t, map[string]string{"infer_tolerance_from_cost": "TRUE"})
 		} else {
-			opts = mustDefaults(t)
+			opts = mustDefaults()
 		}
 		return txn, opts
 	}

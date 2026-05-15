@@ -37,7 +37,6 @@
 // with [ast.Ledger.ReplaceAll] so later plugins observe earlier rewrites:
 //
 //	ctx := context.Background()
-//	opts := options.BuildRaw(ledger)
 //
 //	var diags []ast.Diagnostic
 //	for _, apply := range []func(context.Context, api.Input) (api.Result, error){
@@ -45,7 +44,7 @@
 //	} {
 //		res, err := apply(ctx, api.Input{
 //			Directives: ledger.All(),
-//			Options:    opts,
+//			Options:    ledger.Options,
 //		})
 //		if err != nil {
 //			log.Fatal(err)
