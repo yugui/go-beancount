@@ -473,18 +473,9 @@ func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrac
 	out := make([]BookedPosting, 0, len(booked))
 	for j, ref := range pr.bookedDesc {
 		if pr.dropped[ref.currency] {
-			// Roll back the inventory mutation for this booking.
 			inv := trace.prepareForRollback(booked[j].Account)
 			if err := reverseBooking(inv, booked[j]); err != nil {
-				if typed, ok := err.(Error); ok {
-					r.errs = append(r.errs, typed)
-				} else {
-					r.errs = append(r.errs, Error{
-						Code:    CodeInternalError,
-						Account: booked[j].Account,
-						Message: err.Error(),
-					})
-				}
+				r.errs = append(r.errs, asError(err, booked[j].Account))
 			}
 			continue
 		}
@@ -497,27 +488,26 @@ func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrac
 	return out
 }
 
-// reverseBooking undoes the inventory mutation a single BookedPosting
-// applied, by issuing the inverse Inventory.Add.
-//
-// Augmentation inverse (bp.Reduction == nil): adds Position with
-// negated units and the same lot. This shrinks or removes the lot;
-// for cash augmentations (bp.Lot == nil) the cash position is
-// similarly shrunk.
-//
-// Reduction inverse (bp.Reduction != nil): adds Position with the
-// positive magnitude from bp.Reduction.Units and the original lot
-// cost. A zero-value bp.Reduction.Lot (cash sentinel) maps to a nil
-// Cost so Inventory.Add merges into the cash slot. A non-sentinel lot
-// is cloned to avoid aliasing.
+// asError returns err as an inventory Error: an existing Error passes
+// through, anything else becomes CodeInternalError on account.
+func asError(err error, account ast.Account) Error {
+	if typed, ok := err.(Error); ok {
+		return typed
+	}
+	return Error{Code: CodeInternalError, Account: account, Message: err.Error()}
+}
+
+// reverseBooking undoes a BookedPosting's effect on inv with the
+// inverse Inventory.Add. An augmentation (bp.Reduction == nil) has its
+// units negated; a reduction restores bp.Reduction.Units to the lot
+// (the cash sentinel maps to a nil Cost so the cash slot merges).
 //
 // inv must be the live inventory for bp.Account, obtained via
-// trace.prepareForRollback so that diff() records the rollback.
-// Errors are CodeInternalError from apd arithmetic and do not occur
-// for normal ledger inputs.
+// trace.prepareForRollback so diff() records the rollback. Errors are
+// CodeInternalError from apd arithmetic and do not occur for normal
+// ledger inputs.
 func reverseBooking(inv *Inventory, bp BookedPosting) error {
 	if bp.Reduction == nil {
-		// Augmentation inverse: negate units, preserve lot.
 		var neg apd.Decimal
 		if _, err := apd.BaseContext.Neg(&neg, &bp.Units.Number); err != nil {
 			return Error{
@@ -531,19 +521,18 @@ func reverseBooking(inv *Inventory, bp BookedPosting) error {
 			Cost:  bp.Lot,
 		})
 	}
-	// Reduction inverse: restore the consumed units back to the lot.
 	var cost *Cost
 	if bp.Reduction.Lot.Currency != "" || bp.Reduction.Lot.Number.Sign() != 0 {
 		// Non-sentinel lot: clone to avoid aliasing the step's Lot value.
 		lotCopy := bp.Reduction.Lot
 		cost = lotCopy.Clone()
 	}
-	// bp.Reduction.Units is a positive magnitude; no sign flip needed.
-	// bp.Units.Currency is the consumed commodity (set by bookOne from the
-	// posting's amount; in a reduction the amount carries the lot commodity).
 	return inv.Add(Position{
-		Units: ast.Amount{Number: *ast.CloneDecimal(&bp.Reduction.Units), Currency: bp.Units.Currency},
-		Cost:  cost,
+		Units: ast.Amount{
+			Number:   *ast.CloneDecimal(&bp.Reduction.Units), // positive magnitude; no sign flip
+			Currency: bp.Units.Currency,                      // consumed commodity, from the posting's amount
+		},
+		Cost: cost,
 	})
 }
 
