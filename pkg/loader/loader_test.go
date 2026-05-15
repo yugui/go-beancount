@@ -193,6 +193,74 @@ func TestLoad_TotalCostAugmentationBalances(t *testing.T) {
 	}
 }
 
+// TestLoad_OptionsParseErrorEmittedOnce verifies that a malformed option value
+// produces exactly one "invalid-option" diagnostic through the loader pipeline.
+func TestLoad_OptionsParseErrorEmittedOnce(t *testing.T) {
+	t.Run("malformed option emitted exactly once", func(t *testing.T) {
+		const src = `option "inferred_tolerance_multiplier" "not-a-decimal"
+option "operating_currency" "USD"
+`
+		ctx := context.Background()
+		ledger, err := loader.Load(ctx, src)
+		if err != nil {
+			t.Fatalf("loader.Load: %v", err)
+		}
+
+		var invalids []ast.Diagnostic
+		for _, d := range ledger.Diagnostics {
+			if d.Code == "invalid-option" {
+				invalids = append(invalids, d)
+			}
+		}
+		if got := len(invalids); got != 1 {
+			t.Fatalf("invalid-option diagnostics = %d, want 1; all: %+v", got, ledger.Diagnostics)
+		}
+
+		d := invalids[0]
+		if d.Severity != ast.Error {
+			t.Errorf("Severity = %v, want Error", d.Severity)
+		}
+		if d.Span == (ast.Span{}) {
+			t.Error("Span is zero, want directive-sourced span")
+		}
+		if got := d.Span.Start.Filename; got != "<input>" {
+			t.Errorf("Span.Start.Filename = %q, want %q", got, "<input>")
+		}
+		if !strings.Contains(d.Message, "inferred_tolerance_multiplier") {
+			t.Errorf("Message = %q, want it to contain %q", d.Message, "inferred_tolerance_multiplier")
+		}
+	})
+
+	t.Run("valid options produce no invalid-option diagnostic", func(t *testing.T) {
+		const src = `option "operating_currency" "USD"
+option "operating_currency" "JPY"
+option "infer_tolerance_from_cost" "TRUE"
+option "inferred_tolerance_multiplier" "0.25"
+`
+		ctx := context.Background()
+		ledger, err := loader.Load(ctx, src)
+		if err != nil {
+			t.Fatalf("loader.Load: %v", err)
+		}
+
+		for _, d := range ledger.Diagnostics {
+			if d.Code == "invalid-option" {
+				t.Errorf("unexpected invalid-option diagnostic: %s", d.Message)
+			}
+		}
+
+		if got := ledger.Options.StringList("operating_currency"); len(got) != 2 || got[0] != "USD" || got[1] != "JPY" {
+			t.Errorf("operating_currency = %v, want [USD JPY]", got)
+		}
+		if !ledger.Options.Bool("infer_tolerance_from_cost") {
+			t.Error("infer_tolerance_from_cost = false, want true")
+		}
+		if d := ledger.Options.Decimal("inferred_tolerance_multiplier"); d == nil || d.String() != "0.25" {
+			t.Errorf("inferred_tolerance_multiplier = %v, want 0.25", d)
+		}
+	})
+}
+
 func TestLoadRawMode(t *testing.T) {
 	// In raw mode the built-in pipeline is skipped, so an unbalanced
 	// transaction must NOT produce a validations diagnostic.
