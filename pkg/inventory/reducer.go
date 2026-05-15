@@ -438,11 +438,10 @@ func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrac
 	}
 
 	// Phase 1: determine which posting indices survive.
-	// A posting survives iff every descriptor that references its postingAt
-	// carries either "" (unresolved unknown — always survives) or a currency
-	// not in pr.dropped. Postings without any descriptor are not in
-	// pr.postings (markForDrop skips the append), so the loops below
-	// cover all entries.
+	// Failed postings were never appended to pr.postings (markForDrop does
+	// not call append), so the scan covers exactly the entries that need a
+	// survival decision.
+	// currency == "" (unresolved unknown) is never in pr.dropped; those always survive.
 	survives := make([]bool, len(pr.postings))
 	for _, ref := range pr.bookedDesc {
 		if !pr.dropped[ref.currency] {
@@ -450,9 +449,6 @@ func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrac
 		}
 	}
 	for _, ref := range pr.unknownDesc {
-		// currency == "" means unresolved; dropped[""] is always false
-		// per the invariant established in Pass 1/2 (markForDrop never
-		// receives ""), so unresolved unknowns always survive.
 		if !pr.dropped[ref.currency] {
 			survives[ref.postingAt] = true
 		}
@@ -473,9 +469,7 @@ func (pr *postingResolution) applyDrops(booked []BookedPosting, trace *stateTrac
 	}
 	pr.postings = newPostings
 
-	// Phase 3: process bookedDesc — reverse mutations for dropped entries,
-	// re-bind Source pointers for surviving entries, collect surviving
-	// BookedPostings (bookedDesc and booked are parallel).
+	// Phase 3: reverse mutations for dropped entries; re-bind Source for survivors.
 	out := make([]BookedPosting, 0, len(booked))
 	for j, ref := range pr.bookedDesc {
 		if pr.dropped[ref.currency] {
@@ -553,34 +547,34 @@ func reverseBooking(inv *Inventory, bp BookedPosting) error {
 	})
 }
 
-// visitTxn performs the per-transaction booking pass, mutating the
-// reducer's per-account state in place and returning the before/after
-// snapshots plus the booked postings. The stop return value is reserved
-// for future use (e.g. fatal structural errors); today it is always
-// false when the function returns normally.
+// visitTxn books a single transaction: it mutates the reducer's
+// per-account inventory and returns the before/after snapshots and the
+// surviving BookedPosting records. stop is reserved for future use; it
+// is always false in the current implementation.
 //
-// The body runs two passes:
+// A structurally-invalid transaction is rejected with a diagnostic without
+// touching any inventory.
 //
-//   - Pass 1 books each explicit posting via [bookOne] and routes the
-//     outcome through a [postingResolution] helper that rebuilds
-//     txn.Postings, installs the resolved *ast.Cost where needed,
-//     expands multi-lot reductions into per-lot children, and
-//     constructs the BookedPosting records. Unknowns (auto-posting,
-//     deferred augmentation) are recorded by offset for Pass 2.
-//   - Pass 2 solves the residual and books the single unknown.
+// Booking runs in two passes. Pass 1 books every explicit posting; Pass
+// 2 resolves the single auto-balanced or deferred-cost unknown from the
+// residual of the others (more than one unknown is ambiguous and yields
+// one diagnostic per unknown).
 //
-// PostingWeight on every booked Source is well-defined for Pass 2's
-// residual computation because Pass 1 installs *ast.Cost on every
-// posting that needs one before bindAndCollect binds Source pointers.
+// When a posting's booking fails, its whole weight-currency group is
+// dropped: every posting sharing that currency is removed from
+// txn.Postings and from the returned BookedPosting slice, and the
+// group's inventory mutations are rolled back. Other currency groups in
+// the same transaction are unaffected, and the transaction is still
+// emitted even if every group was dropped. A posting that fails only
+// because its cost number is deferred is the exception — it is retried
+// in Pass 2 rather than dropped.
 func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	before map[ast.Account]*Inventory,
 	after map[ast.Account]*Inventory,
 	booked []BookedPosting,
 	stop bool,
 ) {
-	// Reject structurally-invalid transactions before mutating any
-	// account state, so a rejected transaction leaves inventory
-	// untouched.
+	// Reject structurally-invalid input.
 	if !r.validateStructure(txn) {
 		return map[ast.Account]*Inventory{}, nil, nil, false
 	}
@@ -588,19 +582,11 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	trace := newStateTrace(r.state)
 	pr := newPostingResolution(len(txn.Postings))
 
-	// Pass 1: classify each posting via bookOne and route the outcome
-	// through pr. A posting that fails with CodeAugmentationRequiresCost
-	// AND has a cost spec without a number is held back as a deferred
-	// unknown (Pass 2 may infer its per-unit cost from the residual).
-	// The auto-posting (Amount == nil) is also an unknown. If more
-	// than one unknown is collected, the transaction is ambiguous and
-	// is reported below.
+	// Pass 1: book each explicit posting; hold auto/deferred postings as unknowns.
 	for i := range txn.Postings {
 		p := &txn.Postings[i]
 		if p.Amount == nil {
-			// Auto-posting (validated single & no cost/price by
-			// validateStructure). prepareForEdit is not called here —
-			// Pass 2 will book it once the residual is resolved.
+			// Auto-posting: booked in Pass 2 once the residual is known.
 			pr.addUnknown(p)
 			continue
 		}
@@ -609,8 +595,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		method := r.booking[p.Account] // zero value = BookingDefault
 		lot, steps, errs := bookOne(inv, p, method, txn.Date)
 		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
-			// Deferred-unknown path: Pass 2 will re-try with the inferred
-			// cost. The inventory was not mutated (bookOne returned before Add).
+			// Deferred cost: retried in Pass 2 (bookOne returned before mutating inventory).
 			pr.addUnknown(p)
 			continue
 		}
@@ -622,11 +607,8 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 		switch {
 		case p.Cost != nil && p.Cost.IsBooked():
-			// Already-booked second-run path: bookOne's tight matcher
-			// produces either a single-step reduction or an
-			// augmentation lot, never multi-step. The guard is
-			// defensive — if the invariant ever broke, firstStepOrNil
-			// would silently drop the extra steps.
+			// Second-run fixed-point path. Defensive guard: tight matcher
+			// must not return multi-step; a violation would otherwise silently truncate.
 			key := weightCurrencyFallback(p)
 			if len(steps) > 1 {
 				r.errs = append(r.errs, Error{
@@ -651,20 +633,14 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 	}
 
-	// bindAndCollect must run before Pass 2 because solveResidual reads
-	// PostingWeight(bp.Source) on every booked entry — the Source
-	// pointers must already alias the final postings slice. txn.Postings
-	// assignment is deferred until after applyDrops so the output slice
-	// reflects the post-drop state.
+	// Source pointers must be bound before Pass 2's residual solve.
 	var unknowns []*ast.Posting
 	booked, unknowns = pr.bindAndCollect()
 
-	// Pass 2: resolve the single unknown, if any.
+	// Pass 2: resolve the unknown against the residual.
 	switch {
 	case len(unknowns) > 1:
-		// Ambiguous: too many unknowns for a single residual to pin
-		// down. Emit one diagnostic per unknown so the user sees every
-		// site they need to fix.
+		// Too many unknowns to solve a single residual; flag each so users see every site to fix.
 		r.flagAmbiguousUnknowns(unknowns)
 	case len(unknowns) == 1:
 		unknownP := unknowns[0]
@@ -672,11 +648,7 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		if !ok {
 			break // solveResidual already appended the diagnostic
 		}
-		// If the residual currency belongs to a group that already failed
-		// in Pass 1, the auto-posting joins that dropped group. Record the
-		// currency so the drop-application pass can exclude this posting from
-		// txn.Postings. Do not touch Amount/Cost — the posting will be
-		// removed, so mutating it would be misleading.
+		// Residual currency already dropped: the unknown joins that group.
 		if pr.dropped[residual.Currency] {
 			pr.unknownDesc[0].currency = residual.Currency
 			break
@@ -684,40 +656,25 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		inferred := unknownP.Amount == nil
 		if inferred {
 			// Auto-posting: write the inferred Amount. validateStructure
-			// guarantees unknownP.Cost is nil, and this branch must
-			// preserve that — even if bookOne below ends up matching a
-			// held-at-cost lot, the auto-posting's Cost is deliberately
-			// not written.
+			// guarantees Cost nil; preserve it — bookOne must not write Cost here.
 			unknownP.Amount = residual
 		} else if err := r.resolveCostFromResidual(unknownP, residual, txn.Date); err != nil {
 			r.errs = append(r.errs, *err)
 			break
 		}
-		// The deferred branch pre-installed *ast.Cost above, so bookOne
-		// takes the ResolveCost(*ast.Cost) short-circuit path; the
-		// auto-posting branch left Cost nil. No post-bookOne install is
-		// needed in either case.
 		inv := trace.prepareForEdit(unknownP.Account)
 		lot, steps, errs := bookOne(inv, unknownP, r.booking[unknownP.Account], txn.Date)
 		r.errs = append(r.errs, errs...)
 		if len(errs) > 0 {
-			// bookOne failed: mark this currency group as dropped so the
-			// drop-application pass removes the auto-posting along with its
-			// Pass 1 postings.
+			// Pass 2's own booking failed: drop the residual currency along with any Pass 1 postings sharing it.
 			pr.markForDrop(residual.Currency)
 			trace.prepareForRollback(unknownP.Account)
 			pr.unknownDesc[0].currency = residual.Currency
 			break
 		}
 		if len(steps) > 1 {
-			// Multi-lot reductions from the residual pass would
-			// need to expand txn.Postings after Source pointers are
-			// already bound, which is not safe. The deferred-
-			// augment branch installs a tight *ast.Cost so its
-			// matcher returns a single lot; the auto-posting branch
-			// is typically a cash residual that augments. If we
-			// ever land here we want a diagnostic, not a silently-
-			// truncated BookedPosting.
+			// Expanding a multi-lot reduction here would mutate txn.Postings after Source pointers are bound.
+			// The deferred branch installs a tight Cost so the matcher returns one lot; this branch should be unreachable.
 			r.errs = append(r.errs, Error{
 				Code:    CodeInternalError,
 				Span:    unknownP.Span,
@@ -726,13 +683,9 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			})
 			break
 		}
-		// The unknown is already at its final offset in txn.Postings,
-		// so its address is stable: appending one BookedPosting here
-		// does not invalidate any of the Source pointers bindAndCollect
-		// just bound. Record the booking in both booked and bookedDesc so
-		// they remain parallel (drop-application-pass prerequisite). Also
-		// mark the unknownDesc entry with the resolved currency for the
-		// drop-application pass's rebuild.
+		// The unknown already sits at its final offset; appending here does
+		// not invalidate the Source pointers bindAndCollect already bound.
+		// booked and bookedDesc must remain parallel.
 		booked = append(booked, BookedPosting{
 			Source:       unknownP,
 			Account:      unknownP.Account,
@@ -748,14 +701,11 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		pr.unknownDesc[0].currency = residual.Currency
 	}
 
-	// Apply drop: rebuild txn.Postings without failed currency groups,
-	// roll back their inventory mutations, and re-bind Source pointers.
-	// No-op for error-free transactions (pr.dropped is nil).
+	// Apply the currency-group drop, then compute the visitor diff.
 	booked = pr.applyDrops(booked, trace, r)
 	txn.Postings = pr.postings
 
-	// diff must run after applyDrops so prepareForRollback's marks are
-	// visible to the exclusion rule in diff().
+	// diff observes prepareForRollback marks recorded by applyDrops.
 	before, after = trace.diff()
 	return before, after, booked, false
 }
