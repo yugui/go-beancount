@@ -107,6 +107,23 @@ func (c *CostSpec) Clone() *CostSpec {
 	return &out
 }
 
+// Clone returns a deep copy of c. It is nil-safe: calling Clone on a
+// nil receiver returns nil, which matches the convention used by
+// Position for the optional Cost field.
+func (c *Cost) Clone() *Cost {
+	if c == nil {
+		return nil
+	}
+	return &Cost{
+		Number:   *CloneDecimal(&c.Number),
+		Currency: c.Currency,
+		Date:     c.Date,
+		Label:    c.Label,
+		PerUnit:  c.PerUnit.Clone(),
+		Total:    c.Total.Clone(),
+	}
+}
+
 // Clone returns a deep copy of a. The Number decimal is copied via
 // CloneDecimal so the clone owns its coefficient buffer; Currency
 // is shared with the receiver. Returns nil if a is nil.
