@@ -21,7 +21,6 @@ go_test(
     data = glob(["testdata/**"]),
     deps = [
         ":validation",
-        "//internal/options",
         "//pkg/ast",
         "//pkg/ext/postproc/api",
         "//pkg/validation/balance",

@@ -3,7 +3,6 @@ package validations_test
 import (
 	"context"
 	"iter"
-	"strings"
 	"testing"
 	"time"
 
@@ -156,31 +155,6 @@ func TestPlugin_CanceledContext(t *testing.T) {
 	_, err := validations.Apply(ctx, api.Input{})
 	if err == nil {
 		t.Fatalf("validations.Apply on canceled ctx returned nil error, want non-nil")
-	}
-}
-
-func TestPlugin_OptionsFromRawParseError(t *testing.T) {
-	// "inferred_tolerance_multiplier" is a registered decimal-valued
-	// option; a non-numeric value triggers a ParseError which the
-	// plugin surfaces as ast.Diagnostic{Code: "invalid-option"}.
-	in := api.Input{
-		Options: map[string]string{
-			"inferred_tolerance_multiplier": "not-a-decimal",
-		},
-	}
-	res, err := validations.Apply(context.Background(), in)
-	if err != nil {
-		t.Fatalf("validations.Apply: unexpected error %v", err)
-	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != "invalid-option" {
-		t.Errorf("Error.Code = %q, want %q", e.Code, "invalid-option")
-	}
-	if !strings.Contains(e.Message, "inferred_tolerance_multiplier") {
-		t.Errorf("Error.Message = %q, want it to mention the option key", e.Message)
 	}
 }
 

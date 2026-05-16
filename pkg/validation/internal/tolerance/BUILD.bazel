@@ -9,7 +9,6 @@ go_library(
     importpath = "github.com/yugui/go-beancount/pkg/validation/internal/tolerance",
     visibility = ["//pkg/validation:__subpackages__"],
     deps = [
-        "//internal/options",
         "//pkg/ast",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
@@ -20,8 +19,8 @@ go_test(
     srcs = ["tolerance_test.go"],
     deps = [
         ":tolerance",
-        "//internal/options",
         "//pkg/ast",
+        "//pkg/ast/asttest",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )

@@ -15,13 +15,10 @@ package validations
 
 import (
 	"context"
-	"fmt"
 
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
-	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/internal/accountstate"
 )
 
@@ -40,27 +37,14 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	// need an open/close view of the ledger.
 	build := accountstate.Build(in.Directives)
 
-	// Decode raw options to a typed *options.Values. Malformed values
-	// become diagnostics with code "invalid-option"; unknown keys
-	// are silently dropped by FromRaw.
-	opts, optErrs := options.FromRaw(in.Options)
-
 	validators := []entryValidator{
 		newOpenClose(build),
 		newActiveAccounts(build.State),
 		newCurrencyConstraints(build.State),
-		newTransactionBalances(opts),
+		newTransactionBalances(in.Options),
 	}
 
 	var diags []ast.Diagnostic
-	for _, perr := range optErrs {
-		diags = append(diags, ast.Diagnostic{
-			Code:    string(validation.CodeInvalidOption),
-			Span:    perr.Span,
-			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
-		})
-	}
-
 	if in.Directives != nil {
 		for _, d := range in.Directives {
 			for _, v := range validators {

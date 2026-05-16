@@ -39,9 +39,14 @@ type Input struct {
 	// slices.Collect.
 	Directives iter.Seq2[int, ast.Directive]
 
-	// Options snapshots option directives with last-wins semantics,
-	// matching beancount upstream. Nil when the ledger has no options.
-	Options map[string]string
+	// Options is the typed snapshot of option values taken at ledger
+	// construction (see [ast.Ledger.Options]). Plugins must not assume
+	// mutations to Option directives later in the pipeline are
+	// reflected. Nil only when Input is constructed directly rather than
+	// via [ast.Load], [ast.LoadFile], or [ast.LoadReader];
+	// [ast.OptionValues] accessors are nil-safe and fall back to registry
+	// defaults.
+	Options *ast.OptionValues
 
 	// Config is the second argument of the triggering plugin directive,
 	// empty when omitted. Each plugin interprets it per its own

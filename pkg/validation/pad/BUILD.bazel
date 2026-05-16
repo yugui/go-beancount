@@ -6,7 +6,6 @@ go_library(
     importpath = "github.com/yugui/go-beancount/pkg/validation/pad",
     visibility = ["//visibility:public"],
     deps = [
-        "//internal/options",
         "//pkg/ast",
         "//pkg/ext/postproc",
         "//pkg/ext/postproc/api",

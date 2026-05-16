@@ -35,7 +35,6 @@ import (
 	"fmt"
 
 	"github.com/cockroachdb/apd/v3"
-	"github.com/yugui/go-beancount/internal/options"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
@@ -54,19 +53,18 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, err
 	}
 
-	opts, diags := parseOptions(in.Options)
-	balances := map[balanceKey]*apd.Decimal{}
-
 	if in.Directives == nil {
-		return api.Result{Diagnostics: diags}, nil
+		return api.Result{}, nil
 	}
 
+	balances := map[balanceKey]*apd.Decimal{}
+	var diags []ast.Diagnostic
 	for _, d := range in.Directives {
 		switch x := d.(type) {
 		case *ast.Transaction:
 			diags = append(diags, applyTransaction(x, balances)...)
 		case *ast.Balance:
-			diags = append(diags, checkBalance(x, balances, opts)...)
+			diags = append(diags, checkBalance(x, balances, in.Options)...)
 		}
 	}
 
@@ -86,23 +84,6 @@ func init() {
 type balanceKey struct {
 	Account  ast.Account
 	Currency string
-}
-
-// parseOptions wraps options.FromRaw and converts any parse failures
-// into ast.Diagnostic values with code [validation.CodeInvalidOption].
-// On error the returned *options.Values is still safe to use: FromRaw
-// retains defaults for keys that failed to parse.
-func parseOptions(raw map[string]string) (*options.Values, []ast.Diagnostic) {
-	opts, optErrs := options.FromRaw(raw)
-	var diags []ast.Diagnostic
-	for _, perr := range optErrs {
-		diags = append(diags, ast.Diagnostic{
-			Code:    string(validation.CodeInvalidOption),
-			Span:    perr.Span,
-			Message: fmt.Sprintf("invalid option %q: %v", perr.Key, perr.Err),
-		})
-	}
-	return opts, diags
 }
 
 // applyTransaction accumulates tx's postings into balances. The
@@ -161,7 +142,7 @@ func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal)
 // diff is computed as expected - actual; the tolerance check operates
 // on |diff|, so the sign of diff only affects error message
 // formatting.
-func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *options.Values) []ast.Diagnostic {
+func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *ast.OptionValues) []ast.Diagnostic {
 	var diags []ast.Diagnostic
 	actual := new(apd.Decimal)
 	for k, v := range balances {

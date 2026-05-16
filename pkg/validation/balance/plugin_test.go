@@ -3,13 +3,13 @@ package balance_test
 import (
 	"context"
 	"iter"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/ast/asttest"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
 	"github.com/yugui/go-beancount/pkg/validation/balance"
@@ -619,7 +619,7 @@ func TestPlugin_ToleranceMultiplierZero(t *testing.T) {
 		Amount:  amtStr(t, "100.00", "USD"),
 	}
 	in := api.Input{
-		Options:    map[string]string{"inferred_tolerance_multiplier": "0"},
+		Options:    asttest.MustOptions(t, map[string]string{"inferred_tolerance_multiplier": "0"}),
 		Directives: seqOf([]ast.Directive{txn, bal}),
 	}
 	res, err := balance.Apply(context.Background(), in)
@@ -703,7 +703,7 @@ func TestPlugin_ToleranceMultiplierRelaxed(t *testing.T) {
 			Amount:  amtStr(t, "100.00", "USD"),
 		}
 		in := api.Input{
-			Options:    map[string]string{"inferred_tolerance_multiplier": "2.0"},
+			Options:    asttest.MustOptions(t, map[string]string{"inferred_tolerance_multiplier": "2.0"}),
 			Directives: seqOf([]ast.Directive{txn, bal}),
 		}
 		res, err := balance.Apply(context.Background(), in)
@@ -1148,29 +1148,4 @@ func TestPlugin_SubtreeAggregation(t *testing.T) {
 			t.Errorf("Result.Diagnostics = %v, want empty (leaf assertion sees only its own bucket)", res.Diagnostics)
 		}
 	})
-}
-
-// TestPlugin_OptionsFromRawParseError confirms malformed options
-// surface as ast.Diagnostic{Code: "invalid-option"}, matching the
-// validations plugin's contract.
-func TestPlugin_OptionsFromRawParseError(t *testing.T) {
-	in := api.Input{
-		Options: map[string]string{
-			"inferred_tolerance_multiplier": "not-a-decimal",
-		},
-	}
-	res, err := balance.Apply(context.Background(), in)
-	if err != nil {
-		t.Fatalf("balance.Apply: unexpected error %v", err)
-	}
-	if len(res.Diagnostics) != 1 {
-		t.Fatalf("len(Result.Diagnostics) = %d, want 1; diagnostics = %v", len(res.Diagnostics), res.Diagnostics)
-	}
-	e := res.Diagnostics[0]
-	if e.Code != "invalid-option" {
-		t.Errorf("Code = %q, want %q", e.Code, "invalid-option")
-	}
-	if !strings.Contains(e.Message, "inferred_tolerance_multiplier") {
-		t.Errorf("Message = %q, want it to mention the option key", e.Message)
-	}
 }

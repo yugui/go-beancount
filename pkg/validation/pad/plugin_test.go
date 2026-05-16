@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"iter"
-	"strings"
 	"testing"
 	"time"
 
@@ -943,32 +942,5 @@ func TestPlugin_DuplicateBalanceSameCurrencyDoesNotDoubleSynth(t *testing.T) {
 	wantDirectives := []ast.Directive{p, wantSynthTx(p, 1000, 1000, "USD"), bal1, bal2}
 	if diff := cmp.Diff(wantDirectives, res.Directives, astCmpOpts); diff != "" {
 		t.Errorf("pad.Apply: Result.Directives mismatch (-want +got):\n%s", diff)
-	}
-}
-
-// TestPlugin_OptionsFromRawParseError confirms malformed options
-// surface as ast.Diagnostic{Code: "invalid-option"}, matching the balance
-// and validations plugins' contract.
-func TestPlugin_OptionsFromRawParseError(t *testing.T) {
-	in := api.Input{
-		Options: map[string]string{
-			"inferred_tolerance_multiplier": "not-a-decimal",
-		},
-	}
-	res, err := pad.Apply(context.Background(), in)
-	if err != nil {
-		t.Fatalf("pad.Apply: unexpected error %v", err)
-	}
-	// Span and Message are intentionally not pinned: their exact
-	// shape is owned by options.FromRaw (which formats the wrapped
-	// parse error and points at the option's source location).
-	wantDiagnostics := []ast.Diagnostic{{Code: string(validation.CodeInvalidOption)}}
-	if diff := cmp.Diff(wantDiagnostics, res.Diagnostics, astCmpOpts,
-		cmpopts.IgnoreFields(ast.Diagnostic{}, "Span", "Message"),
-	); diff != "" {
-		t.Errorf("pad.Apply: Diagnostics mismatch (-want +got):\n%s", diff)
-	}
-	if len(res.Diagnostics) > 0 && !strings.Contains(res.Diagnostics[0].Message, "inferred_tolerance_multiplier") {
-		t.Errorf("pad.Apply: Message = %q, want it to mention the option key", res.Diagnostics[0].Message)
 	}
 }
