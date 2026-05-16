@@ -444,17 +444,18 @@ type residualGroup struct {
 // first-appearance order from pr.unknownDesc, and (b) any remaining
 // sum currency with non-zero residual, in first-appearance order from
 // booked weights. The second category drives the free path: its
-// residuals are what a free unknown may absorb. Dropped sum
-// currencies remain included so the free-path silent-join can
-// recognize them; the Reducer checks pr.isDropped before booking.
+// residuals are what a free unknown may absorb.
 //
 // free lists every unknown whose candidate currency is "".
 //
 // Unknowns whose candidate currency is in pr.dropped are silently
-// joined by virtue of their unknownDesc.currency already being in
-// pr.dropped — finalize's drop filter excludes them automatically.
-// groupForResidual simply skips them and emits no group on their
-// behalf.
+// joined: their unknownDesc.currency already names a dropped currency,
+// so finalize's drop filter excludes them automatically. groupForResidual
+// simply skips them and emits no group on their behalf. The free-path
+// counterpart — a free unknown whose only sum-only residual is in a
+// dropped currency — relies on the same finalize mechanism: bookOne
+// runs, the resulting BookedPosting is appended under the dropped
+// currency, finalize reverses the booking and excludes the posting.
 //
 // errs is non-empty iff summing booked weights or negating a residual
 // failed (apd arithmetic invariants); callers must not proceed with
@@ -484,18 +485,19 @@ func (pr *postingResolution) groupForResidual() (
 		if w == nil {
 			continue
 		}
-		if existing, found := sums[w.Currency]; found {
-			if _, err := apd.BaseContext.Add(existing, existing, &w.Number); err != nil {
-				return nil, nil, []Error{{
-					Code:    CodeInternalError,
-					Span:    p.Span,
-					Account: p.Account,
-					Message: "interpolate: accumulate weight: " + err.Error(),
-				}}
-			}
-		} else {
+		existing, found := sums[w.Currency]
+		if !found {
 			sums[w.Currency] = &w.Number
 			sumOrder = append(sumOrder, w.Currency)
+			continue
+		}
+		if _, err := apd.BaseContext.Add(existing, existing, &w.Number); err != nil {
+			return nil, nil, []Error{{
+				Code:    CodeInternalError,
+				Span:    p.Span,
+				Account: p.Account,
+				Message: "interpolate: accumulate weight: " + err.Error(),
+			}}
 		}
 	}
 
@@ -565,15 +567,6 @@ func (pr *postingResolution) groupForResidual() (
 	}
 
 	return groups, free, nil
-}
-
-// isDropped reports whether currency was marked for drop by Pass 1.
-// The Reducer's Pass 2 free path consults this to silent-join a free
-// unknown whose sole residual currency was Pass-1-dropped; committed
-// groups do not need this check because groupForResidual filters them
-// out at the source.
-func (pr *postingResolution) isDropped(currency string) bool {
-	return pr.dropped[currency]
 }
 
 // recordUnknownBooked completes the bookkeeping for a Pass 2 booking
@@ -879,13 +872,10 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			switch len(freeResiduals) {
 			case 1:
 				res := freeResiduals[0]
-				if pr.isDropped(res.Currency) {
-					// silent-join: the sole residual is in a
-					// Pass-1-dropped currency; stamp the unknown so
-					// finalize excludes it, no diagnostic.
-					pr.recordUnknownFailed(unknownP, res.Currency)
-					break
-				}
+				// A Pass-1-dropped residual currency is handled by
+				// finalize: bookResolvedUnknown stamps unknownDesc
+				// with the dropped currency, the BookedPosting joins
+				// the dropped group, and both are reversed/excluded.
 				r.bookResolvedUnknown(unknownP, res.Currency, res, unknownP.Amount == nil, &pr, trace, txn.Date)
 			case 0:
 				msg := "deferred cost cannot be interpolated: every currency already balances"
