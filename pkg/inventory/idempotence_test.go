@@ -67,7 +67,7 @@ func TestNewCostMatcher_BookedTightMatch(t *testing.T) {
 		Date:     date,
 		Label:    "lot-A",
 	}
-	m := NewCostMatcher(booked, "" /* priceCurrency unused for booked */)
+	m := NewCostMatcher(booked, "" /* priceCurrency unused for booked */, nil)
 	if !m.HasPerUnit {
 		t.Error("HasPerUnit = false; tight matcher must constrain Number")
 	}

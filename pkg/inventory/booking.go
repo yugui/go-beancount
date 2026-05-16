@@ -339,7 +339,7 @@ func bookReduce(
 	if specIsEmpty(p.Cost) && p.Price != nil {
 		priceCcy = p.Price.Amount.Currency
 	}
-	matcher := NewCostMatcher(p.Cost, priceCcy)
+	matcher := NewCostMatcher(p.Cost, priceCcy, p.Amount)
 
 	if inv == nil {
 		// A reduction against a nil inventory is structurally

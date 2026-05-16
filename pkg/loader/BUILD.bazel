@@ -26,5 +26,6 @@ go_test(
     deps = [
         ":loader",
         "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )

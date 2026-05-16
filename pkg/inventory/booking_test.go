@@ -667,6 +667,93 @@ func TestBookOne_ReduceStrictAmbiguous(t *testing.T) {
 	}
 }
 
+// TestBookOne_ReduceStrictTotalCostDisambiguates verifies that a
+// total-only cost spec on a reducing posting (`{{ T CUR }}`) implicitly
+// pins the per-unit cost to T/|units| for STRICT lot selection,
+// mirroring upstream beancount. With two lots of the same commodity at
+// different per-unit costs, the reduction must select only the lot
+// whose per-unit cost equals T/|units| instead of being rejected as
+// ambiguous.
+func TestBookOne_ReduceStrictTotalCostDisambiguates(t *testing.T) {
+	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	if err := inv.Add(mkPosition(t, "10", "STOCK", mkCost(t, "1", "JPY", date, ""))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "10", "STOCK", mkCost(t, "1.5", "JPY", date, ""))); err != nil {
+		t.Fatal(err)
+	}
+
+	// {{ 10 JPY }} on -10 STOCK implies per-unit 1 JPY, which uniquely
+	// identifies the first lot.
+	spec := &ast.CostSpec{Total: decimalPtr(t, "10"), Currency: "JPY"}
+	p := mkPosting(t, "Assets:A", mkAmount(t, "-10", "STOCK"), spec, nil)
+
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
+	if len(errs) > 0 {
+		t.Fatalf("bookOne errors: %v", errs)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps len = %d, want 1", len(steps))
+	}
+	wantPerUnit := decimalVal(t, "1")
+	if steps[0].Lot.Number.Cmp(&wantPerUnit) != 0 {
+		t.Errorf("bookOne: reduced lot per-unit = %s, want 1", steps[0].Lot.Number.String())
+	}
+	if steps[0].Lot.Currency != "JPY" {
+		t.Errorf("bookOne: reduced lot currency = %q, want JPY", steps[0].Lot.Currency)
+	}
+	// The 1.5 JPY lot must remain untouched.
+	if inv.Len() != 1 {
+		t.Fatalf("inventory Len = %d, want 1 (only the 1.5 JPY lot left)", inv.Len())
+	}
+	// No exported per-lot accessor; read positions directly.
+	remaining := inv.positions[0]
+	if remaining.Cost == nil {
+		t.Fatalf("bookOne: remaining lot has nil Cost; want lot at per-unit 1.5 JPY")
+	}
+	wantRemainingPerUnit := decimalVal(t, "1.5")
+	if remaining.Cost.Number.Cmp(&wantRemainingPerUnit) != 0 {
+		t.Errorf("bookOne: remaining lot per-unit = %s, want 1.5", remaining.Cost.Number.String())
+	}
+}
+
+// TestBookOne_ReduceStrictCombinedCostDisambiguates is the combined-form
+// `{per # total CUR}` counterpart of the total-only disambiguation test
+// above. The derived per-unit constraint is per + total/|units|.
+func TestBookOne_ReduceStrictCombinedCostDisambiguates(t *testing.T) {
+	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	inv := NewInventory()
+	// First lot was augmented with `{1 # 5 JPY}` on 10 units, so its
+	// per-unit cost is 1 + 5/10 = 1.5.
+	if err := inv.Add(mkPosition(t, "10", "STOCK", mkCost(t, "1.5", "JPY", date, ""))); err != nil {
+		t.Fatal(err)
+	}
+	if err := inv.Add(mkPosition(t, "10", "STOCK", mkCost(t, "2", "JPY", date, ""))); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reducer uses `{1 # 5 JPY}` on -10 STOCK; derived per-unit is 1.5.
+	spec := &ast.CostSpec{
+		PerUnit:  decimalPtr(t, "1"),
+		Total:    decimalPtr(t, "5"),
+		Currency: "JPY",
+	}
+	p := mkPosting(t, "Assets:A", mkAmount(t, "-10", "STOCK"), spec, nil)
+
+	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
+	if len(errs) > 0 {
+		t.Fatalf("bookOne errors: %v", errs)
+	}
+	if len(steps) != 1 {
+		t.Fatalf("steps len = %d, want 1", len(steps))
+	}
+	wantPerUnit := decimalVal(t, "1.5")
+	if steps[0].Lot.Number.Cmp(&wantPerUnit) != 0 {
+		t.Errorf("bookOne: reduced lot per-unit = %s, want 1.5", steps[0].Lot.Number.String())
+	}
+}
+
 func TestBookOne_NilAmountReturnsInternalError(t *testing.T) {
 	inv := NewInventory()
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
