@@ -1198,6 +1198,86 @@ func TestReducerWalk_InterpolatesSingleDeferred_EmptyBraces(t *testing.T) {
 	}
 }
 
+// TestReducerWalk_DeferredCostZeroResidualInterpolates pins the
+// committed-group zero-residual behavior: a deferred {CUR} posting
+// whose bid currency does not appear in (or sums to zero in) the
+// rest of the transaction interpolates to a zero per-unit cost
+// rather than erroring with CodeUnresolvableInterpolation.
+// Algebraically a zero residual is a valid interpolation outcome
+// (cost = 0). The downstream balance validator catches any
+// transaction-level imbalance separately; here the JPY legs net to
+// zero and USD is absent from booked sums, so the deferred USD bid
+// resolves to {0 USD} and the transaction is internally balanced.
+func TestReducerWalk_DeferredCostZeroResidualInterpolates(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	txn := mkTxn(txnDate,
+		&ast.Posting{
+			Account: "Assets:Stock",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost:    &ast.CostSpec{Currency: "USD"}, // bid currency absent from booked sums
+		},
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-1000", "JPY")},
+		&ast.Posting{Account: "Income:Gift", Amount: mkAmountPtr(t, "1000", "JPY")},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Stock", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Income:Gift", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	var stockBooked *BookedPosting
+	dirs, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		for i := range booked {
+			if booked[i].Account == "Assets:Stock" {
+				bp := booked[i]
+				stockBooked = &bp
+			}
+		}
+		return true
+	})
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+	if stockBooked == nil {
+		t.Fatalf("Walk: Assets:Stock BookedPosting not observed")
+	}
+	if stockBooked.Lot == nil {
+		t.Fatalf("Walk: Assets:Stock Lot is nil after zero-residual interpolation")
+	}
+	wantZero := decimalVal(t, "0")
+	if stockBooked.Lot.Number.Cmp(&wantZero) != 0 {
+		t.Errorf("Walk: Assets:Stock Lot.Number = %s, want 0", stockBooked.Lot.Number.Text('f'))
+	}
+	if stockBooked.Lot.Currency != "USD" {
+		t.Errorf("Walk: Assets:Stock Lot.Currency = %q, want USD", stockBooked.Lot.Currency)
+	}
+
+	// The resolved Cost on the rebuilt posting also carries Number=0 USD.
+	booked := findBookedTxn(t, dirs, txnDate)
+	var sawStock bool
+	for _, p := range booked.Postings {
+		if p.Account != "Assets:Stock" {
+			continue
+		}
+		sawStock = true
+		cost, ok := p.Cost.(*ast.Cost)
+		if !ok || cost == nil {
+			t.Fatalf("Assets:Stock: Cost = %#v, want *ast.Cost", p.Cost)
+		}
+		if cost.Currency != "USD" || cost.Number.Cmp(&wantZero) != 0 {
+			t.Errorf("Assets:Stock: Cost = {%s %s}, want {0 USD}", cost.Number.Text('f'), cost.Currency)
+		}
+	}
+	if !sawStock {
+		t.Errorf("Walk: Assets:Stock not present in booked transaction postings")
+	}
+}
+
 // TestReducerWalk_InterpolationAmbiguousMultipleResidualCurrencies
 // exercises the multi-currency-residual rejection path with a
 // deferred cost spec (rather than an auto-posting). The transaction
