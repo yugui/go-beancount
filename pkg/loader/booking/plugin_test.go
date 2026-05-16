@@ -49,6 +49,13 @@ func amt(num string, cur string) *ast.Amount {
 	return &ast.Amount{Number: dec(num), Currency: cur}
 }
 
+// decp returns a freshly allocated *apd.Decimal parsed from s. Used
+// by CostSpec test fixtures where PerUnit / Total are decimal pointers.
+func decp(s string) *apd.Decimal {
+	d := dec(s)
+	return &d
+}
+
 // seqOf adapts a directive slice into the iter.Seq2[int, ast.Directive]
 // shape required by api.Input.Directives.
 func seqOf(directives []ast.Directive) iter.Seq2[int, ast.Directive] {
@@ -95,8 +102,9 @@ func TestApply_DateOnlyCostReducesWithoutImbalance(t *testing.T) {
 				Account: "Assets:Gift-Certificates",
 				Amount:  amt("2", "DISCOUNT"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("1300", "JPY"),
-					Date:    dayp(2024, 5, 14),
+					PerUnit:  decp("1300"),
+					Currency: "JPY",
+					Date:     dayp(2024, 5, 14),
 				},
 			},
 			{Account: "Income:Gifts", Amount: amt("-2600", "JPY")},
@@ -152,9 +160,10 @@ func TestApply_AugmentationFillsPerUnit(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amt("10", "AAPL"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100.00", "USD"),
-					Date:    dayp(2024, 1, 15),
-					Label:   "lot1",
+					PerUnit:  decp("100.00"),
+					Currency: "USD",
+					Date:     dayp(2024, 1, 15),
+					Label:    "lot1",
 				},
 			},
 			{
@@ -175,7 +184,7 @@ func TestApply_AugmentationFillsPerUnit(t *testing.T) {
 		t.Fatalf("booking.Apply() Directives = nil, want non-nil clone")
 	}
 	// The plugin must NOT mutate the input AST.
-	if got := txn.Postings[0].Cost.(*ast.CostSpec).PerUnit.Number.Text('f'); got != "100.00" {
+	if got := txn.Postings[0].Cost.(*ast.CostSpec).PerUnit.Text('f'); got != "100.00" {
 		t.Errorf("input PerUnit after Apply: got %q, want %q", got, "100.00")
 	}
 	// Find the cloned transaction and check its CostSpec.
@@ -228,7 +237,8 @@ func TestApply_AugmentationPreservesTotalCostSpec(t *testing.T) {
 				Account: "Assets:A",
 				Amount:  amt("4.1", "STOCK"),
 				Cost: &ast.CostSpec{
-					Total: amt("4.2", "JPY"),
+					Total:    decp("4.2"),
+					Currency: "JPY",
 				},
 			},
 			{Account: "Assets:Cash", Amount: amt("-4.2", "JPY")},
@@ -302,8 +312,9 @@ func TestApply_ReductionAggregatesTotal(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amt("2", "ABC"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100.00", "USD"),
-					Date:    dayp(2024, 1, 1),
+					PerUnit:  decp("100.00"),
+					Currency: "USD",
+					Date:     dayp(2024, 1, 1),
 				},
 			},
 			{Account: "Assets:Cash", Amount: amt("-200.00", "USD")},
@@ -318,8 +329,9 @@ func TestApply_ReductionAggregatesTotal(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amt("3", "ABC"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("110.00", "USD"),
-					Date:    dayp(2024, 2, 1),
+					PerUnit:  decp("110.00"),
+					Currency: "USD",
+					Date:     dayp(2024, 2, 1),
 				},
 			},
 			{Account: "Assets:Cash", Amount: amt("-330.00", "USD")},
@@ -414,8 +426,9 @@ func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 				Account: "Assets:A",
 				Amount:  amt("10", "STOCK"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100", "JPY"),
-					Label:   "first",
+					PerUnit:  decp("100"),
+					Currency: "JPY",
+					Label:    "first",
 				},
 			},
 			{Account: "Equity:Opening-Balances", Amount: amt("-1000", "JPY")},
@@ -430,8 +443,9 @@ func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 				Account: "Assets:A",
 				Amount:  amt("10", "STOCK"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100", "JPY"),
-					Label:   "second",
+					PerUnit:  decp("100"),
+					Currency: "JPY",
+					Label:    "second",
 				},
 			},
 			{Account: "Equity:Opening-Balances", Amount: amt("-1000", "JPY")},
@@ -446,7 +460,8 @@ func TestApply_StrictTotalMatchPerUnitCost(t *testing.T) {
 				Account: "Assets:A",
 				Amount:  amt("-20", "STOCK"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100", "JPY"),
+					PerUnit:  decp("100"),
+					Currency: "JPY",
 				},
 			},
 			{Account: "Assets:A", Amount: amt("3000", "JPY")},
@@ -509,8 +524,9 @@ func TestApply_StrictTotalMatchEmptyCost(t *testing.T) {
 				Account: "Assets:A",
 				Amount:  amt("10", "STOCK"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100", "JPY"),
-					Label:   "first",
+					PerUnit:  decp("100"),
+					Currency: "JPY",
+					Label:    "first",
 				},
 			},
 			{Account: "Equity:Opening-Balances", Amount: amt("-1000", "JPY")},
@@ -525,8 +541,9 @@ func TestApply_StrictTotalMatchEmptyCost(t *testing.T) {
 				Account: "Assets:A",
 				Amount:  amt("10", "STOCK"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100", "JPY"),
-					Label:   "second",
+					PerUnit:  decp("100"),
+					Currency: "JPY",
+					Label:    "second",
 				},
 			},
 			{Account: "Equity:Opening-Balances", Amount: amt("-1000", "JPY")},
@@ -723,8 +740,9 @@ func TestApply_ReducerErrorsBecomeDiagnostics(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amt("2", "ABC"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100.00", "USD"),
-					Date:    dayp(2024, 1, 1),
+					PerUnit:  decp("100.00"),
+					Currency: "USD",
+					Date:     dayp(2024, 1, 1),
 				},
 			},
 			{Account: "Assets:Cash", Amount: amt("-200.00", "USD")},
@@ -739,8 +757,9 @@ func TestApply_ReducerErrorsBecomeDiagnostics(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amt("-1", "ABC"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("50.00", "USD"),
-					Date:    dayp(2099, 12, 31),
+					PerUnit:  decp("50.00"),
+					Currency: "USD",
+					Date:     dayp(2099, 12, 31),
 				},
 			},
 			{Account: "Assets:Cash", Amount: amt("50.00", "USD")},
@@ -785,8 +804,9 @@ func TestApply_Idempotent(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amt("2", "ABC"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100.00", "USD"),
-					Date:    dayp(2024, 1, 1),
+					PerUnit:  decp("100.00"),
+					Currency: "USD",
+					Date:     dayp(2024, 1, 1),
 				},
 			},
 			{Account: "Assets:Cash", Amount: amt("-200.00", "USD")},
@@ -1004,7 +1024,8 @@ func TestApply_ClonesCostBearingTransaction(t *testing.T) {
 				Account: "Assets:Brokerage",
 				Amount:  amt("10", "AAPL"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100.00", "USD"),
+					PerUnit:  decp("100.00"),
+					Currency: "USD",
 				},
 			},
 			{Account: "Assets:Cash", Amount: amt("-1000.00", "USD")},
@@ -1053,9 +1074,10 @@ func TestApply_DeferredAugmentationInterpolated(t *testing.T) {
 				Account: "Assets:B",
 				Amount:  amt("10", "STOCK"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100", "JPY"),
-					Date:    &buyDate,
-					Label:   "label",
+					PerUnit:  decp("100"),
+					Currency: "JPY",
+					Date:     &buyDate,
+					Label:    "label",
 				},
 			},
 			{Account: "Equity:Opening", Amount: amt("-1000", "JPY")},
@@ -1144,8 +1166,9 @@ func TestApply_EmptyBracesAugmentationInterpolated(t *testing.T) {
 				Account: "Assets:B",
 				Amount:  amt("10", "STOCK"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100", "JPY"),
-					Date:    &buyDate,
+					PerUnit:  decp("100"),
+					Currency: "JPY",
+					Date:     &buyDate,
 				},
 			},
 			{Account: "Equity:Opening", Amount: amt("-1000", "JPY")},
@@ -1239,9 +1262,10 @@ func TestApply_IdempotentInterpolatedAugmentation(t *testing.T) {
 				Account: "Assets:B",
 				Amount:  amt("10", "STOCK"),
 				Cost: &ast.CostSpec{
-					PerUnit: amt("100", "JPY"),
-					Date:    &buyDate,
-					Label:   "label",
+					PerUnit:  decp("100"),
+					Currency: "JPY",
+					Date:     &buyDate,
+					Label:    "label",
 				},
 			},
 			{Account: "Equity:Opening", Amount: amt("-1000", "JPY")},

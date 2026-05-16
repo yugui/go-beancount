@@ -1101,33 +1101,34 @@ func (l *lowerer) lowerCostSpec(n *syntax.Node) (CostSpec, bool) {
 			return CostSpec{}, false
 		}
 
-		// Lower the per-unit side. The parser allows it to omit its currency,
-		// in which case lowerAmount errors out. Use lowerAmountOptionalCurrency
-		// to permit a currency-less amount and inherit from the total side.
+		// per-unit: bare expression (parser rejects a currency token here).
 		perUnit, ok := l.lowerAmountOptionalCurrency(amountNodes[0])
 		if !ok {
 			return CostSpec{}, false
 		}
-		if perUnit.Currency == "" {
-			perUnit.Currency = total.Currency
-		} else if perUnit.Currency != total.Currency {
-			l.addDiagnostic(n, fmt.Sprintf("mismatched currencies in combined cost form: %q and %q", perUnit.Currency, total.Currency))
-			return CostSpec{}, false
-		}
 
-		cs.PerUnit = &perUnit
-		cs.Total = &total
+		cs.PerUnit = CloneDecimal(&perUnit.Number)
+		cs.Total = CloneDecimal(&total.Number)
+		cs.Currency = total.Currency
 	} else if amountNode := n.FindNode(syntax.AmountNode); amountNode != nil {
 		// Single-amount form: { X CUR } or {{ X CUR }}.
 		amt, ok := l.lowerAmount(amountNode)
 		if !ok {
 			return CostSpec{}, false
 		}
+		cs.Currency = amt.Currency
+		num := CloneDecimal(&amt.Number)
 		if isTotal {
-			cs.Total = &amt
+			cs.Total = num
 		} else {
-			cs.PerUnit = &amt
+			cs.PerUnit = num
 		}
+	} else if curToks := findTokens(n, syntax.CURRENCY); len(curToks) > 0 {
+		// Currency-only form: `{ CUR }` or `{{ CUR }}`. Brace flavor is
+		// irrelevant — without a number there is no per-unit/total to pick.
+		// Use direct-children scan (findTokens) so we only match the token
+		// the parser attaches to the CostSpecNode itself, not any sub-node.
+		cs.Currency = curToks[0].Raw
 	}
 
 	// Extract optional date.

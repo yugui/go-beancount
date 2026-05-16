@@ -125,15 +125,15 @@ func TestMultiCurrencyCosts(t *testing.T) {
 	openIU := &ast.Open{Date: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC), Account: "Assets:Cash:USD"}
 	openIJ := &ast.Open{Date: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC), Account: "Assets:Cash:JPY"}
 	share := amt(1, "AAPL")
-	usdCost := amt(150, "USD")
-	jpyCost := amt(20000, "JPY")
+	usdCost := amt(150, "USD").Number
+	jpyCost := amt(20000, "JPY").Number
 	negUSD := amt(-150, "USD")
 	negJPY := amt(-20000, "JPY")
 	tx1 := &ast.Transaction{
 		Date: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Inv", Amount: &share, Cost: &ast.CostSpec{PerUnit: &usdCost}},
+			{Account: "Assets:Inv", Amount: &share, Cost: &ast.CostSpec{PerUnit: &usdCost, Currency: "USD"}},
 			{Account: "Assets:Cash:USD", Amount: &negUSD},
 		},
 	}
@@ -141,7 +141,7 @@ func TestMultiCurrencyCosts(t *testing.T) {
 		Date: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Inv", Amount: &share, Cost: &ast.CostSpec{PerUnit: &jpyCost}},
+			{Account: "Assets:Inv", Amount: &share, Cost: &ast.CostSpec{PerUnit: &jpyCost, Currency: "JPY"}},
 			{Account: "Assets:Cash:JPY", Amount: &negJPY},
 		},
 	}
@@ -172,15 +172,15 @@ func TestUnitAndCostBothFlagged(t *testing.T) {
 	openIJ := &ast.Open{Date: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC), Account: "Assets:Cash:JPY"}
 	aapl := amt(1, "AAPL")
 	googl := amt(1, "GOOGL")
-	usdCost := amt(150, "USD")
-	jpyCost := amt(20000, "JPY")
+	usdCost := amt(150, "USD").Number
+	jpyCost := amt(20000, "JPY").Number
 	negUSD := amt(-150, "USD")
 	negJPY := amt(-20000, "JPY")
 	tx1 := &ast.Transaction{
 		Date: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Inv", Amount: &aapl, Cost: &ast.CostSpec{PerUnit: &usdCost}},
+			{Account: "Assets:Inv", Amount: &aapl, Cost: &ast.CostSpec{PerUnit: &usdCost, Currency: "USD"}},
 			{Account: "Assets:Cash:USD", Amount: &negUSD},
 		},
 	}
@@ -188,7 +188,7 @@ func TestUnitAndCostBothFlagged(t *testing.T) {
 		Date: time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC),
 		Flag: '*',
 		Postings: []ast.Posting{
-			{Account: "Assets:Inv", Amount: &googl, Cost: &ast.CostSpec{PerUnit: &jpyCost}},
+			{Account: "Assets:Inv", Amount: &googl, Cost: &ast.CostSpec{PerUnit: &jpyCost, Currency: "JPY"}},
 			{Account: "Assets:Cash:JPY", Amount: &negJPY},
 		},
 	}

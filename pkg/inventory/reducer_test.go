@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -1029,9 +1030,10 @@ func TestReducerWalk_InterpolatesSingleDeferred_DateLabel(t *testing.T) {
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
-				Label:   "label",
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
+				Label:    "label",
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1127,9 +1129,10 @@ func TestReducerWalk_InterpolatesSingleDeferred_EmptyBraces(t *testing.T) {
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
-				Label:   "label",
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
+				Label:    "label",
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1195,6 +1198,86 @@ func TestReducerWalk_InterpolatesSingleDeferred_EmptyBraces(t *testing.T) {
 	}
 }
 
+// TestReducerWalk_DeferredCostZeroResidualInterpolates pins the
+// committed-group zero-residual behavior: a deferred {CUR} posting
+// whose bid currency does not appear in (or sums to zero in) the
+// rest of the transaction interpolates to a zero per-unit cost
+// rather than erroring with CodeUnresolvableInterpolation.
+// Algebraically a zero residual is a valid interpolation outcome
+// (cost = 0). The downstream balance validator catches any
+// transaction-level imbalance separately; here the JPY legs net to
+// zero and USD is absent from booked sums, so the deferred USD bid
+// resolves to {0 USD} and the transaction is internally balanced.
+func TestReducerWalk_DeferredCostZeroResidualInterpolates(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	txn := mkTxn(txnDate,
+		&ast.Posting{
+			Account: "Assets:Stock",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost:    &ast.CostSpec{Currency: "USD"}, // bid currency absent from booked sums
+		},
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-1000", "JPY")},
+		&ast.Posting{Account: "Income:Gift", Amount: mkAmountPtr(t, "1000", "JPY")},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Stock", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Income:Gift", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	var stockBooked *BookedPosting
+	dirs, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+		for i := range booked {
+			if booked[i].Account == "Assets:Stock" {
+				bp := booked[i]
+				stockBooked = &bp
+			}
+		}
+		return true
+	})
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+	if stockBooked == nil {
+		t.Fatalf("Walk: Assets:Stock BookedPosting not observed")
+	}
+	if stockBooked.Lot == nil {
+		t.Fatalf("Walk: Assets:Stock Lot is nil after zero-residual interpolation")
+	}
+	wantZero := decimalVal(t, "0")
+	if stockBooked.Lot.Number.Cmp(&wantZero) != 0 {
+		t.Errorf("Walk: Assets:Stock Lot.Number = %s, want 0", stockBooked.Lot.Number.Text('f'))
+	}
+	if stockBooked.Lot.Currency != "USD" {
+		t.Errorf("Walk: Assets:Stock Lot.Currency = %q, want USD", stockBooked.Lot.Currency)
+	}
+
+	// The resolved Cost on the rebuilt posting also carries Number=0 USD.
+	booked := findBookedTxn(t, dirs, txnDate)
+	var sawStock bool
+	for _, p := range booked.Postings {
+		if p.Account != "Assets:Stock" {
+			continue
+		}
+		sawStock = true
+		cost, ok := p.Cost.(*ast.Cost)
+		if !ok || cost == nil {
+			t.Fatalf("Assets:Stock: Cost = %#v, want *ast.Cost", p.Cost)
+		}
+		if cost.Currency != "USD" || cost.Number.Cmp(&wantZero) != 0 {
+			t.Errorf("Assets:Stock: Cost = {%s %s}, want {0 USD}", cost.Number.Text('f'), cost.Currency)
+		}
+	}
+	if !sawStock {
+		t.Errorf("Walk: Assets:Stock not present in booked transaction postings")
+	}
+}
+
 // TestReducerWalk_InterpolationAmbiguousMultipleResidualCurrencies
 // exercises the multi-currency-residual rejection path with a
 // deferred cost spec (rather than an auto-posting). The transaction
@@ -1247,8 +1330,9 @@ func TestReducerWalk_InterpolationAmbiguousMultipleDeferred(t *testing.T) {
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1307,8 +1391,9 @@ func TestReducerWalk_InterpolationAmbiguousDeferredPlusAutoPosting(t *testing.T)
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1369,8 +1454,9 @@ func TestReducerWalk_AutoPostingResidualUsesBookedReductions(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1434,8 +1520,9 @@ func TestReducerWalk_InterpolationZeroUnits(t *testing.T) {
 			Account: "Assets:B",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1473,6 +1560,284 @@ func TestReducerWalk_InterpolationZeroUnits(t *testing.T) {
 	}
 }
 
+// TestUnknownCandidateCurrency exercises the three-arm precedence
+// of [unknownCandidateCurrency] directly. The helper is internal but
+// load-bearing for Pass 2's partition, and walk-level tests cover the
+// cost-spec and "" arms transitively without exercising the
+// price-only-with-no-cost arm.
+func TestUnknownCandidateCurrency(t *testing.T) {
+	priceAmt := *mkAmountPtr(t, "1", "USD")
+	tests := []struct {
+		name string
+		p    *ast.Posting
+		want string
+	}{
+		{
+			name: "cost spec currency wins",
+			p: &ast.Posting{
+				Cost:  &ast.CostSpec{Currency: "JPY"},
+				Price: &ast.PriceAnnotation{Amount: priceAmt},
+			},
+			want: "JPY",
+		},
+		{
+			name: "price falls through when cost currency is empty",
+			p: &ast.Posting{
+				Cost:  &ast.CostSpec{},
+				Price: &ast.PriceAnnotation{Amount: priceAmt},
+			},
+			want: "USD",
+		},
+		{
+			name: "price only",
+			p: &ast.Posting{
+				Price: &ast.PriceAnnotation{Amount: priceAmt},
+			},
+			want: "USD",
+		},
+		{
+			name: "free unknown",
+			p:    &ast.Posting{},
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := unknownCandidateCurrency(tc.p); got != tc.want {
+				t.Errorf("unknownCandidateCurrency = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReducerWalk_InterpolatesMultipleDeferred_DistinctWeightCurrency
+// is the central regression for the per-currency residual resolution:
+// two deferred postings whose cost-spec currencies differ each commit
+// to their own currency group and resolve independently against their
+// matching cash leg. The transaction balances cleanly with no errors;
+// each deferred posting receives a Cost whose Number equals the cash
+// leg's magnitude divided by the deferred posting's units.
+func TestReducerWalk_InterpolatesMultipleDeferred_DistinctWeightCurrency(t *testing.T) {
+	openDate := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	txn := mkTxn(txnDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "10", "A"),
+			Cost:    &ast.CostSpec{Currency: "JPY"},
+		},
+		&ast.Posting{
+			Account: "Assets:B",
+			Amount:  mkAmountPtr(t, "10", "B"),
+			Cost:    &ast.CostSpec{Currency: "USD"},
+		},
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-100", "JPY")},
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-1.00", "USD")},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:B", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	dirs, errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+	booked := findBookedTxn(t, dirs, txnDate)
+	wantA := decimalVal(t, "10")
+	wantB := decimalVal(t, "0.10")
+	var sawA, sawB bool
+	for _, p := range booked.Postings {
+		switch p.Account {
+		case "Assets:A":
+			sawA = true
+			cost, ok := p.Cost.(*ast.Cost)
+			if !ok || cost == nil {
+				t.Errorf("Assets:A: Cost = %#v, want *ast.Cost", p.Cost)
+				continue
+			}
+			if cost.Currency != "JPY" || cost.Number.Cmp(&wantA) != 0 {
+				t.Errorf("Assets:A: Cost = {%s %s}, want {10 JPY}", cost.Number.Text('f'), cost.Currency)
+			}
+		case "Assets:B":
+			sawB = true
+			cost, ok := p.Cost.(*ast.Cost)
+			if !ok || cost == nil {
+				t.Errorf("Assets:B: Cost = %#v, want *ast.Cost", p.Cost)
+				continue
+			}
+			if cost.Currency != "USD" || cost.Number.Cmp(&wantB) != 0 {
+				t.Errorf("Assets:B: Cost = {%s %s}, want {0.10 USD}", cost.Number.Text('f'), cost.Currency)
+			}
+		}
+	}
+	if !sawA {
+		t.Errorf("Walk: Assets:A booking not observed")
+	}
+	if !sawB {
+		t.Errorf("Walk: Assets:B booking not observed")
+	}
+}
+
+// TestReducerWalk_AmbiguousMultipleDeferred_SameWeightCurrency pins
+// the same-currency-group ambiguity: two deferred postings that both
+// commit to JPY cannot be jointly resolved; each is reported as
+// CodeUnresolvableInterpolation. Distinct-currency multi-unknown is
+// allowed (preceding test); same-currency multi-unknown is not.
+func TestReducerWalk_AmbiguousMultipleDeferred_SameWeightCurrency(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	txn := mkTxn(txnDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "10", "A"),
+			Cost:    &ast.CostSpec{Currency: "JPY"},
+		},
+		&ast.Posting{
+			Account: "Assets:C",
+			Amount:  mkAmountPtr(t, "10", "C"),
+			Cost:    &ast.CostSpec{Currency: "JPY"},
+		},
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-100", "JPY")},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:C", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
+	if len(errs) != 2 {
+		t.Fatalf("Walk errs = %v, want 2 entries", errs)
+	}
+	for _, e := range errs {
+		if e.Code != CodeUnresolvableInterpolation {
+			t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", e.Code)
+		}
+		if !strings.Contains(e.Message, "multiple unknown posting values") {
+			t.Errorf("err.Message = %q, want substring %q", e.Message, "multiple unknown posting values")
+		}
+	}
+}
+
+// TestReducerWalk_CommittedPlusFree exercises the committed/free
+// coexistence: a JPY-deferred posting absorbs the JPY residual via
+// its committed group while an auto-posting absorbs the unique
+// remaining USD residual. Both unknowns resolve cleanly.
+func TestReducerWalk_CommittedPlusFree(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	txn := mkTxn(txnDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "10", "A"),
+			Cost:    &ast.CostSpec{Currency: "JPY"},
+		},
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-100", "JPY")},
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-1.00", "USD")},
+		&ast.Posting{Account: "Income:Plug"}, // auto: absorbs USD
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Income:Plug", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	dirs, errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+	booked := findBookedTxn(t, dirs, txnDate)
+	wantA := decimalVal(t, "10")
+	wantPlug := decimalVal(t, "1.00")
+	var sawA, sawPlug bool
+	for _, p := range booked.Postings {
+		switch p.Account {
+		case "Assets:A":
+			sawA = true
+			cost, ok := p.Cost.(*ast.Cost)
+			if !ok || cost == nil {
+				t.Errorf("Assets:A: Cost = %#v, want *ast.Cost", p.Cost)
+				continue
+			}
+			if cost.Currency != "JPY" || cost.Number.Cmp(&wantA) != 0 {
+				t.Errorf("Assets:A: Cost = {%s %s}, want {10 JPY}", cost.Number.Text('f'), cost.Currency)
+			}
+		case "Income:Plug":
+			sawPlug = true
+			if p.Amount == nil {
+				t.Errorf("Income:Plug: Amount = nil, want resolved")
+				continue
+			}
+			if p.Amount.Currency != "USD" || p.Amount.Number.Cmp(&wantPlug) != 0 {
+				t.Errorf("Income:Plug: Amount = {%s %s}, want {1.00 USD}", p.Amount.Number.Text('f'), p.Amount.Currency)
+			}
+		}
+	}
+	if !sawA {
+		t.Errorf("Walk: Assets:A booking not observed")
+	}
+	if !sawPlug {
+		t.Errorf("Walk: Income:Plug booking not observed")
+	}
+}
+
+// TestReducerWalk_CommittedPlusFree_FreeMultiResidual exercises the
+// case where a committed group claims its currency but the free
+// auto-posting still sees more than one unclaimed currency to absorb
+// — the auto-posting must report CodeUnresolvableInterpolation with
+// the multi-currency wording.
+func TestReducerWalk_CommittedPlusFree_FreeMultiResidual(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	txn := mkTxn(txnDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "10", "A"),
+			Cost:    &ast.CostSpec{Currency: "JPY"},
+		},
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-100", "JPY")},
+		&ast.Posting{Account: "Assets:USD", Amount: mkAmountPtr(t, "100", "USD")},
+		&ast.Posting{Account: "Assets:EUR", Amount: mkAmountPtr(t, "200", "EUR")},
+		&ast.Posting{Account: "Income:Plug"}, // auto: USD and EUR both unclaimed
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Assets:USD", ast.BookingDefault),
+		mkOpen(openDate, "Assets:EUR", ast.BookingDefault),
+		mkOpen(openDate, "Income:Plug", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	_, errs := r.Walk(nil)
+	if len(errs) != 1 {
+		t.Fatalf("Walk errs = %v, want exactly 1", errs)
+	}
+	if errs[0].Code != CodeUnresolvableInterpolation {
+		t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", errs[0].Code)
+	}
+	if !strings.Contains(errs[0].Message, "residual spans") {
+		t.Errorf("err.Message = %q, want substring %q", errs[0].Message, "residual spans")
+	}
+}
+
 // TestReducerWalk_DoesNotMutateInput exercises every interpolation /
 // rewrite path the reducer can take — auto-posting amount fill,
 // deferred per-unit cost fill, single-lot reduction Cost install, and
@@ -1504,8 +1869,9 @@ func TestReducerWalk_DoesNotMutateInput(t *testing.T) {
 			Account: "Assets:Investments",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "JPY"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "JPY")},
@@ -1516,8 +1882,9 @@ func TestReducerWalk_DoesNotMutateInput(t *testing.T) {
 			Account: "Assets:Investments",
 			Amount:  mkAmountPtr(t, "10", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "110", "JPY"),
-				Date:    &buy2Date,
+				PerUnit:  decimalPtr(t, "110"),
+				Currency: "JPY",
+				Date:     &buy2Date,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1100", "JPY")},
@@ -1607,8 +1974,9 @@ func TestReducerWalk_FailedGroupDroppedAtomically(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -1727,8 +2095,9 @@ func TestReducerWalk_MultiCurrencyMultiLotReductionGrouping(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyUSDDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyUSDDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "USD")},
@@ -1740,8 +2109,9 @@ func TestReducerWalk_MultiCurrencyMultiLotReductionGrouping(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "90", "EUR"),
-				Date:    &buyEURDate,
+				PerUnit:  decimalPtr(t, "90"),
+				Currency: "EUR",
+				Date:     &buyEURDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-900", "EUR")},
@@ -1845,8 +2215,9 @@ func TestReducerWalk_DroppedGroupOmittedFromTxnPostings(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -1947,8 +2318,9 @@ func TestReducerWalk_DroppedGroupRollsBackAugmentation(t *testing.T) {
 			Account: "Assets:Broker",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -1964,8 +2336,9 @@ func TestReducerWalk_DroppedGroupRollsBackAugmentation(t *testing.T) {
 			Account: "Assets:Broker",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &txnDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &txnDate,
 			},
 		},
 		&ast.Posting{
@@ -1974,8 +2347,9 @@ func TestReducerWalk_DroppedGroupRollsBackAugmentation(t *testing.T) {
 			Account: "Assets:Broker",
 			Amount:  mkAmountPtr(t, "-20", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 	)
@@ -2031,8 +2405,9 @@ func TestReducerWalk_DroppedGroupMultipleFailedAccounts(t *testing.T) {
 			Account: "Assets:BrokerA",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -2042,8 +2417,9 @@ func TestReducerWalk_DroppedGroupMultipleFailedAccounts(t *testing.T) {
 			Account: "Assets:BrokerB",
 			Amount:  mkAmountPtr(t, "3", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-300", "USD")},
@@ -2139,8 +2515,9 @@ func TestReducerWalk_AllPostingsDroppedEmitsEmptyTxn(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -2229,8 +2606,9 @@ func TestReducerWalk_Pass2UnknownJoinsDroppedGroup(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "5", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -2249,8 +2627,9 @@ func TestReducerWalk_Pass2UnknownJoinsDroppedGroup(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "-10", "AAPL"), // fails: only 5 available
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"), // weight = USD → USD group dropped
-				Date:    &buyDate,
+				PerUnit:  decimalPtr(t, "100"), // weight = USD → USD group dropped
+				Currency: "USD",
+				Date:     &buyDate,
 			},
 		},
 		&ast.Posting{
@@ -2375,8 +2754,9 @@ func TestReducerWalk_Pass2UnknownBookOneFailsDropsCurrency(t *testing.T) {
 			Account: "Assets:Stock",
 			Amount:  mkAmountPtr(t, "2", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &seedDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &seedDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-200", "USD")},
@@ -2498,8 +2878,9 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buyUSDDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buyUSDDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-1000", "USD")},
@@ -2511,8 +2892,9 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 			Account: "Assets:Brokerage",
 			Amount:  mkAmountPtr(t, "10", "AAPL"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "90", "EUR"),
-				Date:    &buyEURDate,
+				PerUnit:  decimalPtr(t, "90"),
+				Currency: "EUR",
+				Date:     &buyEURDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-900", "EUR")},
@@ -2524,8 +2906,9 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 			Account: "Assets:BrokerB",
 			Amount:  mkAmountPtr(t, "5", "STOCK"),
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"),
-				Date:    &buySTOCKDate,
+				PerUnit:  decimalPtr(t, "100"),
+				Currency: "USD",
+				Date:     &buySTOCKDate,
 			},
 		},
 		&ast.Posting{Account: "Equity:Opening", Amount: mkAmountPtr(t, "-500", "USD")},
@@ -2545,8 +2928,9 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 			Account: "Assets:BrokerB",
 			Amount:  mkAmountPtr(t, "-10", "STOCK"), // fails: only 5 available
 			Cost: &ast.CostSpec{
-				PerUnit: mkAmountPtr(t, "100", "USD"), // USD weight → same group as AAPL{USD}
-				Date:    &buySTOCKDate,
+				PerUnit:  decimalPtr(t, "100"), // USD weight → same group as AAPL{USD}
+				Currency: "USD",
+				Date:     &buySTOCKDate,
 			},
 		},
 	)

@@ -73,11 +73,11 @@ func amt(t *testing.T, number, currency string) ast.Amount {
 func withCostPosting(t *testing.T, account, number, currency, costNumber, costCurrency string) ast.Posting {
 	t.Helper()
 	a := amt(t, number, currency)
-	c := amt(t, costNumber, costCurrency)
+	c := amt(t, costNumber, costCurrency).Number
 	return ast.Posting{
 		Account: ast.Account(account),
 		Amount:  &a,
-		Cost:    &ast.CostSpec{PerUnit: &c},
+		Cost:    &ast.CostSpec{PerUnit: &c, Currency: costCurrency},
 	}
 }
 

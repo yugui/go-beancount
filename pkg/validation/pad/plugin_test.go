@@ -37,6 +37,14 @@ func amtInt(n int64, currency string) ast.Amount {
 	return ast.Amount{Number: d, Currency: currency}
 }
 
+// decIntPtr returns a freshly allocated *apd.Decimal carrying n.
+// Used by CostSpec test fixtures where PerUnit / Total are decimal pointers.
+func decIntPtr(n int64) *apd.Decimal {
+	d := new(apd.Decimal)
+	d.SetInt64(n)
+	return d
+}
+
 // seqOf adapts a slice of directives into an iter.Seq2[int, ast.Directive]
 // compatible with api.Input.Directives without allocating a full ast.Ledger.
 func seqOf(directives []ast.Directive) iter.Seq2[int, ast.Directive] {
@@ -524,7 +532,7 @@ func TestPlugin_PadTargetWithCostReports(t *testing.T) {
 	// pad and the balance assertion.
 	stockAmt := amtInt(5, "ACME")
 	cashAmt := amtInt(-500, "USD")
-	perUnit := amtInt(100, "USD")
+	perUnit := decIntPtr(100)
 	postSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 8, Column: 3}}
 	txn := &ast.Transaction{
 		Date: day(2024, 1, 20),
@@ -534,7 +542,7 @@ func TestPlugin_PadTargetWithCostReports(t *testing.T) {
 				Span:    postSpan,
 				Account: "Assets:Stock",
 				Amount:  &stockAmt,
-				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+				Cost:    &ast.CostSpec{PerUnit: perUnit, Currency: "USD"},
 			},
 			{Account: "Equity:Opening", Amount: &cashAmt},
 		},
@@ -591,7 +599,7 @@ func TestPlugin_CostInOtherCurrencyDoesNotBlockPadding(t *testing.T) {
 	}
 	stockAmt := amtInt(100, "STOCK")
 	cashAmt := amtInt(-1000, "JPY")
-	perUnit := amtInt(10, "JPY")
+	perUnit := decIntPtr(10)
 	postSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 7, Column: 3}}
 	txn := &ast.Transaction{
 		Date: day(2025, 1, 1),
@@ -601,7 +609,7 @@ func TestPlugin_CostInOtherCurrencyDoesNotBlockPadding(t *testing.T) {
 				Span:    postSpan,
 				Account: "Assets:A",
 				Amount:  &stockAmt,
-				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+				Cost:    &ast.CostSpec{PerUnit: perUnit, Currency: "JPY"},
 			},
 			{Account: "Equity:Opening-Balances", Amount: &cashAmt},
 		},
@@ -686,7 +694,7 @@ func TestPlugin_PadCostBlockedOnlyForAffectedCurrency(t *testing.T) {
 	}
 	stockAmt := amtInt(5, "ACME")
 	cashAmt := amtInt(-500, "USD")
-	perUnit := amtInt(100, "USD")
+	perUnit := decIntPtr(100)
 	postSpan := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 6, Column: 3}}
 	txn := &ast.Transaction{
 		Date: day(2024, 1, 5),
@@ -696,7 +704,7 @@ func TestPlugin_PadCostBlockedOnlyForAffectedCurrency(t *testing.T) {
 				Span:    postSpan,
 				Account: "Assets:Mixed",
 				Amount:  &stockAmt,
-				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+				Cost:    &ast.CostSpec{PerUnit: perUnit, Currency: "USD"},
 			},
 			{Account: "Equity:Opening", Amount: &cashAmt},
 		},
@@ -754,7 +762,7 @@ func TestPlugin_CostBuiltUpThenSoldOut(t *testing.T) {
 	}
 	buyAmt := amtInt(5, "ACME")
 	cashOut := amtInt(-500, "USD")
-	perUnit := amtInt(100, "USD")
+	perUnit := decIntPtr(100)
 	buy := &ast.Transaction{
 		Date: day(2024, 1, 5),
 		Flag: '*',
@@ -762,7 +770,7 @@ func TestPlugin_CostBuiltUpThenSoldOut(t *testing.T) {
 			{
 				Account: "Assets:Trade",
 				Amount:  &buyAmt,
-				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+				Cost:    &ast.CostSpec{PerUnit: perUnit, Currency: "USD"},
 			},
 			{Account: "Equity:Opening", Amount: &cashOut},
 		},
@@ -776,7 +784,7 @@ func TestPlugin_CostBuiltUpThenSoldOut(t *testing.T) {
 			{
 				Account: "Assets:Trade",
 				Amount:  &sellAmt,
-				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+				Cost:    &ast.CostSpec{PerUnit: perUnit, Currency: "USD"},
 			},
 			{Account: "Equity:Opening", Amount: &cashIn},
 		},
@@ -825,7 +833,7 @@ func TestPlugin_CostOnUnrelatedAccountDoesNotBlockPad(t *testing.T) {
 	}
 	stockAmt := amtInt(5, "ACME")
 	cashAmt := amtInt(-500, "USD")
-	perUnit := amtInt(100, "USD")
+	perUnit := decIntPtr(100)
 	// Cost-bearing posting on a different account entirely.
 	txn := &ast.Transaction{
 		Date: day(2024, 1, 5),
@@ -834,7 +842,7 @@ func TestPlugin_CostOnUnrelatedAccountDoesNotBlockPad(t *testing.T) {
 			{
 				Account: "Assets:OtherStock",
 				Amount:  &stockAmt,
-				Cost:    &ast.CostSpec{PerUnit: &perUnit},
+				Cost:    &ast.CostSpec{PerUnit: perUnit, Currency: "USD"},
 			},
 			{Account: "Equity:Opening", Amount: &cashAmt},
 		},

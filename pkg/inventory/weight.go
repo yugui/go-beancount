@@ -1,6 +1,8 @@
 package inventory
 
 import (
+	"errors"
+
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 )
@@ -50,6 +52,9 @@ func PostingWeight(p *ast.Posting) (*ast.Amount, error) {
 	}
 	if cost != nil {
 		return &ast.Amount{Number: *ast.CloneDecimal(&cost.Number), Currency: cost.Currency}, nil
+	}
+	if p.Cost != nil && !p.Cost.IsBooked() && p.Cost.GetCurrency() != "" {
+		return nil, errors.New("posting weight: cost spec has currency but no number; reducer must resolve before weighing")
 	}
 	if p.Price != nil {
 		num := p.Amount.Number

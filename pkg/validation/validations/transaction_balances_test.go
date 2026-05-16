@@ -291,7 +291,7 @@ func TestTransactionBalances_MultiplierAffectsResidualTolerance(t *testing.T) {
 func TestTransactionBalances_MixedPrecisionResidualWithinCoarseTolerance(t *testing.T) {
 	v := newTransactionBalances(mustDefaults())
 	stockUnits := amtStrDec(t, "-10", "STOCK")
-	totalCost := amtStrDec(t, "100.1111", "JPY")
+	totalCost := amtStrDec(t, "100.1111", "JPY").Number
 	cashHigh := amtStrDec(t, "200.22222222222222", "JPY")
 	gain := amtStrDec(t, "-100.1111", "JPY")
 	txn := &ast.Transaction{
@@ -301,7 +301,7 @@ func TestTransactionBalances_MixedPrecisionResidualWithinCoarseTolerance(t *test
 			{
 				Account: "Assets:A",
 				Amount:  &stockUnits,
-				Cost:    &ast.CostSpec{Total: &totalCost},
+				Cost:    &ast.CostSpec{Total: &totalCost, Currency: "JPY"},
 			},
 			{Account: "Assets:A", Amount: &cashHigh},
 			{Account: "Income:Gain", Amount: &gain},
@@ -319,7 +319,7 @@ func TestTransactionBalances_MixedPrecisionResidualWithinCoarseTolerance(t *test
 func TestTransactionBalances_InferToleranceFromCost(t *testing.T) {
 	build := func(withOption bool) (*ast.Transaction, *ast.OptionValues) {
 		units := amtDec(1000, "XYZ")
-		costAmt := amtStrDec(t, "1.0001", "USD")
+		costAmt := amtStrDec(t, "1.0001", "USD").Number
 		cash := amtStrDec(t, "-1000.15", "USD")
 		txn := &ast.Transaction{
 			Date: day(2024, 2, 1),
@@ -328,7 +328,7 @@ func TestTransactionBalances_InferToleranceFromCost(t *testing.T) {
 				{
 					Account: "Assets:Inv",
 					Amount:  &units,
-					Cost:    &ast.CostSpec{PerUnit: &costAmt},
+					Cost:    &ast.CostSpec{PerUnit: &costAmt, Currency: "USD"},
 				},
 				{Account: "Assets:Cash", Amount: &cash},
 			},

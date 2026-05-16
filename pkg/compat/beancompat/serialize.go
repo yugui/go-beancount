@@ -895,11 +895,8 @@ func costPayload(c *ast.Cost) (json.RawMessage, error) {
 // parse time today), and emitting "merge": false when upstream would have
 // omitted the key is again a divergence we choose not to introduce.
 //
-// Currency is sourced from PerUnit.Currency when present, falling back to
-// Total.Currency. The combined "{X # Y CUR}" form has the parser enforce
-// matched currencies on PerUnit and Total, so the choice between the two
-// sources is information-equivalent in well-formed input; we do not
-// re-validate here.
+// Currency is read from CostSpec.Currency, the single source of truth
+// for the spec's cost currency.
 //
 // Output keys are emitted in alphabetical order (via marshalSortedObject)
 // for byte-stable diagnostics across Go's randomized map iteration; the
@@ -923,16 +920,13 @@ func costSpecPayload(c *ast.CostSpec) (json.RawMessage, error) {
 	}
 	add("kind", "cost_spec")
 	if c.PerUnit != nil {
-		add("number_per", c.PerUnit.Number.String())
+		add("number_per", c.PerUnit.String())
 	}
 	if c.Total != nil {
-		add("number_total", c.Total.Number.String())
+		add("number_total", c.Total.String())
 	}
-	switch {
-	case c.PerUnit != nil:
-		add("currency", c.PerUnit.Currency)
-	case c.Total != nil:
-		add("currency", c.Total.Currency)
+	if c.Currency != "" {
+		add("currency", c.Currency)
 	}
 	if c.Date != nil {
 		add("date", c.Date.Format(isoDate))

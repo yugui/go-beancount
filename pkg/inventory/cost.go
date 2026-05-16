@@ -43,16 +43,13 @@ type Lot = ast.Lot
 //     ResolveCost for this case; they build a [CostMatcher] instead.
 //   - per-unit only ({X CUR})                     -> Number = X
 //   - total only      ({{T CUR}})                 -> Number = T / |units|
-//   - combined form   ({X # T CUR}, {X # T CUR})  -> Number = X + T/|units|
+//   - combined form   ({X # T CUR})               -> Number = X + T/|units|
 //
 // For the CostSpec branches, the returned [ast.Cost] also retains the
 // user's PerUnit / Total literals so the printer round-trips the
 // surcharge form. The computed Number is always positive (cost is a
 // magnitude). The Date defaults to txnDate when spec.Date is unset;
-// Label is copied verbatim. When both PerUnit and Total are present
-// the function defensively verifies that their currencies agree; a
-// mismatch is reported as [CodeInternalError] because earlier
-// parse/lower stages should have caught it.
+// Label is copied verbatim.
 func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, error) {
 	if c == nil {
 		return nil, nil
@@ -79,7 +76,7 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 		}
 	}
 
-	out := &Cost{}
+	out := &Cost{Currency: spec.Currency}
 	if spec.Date != nil && !spec.Date.IsZero() {
 		out.Date = *spec.Date
 	} else {
@@ -87,11 +84,9 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 	}
 	out.Label = spec.Label
 	// Retain the user's syntactic form so the printer round-trips
-	// surcharge / total-only / per-unit-only after booking. The
-	// retained Amounts are cloned (not aliased) so later AST edits
-	// on the spec do not propagate to the booked Cost.
-	out.PerUnit = spec.PerUnit.Clone()
-	out.Total = spec.Total.Clone()
+	// surcharge / total-only / per-unit-only after booking.
+	out.PerUnit = spec.GetPerUnit()
+	out.Total = spec.GetTotal()
 
 	// |units| is used as the denominator for the total-to-per-unit
 	// division. Compute it once.
@@ -107,28 +102,16 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 
 	switch {
 	case spec.PerUnit != nil && spec.Total != nil:
-		// Combined form. Currency must agree between the two parts.
-		if spec.PerUnit.Currency != spec.Total.Currency {
-			return nil, Error{
-				Code: CodeInternalError,
-				Span: spec.Span,
-				Message: "combined cost spec has mismatched currencies: " +
-					spec.PerUnit.Currency + " vs " + spec.Total.Currency,
-			}
-		}
-		out.Currency = spec.PerUnit.Currency
-		// per + total / |units|
-		perNum := spec.PerUnit.Number
-		totalNum := spec.Total.Number
+		// Combined form: per + total / |units|.
 		quo := new(apd.Decimal)
-		if _, err := quoContext.Quo(quo, &totalNum, absUnits); err != nil {
+		if _, err := quoContext.Quo(quo, spec.Total, absUnits); err != nil {
 			return nil, Error{
 				Code:    CodeInternalError,
 				Span:    spec.Span,
 				Message: "divide total by units: " + err.Error(),
 			}
 		}
-		if _, err := apd.BaseContext.Add(&out.Number, &perNum, quo); err != nil {
+		if _, err := apd.BaseContext.Add(&out.Number, spec.PerUnit, quo); err != nil {
 			return nil, Error{
 				Code:    CodeInternalError,
 				Span:    spec.Span,
@@ -137,9 +120,7 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 		}
 	case spec.Total != nil:
 		// {{T CUR}} -> T / |units|
-		out.Currency = spec.Total.Currency
-		totalNum := spec.Total.Number
-		if _, err := quoContext.Quo(&out.Number, &totalNum, absUnits); err != nil {
+		if _, err := quoContext.Quo(&out.Number, spec.Total, absUnits); err != nil {
 			return nil, Error{
 				Code:    CodeInternalError,
 				Span:    spec.Span,
@@ -148,8 +129,7 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 		}
 	default:
 		// Per-unit only: copy verbatim.
-		out.Currency = spec.PerUnit.Currency
-		out.Number = *ast.CloneDecimal(&spec.PerUnit.Number)
+		out.Number = *ast.CloneDecimal(spec.PerUnit)
 	}
 
 	return out, nil

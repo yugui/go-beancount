@@ -261,6 +261,91 @@ option "inferred_tolerance_multiplier" "0.25"
 	})
 }
 
+// TestLoad_CurrencyOnlyCostDistinctWeightCurrencyBalances is the
+// end-to-end pin for the user-reported scenario: two currency-only
+// cost specs (`{ JPY }`, `{ USD }`) commit to distinct weight
+// currencies and resolve cleanly against their respective cash legs,
+// producing no error-severity diagnostics.
+func TestLoad_CurrencyOnlyCostDistinctWeightCurrencyBalances(t *testing.T) {
+	const src = `1970-01-01 open Income:Gain
+1970-01-01 open Assets:A A "STRICT"
+1970-01-01 open Assets:B B "STRICT"
+1970-01-01 open Assets:Cash "STRICT"
+
+1970-01-01 * "txn"
+  Assets:A          10 A { JPY }
+  Assets:B          10 B { USD }
+  Assets:Cash       -100 JPY
+  Assets:Cash       -1.00 USD
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Errorf("unexpected error diagnostic: [%s] %s", d.Code, d.Message)
+		}
+	}
+}
+
+// TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_EmitsValidatorDiagnostic
+// pins the end-to-end shape of the same-currency-committed ambiguity
+// case. Two deferred postings sharing `{ JPY }` are reported as
+// CodeUnresolvableInterpolation by the reducer (one diagnostic per
+// posting). The reducer deliberately does *not* drop the JPY group,
+// so the unresolved currency-only-CostSpec postings reach the
+// transaction-balance validator; PostingWeight's defensive guard
+// then fires and the validator emits an additional
+// CodeUnbalancedTransaction. This extra validator diagnostic is the
+// accepted shape, consistent with how the existing `{}` same-
+// currency-empty ambiguity case surfaces today.
+func TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_EmitsValidatorDiagnostic(t *testing.T) {
+	const src = `1970-01-01 open Assets:A
+1970-01-01 open Assets:C
+1970-01-01 open Assets:Cash
+
+1970-01-01 * "txn"
+  Assets:A          10 A { JPY }
+  Assets:C          10 C { JPY }
+  Assets:Cash    -100 JPY
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	var ambiguous, unbalanced int
+	for _, d := range ledger.Diagnostics {
+		if d.Severity != ast.Error {
+			continue
+		}
+		switch d.Code {
+		case "unresolvable-interpolation":
+			if !strings.Contains(d.Message, "multiple unknown posting values") {
+				t.Errorf("CodeUnresolvableInterpolation message = %q, want substring %q",
+					d.Message, "multiple unknown posting values")
+			}
+			ambiguous++
+		case "unbalanced-transaction":
+			if !strings.Contains(d.Message, "failed to compute posting weight") {
+				t.Errorf("CodeUnbalancedTransaction message = %q, want substring %q",
+					d.Message, "failed to compute posting weight")
+			}
+			unbalanced++
+		default:
+			t.Errorf("unexpected diagnostic [%s] %s", d.Code, d.Message)
+		}
+	}
+	if ambiguous != 2 {
+		t.Errorf("CodeUnresolvableInterpolation count = %d, want 2", ambiguous)
+	}
+	if unbalanced != 1 {
+		t.Errorf("CodeUnbalancedTransaction count = %d, want 1", unbalanced)
+	}
+}
+
 func TestLoadRawMode(t *testing.T) {
 	// In raw mode the built-in pipeline is skipped, so an unbalanced
 	// transaction must NOT produce a validations diagnostic.

@@ -456,7 +456,8 @@ func (p *parser) parseCostSpec() *Node {
 // parseCostContents parses comma-separated elements inside a cost spec.
 // The leading element may be an Amount (with currency optional when the
 // combined per-unit `#` total form is used and only outside `{{...}}`),
-// a Date, or a String label; subsequent elements follow parseCostElement.
+// a bare CURRENCY (currency-only cost spec), a Date, or a String label;
+// subsequent elements follow parseCostElement.
 func (p *parser) parseCostContents(node *Node, isTotalBraces bool) {
 	// Could be empty: {} or {{}}
 	if p.peek() == RBRACE || p.peek() == RBRACE2 {
@@ -475,6 +476,13 @@ func (p *parser) parseCostContents(node *Node, isTotalBraces bool) {
 
 		// Combined form: { perUnit # total CUR }
 		if p.peek() == HASH {
+			// per-unit side is a bare expression; the currency lives on the
+			// total side only.
+			if amt.FindToken(CURRENCY) != nil {
+				// Record the error but continue consuming '#' and the total amount
+				// so later diagnostics are not spurious.
+				p.errorf("per-unit amount in combined cost form must not carry a currency")
+			}
 			if isTotalBraces {
 				p.errorf("'#' separator is not allowed inside total-cost braces {{...}}")
 				// Record the error but continue consuming '#' and the total amount
@@ -500,6 +508,12 @@ func (p *parser) parseCostContents(node *Node, isTotalBraces bool) {
 			// A currency-less amount is only permitted before `#`.
 			p.errorf("expected currency after amount in cost spec, got %s", p.tok.Kind)
 		}
+	case CURRENCY:
+		// Currency-only spec `{ CUR }` / `{{ CUR }}`. The token attaches
+		// directly to the CostSpecNode so the lowerer can distinguish it
+		// from the single-amount form (which wraps it in an AmountNode).
+		cur := p.advance()
+		node.AddToken(&cur)
 	case DATE:
 		date := p.advance()
 		node.AddToken(&date)

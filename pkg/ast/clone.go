@@ -87,16 +87,19 @@ func cloneCostHolder(h CostHolder) CostHolder {
 }
 
 // Clone returns a deep copy of c. PerUnit, Total, and Date are
-// deep-cloned (a fresh time.Time pointer is allocated for Date);
-// Span and Label are shared with the receiver. Returns nil if c is
-// nil.
+// deep-cloned (fresh apd.Decimal and time.Time allocations); Span,
+// Currency, and Label are copied by value. Returns nil if c is nil.
 func (c *CostSpec) Clone() *CostSpec {
 	if c == nil {
 		return nil
 	}
 	out := *c
-	out.PerUnit = c.PerUnit.Clone()
-	out.Total = c.Total.Clone()
+	if c.PerUnit != nil {
+		out.PerUnit = CloneDecimal(c.PerUnit)
+	}
+	if c.Total != nil {
+		out.Total = CloneDecimal(c.Total)
+	}
 	if c.Date != nil {
 		d := *c.Date
 		out.Date = &d

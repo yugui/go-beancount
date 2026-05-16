@@ -6,24 +6,23 @@ import (
 )
 
 // TestCostHolder_CostSpec_Accessors exercises every CostHolder
-// accessor across the matrix of (PerUnit / Total presence) ×
-// (Date set / unset) × (Label empty / set). Form-dependent
-// accessors (GetPerUnit, GetTotal, GetCurrency) take their expected
-// values from the case row; form-independent accessors (GetDate,
-// GetLabel, IsBooked) follow the same uniform contract for every
-// CostSpec — IsBooked is always false. Pointer identity with the
-// underlying field is asserted for GetPerUnit / GetTotal so a
-// regression that returns a copy (and silently breaks reducer
-// mutation through the field) is caught here.
+// accessor across the matrix of (PerUnit / Total / Currency presence)
+// × (Date set / unset) × (Label empty / set). The synthesis contract
+// for GetPerUnit / GetTotal — return a freshly allocated Amount only
+// when both the number pointer and Currency are set — is checked by
+// asserting the synthesized Amount's value, not pointer identity.
+// IsBooked is always false for *CostSpec.
 func TestCostHolder_CostSpec_Accessors(t *testing.T) {
 	date := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-	perUSD := amount(t, "10", "USD")
-	totUSD := amount(t, "2", "USD")
-	totJPY := amount(t, "50", "JPY")
+	perTen := dec(t, "10")
+	totTwo := dec(t, "2")
+	totFifty := dec(t, "50")
 
 	cases := []struct {
 		name         string
 		spec         *CostSpec
+		wantPerUnit  *Amount
+		wantTotal    *Amount
 		wantCurrency string
 		wantDate     time.Time
 		wantHasDate  bool
@@ -45,13 +44,20 @@ func TestCostHolder_CostSpec_Accessors(t *testing.T) {
 			wantHasDate: true,
 		},
 		{
+			name:         "currency only",
+			spec:         &CostSpec{Currency: "JPY"},
+			wantCurrency: "JPY",
+		},
+		{
 			name:         "per-unit only",
-			spec:         &CostSpec{PerUnit: perUSD},
+			spec:         &CostSpec{PerUnit: &perTen, Currency: "USD"},
+			wantPerUnit:  amount(t, "10", "USD"),
 			wantCurrency: "USD",
 		},
 		{
 			name:         "per-unit with date and label",
-			spec:         &CostSpec{PerUnit: perUSD, Date: &date, Label: "lot-B"},
+			spec:         &CostSpec{PerUnit: &perTen, Currency: "USD", Date: &date, Label: "lot-B"},
+			wantPerUnit:  amount(t, "10", "USD"),
 			wantCurrency: "USD",
 			wantDate:     date,
 			wantHasDate:  true,
@@ -59,34 +65,45 @@ func TestCostHolder_CostSpec_Accessors(t *testing.T) {
 		},
 		{
 			name:         "total only",
-			spec:         &CostSpec{Total: totJPY},
+			spec:         &CostSpec{Total: &totFifty, Currency: "JPY"},
+			wantTotal:    amount(t, "50", "JPY"),
 			wantCurrency: "JPY",
 		},
 		{
 			name:         "total only with date",
-			spec:         &CostSpec{Total: totJPY, Date: &date},
+			spec:         &CostSpec{Total: &totFifty, Currency: "JPY", Date: &date},
+			wantTotal:    amount(t, "50", "JPY"),
 			wantCurrency: "JPY",
 			wantDate:     date,
 			wantHasDate:  true,
 		},
 		{
-			// Combined / surcharge form {X CUR, # CUR}: GetCurrency
-			// returns PerUnit.Currency. The lowerer enforces that the
-			// two component currencies match in well-formed input.
 			name:         "surcharge",
-			spec:         &CostSpec{PerUnit: perUSD, Total: totUSD},
+			spec:         &CostSpec{PerUnit: &perTen, Total: &totTwo, Currency: "USD"},
+			wantPerUnit:  amount(t, "10", "USD"),
+			wantTotal:    amount(t, "2", "USD"),
 			wantCurrency: "USD",
+		},
+		{
+			// Per-unit number set without a currency: GetPerUnit
+			// suppresses synthesis to avoid emitting a currency-less
+			// Amount, which would violate the package invariant.
+			name:         "per-unit without currency",
+			spec:         &CostSpec{PerUnit: &perTen},
+			wantCurrency: "",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var h CostHolder = tc.spec
-			if got := h.GetPerUnit(); got != tc.spec.PerUnit {
-				t.Errorf("GetPerUnit = %v, want field pointer %v", got, tc.spec.PerUnit)
+			gotPerUnit := h.GetPerUnit()
+			if !amountEqual(gotPerUnit, tc.wantPerUnit) {
+				t.Errorf("GetPerUnit = %v, want %v", gotPerUnit, tc.wantPerUnit)
 			}
-			if got := h.GetTotal(); got != tc.spec.Total {
-				t.Errorf("GetTotal = %v, want field pointer %v", got, tc.spec.Total)
+			gotTotal := h.GetTotal()
+			if !amountEqual(gotTotal, tc.wantTotal) {
+				t.Errorf("GetTotal = %v, want %v", gotTotal, tc.wantTotal)
 			}
 			if got := h.GetCurrency(); got != tc.wantCurrency {
 				t.Errorf("GetCurrency = %q, want %q", got, tc.wantCurrency)
@@ -105,6 +122,59 @@ func TestCostHolder_CostSpec_Accessors(t *testing.T) {
 				t.Error("IsBooked = true, want false for *CostSpec")
 			}
 		})
+	}
+}
+
+// amountEqual compares two *Amount by value (Number and Currency),
+// treating two nils as equal. Used in the *CostSpec accessor tests
+// because GetPerUnit / GetTotal synthesize a fresh Amount each call,
+// so pointer identity is meaningless.
+func amountEqual(a, b *Amount) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	if a.Currency != b.Currency {
+		return false
+	}
+	return a.Number.Cmp(&b.Number) == 0
+}
+
+// TestCostSpec_GetPerUnit_AllocatesFresh asserts the synthesis
+// contract: each call returns a freshly allocated Amount whose
+// Decimal is independent of the spec's PerUnit field, so callers
+// may mutate the returned Number without disturbing the spec.
+func TestCostSpec_GetPerUnit_AllocatesFresh(t *testing.T) {
+	num := dec(t, "12.5")
+	spec := &CostSpec{PerUnit: &num, Currency: "USD"}
+
+	got := spec.GetPerUnit()
+	if got == nil {
+		t.Fatal("GetPerUnit returned nil for populated spec")
+	}
+	mutated := dec(t, "999")
+	got.Number.Set(&mutated)
+	if spec.PerUnit.Cmp(&mutated) == 0 {
+		t.Errorf("mutating GetPerUnit result leaked into spec.PerUnit: got %s, want 12.5", spec.PerUnit.String())
+	}
+}
+
+// TestCostSpec_GetTotal_AllocatesFresh mirrors
+// TestCostSpec_GetPerUnit_AllocatesFresh for the Total accessor: the
+// synthesis contract is symmetric, and locking it independently
+// catches a regression where one accessor's allocation behaviour
+// drifts from the other's.
+func TestCostSpec_GetTotal_AllocatesFresh(t *testing.T) {
+	num := dec(t, "12.5")
+	spec := &CostSpec{Total: &num, Currency: "USD"}
+
+	got := spec.GetTotal()
+	if got == nil {
+		t.Fatal("GetTotal returned nil for populated spec")
+	}
+	mutated := dec(t, "999")
+	got.Number.Set(&mutated)
+	if spec.Total.Cmp(&mutated) == 0 {
+		t.Errorf("mutating GetTotal result leaked into spec.Total: got %s, want 12.5", spec.Total.String())
 	}
 }
 

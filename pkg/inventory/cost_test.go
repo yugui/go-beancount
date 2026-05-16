@@ -170,10 +170,12 @@ func TestResolveCost(t *testing.T) {
 	})
 
 	t.Run("per-unit only with spec date", func(t *testing.T) {
+		perUnit := decimalVal(t, "100")
 		spec := &ast.CostSpec{
-			PerUnit: &ast.Amount{Number: decimalVal(t, "100"), Currency: "USD"},
-			Date:    &specDate,
-			Label:   "lot-a",
+			PerUnit:  &perUnit,
+			Currency: "USD",
+			Date:     &specDate,
+			Label:    "lot-a",
 		}
 		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
@@ -194,8 +196,10 @@ func TestResolveCost(t *testing.T) {
 	})
 
 	t.Run("per-unit only, date defaults to txn date", func(t *testing.T) {
+		perUnit := decimalVal(t, "100")
 		spec := &ast.CostSpec{
-			PerUnit: &ast.Amount{Number: decimalVal(t, "100"), Currency: "USD"},
+			PerUnit:  &perUnit,
+			Currency: "USD",
 		}
 		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
@@ -207,8 +211,10 @@ func TestResolveCost(t *testing.T) {
 	})
 
 	t.Run("total only", func(t *testing.T) {
+		total := decimalVal(t, "500")
 		spec := &ast.CostSpec{
-			Total: &ast.Amount{Number: decimalVal(t, "500"), Currency: "USD"},
+			Total:    &total,
+			Currency: "USD",
 		}
 		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
@@ -227,8 +233,10 @@ func TestResolveCost(t *testing.T) {
 	})
 
 	t.Run("total only with negative units uses magnitude", func(t *testing.T) {
+		total := decimalVal(t, "500")
 		spec := &ast.CostSpec{
-			Total: &ast.Amount{Number: decimalVal(t, "500"), Currency: "USD"},
+			Total:    &total,
+			Currency: "USD",
 		}
 		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "-5"), Currency: "ACME"}, txnDate)
 		if err != nil {
@@ -244,9 +252,12 @@ func TestResolveCost(t *testing.T) {
 	})
 
 	t.Run("combined form", func(t *testing.T) {
+		perUnit := decimalVal(t, "100")
+		total := decimalVal(t, "50")
 		spec := &ast.CostSpec{
-			PerUnit: &ast.Amount{Number: decimalVal(t, "100"), Currency: "USD"},
-			Total:   &ast.Amount{Number: decimalVal(t, "50"), Currency: "USD"},
+			PerUnit:  &perUnit,
+			Total:    &total,
+			Currency: "USD",
 		}
 		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
@@ -265,8 +276,10 @@ func TestResolveCost(t *testing.T) {
 	t.Run("total only with zero units", func(t *testing.T) {
 		// Division-by-zero on user input currently surfaces as
 		// CodeInternalError; TODO: consider a dedicated code.
+		total := decimalVal(t, "500")
 		spec := &ast.CostSpec{
-			Total: &ast.Amount{Number: decimalVal(t, "500"), Currency: "USD"},
+			Total:    &total,
+			Currency: "USD",
 		}
 		_, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "0"), Currency: "ACME"}, txnDate)
 		if err == nil {
@@ -275,24 +288,6 @@ func TestResolveCost(t *testing.T) {
 		var invErr Error
 		if !errors.As(err, &invErr) {
 			t.Fatalf("error type = %T, want inventory.Error", err)
-		}
-	})
-
-	t.Run("combined form with mismatched currencies", func(t *testing.T) {
-		spec := &ast.CostSpec{
-			PerUnit: &ast.Amount{Number: decimalVal(t, "100"), Currency: "USD"},
-			Total:   &ast.Amount{Number: decimalVal(t, "50"), Currency: "EUR"},
-		}
-		_, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
-		var invErr Error
-		if !errors.As(err, &invErr) {
-			t.Fatalf("error type = %T, want inventory.Error", err)
-		}
-		if invErr.Code != CodeInternalError {
-			t.Errorf("Code = %v, want CodeInternalError", invErr.Code)
 		}
 	})
 }

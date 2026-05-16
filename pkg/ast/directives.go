@@ -26,23 +26,27 @@ type Posting struct {
 
 // CostSpec represents a cost specification on a posting.
 //
-// PerUnit and Total carry distinct, non-overlapping meanings; there is no
-// disambiguation flag. The mapping from source syntax is:
+// PerUnit and Total carry the per-unit and total / surcharge cost
+// numbers; Currency is their shared currency. There is no disambiguation
+// flag; the mapping from source syntax is:
 //
-//	{X CUR}            -> PerUnit=X,    Total=nil
-//	{{X CUR}}          -> PerUnit=nil,  Total=X
-//	{X # Y CUR}        -> PerUnit=X,    Total=Y      (combined form, future)
-//	{} or {{}}         -> PerUnit=nil,  Total=nil    (empty)
+//	{X CUR}            -> PerUnit=X,    Total=nil,  Currency=CUR
+//	{{X CUR}}          -> PerUnit=nil,  Total=X,    Currency=CUR
+//	{X # Y CUR}        -> PerUnit=X,    Total=Y,    Currency=CUR
+//	{ CUR }            -> PerUnit=nil,  Total=nil,  Currency=CUR
+//	{} or {{}}         -> PerUnit=nil,  Total=nil,  Currency=""
 //
-// In the combined form (both non-nil) both components share the same
-// currency. The empty form is normalized to "{}" on print; "{{}}" does not
-// round-trip byte-for-byte.
+// Currency carries the cost currency for every shape that has one;
+// reading it is the single source of truth and avoids re-deriving it
+// from PerUnit / Total. The empty form is normalized to "{}" on print;
+// "{{}}" does not round-trip byte-for-byte.
 type CostSpec struct {
-	Span    Span
-	PerUnit *Amount    // per-unit cost component; nil if absent
-	Total   *Amount    // total / surcharge cost component; nil if absent
-	Date    *time.Time // optional acquisition date
-	Label   string     // optional lot label; empty if not specified
+	Span     Span
+	PerUnit  *apd.Decimal // per-unit cost number; nil if absent
+	Total    *apd.Decimal // total / surcharge cost number; nil if absent
+	Currency string       // shared cost currency; empty if unspecified
+	Date     *time.Time   // optional acquisition date
+	Label    string       // optional lot label; empty if not specified
 }
 
 // PriceAnnotation represents a price annotation on a posting.

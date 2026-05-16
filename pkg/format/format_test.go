@@ -304,12 +304,6 @@ func TestFormatPostingWithCombinedCostSpec(t *testing.T) {
 				"  Assets:Cash                           -5031.15 USD\n",
 		},
 		{
-			name: "combined cost with explicit per-unit currency",
-			src: "2024-01-15 * \"Buy GOOG\"\n" +
-				"  Assets:Brokerage                           10 GOOG {502.12 USD # 9.95 USD}\n" +
-				"  Assets:Cash                           -5031.15 USD\n",
-		},
-		{
 			name: "combined cost with date and label",
 			src: "2024-01-15 * \"Buy GOOG\"\n" +
 				"  Assets:Brokerage                           10 GOOG {502.12 # 9.95 USD, 2024-01-15, \"lot1\"}\n" +

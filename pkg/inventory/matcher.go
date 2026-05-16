@@ -110,18 +110,21 @@ func NewCostMatcher(c ast.CostHolder, priceCurrency string) CostMatcher {
 	case spec.PerUnit != nil && spec.Total == nil:
 		// Per-unit-only form `{X CUR}`: X is a real selection constraint.
 		m.HasPerUnit = true
-		m.PerUnit = *ast.CloneDecimal(&spec.PerUnit.Number)
-		m.Currency = spec.PerUnit.Currency
+		m.PerUnit = *ast.CloneDecimal(spec.PerUnit)
+		m.Currency = spec.Currency
 	case spec.Total != nil:
 		// Combined form `{per # total CUR}` or total-only `{{total CUR}}`:
 		// the Total is informational for realized-gain calculation, not for
-		// lot selection, so do not set HasPerUnit. Currency comes from Total
-		// (which carries the authoritative currency in both forms).
-		m.Currency = spec.Total.Currency
+		// lot selection, so do not set HasPerUnit.
+		m.Currency = spec.Currency
 	default:
-		// Empty "{}" spec: no per-unit and no total. Fall back to the
-		// price-currency hint if one is available.
-		if priceCurrency != "" {
+		// No per-unit and no total. Use the spec's currency if it
+		// carries one (the currency-only `{ CUR }` form), otherwise
+		// fall back to the price-currency hint.
+		switch {
+		case spec.Currency != "":
+			m.Currency = spec.Currency
+		case priceCurrency != "":
 			m.Currency = priceCurrency
 		}
 	}
