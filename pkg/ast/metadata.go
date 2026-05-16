@@ -1,5 +1,79 @@
 package ast
 
+import (
+	"fmt"
+	"time"
+
+	"github.com/cockroachdb/apd/v3"
+)
+
+// MetaValueKind tags which field of MetaValue is populated.
+type MetaValueKind int
+
+const (
+	// MetaString indicates a string value.
+	MetaString MetaValueKind = iota
+	// MetaAccount indicates an account name.
+	MetaAccount
+	// MetaCurrency indicates a currency code.
+	MetaCurrency
+	// MetaDate indicates a date value.
+	MetaDate
+	// MetaTag indicates a tag value.
+	MetaTag
+	// MetaLink indicates a link value.
+	MetaLink
+	// MetaNumber indicates a numeric value.
+	MetaNumber
+	// MetaAmount indicates an amount (number + currency).
+	MetaAmount
+	// MetaBool indicates a boolean value.
+	MetaBool
+)
+
+// String returns a human-readable name for the MetaValueKind, satisfying
+// the fmt.Stringer interface. Unknown kinds are formatted as "kind(n)".
+func (k MetaValueKind) String() string {
+	switch k {
+	case MetaString:
+		return "string"
+	case MetaAccount:
+		return "account"
+	case MetaCurrency:
+		return "currency"
+	case MetaDate:
+		return "date"
+	case MetaTag:
+		return "tag"
+	case MetaLink:
+		return "link"
+	case MetaNumber:
+		return "number"
+	case MetaAmount:
+		return "amount"
+	case MetaBool:
+		return "bool"
+	default:
+		return fmt.Sprintf("kind(%d)", int(k))
+	}
+}
+
+// MetaValue is a tagged union for metadata values.
+type MetaValue struct {
+	Kind   MetaValueKind
+	String string      // MetaString, MetaAccount, MetaCurrency, MetaTag, MetaLink
+	Date   time.Time   // MetaDate
+	Number apd.Decimal // MetaNumber
+	Amount Amount      // MetaAmount
+	Bool   bool        // MetaBool
+}
+
+// Metadata is a collection of key-value pairs attached to directives or postings.
+type Metadata struct {
+	// Props holds key-value pairs. Insertion order is not guaranteed.
+	Props map[string]MetaValue
+}
+
 // Without returns a copy of m that omits any key listed in keys. If none of
 // the listed keys are present in m.Props, the receiver is returned unchanged
 // (same map pointer) so callers that pass an empty StripMetaKeys list pay no
