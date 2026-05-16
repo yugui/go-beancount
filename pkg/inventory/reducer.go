@@ -1188,16 +1188,15 @@ func (r *Reducer) resolveResidualGroups(
 ) []ast.Amount {
 	var freeResiduals []ast.Amount
 	for _, g := range groups {
-		switch len(g.unknown) {
-		case 0:
+		switch {
+		case len(g.unknown) == 0:
 			if g.residual.Number.Sign() != 0 {
 				freeResiduals = append(freeResiduals, g.residual)
 			}
 			continue
-		default:
+		case len(g.unknown) > 1:
 			r.flagAmbiguousUnknowns(g.unknown)
 			continue
-		case 1:
 		}
 
 		p := g.unknown[0]
@@ -1235,18 +1234,17 @@ func (r *Reducer) resolveFreeResiduals(
 	txnDate time.Time,
 	book func(orig, candidate *ast.Posting, currency string) []Error,
 ) {
-	switch len(free) {
-	case 0:
+	switch {
+	case len(free) == 0:
 		return
-	default:
+	case len(free) > 1:
 		r.flagAmbiguousUnknowns(free)
 		return
-	case 1:
 	}
 
 	p := free[0]
-	switch len(freeResiduals) {
-	case 0:
+	switch {
+	case len(freeResiduals) == 0:
 		msg := "deferred cost cannot be interpolated: every currency already balances"
 		if p.Amount == nil {
 			msg = "auto-balanced posting has no residual to absorb; every currency already balances"
@@ -1258,7 +1256,7 @@ func (r *Reducer) resolveFreeResiduals(
 			Message: msg,
 		})
 		return
-	default:
+	case len(freeResiduals) > 1:
 		currencies := make([]string, len(freeResiduals))
 		for i, a := range freeResiduals {
 			currencies[i] = a.Currency
@@ -1270,7 +1268,6 @@ func (r *Reducer) resolveFreeResiduals(
 			Message: fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(currencies), currencies),
 		})
 		return
-	case 1:
 	}
 
 	res := freeResiduals[0]
