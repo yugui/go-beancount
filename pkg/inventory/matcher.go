@@ -18,10 +18,12 @@ import (
 // Semantics of the fields:
 //
 //   - HasPerUnit / PerUnit: when HasPerUnit is true only lots whose
-//     [Cost.Number] equals PerUnit qualify. Combined-form cost specs
-//     ({per # total CUR}) and total-only specs ({{total CUR}}) do NOT
-//     set HasPerUnit — their Total is informational for realized-gain
-//     calculation, not a lot-selection constraint.
+//     [Cost.Number] equals PerUnit qualify. Total-only specs
+//     ({{total CUR}}) and combined-form specs ({per # total CUR})
+//     derive an implicit per-unit constraint when [NewCostMatcher] is
+//     given the reducing posting's units (Total/|units| or
+//     per + Total/|units|, mirroring [ResolveCost]); without units
+//     they fall back to a currency-only matcher.
 //   - Currency: the cost currency to constrain on. The empty string means
 //     "match any currency". It is populated from an explicit cost spec
 //     when the spec carries a currency, or from the price-annotation
@@ -41,8 +43,10 @@ type CostMatcher struct {
 }
 
 // NewCostMatcher builds a matcher from the reducing posting's cost
-// holder and an optional cost-currency hint derived from a price
-// annotation. The two [ast.CostHolder] variants are handled uniformly:
+// holder, an optional cost-currency hint derived from a price
+// annotation, and the reducing posting's units (used to derive a
+// per-unit constraint from total-form cost specs). The two
+// [ast.CostHolder] variants are handled uniformly:
 //
 //   - c is nil && priceCurrency == "": empty matcher (matches any lot).
 //   - c is nil && priceCurrency != "": Currency = priceCurrency (the
@@ -54,26 +58,33 @@ type CostMatcher struct {
 //     booked Cost carries the authoritative Currency.
 //   - c is *[ast.CostSpec]: existing parse-tier rules apply.
 //
-// CostSpec dispatch (unchanged from the parse-tier-only implementation):
+// CostSpec dispatch:
 //
 //   - Per-unit-only form {X CUR} (spec.PerUnit != nil && spec.Total ==
 //     nil): HasPerUnit is set and both PerUnit and Currency are
 //     populated from spec.PerUnit — X is a real lot-selection
 //     constraint.
+//   - Total-only form {{total CUR}} (spec.PerUnit == nil &&
+//     spec.Total != nil): when units is non-nil and non-zero,
+//     HasPerUnit is set and PerUnit = Total/|units|, the same value
+//     [ResolveCost] stores on a lot augmented with this spec. Without
+//     units the matcher falls back to currency-only.
 //   - Combined form {per # total CUR} (spec.PerUnit != nil &&
-//     spec.Total != nil) and total-only form {{total CUR}}
-//     (spec.Total != nil): Currency is populated from spec.Total, but
-//     HasPerUnit is NOT set. [ResolveCost] stores the lot's Number as
-//     per + total/|units| (not per alone) for the combined form, so a
-//     matcher built from the same spec cannot constrain Number and
-//     still find the lot it just created. The Total is informational
-//     for realized-gain calculation, handled by the booking layer.
+//     spec.Total != nil): when units is non-nil and non-zero,
+//     HasPerUnit is set and PerUnit = per + Total/|units|, matching
+//     [ResolveCost]'s storage. Without units the matcher falls back
+//     to currency-only.
 //   - spec.Date != nil && !spec.Date.IsZero(): HasDate / Date set.
 //   - spec.Label != "": HasLabel / Label set.
 //
 // priceCurrency is only used as a fallback when the cost spec does not
 // itself supply a currency (i.e. both PerUnit and Total are nil).
-func NewCostMatcher(c ast.CostHolder, priceCurrency string) CostMatcher {
+//
+// The derived per-unit value is computed with [quoContext], the same
+// 34-digit context [ResolveCost] uses, so a matcher built from a
+// total-form spec finds the lot [ResolveCost] just created from an
+// equivalent spec.
+func NewCostMatcher(c ast.CostHolder, priceCurrency string, units *ast.Amount) CostMatcher {
 	var m CostMatcher
 	if c == nil {
 		if priceCurrency != "" {
@@ -113,10 +124,16 @@ func NewCostMatcher(c ast.CostHolder, priceCurrency string) CostMatcher {
 		m.PerUnit = *ast.CloneDecimal(spec.PerUnit)
 		m.Currency = spec.Currency
 	case spec.Total != nil:
-		// Combined form `{per # total CUR}` or total-only `{{total CUR}}`:
-		// the Total is informational for realized-gain calculation, not for
-		// lot selection, so do not set HasPerUnit.
+		// Total-only `{{T CUR}}` or combined `{per # T CUR}`. When
+		// units are known, derive the per-unit constraint that
+		// matches what ResolveCost would store on an augmentation
+		// from the same spec; otherwise leave HasPerUnit unset and
+		// rely on currency-only filtering.
 		m.Currency = spec.Currency
+		if derived, ok := derivePerUnitFromTotal(spec, units); ok {
+			m.HasPerUnit = true
+			m.PerUnit = derived
+		}
 	default:
 		// No per-unit and no total. Use the spec's currency if it
 		// carries one (the currency-only `{ CUR }` form), otherwise
@@ -138,6 +155,33 @@ func NewCostMatcher(c ast.CostHolder, priceCurrency string) CostMatcher {
 		m.Label = spec.Label
 	}
 	return m
+}
+
+// derivePerUnitFromTotal returns the per-unit cost implied by a
+// total-form cost spec given the reducing posting's units, mirroring
+// [ResolveCost]: T/|units| for total-only and per + T/|units| for the
+// combined form. Returns ok=false when units is nil or its Number is
+// zero, so the caller falls back to currency-only matching.
+func derivePerUnitFromTotal(spec *ast.CostSpec, units *ast.Amount) (apd.Decimal, bool) {
+	if units == nil || units.Number.Sign() == 0 {
+		return apd.Decimal{}, false
+	}
+	var absUnits apd.Decimal
+	if _, err := apd.BaseContext.Abs(&absUnits, &units.Number); err != nil {
+		return apd.Decimal{}, false
+	}
+	var quo apd.Decimal
+	if _, err := quoContext.Quo(&quo, spec.Total, &absUnits); err != nil {
+		return apd.Decimal{}, false
+	}
+	if spec.PerUnit == nil {
+		return quo, true
+	}
+	var sum apd.Decimal
+	if _, err := apd.BaseContext.Add(&sum, spec.PerUnit, &quo); err != nil {
+		return apd.Decimal{}, false
+	}
+	return sum, true
 }
 
 // IsEmpty reports whether the matcher has no constraints at all. An empty

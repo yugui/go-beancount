@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/loader"
 )
@@ -190,6 +192,70 @@ func TestLoad_TotalCostAugmentationBalances(t *testing.T) {
 		if d.Severity == ast.Error {
 			t.Errorf("unexpected error diagnostic: [%s] %s", d.Code, d.Message)
 		}
+	}
+}
+
+// TestLoad_StrictTotalCostReducingPostingMatchesByDerivedPerUnit pins
+// the upstream-beancount behavior that a `{{ T CUR }}` reducing
+// posting under STRICT booking is matched by the implicit per-unit
+// cost T/|units|. Two augmenting lots at different per-unit costs
+// would be ambiguous under a currency-only matcher, but the derived
+// per-unit value selects exactly one lot.
+func TestLoad_StrictTotalCostReducingPostingMatchesByDerivedPerUnit(t *testing.T) {
+	const src = `1970-01-03 open Income:Gain
+1970-01-01 open Assets:A "STRICT"
+
+1970-01-01 * "txn"
+  Assets:A          10 STOCK { 1 JPY }
+  Assets:A
+
+1970-01-02 * "txn"
+  Assets:A          10 STOCK { 1.5 JPY }
+  Assets:A
+
+1970-01-03 * "txn"
+  Assets:A          -10 STOCK {{ 10 JPY }}
+  Assets:A
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Errorf("loader.Load: unexpected error diagnostic: [%s] %s", d.Code, d.Message)
+		}
+	}
+	// Positive assertion: the booking pass must have installed the 1 JPY
+	// lot's cost on the 1970-01-03 reduction. Looking for any other
+	// per-unit value (or no Cost at all) means the disambiguation went
+	// wrong even if no diagnostic was emitted.
+	saleDate := time.Date(1970, 1, 3, 0, 0, 0, 0, time.UTC)
+	want := apd.New(1, 0)
+	var found bool
+	for _, d := range ledger.All() {
+		txn, ok := d.(*ast.Transaction)
+		if !ok || !txn.Date.Equal(saleDate) {
+			continue
+		}
+		for _, p := range txn.Postings {
+			if p.Amount == nil || p.Amount.Currency != "STOCK" {
+				continue
+			}
+			found = true
+			cost, ok := p.Cost.(*ast.Cost)
+			if !ok {
+				t.Errorf("loader.Load: 1970-01-03 STOCK posting Cost = %T, want *ast.Cost", p.Cost)
+				continue
+			}
+			if cost.Number.Cmp(want) != 0 || cost.Currency != "JPY" {
+				t.Errorf("loader.Load: 1970-01-03 STOCK posting Cost = %s %s, want 1 JPY", cost.Number.String(), cost.Currency)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("loader.Load: 1970-01-03 STOCK posting not found in ledger output")
 	}
 }
 

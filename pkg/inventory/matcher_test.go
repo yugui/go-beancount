@@ -85,14 +85,14 @@ func TestCostMatcherDateAndLabel(t *testing.T) {
 }
 
 func TestNewCostMatcherNilNoHint(t *testing.T) {
-	m := NewCostMatcher(nil, "")
+	m := NewCostMatcher(nil, "", nil)
 	if !m.IsEmpty() {
-		t.Errorf("NewCostMatcher(nil, \"\") should be empty, got %+v", m)
+		t.Errorf("NewCostMatcher(nil, \"\", nil) should be empty, got %+v", m)
 	}
 }
 
 func TestNewCostMatcherNilWithHint(t *testing.T) {
-	m := NewCostMatcher(nil, "USD")
+	m := NewCostMatcher(nil, "USD", nil)
 	if m.IsEmpty() {
 		t.Error("currency-hint matcher should not be empty")
 	}
@@ -110,7 +110,7 @@ func TestNewCostMatcherPerUnit(t *testing.T) {
 		PerUnit:  &perUnit,
 		Currency: "USD",
 	}
-	m := NewCostMatcher(spec, "")
+	m := NewCostMatcher(spec, "", nil)
 	if !m.HasPerUnit {
 		t.Error("HasPerUnit should be true")
 	}
@@ -124,14 +124,45 @@ func TestNewCostMatcherPerUnit(t *testing.T) {
 }
 
 func TestNewCostMatcherTotalOnly(t *testing.T) {
+	// Total-only spec `{{500 USD}}` on 10 reducing units must derive
+	// a per-unit constraint of 500/10 = 50 USD, mirroring what
+	// ResolveCost stores on an augmentation from the same spec.
 	total := decimalVal(t, "500")
 	spec := &ast.CostSpec{
 		Total:    &total,
 		Currency: "USD",
 	}
-	m := NewCostMatcher(spec, "")
+	units := ast.Amount{Number: decimalVal(t, "-10"), Currency: "STOCK"}
+	m := NewCostMatcher(spec, "", &units)
+	if !m.HasPerUnit {
+		t.Error("HasPerUnit should be true once units are known")
+	}
+	want := decimalVal(t, "50")
+	if m.PerUnit.Cmp(&want) != 0 {
+		t.Errorf("PerUnit = %s, want 50", m.PerUnit.String())
+	}
+	if m.Currency != "USD" {
+		t.Errorf("Currency = %q, want USD", m.Currency)
+	}
+	if !m.Matches(Cost{Number: decimalVal(t, "50"), Currency: "USD"}) {
+		t.Error("Matches: USD lot at per-unit 50 should match {{500 USD}} on 10 units")
+	}
+	if m.Matches(Cost{Number: decimalVal(t, "60"), Currency: "USD"}) {
+		t.Error("Matches: USD lot at per-unit 60 must not match {{500 USD}} on 10 units")
+	}
+}
+
+func TestNewCostMatcherTotalOnlyWithoutUnitsFallsBack(t *testing.T) {
+	// Without units (units == nil), the matcher falls back to
+	// currency-only to remain usable from Pass 2 deferred-cost paths.
+	total := decimalVal(t, "500")
+	spec := &ast.CostSpec{
+		Total:    &total,
+		Currency: "USD",
+	}
+	m := NewCostMatcher(spec, "", nil)
 	if m.HasPerUnit {
-		t.Error("HasPerUnit should be false for total-only spec")
+		t.Error("HasPerUnit must be false when units are unavailable")
 	}
 	if m.Currency != "USD" {
 		t.Errorf("Currency = %q, want USD", m.Currency)
@@ -139,13 +170,9 @@ func TestNewCostMatcherTotalOnly(t *testing.T) {
 }
 
 func TestNewCostMatcherCombinedForm(t *testing.T) {
-	// Combined form `{100 # 500 USD}`: both PerUnit and Total are
-	// present. ResolveCost stores the lot's Number as
-	// per + total/|units| (e.g. 100 + 500/10 = 150 for 10 units), so a
-	// matcher built from the same spec MUST NOT constrain Number on
-	// PerUnit alone — it would never match the lot it helped create.
-	// The Total is informational for gain calculation, and lot
-	// selection is currency-only.
+	// Combined form `{100 # 500 USD}` on 10 units: ResolveCost stores
+	// the lot's Number as 100 + 500/10 = 150, so the matcher must
+	// derive the same per-unit value to find the lot it helped create.
 	perUnit := decimalVal(t, "100")
 	total := decimalVal(t, "500")
 	spec := &ast.CostSpec{
@@ -153,28 +180,63 @@ func TestNewCostMatcherCombinedForm(t *testing.T) {
 		Total:    &total,
 		Currency: "USD",
 	}
-	m := NewCostMatcher(spec, "")
-	if m.HasPerUnit {
-		t.Error("HasPerUnit must be false for combined form {per # total CUR}")
+	units := ast.Amount{Number: decimalVal(t, "-10"), Currency: "STOCK"}
+	m := NewCostMatcher(spec, "", &units)
+	if !m.HasPerUnit {
+		t.Error("HasPerUnit should be true once units are known")
+	}
+	want := decimalVal(t, "150")
+	if m.PerUnit.Cmp(&want) != 0 {
+		t.Errorf("PerUnit = %s, want 150", m.PerUnit.String())
 	}
 	if m.Currency != "USD" {
 		t.Errorf("Currency = %q, want USD", m.Currency)
 	}
-	// The authoritative resolved Number for 10 units is 100 + 500/10 = 150.
 	if !m.Matches(Cost{Number: decimalVal(t, "150"), Currency: "USD"}) {
-		t.Error("USD lot with resolved per-unit 150 should match combined-form matcher")
+		t.Error("Matches: USD lot with per-unit 150 should match combined-form matcher")
 	}
-	// Since the matcher is currency-only, it must accept any USD cost,
-	// regardless of the Number stored on the lot.
-	if !m.Matches(Cost{Number: decimalVal(t, "0"), Currency: "USD"}) {
-		t.Error("zero-Number USD lot should match a currency-only combined-form matcher")
+	if m.Matches(Cost{Number: decimalVal(t, "100"), Currency: "USD"}) {
+		t.Error("Matches: USD lot at per-unit 100 (PerUnit alone) must not match the combined-form derived 150")
 	}
-	if !m.Matches(Cost{Number: decimalVal(t, "200"), Currency: "USD"}) {
-		t.Error("arbitrary USD lot should match a currency-only combined-form matcher")
-	}
-	// A non-USD lot must still be rejected.
 	if m.Matches(Cost{Number: decimalVal(t, "150"), Currency: "EUR"}) {
-		t.Error("EUR lot must not match a USD combined-form matcher")
+		t.Error("Matches: EUR lot must not match a USD combined-form matcher")
+	}
+}
+
+func TestNewCostMatcherCombinedFormWithoutUnitsFallsBack(t *testing.T) {
+	// Without units the combined-form matcher falls back to
+	// currency-only, mirroring TestNewCostMatcherTotalOnlyWithoutUnitsFallsBack.
+	perUnit := decimalVal(t, "100")
+	total := decimalVal(t, "500")
+	spec := &ast.CostSpec{
+		PerUnit:  &perUnit,
+		Total:    &total,
+		Currency: "USD",
+	}
+	m := NewCostMatcher(spec, "", nil)
+	if m.HasPerUnit {
+		t.Error("HasPerUnit must be false when units are unavailable")
+	}
+	if m.Currency != "USD" {
+		t.Errorf("Currency = %q, want USD", m.Currency)
+	}
+}
+
+func TestNewCostMatcherTotalOnlyZeroUnitsFallsBack(t *testing.T) {
+	// A zero units amount yields a 0 denominator; the matcher must
+	// fall back to currency-only rather than emit an arithmetic error.
+	total := decimalVal(t, "500")
+	spec := &ast.CostSpec{
+		Total:    &total,
+		Currency: "USD",
+	}
+	units := ast.Amount{Number: decimalVal(t, "0"), Currency: "STOCK"}
+	m := NewCostMatcher(spec, "", &units)
+	if m.HasPerUnit {
+		t.Error("HasPerUnit must be false when units are zero")
+	}
+	if m.Currency != "USD" {
+		t.Errorf("Currency = %q, want USD", m.Currency)
 	}
 }
 
@@ -187,7 +249,7 @@ func TestNewCostMatcherDateAndLabel(t *testing.T) {
 		Date:     &date,
 		Label:    "lot-a",
 	}
-	m := NewCostMatcher(spec, "")
+	m := NewCostMatcher(spec, "", nil)
 	if !m.HasDate {
 		t.Error("HasDate should be true")
 	}
@@ -201,7 +263,7 @@ func TestNewCostMatcherDateAndLabel(t *testing.T) {
 
 func TestNewCostMatcherEmptySpecFallsBackToHint(t *testing.T) {
 	spec := &ast.CostSpec{}
-	m := NewCostMatcher(spec, "USD")
+	m := NewCostMatcher(spec, "USD", nil)
 	if m.Currency != "USD" {
 		t.Errorf("Currency = %q, want USD (fallback to hint)", m.Currency)
 	}
