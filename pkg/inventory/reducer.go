@@ -682,8 +682,9 @@ func unknownCandidateCurrency(p *ast.Posting) string {
 // dropped entry (recorded against trace via prepareForRollback so the
 // state-diff pass observes the rollback), and Source on survivors is
 // bound to the rebuilt slice. Survival is "currency not in pr.dropped";
-// the "" key is never in pr.dropped, so Pass 2-unresolved free unknowns
-// always survive. Failed postings were never appended to pr.postings
+// the "" sentinel key excludes unresolved free unknowns while leaving
+// every bookedDesc entry intact (those always carry a real weight
+// currency). Failed postings were never appended to pr.postings
 // (markForDrop does not append), so they need no separate exclusion.
 //
 // Errors from reverseBooking are CodeInternalError from apd arithmetic
@@ -916,8 +917,18 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			return nil
 		}
 
-		freeResiduals := r.resolveResidualGroups(groups, txn.Date, book)
-		r.resolveFreeResiduals(free, freeResiduals, txn.Date, book)
+		freeResiduals, failures := resolveResidualGroups(groups, txn.Date, book)
+		for _, f := range failures {
+			r.errs = append(r.errs, f.err)
+			pr.recordUnknownFailed(f.posting, f.currency)
+		}
+
+		if errs := resolveFreeResiduals(free, freeResiduals, txn.Date, book); len(errs) > 0 {
+			r.errs = append(r.errs, errs...)
+			for _, p := range free {
+				pr.recordUnknownFailed(p, "")
+			}
+		}
 	}
 
 	// Materialize the booked slice: applies any currency-group drops,
@@ -1146,76 +1157,108 @@ func (st *stateTrace) diff() (before, after map[ast.Account]*Inventory) {
 	return st.before, after
 }
 
-// flagAmbiguousUnknowns emits one CodeUnresolvableInterpolation per
-// unknown when the transaction has more than one. The wording branches
-// on whether the unknown is the auto-posting (no Amount, so the
-// "amount" is unresolved) or a deferred cost-spec (Amount is set, only
-// the per-unit "cost" is unresolved).
-func (r *Reducer) flagAmbiguousUnknowns(unknowns []*ast.Posting) {
+// ambiguousUnknownErrors returns one CodeUnresolvableInterpolation per
+// unknown — the wording branches on whether the unknown is an
+// auto-posting (no Amount, so the "amount" is unresolved) or a
+// deferred cost-spec (Amount is set, only the per-unit "cost" is
+// unresolved).
+func ambiguousUnknownErrors(unknowns []*ast.Posting) []Error {
+	errs := make([]Error, 0, len(unknowns))
 	for _, p := range unknowns {
 		msg := "cannot interpolate cost: transaction has multiple unknown posting values"
 		if p.Amount == nil {
 			msg = "cannot interpolate amount: transaction has multiple unknown posting values"
 		}
-		r.errs = append(r.errs, Error{
+		errs = append(errs, Error{
 			Code:    CodeUnresolvableInterpolation,
 			Span:    p.Span,
 			Account: p.Account,
 			Message: msg,
 		})
 	}
+	return errs
 }
 
-// resolveResidualGroups walks Pass 2's per-currency groups returned
-// by [postingResolution.groupForResidual]. Groups with one unknown
-// bidder (the well-formed committed case) are booked via book;
-// zero-bidder groups contribute their non-zero residual to the
-// returned slice for the free path; multi-bidder groups emit one
-// ambiguity diagnostic each.
+// unknownFailure pairs a Pass 2 unknown posting with the diagnostic
+// describing its failure and the weight currency the caller must drop
+// it under via [postingResolution.recordUnknownFailed].
+type unknownFailure struct {
+	posting  *ast.Posting
+	currency string
+	err      Error
+}
+
+// resolveResidualGroups walks Pass 2's per-currency groups returned by
+// [postingResolution.groupForResidual] and returns:
+//
+//   - free: residuals for the free-bucket pass (zero-unknown groups
+//     with a non-zero residual).
+//   - failures: one entry per unknown that could not be resolved,
+//     each carrying the diagnostic plus the currency the caller must
+//     drop the posting under. Both early-reject paths (multi-unknown
+//     ambiguity, zero-units deferred) and any errors returned by the
+//     book closure flow through this slice; the caller is responsible
+//     for appending each `err` to r.errs and for calling
+//     [postingResolution.recordUnknownFailed] with the recorded
+//     currency, dropping the whole currency group consistently with
+//     Pass 1's bookOne-failure precedent.
 //
 // validateStructure guarantees that a bidder has Amount != nil
 // (auto-postings cannot carry Cost or Price); a bidder with zero
-// units is rejected with CodeUnresolvableInterpolation because the
+// units is reported as CodeUnresolvableInterpolation because the
 // per-unit cost would require dividing the residual by zero.
 //
 // book is the visitTxn-scoped closure that owns prepareForEdit,
-// bookOne, the success-side dispatch to pr.promote*, and the
-// rollback/recordUnknownFailed sequence on failure.
-func (r *Reducer) resolveResidualGroups(
+// bookOne, and the success-side dispatch to pr.promote*.
+func resolveResidualGroups(
 	groups []residualGroup,
 	txnDate time.Time,
 	book func(orig, candidate *ast.Posting, currency string) []Error,
-) []ast.Amount {
-	var freeResiduals []ast.Amount
+) (free []ast.Amount, failures []unknownFailure) {
 	for _, g := range groups {
 		switch {
 		case len(g.unknown) == 0:
 			if g.residual.Number.Sign() != 0 {
-				freeResiduals = append(freeResiduals, g.residual)
+				free = append(free, g.residual)
 			}
 			continue
 		case len(g.unknown) > 1:
-			r.flagAmbiguousUnknowns(g.unknown)
+			ambErrs := ambiguousUnknownErrors(g.unknown)
+			for i, p := range g.unknown {
+				failures = append(failures, unknownFailure{
+					posting:  p,
+					currency: g.residual.Currency,
+					err:      ambErrs[i],
+				})
+			}
 			continue
 		}
 
 		p := g.unknown[0]
 		if p.Amount.Number.Sign() == 0 {
-			r.errs = append(r.errs, Error{
-				Code:    CodeUnresolvableInterpolation,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "deferred cost cannot be interpolated: posting has zero units",
+			failures = append(failures, unknownFailure{
+				posting:  p,
+				currency: g.residual.Currency,
+				err: Error{
+					Code:    CodeUnresolvableInterpolation,
+					Span:    p.Span,
+					Account: p.Account,
+					Message: "deferred cost cannot be interpolated: posting has zero units",
+				},
 			})
 			continue
 		}
 		candidate := *p
 		candidate.Cost = synthesizeCostSpec(p.Cost, g.residual, txnDate)
-		if errs := book(p, &candidate, g.residual.Currency); len(errs) > 0 {
-			r.errs = append(r.errs, errs...)
+		for _, e := range book(p, &candidate, g.residual.Currency) {
+			failures = append(failures, unknownFailure{
+				posting:  p,
+				currency: g.residual.Currency,
+				err:      e,
+			})
 		}
 	}
-	return freeResiduals
+	return free, failures
 }
 
 // resolveFreeResiduals handles Pass 2's free bucket: unknown postings
@@ -1224,22 +1267,26 @@ func (r *Reducer) resolveResidualGroups(
 // ambiguous; with exactly one, the unknown absorbs the unique
 // remaining residual currency, either as a synthesized Amount
 // (auto-posting) or a synthesized Cost (deferred posting with empty
-// cost spec). A residual currency that was Pass-1-dropped is handled
-// by finalize: book stamps the unknownDesc with the dropped currency,
-// the resulting BookedPosting joins the dropped group, and both are
-// reversed and excluded.
-func (r *Reducer) resolveFreeResiduals(
+// cost spec).
+//
+// Returns one diagnostic per failure path or per error surfaced by
+// the book closure. When the slice is non-empty the caller must drop
+// every posting in free via [postingResolution.recordUnknownFailed]
+// with the "" sentinel currency so finalize excludes them from the
+// rebuilt postings; the booking-layer CodeUnresolvableInterpolation
+// diagnostic is then the sole record of the failure and downstream
+// validators do not re-emit CodeAutoPostingUnresolved.
+func resolveFreeResiduals(
 	free []*ast.Posting,
 	freeResiduals []ast.Amount,
 	txnDate time.Time,
 	book func(orig, candidate *ast.Posting, currency string) []Error,
-) {
+) []Error {
 	switch {
 	case len(free) == 0:
-		return
+		return nil
 	case len(free) > 1:
-		r.flagAmbiguousUnknowns(free)
-		return
+		return ambiguousUnknownErrors(free)
 	}
 
 	p := free[0]
@@ -1249,50 +1296,42 @@ func (r *Reducer) resolveFreeResiduals(
 		if p.Amount == nil {
 			msg = "auto-balanced posting has no residual to absorb; every currency already balances"
 		}
-		r.errs = append(r.errs, Error{
+		return []Error{{
 			Code:    CodeUnresolvableInterpolation,
 			Span:    p.Span,
 			Account: p.Account,
 			Message: msg,
-		})
-		return
+		}}
 	case len(freeResiduals) > 1:
 		currencies := make([]string, len(freeResiduals))
 		for i, a := range freeResiduals {
 			currencies[i] = a.Currency
 		}
-		r.errs = append(r.errs, Error{
+		return []Error{{
 			Code:    CodeUnresolvableInterpolation,
 			Span:    p.Span,
 			Account: p.Account,
 			Message: fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(currencies), currencies),
-		})
-		return
+		}}
 	}
 
 	res := freeResiduals[0]
 	if p.Amount == nil {
 		candidate := *p
 		candidate.Amount = &res
-		if errs := book(p, &candidate, res.Currency); len(errs) > 0 {
-			r.errs = append(r.errs, errs...)
-		}
-		return
+		return book(p, &candidate, res.Currency)
 	}
 	if p.Amount.Number.Sign() == 0 {
-		r.errs = append(r.errs, Error{
+		return []Error{{
 			Code:    CodeUnresolvableInterpolation,
 			Span:    p.Span,
 			Account: p.Account,
 			Message: "deferred cost cannot be interpolated: posting has zero units",
-		})
-		return
+		}}
 	}
 	candidate := *p
 	candidate.Cost = synthesizeCostSpec(p.Cost, res, txnDate)
-	if errs := book(p, &candidate, res.Currency); len(errs) > 0 {
-		r.errs = append(r.errs, errs...)
-	}
+	return book(p, &candidate, res.Currency)
 }
 
 // synthesizeCostSpec builds a parse-tier *ast.CostSpec carrying the

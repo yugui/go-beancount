@@ -316,6 +316,131 @@ func TestReducerWalk_AutoPostingZeroResidual(t *testing.T) {
 	}
 }
 
+// TestReducerWalk_AutoPostingZeroResidualDroppedFromTxnPostings
+// verifies that a Pass 2-unresolved free auto-posting is removed from
+// txn.Postings, not left dangling with a nil Amount. The booking-layer
+// CodeUnresolvableInterpolation diagnostic remains the sole record of
+// the failure; downstream validators see the transaction without the
+// auto-posting and have no nil-Amount posting to re-flag with
+// CodeAutoPostingUnresolved.
+func TestReducerWalk_AutoPostingZeroResidualDroppedFromTxnPostings(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	pos := mkAmountPtr(t, "100.00", "USD")
+	neg := mkAmountPtr(t, "-100.00", "USD")
+	txn := mkTxn(txnDate,
+		&ast.Posting{Account: "Assets:Cash", Amount: pos},
+		&ast.Posting{Account: "Expenses:Food", Amount: neg},
+		&ast.Posting{Account: "Equity:Plug"},
+	)
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:Food", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Plug", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	directives, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
+		return true
+	})
+	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	}
+
+	var bookedTxn *ast.Transaction
+	for _, d := range directives {
+		if tx, ok := d.(*ast.Transaction); ok && tx.Date.Equal(txnDate) {
+			bookedTxn = tx
+			break
+		}
+	}
+	if bookedTxn == nil {
+		t.Fatalf("booked transaction not found in Walk output")
+	}
+	if got := len(bookedTxn.Postings); got != 2 {
+		t.Fatalf("booked txn.Postings len = %d, want 2 (auto-posting dropped)", got)
+	}
+	for _, p := range bookedTxn.Postings {
+		if p.Account == "Equity:Plug" {
+			t.Errorf("Walk: auto-posting Equity:Plug survived; want dropped after Pass 2 failure")
+		}
+		if p.Amount == nil {
+			t.Errorf("Walk: posting %q has nil Amount after Pass 2; want every surviving posting to carry an Amount", p.Account)
+		}
+	}
+}
+
+// TestReducerWalk_AmbiguousCommittedGroup_DropsCurrencyGroup verifies
+// that when two deferred-cost unknowns share the same residual
+// currency, Pass 2 emits CodeUnresolvableInterpolation per unknown
+// AND drops the whole currency group from txn.Postings. Without the
+// drop, the unresolved nil-Cost postings reach the downstream
+// validators, which then re-flag them with CodeUnbalancedTransaction;
+// dropping the group is what suppresses that cascade.
+func TestReducerWalk_AmbiguousCommittedGroup_DropsCurrencyGroup(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	txn := mkTxn(txnDate,
+		// Two deferred-cost postings both pinned to weight currency JPY.
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "10", "A"),
+			Cost:    &ast.CostSpec{Currency: "JPY"},
+		},
+		&ast.Posting{
+			Account: "Assets:C",
+			Amount:  mkAmountPtr(t, "10", "C"),
+			Cost:    &ast.CostSpec{Currency: "JPY"},
+		},
+		// Cash leg in the same currency group.
+		&ast.Posting{Account: "Assets:Cash", Amount: mkAmountPtr(t, "-100", "JPY")},
+	)
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Assets:C", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+		txn,
+	)
+
+	r := NewReducer(ledger.All())
+	directives, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
+		return true
+	})
+	var ambiguous int
+	for _, e := range errs {
+		if e.Code == CodeUnresolvableInterpolation {
+			ambiguous++
+		} else {
+			t.Errorf("Walk: unexpected error code %v (%s)", e.Code, e.Message)
+		}
+	}
+	if ambiguous != 2 {
+		t.Errorf("Walk: ambiguous-unknown count = %d, want 2", ambiguous)
+	}
+
+	var bookedTxn *ast.Transaction
+	for _, d := range directives {
+		if tx, ok := d.(*ast.Transaction); ok && tx.Date.Equal(txnDate) {
+			bookedTxn = tx
+			break
+		}
+	}
+	if bookedTxn == nil {
+		t.Fatalf("Walk: booked transaction not found in output")
+	}
+	// The entire JPY group — both deferred unknowns and the cash leg —
+	// must be dropped. The rebuilt transaction is empty.
+	if got := len(bookedTxn.Postings); got != 0 {
+		t.Errorf("Walk: booked txn.Postings len = %d, want 0 (whole JPY group dropped)", got)
+		for _, p := range bookedTxn.Postings {
+			t.Logf("  surviving posting: %+v", p)
+		}
+	}
+}
+
 // TestReducerWalk_AutoPostingMultiCurrencyResidual ensures that an
 // auto-posting is rejected when the residual spans more than one
 // currency, because the inferred amount must settle exactly one

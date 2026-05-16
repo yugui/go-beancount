@@ -259,6 +259,53 @@ func TestLoad_StrictTotalCostReducingPostingMatchesByDerivedPerUnit(t *testing.T
 	}
 }
 
+// TestLoad_UnresolvableAutoPostingDoesNotCascade verifies that when
+// booking fails to resolve an auto-posting (e.g. an already-balanced
+// transaction with a redundant auto-posting), the booking-layer
+// CodeUnresolvableInterpolation diagnostic is the sole error: the
+// downstream pad / balance / validations passes see the transaction
+// without the unresolved posting and do not re-emit
+// CodeAutoPostingUnresolved.
+func TestLoad_UnresolvableAutoPostingDoesNotCascade(t *testing.T) {
+	const src = `1970-01-01 open Assets:Cash
+1970-01-01 open Expenses:Food
+1970-01-01 open Equity:Plug
+
+1970-02-01 * "txn"
+  Assets:Cash          100.00 USD
+  Expenses:Food       -100.00 USD
+  Equity:Plug
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	// Diagnostic codes are stable strings produced by inventory.Error
+	// (mapped in pkg/loader/booking) and pkg/validation; ast.Diagnostic
+	// carries them as plain strings rather than typed constants.
+	var unresolvable, autoUnresolved int
+	for _, d := range ledger.Diagnostics {
+		if d.Severity != ast.Error {
+			continue
+		}
+		switch d.Code {
+		case "unresolvable-interpolation":
+			unresolvable++
+		case "auto-posting-unresolved":
+			autoUnresolved++
+		default:
+			t.Errorf("loader.Load: unexpected diagnostic [%s] %s", d.Code, d.Message)
+		}
+	}
+	if unresolvable != 1 {
+		t.Errorf("loader.Load: unresolvable-interpolation count = %d, want 1", unresolvable)
+	}
+	if autoUnresolved != 0 {
+		t.Errorf("loader.Load: auto-posting-unresolved count = %d, want 0 (must not cascade)", autoUnresolved)
+	}
+}
+
 // TestLoad_OptionsParseErrorEmittedOnce verifies that a malformed option value
 // produces exactly one "invalid-option" diagnostic through the loader pipeline.
 func TestLoad_OptionsParseErrorEmittedOnce(t *testing.T) {
@@ -356,18 +403,16 @@ func TestLoad_CurrencyOnlyCostDistinctWeightCurrencyBalances(t *testing.T) {
 	}
 }
 
-// TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_EmitsValidatorDiagnostic
+// TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_DoesNotCascade
 // pins the end-to-end shape of the same-currency-committed ambiguity
-// case. Two deferred postings sharing `{ JPY }` are reported as
+// case. Two deferred postings sharing `{ JPY }` are each reported as
 // CodeUnresolvableInterpolation by the reducer (one diagnostic per
-// posting). The reducer deliberately does *not* drop the JPY group,
-// so the unresolved currency-only-CostSpec postings reach the
-// transaction-balance validator; PostingWeight's defensive guard
-// then fires and the validator emits an additional
-// CodeUnbalancedTransaction. This extra validator diagnostic is the
-// accepted shape, consistent with how the existing `{}` same-
-// currency-empty ambiguity case surfaces today.
-func TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_EmitsValidatorDiagnostic(t *testing.T) {
+// posting). The whole JPY group is then dropped — including the
+// successful Assets:Cash booking — so the transaction-balance
+// validator never sees a nil-Amount posting and emits no additional
+// CodeUnbalancedTransaction or CodeAutoPostingUnresolved diagnostic.
+// The booking-layer diagnostics are the sole record of the failure.
+func TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_DoesNotCascade(t *testing.T) {
 	const src = `1970-01-01 open Assets:A
 1970-01-01 open Assets:C
 1970-01-01 open Assets:Cash
@@ -382,7 +427,7 @@ func TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_EmitsValidatorDiagnos
 	if err != nil {
 		t.Fatalf("loader.Load: %v", err)
 	}
-	var ambiguous, unbalanced int
+	var ambiguous, unbalanced, autoUnresolved int
 	for _, d := range ledger.Diagnostics {
 		if d.Severity != ast.Error {
 			continue
@@ -395,11 +440,9 @@ func TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_EmitsValidatorDiagnos
 			}
 			ambiguous++
 		case "unbalanced-transaction":
-			if !strings.Contains(d.Message, "failed to compute posting weight") {
-				t.Errorf("CodeUnbalancedTransaction message = %q, want substring %q",
-					d.Message, "failed to compute posting weight")
-			}
 			unbalanced++
+		case "auto-posting-unresolved":
+			autoUnresolved++
 		default:
 			t.Errorf("unexpected diagnostic [%s] %s", d.Code, d.Message)
 		}
@@ -407,8 +450,11 @@ func TestLoad_AmbiguousMultipleDeferred_SameWeightCurrency_EmitsValidatorDiagnos
 	if ambiguous != 2 {
 		t.Errorf("CodeUnresolvableInterpolation count = %d, want 2", ambiguous)
 	}
-	if unbalanced != 1 {
-		t.Errorf("CodeUnbalancedTransaction count = %d, want 1", unbalanced)
+	if unbalanced != 0 {
+		t.Errorf("CodeUnbalancedTransaction count = %d, want 0 (must not cascade)", unbalanced)
+	}
+	if autoUnresolved != 0 {
+		t.Errorf("CodeAutoPostingUnresolved count = %d, want 0 (must not cascade)", autoUnresolved)
 	}
 }
 
