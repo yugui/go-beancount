@@ -690,6 +690,61 @@ by the option.
 Quality: if the printer's number formatter is shared across many
 paths, prefer the storage-only fallback over a broad refactor.
 
+### Detailed Design
+
+#### Contract
+
+**Adopted: full integration.** The comma-grouping mechanism is already complete throughout `pkg/format` and `pkg/printer` from a pre-existing commit: `formatopt.Options.CommaGrouping`, `formatopt.InsertCommas`/`StripCommas`, `format.WithCommaGrouping`, and consumer sites in both the formatter and the printer. Step 8's job is the option-to-knob plumbing.
+
+**Option registration** in `pkg/ast/optvalues.go::defaultRegistry`:
+- Key `"render_commas"`. Kind `KindBool`. Parser `parseBoolOption` (already accepts `"TRUE"`/`"true"`/`"FALSE"`/`"false"`). Default `false`.
+
+**Helper** in `pkg/ast` (mirroring `LedgerDisplayContext`):
+```go
+// LedgerRenderCommas reports whether numeric output for ledger should
+// include thousand-separator commas, as configured by option
+// "render_commas". Returns false when ledger is nil.
+func LedgerRenderCommas(ledger *Ledger) bool
+```
+
+Locked behavior:
+- `LedgerRenderCommas(nil)` → `false`.
+- Otherwise returns `ledger.Options.Bool("render_commas")`.
+
+**Formatter / printer surface change**: none. The existing `format.WithCommaGrouping(bool)` option provides the entire knob. Callers wire from a ledger via `format.WithCommaGrouping(ast.LedgerRenderCommas(ledger))`, symmetric with `format.WithDisplayContext(ast.LedgerDisplayContext(ledger))`.
+
+**Serializer**: the Step 2 generic serializer's `KindBool` branch handles `render_commas` automatically; only the golden envelope needs the new key.
+
+**Observable behavior**:
+- `option "render_commas" "TRUE"` + `1000.00 USD` → output `1,000.00 USD`.
+- `"FALSE"` or unset → output `1000.00 USD` (existing default).
+- Negative numbers, decimal-only, integer-only, and cost amounts all follow `formatopt.InsertCommas`'s established behavior — Step 8 introduces no new formatting code.
+
+**Out-of-scope (locked exclusions)**:
+- No production wiring into a CLI/loader call site. `LedgerRenderCommas` is the canonical entry point, mirroring the Step 4 precedent where `LedgerDisplayContext` has no production caller today either.
+- No re-baselining of existing goldens (default false preserves byte-identical output).
+
+#### Suggested Internals
+
+- **Helper placement**: `pkg/ast/precision_profile.go` (alongside `LedgerDisplayContext`) or a new `pkg/ast/render_commas.go`. Either is fine.
+- **Tests**:
+  - `pkg/ast/optvalues_test.go`: assert default `false`; test setting `"TRUE"` and `"true"` (case insensitivity); test reject of non-boolean values.
+  - `pkg/ast/precision_profile_test.go` (or sibling): `TestLedgerRenderCommas` covering nil-ledger, unset, `TRUE`, `FALSE`.
+  - `pkg/format/format_render_commas_test.go` (or extend `format_test.go`): end-to-end golden showing `option "render_commas" "TRUE"` produces commas via `WithCommaGrouping(LedgerRenderCommas(ledger))`. Control: no option → no commas.
+  - Optional parallel printer test.
+  - `pkg/compat/beancompat/serialize_test.go::default_options_envelope`: add `"render_commas":false` in alphabetical position.
+
+#### Alternatives discussed
+
+1. **Storage-only fallback** — rejected; the mechanical foundation is complete and the helper is one line. Storage-only would be a silent no-op like Step 6 (d) rejected.
+2. **Production CLI wiring** — rejected; out of scope for fixture enablement, symmetric with Step 4's deferred wiring.
+3. **Auto-apply inside formatter** without explicit `WithCommaGrouping` call — rejected; would invert package dependency (formatter would import `ast`).
+4. **Separate `RenderCommas` field on `formatopt.Options`** parallel to `CommaGrouping` — rejected; same semantic, different name; would split tests.
+
+#### Recommendation + rationale
+
+Adopt full integration. Total diff: ~6 lines source + ~30 lines test, zero risk to existing fixtures because `CommaGrouping` defaults to `false`. The helper-only wiring (no production call site) mirrors Step 4's `LedgerDisplayContext`; both helpers will receive production wiring together when a future commit introduces a ledger-aware CLI integration.
+
 ### Step 9 — Denylist removal + arch-doc update
 
 **Files:** `pkg/compat/beancompat/denylist.go`,
