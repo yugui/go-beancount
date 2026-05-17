@@ -449,7 +449,7 @@ func (f *formatter) quantizeAmountNode(amtNode *syntax.Node) {
 	}
 	for tok := range amtNode.Tokens() {
 		if tok.Kind == syntax.NUMBER {
-			tok.Raw = Quantize(tok.Raw, digits)
+			tok.Raw = quantize(tok.Raw, digits)
 		}
 	}
 }

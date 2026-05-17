@@ -175,9 +175,9 @@ func (p *printer) printCommodity(c *ast.Commodity) {
 }
 
 func (p *printer) printBalance(b *ast.Balance) {
-	p.printf("%s balance %s %s", b.Date.Format("2006-01-02"), b.Account, p.formatDecimal(&b.Amount.Number))
+	p.printf("%s balance %s %s", b.Date.Format("2006-01-02"), b.Account, p.formatDisplayNumber(&b.Amount.Number, b.Amount.Currency))
 	if b.Tolerance != nil {
-		p.printf(" ~ %s", p.formatDecimal(b.Tolerance))
+		p.printf(" ~ %s", p.formatDisplayNumber(b.Tolerance, b.Amount.Currency))
 	}
 	p.printf(" %s\n", b.Amount.Currency)
 	p.printMetadata(b.Meta, p.indent())
@@ -223,7 +223,7 @@ func (p *printer) printQuery(q *ast.Query) {
 }
 
 func (p *printer) printPrice(pr *ast.Price) {
-	p.printf("%s price %s %s\n", pr.Date.Format("2006-01-02"), pr.Commodity, p.formatAmount(pr.Amount))
+	p.printf("%s price %s %s\n", pr.Date.Format("2006-01-02"), pr.Commodity, p.formatDisplayAmount(pr.Amount))
 	p.printMetadata(pr.Meta, p.indent())
 }
 
@@ -279,7 +279,7 @@ func (p *printer) printPosting(posting ast.Posting, txn *ast.Transaction) {
 
 	// Build the amount + cost + price suffix.
 	var suffix strings.Builder
-	suffix.WriteString(p.formatAmount(*posting.Amount))
+	suffix.WriteString(p.formatDisplayAmount(*posting.Amount))
 	if posting.Cost != nil {
 		suffix.WriteByte(' ')
 		suffix.WriteString(p.formatCostHolder(posting.Cost))
@@ -294,7 +294,7 @@ func (p *printer) printPosting(posting ast.Posting, txn *ast.Transaction) {
 		prefixWidth := formatopt.StringWidth(prefix.String(), p.opts.EastAsianAmbiguousWidth)
 		// The "amount text" for alignment is just "number currency" (the direct amount),
 		// not the cost/price suffixes.
-		amtText := p.formatAmount(*posting.Amount)
+		amtText := p.formatDisplayAmount(*posting.Amount)
 		amtWidth := formatopt.StringWidth(amtText, p.opts.EastAsianAmbiguousWidth)
 
 		totalUsed := prefixWidth + amtWidth
@@ -316,7 +316,7 @@ func (p *printer) printPosting(posting ast.Posting, txn *ast.Transaction) {
 }
 
 func (p *printer) printAmount(a ast.Amount) {
-	p.write(p.formatAmount(a))
+	p.write(p.formatDisplayAmount(a))
 }
 
 func (p *printer) formatAmount(a ast.Amount) string {
@@ -325,6 +325,30 @@ func (p *printer) formatAmount(a ast.Amount) string {
 }
 
 func (p *printer) formatDecimal(d *apd.Decimal) string {
+	s := d.Text('f')
+	if p.opts.CommaGrouping {
+		s = formatopt.InsertCommas(s)
+	}
+	return s
+}
+
+// formatDisplayAmount renders a, applying DisplayContext quantization when
+// configured. Used at the positions PrecisionProfile observes: posting
+// amounts, balance amounts, and price directive amounts. Cost amounts,
+// posting price annotations, and metadata values use the plain formatAmount.
+func (p *printer) formatDisplayAmount(a ast.Amount) string {
+	return p.formatDisplayNumber(&a.Number, a.Currency) + " " + a.Currency
+}
+
+// formatDisplayNumber renders d as text, quantizing to the precision
+// DisplayContext reports for currency when one is configured. Falls back to
+// plain decimal rendering when no precision is known.
+func (p *printer) formatDisplayNumber(d *apd.Decimal, currency string) string {
+	if p.opts.DisplayContext != nil {
+		if digits, ok := p.opts.DisplayContext.Precision(currency); ok {
+			d = format.QuantizeDecimal(d, digits)
+		}
+	}
 	s := d.Text('f')
 	if p.opts.CommaGrouping {
 		s = formatopt.InsertCommas(s)

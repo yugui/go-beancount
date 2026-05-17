@@ -249,6 +249,32 @@ for — silently truncating, for example, a `0.0001 BTC` price annotation to
 `0.00`. Symmetry is what keeps the formatter and the observation pipeline
 honest.
 
+## Printer integration
+
+`pkg/printer` is the AST-side renderer (sibling to `pkg/format`, which walks
+the CST). It accepts the same `format.Option` set, including
+`WithDisplayContext`, and applies the same symmetry invariant — but at AST
+positions rather than CST node kinds:
+
+| AST position | Quantize? |
+|---|:---:|
+| `Transaction.Postings[i].Amount` (posting amount) | Yes |
+| `Balance.Amount` and `Balance.Tolerance` (sharing the balance amount's currency) | Yes |
+| `Price.Amount` (price directive) | Yes |
+| Top-level `ast.Amount` passed to `Fprint` | Yes |
+| `Posting.Price.Amount` (posting price annotation) | No |
+| `CostSpec.PerUnit` / `Total` (cost basis) | No |
+| `MetaValue.Amount` and `MetaValue.Number` (metadata) | No |
+
+Implementation note: the printer keeps the plain `formatAmount` /
+`formatDecimal` helpers for the unquantized positions and routes the
+quantize-eligible positions through `formatDisplayAmount` /
+`formatDisplayNumber`. The split is structural rather than parametric so
+each call site declares which path it wants without a boolean argument.
+
+The same `format.Quantize` helper backs both renderers, so they cannot
+disagree about half-even rounding for the same input.
+
 ## Beancompat serializer
 
 `pkg/compat/beancompat` emits `display_precision_by_currency` as a derived

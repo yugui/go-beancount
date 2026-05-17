@@ -1,9 +1,9 @@
-package format_test
+package format
 
 import (
 	"testing"
 
-	"github.com/yugui/go-beancount/pkg/format"
+	"github.com/cockroachdb/apd/v3"
 )
 
 func TestQuantize(t *testing.T) {
@@ -26,9 +26,37 @@ func TestQuantize(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := format.Quantize(tt.in, tt.digits)
+			got := quantize(tt.in, tt.digits)
 			if got != tt.want {
-				t.Errorf("Quantize(%q, %d) = %q, want %q", tt.in, tt.digits, got, tt.want)
+				t.Errorf("quantize(%q, %d) = %q, want %q", tt.in, tt.digits, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestQuantizeDecimal(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     string
+		digits int
+		want   string
+	}{
+		{"pad zeros", "50", 2, "50.00"},
+		{"half-even rounds down", "1.125", 2, "1.12"},
+		{"half-even rounds up", "1.135", 2, "1.14"},
+		{"negative", "-1.125", 2, "-1.12"},
+		{"zero dp rounds", "1000.7", 0, "1001"},
+		{"negative digits pass-through", "1.5", -1, "1.5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var d apd.Decimal
+			if _, _, err := apd.BaseContext.SetString(&d, tt.in); err != nil {
+				t.Fatalf("SetString(%q): %v", tt.in, err)
+			}
+			got := QuantizeDecimal(&d, tt.digits).Text('f')
+			if got != tt.want {
+				t.Errorf("QuantizeDecimal(%q, %d).Text('f') = %q, want %q", tt.in, tt.digits, got, tt.want)
 			}
 		})
 	}
