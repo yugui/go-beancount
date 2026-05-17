@@ -10,10 +10,7 @@ go_library(
     ],
     importpath = "github.com/yugui/go-beancount/internal/formatopt",
     visibility = ["//:__subpackages__"],
-    deps = [
-        "@com_github_cockroachdb_apd_v3//:apd",
-        "@com_github_mattn_go_runewidth//:go-runewidth",
-    ],
+    deps = ["@com_github_mattn_go_runewidth//:go-runewidth"],
 )
 
 go_test(
