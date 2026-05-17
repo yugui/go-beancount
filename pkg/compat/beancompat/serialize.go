@@ -79,10 +79,11 @@ func serialize(ledger *ast.Ledger) (Result, error) {
 		Errors:     []string{},
 		Directives: make([]Directive, 0, ledger.Len()),
 	}
-	// Result.Options is intentionally left unset (nil) here. Once the AST
-	// gains an options-retention mechanism, a separate plan (Plan A) will
-	// introduce options serialization. Until then, fixtures that require
-	// options (display_precision_by_currency, etc.) will not match.
+	opts, err := serializeOptions(ledger)
+	if err != nil {
+		return Result{}, err
+	}
+	out.Options = opts
 	for _, diag := range ledger.Diagnostics {
 		if diag.Severity == ast.Error {
 			out.Errors = append(out.Errors, diag.Message)
@@ -103,6 +104,31 @@ func serialize(ledger *ast.Ledger) (Result, error) {
 		out.Directives = append(out.Directives, dir)
 	}
 	return out, nil
+}
+
+// serializeOptions builds the beancompat Result.Options envelope for ledger.
+// Returns (nil, nil) when there are no options to emit; the omitempty tag on
+// Result.Options then drops the envelope from the JSON output entirely.
+func serializeOptions(ledger *ast.Ledger) (json.RawMessage, error) {
+	if ledger.PrecisionProfile == nil {
+		return nil, nil
+	}
+	currencies := ledger.PrecisionProfile.Currencies()
+	if len(currencies) == 0 {
+		return nil, nil
+	}
+	inner := make(map[string]any, len(currencies))
+	for _, ccy := range currencies {
+		prec, _ := ledger.PrecisionProfile.Precision(ccy)
+		inner[ccy] = prec
+	}
+	innerRaw, err := marshalSortedObject(currencies, inner)
+	if err != nil {
+		return nil, err
+	}
+	outerKeys := []string{"display_precision_by_currency"}
+	outerValues := map[string]any{"display_precision_by_currency": json.RawMessage(innerRaw)}
+	return marshalSortedObject(outerKeys, outerValues)
 }
 
 // serializeDirective dispatches on the directive's concrete Go type and

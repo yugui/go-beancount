@@ -64,8 +64,9 @@ class ConfTestSmokeTest(unittest.TestCase):
             )
 
     def test_denylist_initial_entries(self):
-        """Sanity check on the migration: the two parse-tier options-envelope
-        divergences that the Go-side denylist also lists must be present.
+        """Sanity check on the migration: the remaining parse-tier
+        options-envelope divergence that the Go-side denylist also lists must
+        be present.
 
         Catches a typo in the rename from accidentally passing the suite.
         Once the underlying serializer gap is fixed and the Go-side entries
@@ -73,7 +74,7 @@ class ConfTestSmokeTest(unittest.TestCase):
         """
         from denylist import DENIED_FIXTURES
 
-        self.assertIn("parse/display_precision_by_currency.json", DENIED_FIXTURES)
+        self.assertNotIn("parse/display_precision_by_currency.json", DENIED_FIXTURES)
         self.assertIn("parse/options_coverage.json", DENIED_FIXTURES)
 
 

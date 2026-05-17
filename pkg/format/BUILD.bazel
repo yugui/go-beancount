@@ -5,12 +5,14 @@ go_library(
     srcs = [
         "format.go",
         "option.go",
+        "quantize.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/format",
     visibility = ["//visibility:public"],
     deps = [
         "//internal/formatopt",
         "//pkg/syntax",
+        "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )
 
@@ -19,9 +21,11 @@ go_test(
     srcs = [
         "consistency_test.go",
         "diff_test.go",
+        "format_displaycontext_test.go",
         "format_integration_test.go",
         "format_test.go",
         "option_test.go",
+        "quantize_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":format"],
@@ -30,6 +34,7 @@ go_test(
         "//pkg/ast",
         "//pkg/printer",
         "//pkg/syntax",
+        "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_google_go_cmp//cmp",
     ],
 )

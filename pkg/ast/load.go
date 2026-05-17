@@ -77,6 +77,7 @@ func (ld *loader) finish() *Ledger {
 	opts, diags := ParseOptions(ledger)
 	ledger.Options = opts
 	ledger.Diagnostics = append(ledger.Diagnostics, diags...)
+	ledger.PrecisionProfile = observeLedger(ledger)
 	return ledger
 }
 

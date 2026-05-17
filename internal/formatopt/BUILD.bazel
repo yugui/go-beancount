@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "formatopt",
     srcs = [
+        "display_context.go",
         "number.go",
         "options.go",
         "width.go",

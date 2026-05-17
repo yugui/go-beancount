@@ -15,7 +15,10 @@ go_library(
 
 go_test(
     name = "printer_test",
-    srcs = ["printer_test.go"],
+    srcs = [
+        "printer_displaycontext_test.go",
+        "printer_test.go",
+    ],
     deps = [
         ":printer",
         "//pkg/ast",

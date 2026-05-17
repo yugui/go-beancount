@@ -190,6 +190,8 @@ func (f *formatter) formatDirective(node *syntax.Node) {
 		return
 	}
 
+	f.applyDisplayContext(node)
+
 	// Apply comma grouping before alignment so that the alignment pass
 	// measures the final NUMBER token width.
 	f.formatCommaGrouping(node)
@@ -416,6 +418,40 @@ func (f *formatter) amountDisplayWidth(amtNode *syntax.Node) int {
 		}
 	}
 	return w
+}
+
+// applyDisplayContext quantizes AmountNode/BalanceAmountNode NUMBER tokens; skips PriceAnnotNode/CostSpecNode.
+func (f *formatter) applyDisplayContext(node *syntax.Node) {
+	if f.opts.DisplayContext == nil {
+		return
+	}
+	for _, c := range node.Children {
+		if c.Node == nil {
+			continue
+		}
+		switch c.Node.Kind {
+		case syntax.PostingNode:
+			f.applyDisplayContext(c.Node)
+		case syntax.AmountNode, syntax.BalanceAmountNode:
+			f.quantizeAmountNode(c.Node)
+		}
+	}
+}
+
+func (f *formatter) quantizeAmountNode(amtNode *syntax.Node) {
+	currTok := amtNode.FindToken(syntax.CURRENCY)
+	if currTok == nil {
+		return
+	}
+	digits, ok := f.opts.DisplayContext.Precision(currTok.Raw)
+	if !ok {
+		return
+	}
+	for tok := range amtNode.Tokens() {
+		if tok.Kind == syntax.NUMBER {
+			tok.Raw = quantize(tok.Raw, digits)
+		}
+	}
 }
 
 // formatCommaGrouping rewrites NUMBER token text to insert thousand-separator
