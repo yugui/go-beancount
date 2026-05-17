@@ -7,41 +7,28 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
-// PostingWeight computes the signed weight contributed by a posting to the
-// transaction's currency sums.
-//
-// An auto-posting (p.Amount == nil) returns (nil, nil); callers that
-// need to infer the missing amount should perform their own balancing.
+// PostingWeight computes the signed weight a posting contributes to
+// the transaction's currency sums. An auto-posting (p.Amount == nil)
+// returns (nil, nil).
 //
 // Precedence (matching upstream Beancount's Balancing Postings rule):
 //
-//   - p.Cost != nil: the cost spec defines the weight via
-//     [(*ast.Posting).TotalCost], handling `{X CUR}`, `{{T CUR}}`, and
-//     the combined `{X # T CUR}` forms uniformly. When both a cost and
-//     a price annotation are present (e.g.
-//     `-10 IVV {183.07 USD} @ 197.90 USD`), upstream's documented
-//     contract is that **the cost defines the balancing weight** and
-//     the price is used only to insert an entry into the prices
-//     database; the realized gain or loss must be recorded explicitly
-//     by another posting in the same transaction.
-//   - p.Price != nil (and no cost): the price annotation defines the
-//     weight (per-unit `@P` -> units * P, total `@@P` -> sign(units) *
-//     |P|), in the price currency. This is the FX-style conversion
-//     case where the cost basis is not tracked at lot granularity.
-//   - otherwise: the posting carries plain units in their commodity
-//     currency.
-//
-// Booking has already filled the cost spec with a concrete number (or
-// synthesized one — see Reducer's deferred-cost and reduction-Total
-// passes) by the time PostingWeight runs as part of validation, so the
-// "Cost present but TotalCost returns nil" branch is unreachable in
-// practice. As a defensive measure the implementation falls through to
-// Price (and then to plain units) if it ever does happen.
+//   - p.Cost with a number: weight is [(*ast.Posting).TotalCost] in
+//     the cost currency, covering `{X CUR}`, `{{T CUR}}`, and the
+//     combined `{X # T CUR}` forms. When a price annotation is also
+//     present the cost still defines the weight; the price is only
+//     consulted by downstream consumers (prices database, realized-
+//     gain bookkeeping).
+//   - p.Cost present but unresolved (unbooked spec with a currency
+//     and no number): returns an error — the reducer must resolve
+//     the cost before weighing.
+//   - p.Price (and no cost): per-unit `@P` → units * P, total `@@P`
+//     → sign(units) * |P|, in the price currency.
+//   - otherwise: plain units in their commodity currency.
 //
 // The returned *ast.Amount is freshly allocated and its Number does
-// not alias any AST field, so callers may mutate it in place (e.g. to
-// negate it when computing an auto-posting residual) without
-// corrupting the source AST.
+// not alias any AST field, so callers may mutate it in place (e.g.
+// to negate it when computing an auto-posting residual).
 func PostingWeight(p *ast.Posting) (*ast.Amount, error) {
 	if p.Amount == nil {
 		return nil, nil
@@ -72,14 +59,11 @@ func PostingWeight(p *ast.Posting) (*ast.Amount, error) {
 		}
 		return &ast.Amount{Number: *out, Currency: p.Price.Amount.Currency}, nil
 	}
-	// Plain amount: copy the posting's units so the caller may mutate
-	// without disturbing the AST.
 	return &ast.Amount{Number: *ast.CloneDecimal(&p.Amount.Number), Currency: p.Amount.Currency}, nil
 }
 
-// signedAbs returns sign(units) * |val| as a freshly allocated decimal,
-// used for the total-price (`@@`) branch of PostingWeight. The cost-side
-// equivalent lives in package ast as part of (*Posting).TotalCost.
+// signedAbs returns sign(units) * |val| as a freshly allocated
+// decimal, used for the total-price (`@@`) branch of PostingWeight.
 func signedAbs(units, val *apd.Decimal) (*apd.Decimal, error) {
 	abs := new(apd.Decimal)
 	if _, err := apd.BaseContext.Abs(abs, val); err != nil {
