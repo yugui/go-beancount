@@ -357,6 +357,94 @@ formatter golden showing override changes USD rendering.
 Quality: respect the option-vs-derived-view split documented in the
 arch-doc. No collapse of the two surfaces into one.
 
+### Detailed Design
+
+#### Contract
+
+**Option registration** (in `pkg/ast/optvalues.go::defaultRegistry`):
+- Key: `"display_precision"`. Kind: `KindIntMap`. Parser: `parseDisplayPrecisionEntry`. Default: `map[string]int(nil)`.
+
+**Parser `parseDisplayPrecisionEntry`** signature `func(raw string) (any, error)`:
+1. Split on first `:` via `splitMapEntry`. Missing separator or empty sub-key → error.
+2. Parse value half with `apd.BaseContext.NewFromString` after `TrimSpace`. On apd error → wrap.
+3. Reject NaN, Infinity, negative, **zero** values with a clear message.
+4. Compute digit count as `max(0, -int(d.Exponent))`.
+
+Locked edge cases:
+
+| Input | Result |
+|---|---|
+| `"USD:0.01"` | `("USD", 2)` |
+| `"USD:1"` | `("USD", 0)` |
+| `"USD:0.0005"` | `("USD", 4)` |
+| `"USD:1.5"` | `("USD", 1)` |
+| `"USD:1E-3"` | `("USD", 3)` |
+| `"USD:1.50"` | `("USD", 2)` |
+| `"USD:0"` | error (degenerate) |
+| `"USD:-0.01"` | error |
+| `"USD:NaN"` / `"USD:Inf"` | error |
+| `"USD"` / `":0.01"` | error |
+| `"  USD : 0.01  "` | `("USD", 2)` (trimmed) |
+
+**Wrapper type** in `pkg/ast/precision_profile.go`:
+```go
+// DisplayPrecisionContext combines an inferred *PrecisionProfile with
+// per-currency overrides from option "display_precision".
+type DisplayPrecisionContext struct {
+    Profile   *PrecisionProfile
+    Overrides map[string]int
+}
+
+func (c *DisplayPrecisionContext) Precision(currency string) (int, bool)
+```
+
+`Precision` returns the override entry when present, otherwise delegates to `Profile.Precision`. Nil-safe on a nil receiver. The zero value is usable.
+
+**Constructor** in `pkg/ast/precision_profile.go`:
+```go
+// LedgerDisplayContext returns a DisplayContext combining the ledger's
+// observed PrecisionProfile with overrides from option "display_precision".
+// When overrides are empty, returns ledger.PrecisionProfile typed as the
+// interface (no wrapper allocation; byte-identical formatter behavior in
+// the no-option case). Nil ledger returns nil.
+func LedgerDisplayContext(ledger *Ledger) interface {
+    Precision(currency string) (int, bool)
+}
+```
+
+Locked behavior:
+- `LedgerDisplayContext(nil)` → nil interface.
+- Empty overrides → returns `ledger.PrecisionProfile` as the interface; no wrapper allocation.
+- Non-empty overrides → `*DisplayPrecisionContext{Profile: ledger.PrecisionProfile, Overrides: ledger.Options.IntMap("display_precision")}`. The `IntMap` returns a fresh copy, safe to retain.
+
+**Serializer** in `pkg/compat/beancompat`: NO change. Step 2's generic `KindIntMap` dispatch already handles it. `display_precision_by_currency` continues to flow from `PrecisionProfile` independently.
+
+**Wiring location**: There are no production callers of `format.WithDisplayContext` today (only test files). Step 4 does NOT modify existing call sites. `LedgerDisplayContext` is the canonical entry point for any future internal caller (CLI, etc.). The arch-doc records this as the implemented "Option-driven override" wiring.
+
+#### Suggested Internals
+
+- **Parser decomposition**: a small helper `digitsFromDecimal(d *apd.Decimal) (int, error)` for the NaN/Inf/negative/zero rejection plus the `max(0, -int(d.Exponent))` clamp. Inline if it feels like overkill for one site.
+- **Wrapper internal layout**: flat struct with exported fields documented as "read-only after construction." Alternative (unexported fields + explicit constructor) closes mutation but adds ceremony without real safety win.
+- **Identity short-circuit**: in `LedgerDisplayContext`, check `len(overrides) == 0` after `IntMap()`; if zero, return bare profile typed as interface. Preserves identity-equality for the no-option path.
+- **Wrapper location**: `pkg/ast/precision_profile.go` keeps override + bookkeeping bookended in one file.
+- **Tests**:
+  - `optvalues_test.go`: parser edge-case table (all 12 rows above), plus accumulation test (two directives, two currencies).
+  - `precision_profile_test.go`: `TestDisplayPrecisionContext` covering override-hit, miss-delegates, nil-profile, nil-receiver, empty-overrides-returns-bare-profile.
+  - `pkg/format/format_displaycontext_test.go`: end-to-end golden with `option "display_precision" "USD:0.01"`.
+  - `pkg/printer/printer_displaycontext_test.go`: parallel test for AST printer.
+- **Documentation**: update `docs/architecture/display-precision.md` §"Option-driven override" to record this as implemented and name `DisplayPrecisionContext` / `LedgerDisplayContext`.
+
+#### Alternatives discussed
+
+1. **Parser semantics**: regex on textual form (rejected: duplicates decimal parsing, mishandles scientific notation), accept zero as 0 (rejected: zero is not a precision *example*; better to surface as typo).
+2. **Wrapper shape**: constructor returning interface (rejected: hides type unnecessarily, tests can't reach fields), inline glue without exported type (rejected: future callers re-implement). **Adopted: exported struct + helper constructor.**
+3. **Wiring location**: per-callsite wrap (rejected: silent future bypass), centralize in `ast.Ledger.DisplayContext()` (rejected: inverts package dependency — formatter would need to import `ast`). **Adopted: `LedgerDisplayContext` helper in `pkg/ast`** — data and constructor co-located, interface-only coupling preserved.
+4. **Plan's "single construction site" phrasing**: that site does not exist in production code; this step provides the canonical helper instead of modifying nonexistent wiring. The arch-doc is updated accordingly.
+
+#### Recommendation + rationale
+
+Register `display_precision` as `KindIntMap` with `parseDisplayPrecisionEntry`; export `DisplayPrecisionContext` struct in `pkg/ast/precision_profile.go`; provide `LedgerDisplayContext` as the canonical wiring helper. The identity short-circuit preserves byte-identical output for current consumers (no re-golden needed). The option-vs-derived-view split is honored at every surface. The parser's zero-rejection is the only contentious call; it costs the user nothing (write `"USD:1"` to mean zero fractional digits) and catches a class of typo.
+
 ### Step 5 — `inferred_tolerance_default` + validation integration
 
 **Files:** `pkg/ast/optvalues.go`, `pkg/validation/internal/tolerance/...`,
