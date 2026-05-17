@@ -119,7 +119,7 @@ func serializeOptions(ledger *ast.Ledger) (json.RawMessage, error) {
 	}
 	inner := make(map[string]any, len(currencies))
 	for _, ccy := range currencies {
-		prec, _ := ledger.PrecisionProfile.MostCommon(ccy)
+		prec, _ := ledger.PrecisionProfile.Precision(ccy)
 		inner[ccy] = prec
 	}
 	innerRaw, err := marshalSortedObject(currencies, inner)

@@ -443,7 +443,7 @@ func (f *formatter) quantizeAmountNode(amtNode *syntax.Node) {
 	if currTok == nil {
 		return
 	}
-	digits, ok := f.opts.DisplayContext.MostCommon(currTok.Raw)
+	digits, ok := f.opts.DisplayContext.Precision(currTok.Raw)
 	if !ok {
 		return
 	}

@@ -17,24 +17,24 @@ func mustLoad(t *testing.T, src string) *ast.Ledger {
 	return ledger
 }
 
-// checkMostCommon fails the test if MostCommon does not return (wantPrec, true).
-func checkMostCommon(t *testing.T, p *ast.PrecisionProfile, currency string, wantPrec int) {
+// checkPrecision fails the test if Precision does not return (wantPrec, true).
+func checkPrecision(t *testing.T, p *ast.PrecisionProfile, currency string, wantPrec int) {
 	t.Helper()
-	prec, ok := p.MostCommon(currency)
+	prec, ok := p.Precision(currency)
 	if !ok {
-		t.Errorf("MostCommon(%q): ok = false, want true", currency)
+		t.Errorf("Precision(%q): ok = false, want true", currency)
 		return
 	}
 	if prec != wantPrec {
-		t.Errorf("MostCommon(%q) = %d, want %d", currency, prec, wantPrec)
+		t.Errorf("Precision(%q) = %d, want %d", currency, prec, wantPrec)
 	}
 }
 
-// checkNotObserved fails the test if MostCommon returns ok=true.
+// checkNotObserved fails the test if Precision returns ok=true.
 func checkNotObserved(t *testing.T, p *ast.PrecisionProfile, currency string) {
 	t.Helper()
-	if _, ok := p.MostCommon(currency); ok {
-		t.Errorf("MostCommon(%q): ok = true, want false (should be unobserved)", currency)
+	if _, ok := p.Precision(currency); ok {
+		t.Errorf("Precision(%q): ok = true, want false (should be unobserved)", currency)
 	}
 }
 
@@ -52,13 +52,13 @@ func TestPrecisionProfileLoad_TransactionPostings(t *testing.T) {
 	if p == nil {
 		t.Fatal("PrecisionProfile is nil after Load")
 	}
-	checkMostCommon(t, p, "USD", 2)
-	checkMostCommon(t, p, "JPY", 0)
+	checkPrecision(t, p, "USD", 2)
+	checkPrecision(t, p, "JPY", 0)
 }
 
 func TestPrecisionProfileLoad_BalanceDirective(t *testing.T) {
 	// The balance directive at 3dp should combine with the transaction at 2dp.
-	// MostCommon picks 2dp because it appears more often.
+	// Precision picks 2dp because it appears more often.
 	src := `
 2024-01-01 open Assets:Bank USD
 
@@ -73,7 +73,7 @@ func TestPrecisionProfileLoad_BalanceDirective(t *testing.T) {
 	if p == nil {
 		t.Fatal("PrecisionProfile is nil after Load")
 	}
-	checkMostCommon(t, p, "USD", 2)
+	checkPrecision(t, p, "USD", 2)
 }
 
 func TestPrecisionProfileLoad_PriceDirective(t *testing.T) {
@@ -85,7 +85,7 @@ func TestPrecisionProfileLoad_PriceDirective(t *testing.T) {
 	if p == nil {
 		t.Fatal("PrecisionProfile is nil after Load")
 	}
-	checkMostCommon(t, p, "USD", 4)
+	checkPrecision(t, p, "USD", 4)
 }
 
 func TestPrecisionProfileLoad_CostNotObserved(t *testing.T) {
@@ -105,7 +105,7 @@ func TestPrecisionProfileLoad_CostNotObserved(t *testing.T) {
 	if p == nil {
 		t.Fatal("PrecisionProfile is nil after Load")
 	}
-	checkMostCommon(t, p, "BTC", 0)
+	checkPrecision(t, p, "BTC", 0)
 	checkNotObserved(t, p, "USD")
 }
 
@@ -126,7 +126,7 @@ func TestPrecisionProfileLoad_PostingPriceAnnotationNotObserved(t *testing.T) {
 		t.Fatal("PrecisionProfile is nil after Load")
 	}
 	// USD at 2dp is observed from the posting amount.
-	checkMostCommon(t, p, "USD", 2)
+	checkPrecision(t, p, "USD", 2)
 	// JPY from the price annotation must not be observed.
 	checkNotObserved(t, p, "JPY")
 }

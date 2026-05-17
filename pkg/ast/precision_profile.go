@@ -34,10 +34,11 @@ func (p *PrecisionProfile) Update(d *apd.Decimal, currency string) {
 	p.counts[currency][prec]++
 }
 
-// MostCommon returns the most-frequent fractional-digit count for currency and
-// ok=true. Returns (0, false) when currency has no observations. On a tie in
-// frequency, the highest precision wins.
-func (p *PrecisionProfile) MostCommon(currency string) (int, bool) {
+// Precision returns the display precision (fractional-digit count) for
+// currency and ok=true. The chosen precision is the one most frequently
+// observed; on a tie, the higher precision wins. Returns (0, false) when
+// currency has no observations.
+func (p *PrecisionProfile) Precision(currency string) (int, bool) {
 	if p == nil {
 		return 0, false
 	}

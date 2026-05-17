@@ -172,7 +172,7 @@ beancompat is the whole point.
 
 ### Tie-break
 
-`(*PrecisionProfile).MostCommon` ties on equal frequency by returning the
+`(*PrecisionProfile).Precision` ties on equal frequency by returning the
 **higher** precision. This deliberately tightens upstream's insertion-order
 tie-break: the higher-precision form is the one that does not silently
 truncate user-authored decimals when chosen.
@@ -185,7 +185,7 @@ truncate user-authored decimals when chosen.
 
 ```go
 type DisplayContext interface {
-    MostCommon(currency string) (int, bool)
+    Precision(currency string) (int, bool)
 }
 ```
 
@@ -280,7 +280,7 @@ any consumer-side changes. The new behaviour fits as a separate
 
 - Parse the option value into `map[string]int` (fractional-digit count
   derived from the example Decimal).
-- Wrap the underlying `PrecisionProfile` with a struct whose `MostCommon`
+- Wrap the underlying `PrecisionProfile` with a struct whose `Precision`
   returns the override when the currency is in the map and delegates to
   the wrapped profile otherwise.
 - Plumb the wrapped value into `formatopt.Options.DisplayContext` (already

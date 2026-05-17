@@ -8,7 +8,7 @@ import (
 // stubDC implements DisplayContext for tests.
 type stubDC map[string]int
 
-func (s stubDC) MostCommon(currency string) (int, bool) {
+func (s stubDC) Precision(currency string) (int, bool) {
 	n, ok := s[currency]
 	return n, ok
 }

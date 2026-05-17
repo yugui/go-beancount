@@ -15,7 +15,7 @@ type Options struct {
 	// but no new blank lines are created where none exist.
 	InsertBlankLinesBetweenDirectives bool
 	// DisplayContext, when non-nil, quantizes amount NUMBER tokens to the
-	// per-currency fractional-digit count reported by MostCommon.
+	// per-currency precision reported by Precision.
 	DisplayContext DisplayContext
 }
 

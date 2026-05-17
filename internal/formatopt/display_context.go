@@ -1,8 +1,9 @@
 package formatopt
 
-// DisplayContext provides per-currency display precision for the formatter.
-// MostCommon returns the most-common fractional-digit count for currency and
-// ok=true, or (0, false) when the currency is unknown or the context is absent.
+// DisplayContext supplies the display precision (fractional-digit count) a
+// formatter should use when rendering an amount in a given currency. Precision
+// returns (0, false) when the currency has no configured precision; callers
+// pass the number through unchanged in that case.
 type DisplayContext interface {
-	MostCommon(currency string) (int, bool)
+	Precision(currency string) (int, bool)
 }
