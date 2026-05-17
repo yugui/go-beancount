@@ -9,10 +9,10 @@ import (
 
 // forExponent returns the inferred tolerance for a value whose
 // least-significant digit sits at exponent e. The result is
-// `inferred_tolerance_multiplier × 10^e`; at the default multiplier 0.5
+// `tolerance_multiplier × 10^e`; at the default multiplier 0.5
 // this yields 0.005 for e=-2 and 0.5 for e=0.
 func forExponent(opts *ast.OptionValues, e int32) *apd.Decimal {
-	mult := opts.Decimal("inferred_tolerance_multiplier")
+	mult := opts.Decimal("tolerance_multiplier")
 	out := new(apd.Decimal)
 	out.Set(mult)
 	// Shift the exponent directly; no rounding or clamping is needed.
@@ -22,7 +22,7 @@ func forExponent(opts *ast.OptionValues, e int32) *apd.Decimal {
 
 // ForAmount returns the default Beancount tolerance for an amount based
 // on the precision of its least-significant digit and the ledger's
-// configured inferred_tolerance_multiplier.
+// configured tolerance_multiplier.
 func ForAmount(opts *ast.OptionValues, amount ast.Amount) *apd.Decimal {
 	return forExponent(opts, amount.Number.Exponent)
 }
@@ -30,14 +30,13 @@ func ForAmount(opts *ast.OptionValues, amount ast.Amount) *apd.Decimal {
 // ForBalanceAssertion returns the inferred tolerance for a Balance
 // directive's asserted amount, mirroring upstream beancount's
 // get_balance_tolerance (beancount/ops/balance.py). The tolerance is
-// 2 × inferred_tolerance_multiplier × 10^expo where expo is the
-// exponent of the assertion amount's least-significant digit.
-// Upstream applies the doubled factor specifically to balance
-// assertions because users hand-write the asserted amount and
-// rounding noise can exceed transaction-internal precision;
-// transaction-balancing tolerance computed from the same amount
-// remains the un-doubled inferred_tolerance_multiplier × 10^expo via
-// ForAmount.
+// 2 × tolerance_multiplier × 10^expo where expo is the exponent of
+// the assertion amount's least-significant digit. Upstream applies
+// the doubled factor specifically to balance assertions because
+// users hand-write the asserted amount and rounding noise can exceed
+// transaction-internal precision; transaction-balancing tolerance
+// computed from the same amount remains the un-doubled
+// tolerance_multiplier × 10^expo via ForAmount.
 func ForBalanceAssertion(opts *ast.OptionValues, amount ast.Amount) *apd.Decimal {
 	out := ForAmount(opts, amount)
 	// apd.Decimal stores sign separately and Coeff is a non-negative
@@ -50,10 +49,9 @@ func ForBalanceAssertion(opts *ast.OptionValues, amount ast.Amount) *apd.Decimal
 // Infer returns a per-currency residual tolerance map keyed by the
 // entries in residualCurrencies. For each such currency it computes
 // the units-based tolerance from posting precision scaled by the
-// inferred_tolerance_multiplier option. When the
-// infer_tolerance_from_cost option is enabled, cost-based
-// contributions are also included. See the package doc for the full
-// derivation.
+// tolerance_multiplier option. When the infer_tolerance_from_cost
+// option is enabled, cost-based contributions are also included.
+// See the package doc for the full derivation.
 func Infer(postings []ast.Posting, opts *ast.OptionValues, residualCurrencies []string) (map[string]*apd.Decimal, error) {
 	// Units-based tolerance per currency: multiplier × 10^maxExp where
 	// maxExp is the *largest* (least negative) exponent observed among

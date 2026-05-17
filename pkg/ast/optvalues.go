@@ -32,6 +32,9 @@ type spec struct {
 	kind         OptionKind
 	parse        func(raw string) (any, error)
 	defaultValue any
+	// aliasOf: writes redirect to the canonical key; reads return this
+	// spec's own registered default.
+	aliasOf string
 }
 
 // registry holds all known option specs keyed by option name.
@@ -46,6 +49,15 @@ func newRegistry() *registry {
 func (r *registry) register(s spec) error {
 	if _, ok := r.specs[s.key]; ok {
 		return fmt.Errorf("options: key %q is already registered", s.key)
+	}
+	if s.aliasOf != "" {
+		canonical, ok := r.specs[s.aliasOf]
+		if !ok {
+			return fmt.Errorf("spec %q aliases %q which is not registered", s.key, s.aliasOf)
+		}
+		if canonical.aliasOf != "" {
+			return fmt.Errorf("spec %q aliases %q which is itself an alias (chains are forbidden)", s.key, s.aliasOf)
+		}
 	}
 	r.specs[s.key] = s
 	return nil
@@ -83,10 +95,17 @@ type mapEntry[V any] struct {
 // set silently ignores unknown keys; unknown is not an error.
 // KindStringList items accumulate; KindDecimalMap and KindIntMap merge per
 // sub-key (last-write-wins); scalar values use last-write-wins.
+// Writes to a deprecated alias key are redirected to the canonical key's
+// storage slot; the deprecated slot is never written to. Mirrors
+// upstream beancount's grammar.py:393-396 write redirect.
 func (v *OptionValues) set(key, raw string) error {
 	s, ok := v.reg.specs[key]
 	if !ok {
 		return nil
+	}
+	target := key
+	if s.aliasOf != "" {
+		target = s.aliasOf
 	}
 	parsed, err := s.parse(raw)
 	if err != nil {
@@ -98,32 +117,32 @@ func (v *OptionValues) set(key, raw string) error {
 		if !ok {
 			return fmt.Errorf("string list parser returned %T, want string", parsed)
 		}
-		existing, _ := v.values[key].([]string)
-		v.values[key] = append(existing, str)
+		existing, _ := v.values[target].([]string)
+		v.values[target] = append(existing, str)
 	case KindDecimalMap:
 		entry, ok := parsed.(mapEntry[*apd.Decimal])
 		if !ok {
 			return fmt.Errorf("decimal-map parser returned %T, want mapEntry[*apd.Decimal]", parsed)
 		}
-		m, _ := v.values[key].(map[string]*apd.Decimal)
+		m, _ := v.values[target].(map[string]*apd.Decimal)
 		if m == nil {
 			m = make(map[string]*apd.Decimal)
 		}
 		m[entry.subKey] = entry.value
-		v.values[key] = m
+		v.values[target] = m
 	case KindIntMap:
 		entry, ok := parsed.(mapEntry[int])
 		if !ok {
 			return fmt.Errorf("int-map parser returned %T, want mapEntry[int]", parsed)
 		}
-		m, _ := v.values[key].(map[string]int)
+		m, _ := v.values[target].(map[string]int)
 		if m == nil {
 			m = make(map[string]int)
 		}
 		m[entry.subKey] = entry.value
-		v.values[key] = m
+		v.values[target] = m
 	default:
-		v.values[key] = parsed
+		v.values[target] = parsed
 	}
 	return nil
 }
@@ -467,11 +486,19 @@ func newDefaultRegistry() *registry {
 		parse:        parseCurrencyListItem,
 		defaultValue: []string(nil),
 	}))
+	// inferred_tolerance_multiplier is the upstream-deprecated alias.
+	mustRegisterDefault(r.register(spec{
+		key:          "tolerance_multiplier",
+		kind:         KindDecimal,
+		parse:        parseDecimalOption,
+		defaultValue: apd.New(5, -1),
+	}))
 	mustRegisterDefault(r.register(spec{
 		key:          "inferred_tolerance_multiplier",
 		kind:         KindDecimal,
 		parse:        parseDecimalOption,
 		defaultValue: apd.New(5, -1),
+		aliasOf:      "tolerance_multiplier",
 	}))
 	mustRegisterDefault(r.register(spec{
 		key:          "infer_tolerance_from_cost",

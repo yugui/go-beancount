@@ -469,7 +469,7 @@ func TestLoadFile_OverrideFilename(t *testing.T) {
 func TestLoadOptionsBuildsValuesAndDiagnostics(t *testing.T) {
 	t.Run("valid options accessible", func(t *testing.T) {
 		src := `option "operating_currency" "USD"
-option "inferred_tolerance_multiplier" "0.25"
+option "tolerance_multiplier" "0.25"
 option "infer_tolerance_from_cost" "TRUE"
 `
 		ledger, err := ast.Load(src)
@@ -479,12 +479,12 @@ option "infer_tolerance_from_cost" "TRUE"
 		if got := ledger.Options.StringList("operating_currency"); len(got) != 1 || got[0] != "USD" {
 			t.Errorf("operating_currency = %v, want [USD]", got)
 		}
-		d := ledger.Options.Decimal("inferred_tolerance_multiplier")
+		d := ledger.Options.Decimal("tolerance_multiplier")
 		if d == nil {
-			t.Fatal("inferred_tolerance_multiplier is nil")
+			t.Fatal("tolerance_multiplier is nil")
 		}
 		if got := d.String(); got != "0.25" {
-			t.Errorf("inferred_tolerance_multiplier = %q, want %q", got, "0.25")
+			t.Errorf("tolerance_multiplier = %q, want %q", got, "0.25")
 		}
 		if got := ledger.Options.Bool("infer_tolerance_from_cost"); !got {
 			t.Errorf("infer_tolerance_from_cost = %v, want true", got)

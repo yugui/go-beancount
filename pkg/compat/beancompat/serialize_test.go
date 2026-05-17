@@ -2686,7 +2686,7 @@ func TestFormatOptionValue(t *testing.T) {
 	})
 
 	t.Run("KindDecimal_typical", func(t *testing.T) {
-		e := makeEntry(t, "inferred_tolerance_multiplier", "0.5")
+		e := makeEntry(t, "tolerance_multiplier", "0.5")
 		raw, err := formatOptionValue(e)
 		if err != nil {
 			t.Fatalf("formatOptionValue: %v", err)
@@ -2898,7 +2898,7 @@ func TestFormatOptionValue(t *testing.T) {
 	})
 
 	t.Run("KindDecimal_negative", func(t *testing.T) {
-		e := makeEntry(t, "inferred_tolerance_multiplier", "-0.5")
+		e := makeEntry(t, "tolerance_multiplier", "-0.5")
 		raw, err := formatOptionValue(e)
 		if err != nil {
 			t.Fatalf("formatOptionValue: %v", err)
@@ -2910,7 +2910,7 @@ func TestFormatOptionValue(t *testing.T) {
 
 	t.Run("KindDecimal_exponent", func(t *testing.T) {
 		// apd normalizes 1E-3 to 0.001; the JSON form preserves that representation.
-		e := makeEntry(t, "inferred_tolerance_multiplier", "1E-3")
+		e := makeEntry(t, "tolerance_multiplier", "1E-3")
 		raw, err := formatOptionValue(e)
 		if err != nil {
 			t.Fatalf("formatOptionValue: %v", err)
@@ -2946,7 +2946,7 @@ func TestSerializeOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SerializeParsed: %v", err)
 		}
-		want := `{"account_current_conversions":"Conversions:Current","account_current_earnings":"Earnings:Current","account_previous_balances":"Opening-Balances","account_previous_conversions":"Conversions:Previous","account_previous_earnings":"Earnings:Previous","account_rounding":"","account_unrealized_gains":"Earnings:Unrealized","allow_deprecated_none_for_tags_and_links":false,"allow_pipe_separator":false,"commodities":[],"conversion_currency":"NOTHING","display_precision":{},"documents":[],"infer_tolerance_from_cost":false,"inferred_tolerance_default":{},"inferred_tolerance_multiplier":"0.5","insert_pythonpath":false,"long_string_maxlines":64,"name_assets":"Assets","name_equity":"Equity","name_expenses":"Expenses","name_income":"Income","name_liabilities":"Liabilities","operating_currency":[],"plugin":[],"plugin_processing_mode":"","pythonpath":[],"title":""}`
+		want := `{"account_current_conversions":"Conversions:Current","account_current_earnings":"Earnings:Current","account_previous_balances":"Opening-Balances","account_previous_conversions":"Conversions:Previous","account_previous_earnings":"Earnings:Previous","account_rounding":"","account_unrealized_gains":"Earnings:Unrealized","allow_deprecated_none_for_tags_and_links":false,"allow_pipe_separator":false,"commodities":[],"conversion_currency":"NOTHING","display_precision":{},"documents":[],"infer_tolerance_from_cost":false,"inferred_tolerance_default":{},"inferred_tolerance_multiplier":"0.5","insert_pythonpath":false,"long_string_maxlines":64,"name_assets":"Assets","name_equity":"Equity","name_expenses":"Expenses","name_income":"Income","name_liabilities":"Liabilities","operating_currency":[],"plugin":[],"plugin_processing_mode":"","pythonpath":[],"title":"","tolerance_multiplier":"0.5"}`
 		if string(got.Options) != want {
 			t.Errorf("default Options envelope mismatch:\ngot  %s\nwant %s", got.Options, want)
 		}

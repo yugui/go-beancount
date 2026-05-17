@@ -365,6 +365,29 @@ func TestForBalanceAssertion(t *testing.T) {
 	}
 }
 
+// TestInfer_ToleranceMultiplierAlias verifies that setting option "tolerance_multiplier"
+// produces the same inferred tolerance as setting "inferred_tolerance_multiplier"
+// with the same value.
+func TestInfer_ToleranceMultiplierAlias(t *testing.T) {
+	pos := amtStr(t, "100.00", "USD") // exp -2
+	postings := []ast.Posting{{Account: "Assets:Cash", Amount: &pos}}
+
+	viaAlias := mustOpts(t, map[string]string{"tolerance_multiplier": "1.0"})
+	viaDirect := mustOpts(t, map[string]string{"inferred_tolerance_multiplier": "1.0"})
+
+	tolAlias, err := tolerance.Infer(postings, viaAlias, []string{"USD"})
+	if err != nil {
+		t.Fatalf("Infer via alias: %v", err)
+	}
+	tolDirect, err := tolerance.Infer(postings, viaDirect, []string{"USD"})
+	if err != nil {
+		t.Fatalf("Infer via direct: %v", err)
+	}
+	if tolAlias["USD"].Cmp(tolDirect["USD"]) != 0 {
+		t.Errorf("tolerance via alias = %s, want %s (same as direct)", tolAlias["USD"].Text('f'), tolDirect["USD"].Text('f'))
+	}
+}
+
 // TestWithin pins the |diff| <= tol contract documented on Within,
 // including the inclusive boundary on both signs of diff. The error
 // path requires triggering apd.BaseContext.Abs failure on pathological

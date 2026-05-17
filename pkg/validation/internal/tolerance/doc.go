@@ -4,8 +4,10 @@
 // The units-based rule: for each residual currency, the tolerance is
 // derived from the maximum exponent (i.e. *least* precise
 // least-significant digit) among contributing explicit postings in
-// that currency, scaled by the ledger option
-// inferred_tolerance_multiplier. This matches upstream beancount's
+// that currency, scaled by the ledger option tolerance_multiplier.
+// Setting the deprecated alias inferred_tolerance_multiplier is also
+// accepted and reaches the same canonical slot via a write redirect
+// at parse time. This matches upstream beancount's
 // infer_tolerances called with mode="max", which the upstream booking
 // pass uses for balance verification because balance checks favor the
 // looser/larger tolerance: a high-precision posting alongside a

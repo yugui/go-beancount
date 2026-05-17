@@ -945,3 +945,262 @@ func TestSnapshotNilReceiver(t *testing.T) {
 		t.Errorf("nil Snapshot keys not sorted: %v", keys)
 	}
 }
+
+// aliasRegistry builds a minimal registry with one canonical KindDecimal spec
+// and one alias spec pointing at it, for use in alias-semantics tests.
+func aliasRegistry(t *testing.T) *registry {
+	t.Helper()
+	r := newRegistry()
+	if err := r.register(spec{
+		key:          "canonical_mult",
+		kind:         KindDecimal,
+		parse:        parseDecimalOption,
+		defaultValue: apd.New(5, -1), // 0.5
+	}); err != nil {
+		t.Fatalf("aliasRegistry: register canonical: %v", err)
+	}
+	if err := r.register(spec{
+		key:          "alias_mult",
+		kind:         KindDecimal,
+		parse:        parseDecimalOption,
+		defaultValue: apd.New(5, -1), // 0.5, same default
+		aliasOf:      "canonical_mult",
+	}); err != nil {
+		t.Fatalf("aliasRegistry: register alias: %v", err)
+	}
+	return r
+}
+
+// TestAliasWriteRedirect verifies the write-redirect alias semantics:
+// writing the deprecated alias key reaches the canonical slot; writing
+// the canonical never touches the alias slot. Mirrors upstream
+// beancount's grammar.py:393-396.
+func TestAliasWriteRedirect(t *testing.T) {
+	t.Run("set alias writes to canonical, alias slot stays at default", func(t *testing.T) {
+		v := newOptionValues(aliasRegistry(t))
+		if err := v.set("alias_mult", "2"); err != nil {
+			t.Fatalf("set alias_mult: %v", err)
+		}
+		if d := v.Decimal("canonical_mult"); d == nil || d.String() != "2" {
+			t.Errorf("canonical_mult after setting alias = %v, want 2", d)
+		}
+		if d := v.Decimal("alias_mult"); d == nil || d.String() != "0.5" {
+			t.Errorf("alias_mult after setting alias = %v, want 0.5 (registered default; alias slot is never written to)", d)
+		}
+	})
+	t.Run("set canonical leaves alias slot at default", func(t *testing.T) {
+		v := newOptionValues(aliasRegistry(t))
+		if err := v.set("canonical_mult", "3"); err != nil {
+			t.Fatalf("set canonical_mult: %v", err)
+		}
+		if d := v.Decimal("canonical_mult"); d == nil || d.String() != "3" {
+			t.Errorf("canonical_mult after setting canonical = %v, want 3", d)
+		}
+		if d := v.Decimal("alias_mult"); d == nil || d.String() != "0.5" {
+			t.Errorf("alias_mult after setting canonical = %v, want 0.5 (registered default)", d)
+		}
+	})
+}
+
+// TestAliasLastWriteWins verifies that the last write to either key in
+// the pair wins on the canonical slot. Because writes via the alias
+// are redirected to the canonical, the alias slot stays at its
+// registered default across all writes.
+func TestAliasLastWriteWins(t *testing.T) {
+	t.Run("alias then canonical", func(t *testing.T) {
+		v := newOptionValues(aliasRegistry(t))
+		if err := v.set("alias_mult", "1"); err != nil {
+			t.Fatalf("set alias_mult: %v", err)
+		}
+		if err := v.set("canonical_mult", "2"); err != nil {
+			t.Fatalf("set canonical_mult: %v", err)
+		}
+		if d := v.Decimal("canonical_mult"); d == nil || d.String() != "2" {
+			t.Errorf("canonical_mult = %v, want 2 (last write)", d)
+		}
+		if d := v.Decimal("alias_mult"); d == nil || d.String() != "0.5" {
+			t.Errorf("alias_mult = %v, want 0.5 (registered default)", d)
+		}
+	})
+	t.Run("canonical then alias", func(t *testing.T) {
+		v := newOptionValues(aliasRegistry(t))
+		if err := v.set("canonical_mult", "2"); err != nil {
+			t.Fatalf("set canonical_mult: %v", err)
+		}
+		if err := v.set("alias_mult", "3"); err != nil {
+			t.Fatalf("set alias_mult: %v", err)
+		}
+		if d := v.Decimal("canonical_mult"); d == nil || d.String() != "3" {
+			t.Errorf("canonical_mult = %v, want 3 (last write via alias redirect)", d)
+		}
+		if d := v.Decimal("alias_mult"); d == nil || d.String() != "0.5" {
+			t.Errorf("alias_mult = %v, want 0.5 (registered default)", d)
+		}
+	})
+}
+
+// TestAliasDefaults verifies that with neither key set, both the canonical and
+// the alias return the independently registered default (0.5).
+func TestAliasDefaults(t *testing.T) {
+	v := newOptionValues(aliasRegistry(t))
+	if d := v.Decimal("canonical_mult"); d == nil || d.String() != "0.5" {
+		t.Errorf("canonical_mult default = %v, want 0.5", d)
+	}
+	if d := v.Decimal("alias_mult"); d == nil || d.String() != "0.5" {
+		t.Errorf("alias_mult default = %v, want 0.5", d)
+	}
+}
+
+// TestSnapshotAliasPair verifies that Snapshot lists both keys in
+// ascending order; the canonical reflects the latest write (via either
+// name), while the alias slot keeps its registered default.
+func TestSnapshotAliasPair(t *testing.T) {
+	t.Run("neither set: both at default", func(t *testing.T) {
+		v := newOptionValues(aliasRegistry(t))
+		entries := v.Snapshot()
+		if len(entries) != 2 {
+			t.Fatalf("Snapshot len = %d, want 2", len(entries))
+		}
+		byKey := make(map[string]OptionEntry, 2)
+		for _, e := range entries {
+			byKey[e.Key] = e
+		}
+		for _, key := range []string{"alias_mult", "canonical_mult"} {
+			e, ok := byKey[key]
+			if !ok {
+				t.Errorf("key %q missing from Snapshot", key)
+				continue
+			}
+			if d := e.Decimal(); d == nil || d.String() != "0.5" {
+				t.Errorf("%s default in Snapshot = %v, want 0.5", key, d)
+			}
+		}
+	})
+	t.Run("alias set: canonical takes value, alias stays at default", func(t *testing.T) {
+		v := newOptionValues(aliasRegistry(t))
+		if err := v.set("alias_mult", "1.5"); err != nil {
+			t.Fatalf("set alias_mult: %v", err)
+		}
+		entries := v.Snapshot()
+		byKey := make(map[string]OptionEntry, len(entries))
+		for _, e := range entries {
+			byKey[e.Key] = e
+		}
+		if d := byKey["canonical_mult"].Decimal(); d == nil || d.String() != "1.5" {
+			t.Errorf("canonical_mult in Snapshot = %v, want 1.5", d)
+		}
+		if d := byKey["alias_mult"].Decimal(); d == nil || d.String() != "0.5" {
+			t.Errorf("alias_mult in Snapshot = %v, want 0.5 (registered default)", d)
+		}
+	})
+	t.Run("canonical set: canonical takes value, alias stays at default", func(t *testing.T) {
+		v := newOptionValues(aliasRegistry(t))
+		if err := v.set("canonical_mult", "2.5"); err != nil {
+			t.Fatalf("set canonical_mult: %v", err)
+		}
+		entries := v.Snapshot()
+		byKey := make(map[string]OptionEntry, len(entries))
+		for _, e := range entries {
+			byKey[e.Key] = e
+		}
+		if d := byKey["canonical_mult"].Decimal(); d == nil || d.String() != "2.5" {
+			t.Errorf("canonical_mult in Snapshot = %v, want 2.5", d)
+		}
+		if d := byKey["alias_mult"].Decimal(); d == nil || d.String() != "0.5" {
+			t.Errorf("alias_mult in Snapshot = %v, want 0.5 (registered default)", d)
+		}
+	})
+}
+
+// TestRegisterRejectsAliasToUnregistered verifies that registering a spec
+// whose aliasOf names an unregistered key returns an error.
+func TestRegisterRejectsAliasToUnregistered(t *testing.T) {
+	r := newRegistry()
+	err := r.register(spec{
+		key:          "some_option",
+		kind:         KindDecimal,
+		parse:        parseDecimalOption,
+		defaultValue: apd.New(5, -1),
+		aliasOf:      "missing",
+	})
+	if err == nil {
+		t.Fatal("register with aliasOf pointing at unregistered key: want error, got nil")
+	}
+}
+
+// TestRegisterRejectsAliasChain verifies that registering a spec whose aliasOf
+// names an existing alias (forming an alias chain) returns an error.
+func TestRegisterRejectsAliasChain(t *testing.T) {
+	r := newRegistry()
+	// A is the canonical.
+	if err := r.register(spec{
+		key:          "A",
+		kind:         KindDecimal,
+		parse:        parseDecimalOption,
+		defaultValue: apd.New(5, -1),
+	}); err != nil {
+		t.Fatalf("register A: %v", err)
+	}
+	// B aliases A — should succeed.
+	if err := r.register(spec{
+		key:          "B",
+		kind:         KindDecimal,
+		parse:        parseDecimalOption,
+		defaultValue: apd.New(5, -1),
+		aliasOf:      "A",
+	}); err != nil {
+		t.Fatalf("register B (alias of A): %v", err)
+	}
+	// C aliases B — should fail (chain).
+	err := r.register(spec{
+		key:          "C",
+		kind:         KindDecimal,
+		parse:        parseDecimalOption,
+		defaultValue: apd.New(5, -1),
+		aliasOf:      "B",
+	})
+	if err == nil {
+		t.Fatal("register C with aliasOf pointing at alias B: want error, got nil")
+	}
+}
+
+// TestDefaultRegistryToleranceMultiplier verifies that the default
+// registry treats tolerance_multiplier as canonical and
+// inferred_tolerance_multiplier as the deprecated write-redirect
+// alias: writes via either name reach the canonical slot; the
+// deprecated slot keeps its registered default.
+func TestDefaultRegistryToleranceMultiplier(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		v := NewOptionValues()
+		if d := v.Decimal("tolerance_multiplier"); d == nil || d.String() != "0.5" {
+			t.Errorf("tolerance_multiplier default = %v, want 0.5", d)
+		}
+		if d := v.Decimal("inferred_tolerance_multiplier"); d == nil || d.String() != "0.5" {
+			t.Errorf("inferred_tolerance_multiplier default = %v, want 0.5", d)
+		}
+	})
+	t.Run("set canonical updates canonical only", func(t *testing.T) {
+		v := NewOptionValues()
+		if err := v.set("tolerance_multiplier", "2"); err != nil {
+			t.Fatalf("set tolerance_multiplier: %v", err)
+		}
+		if d := v.Decimal("tolerance_multiplier"); d == nil || d.String() != "2" {
+			t.Errorf("tolerance_multiplier = %v, want 2", d)
+		}
+		if d := v.Decimal("inferred_tolerance_multiplier"); d == nil || d.String() != "0.5" {
+			t.Errorf("inferred_tolerance_multiplier = %v, want 0.5 (registered default)", d)
+		}
+	})
+	t.Run("set deprecated redirects to canonical", func(t *testing.T) {
+		v := NewOptionValues()
+		if err := v.set("inferred_tolerance_multiplier", "3"); err != nil {
+			t.Fatalf("set inferred_tolerance_multiplier: %v", err)
+		}
+		if d := v.Decimal("tolerance_multiplier"); d == nil || d.String() != "3" {
+			t.Errorf("tolerance_multiplier = %v, want 3 (write redirected from deprecated alias)", d)
+		}
+		if d := v.Decimal("inferred_tolerance_multiplier"); d == nil || d.String() != "0.5" {
+			t.Errorf("inferred_tolerance_multiplier = %v, want 0.5 (registered default; alias slot is never written)", d)
+		}
+	})
+}
