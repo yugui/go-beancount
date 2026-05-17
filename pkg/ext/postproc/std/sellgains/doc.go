@@ -168,6 +168,15 @@
 //     transactions, matching the iterator's traversal order. This
 //     happens to coincide with upstream's order, where the Python list
 //     comprehension also walks entries in source order.
+//   - Upstream's parser eagerly converts a posting's @@ total-form
+//     price to a per-unit price before any later pass observes it; the
+//     Go port preserves IsTotal on the AST for source fidelity and
+//     converts to per-unit lazily, at the multi-lot booking split.
+//     The sellgains check result is unchanged either way (the price
+//     side is identical after normalization). The only observable
+//     difference is on round-trip emission: a non-split @@ posting
+//     prints as @@ in the Go port, whereas upstream would have
+//     rewritten it to @ at parse time.
 //
 // # Registered names
 //

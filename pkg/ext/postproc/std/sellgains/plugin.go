@@ -298,6 +298,12 @@ func inferTolerances(postings []ast.Posting) map[string]*apd.Decimal {
 // degenerates to zero for zero-units postings — matching upstream's
 // parser-level fold-to-zero in that pathological case.
 //
+// The IsTotal branch is reached only on non-split postings: the booking
+// pass rewrites each child of a multi-lot reduction to a per-unit Price
+// (see [pkg/inventory.postingResolution.addMultiLotReduction]) so a
+// total-form Price never appears on a posting whose units are merely a
+// slice of the user-written total.
+//
 // p must have a non-nil Amount and a non-nil Price; checkTransaction
 // guarantees both for every posting it routes through this function.
 func priceContribution(p *ast.Posting) (ast.Amount, error) {
