@@ -106,9 +106,9 @@ func serialize(ledger *ast.Ledger) (Result, error) {
 	return out, nil
 }
 
-// serializeOptions builds the Result.Options JSON for ledger's PrecisionProfile.
-// Returns (nil, nil) when the profile is absent or has no observations, which
-// the omitempty tag on Result.Options drops from the JSON envelope entirely.
+// serializeOptions builds the beancompat Result.Options envelope for ledger.
+// Returns (nil, nil) when there are no options to emit; the omitempty tag on
+// Result.Options then drops the envelope from the JSON output entirely.
 func serializeOptions(ledger *ast.Ledger) (json.RawMessage, error) {
 	if ledger.PrecisionProfile == nil {
 		return nil, nil
