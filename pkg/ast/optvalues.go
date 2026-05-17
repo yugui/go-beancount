@@ -642,6 +642,15 @@ func newDefaultRegistry() *registry {
 		parse:        parseBoolOption,
 		defaultValue: false,
 	}))
+	// render_commas: enables thousands-separator commas in number output.
+	// Read via ledger.Options.Bool("render_commas") at call sites; wired via
+	// format.WithCommaGrouping.
+	mustRegisterDefault(r.register(spec{
+		key:          "render_commas",
+		kind:         KindBool,
+		parse:        parseBoolOption,
+		defaultValue: false,
+	}))
 
 	// Deprecated parser flags — options.py; Go parser does not implement
 	// these features; stored as inert booleans.

@@ -23,6 +23,7 @@ go_test(
         "diff_test.go",
         "format_displaycontext_test.go",
         "format_integration_test.go",
+        "format_render_commas_test.go",
         "format_test.go",
         "option_test.go",
         "quantize_test.go",

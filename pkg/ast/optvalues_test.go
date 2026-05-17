@@ -256,6 +256,7 @@ func TestDefaultRegistryKeys(t *testing.T) {
 		{"insert_pythonpath", false},
 		{"allow_pipe_separator", false},
 		{"allow_deprecated_none_for_tags_and_links", false},
+		{"render_commas", false},
 	}
 	for _, tc := range boolCases {
 		t.Run(tc.key, func(t *testing.T) {
@@ -1204,6 +1205,58 @@ func TestDefaultRegistryToleranceMultiplier(t *testing.T) {
 		}
 		if d := v.Decimal("inferred_tolerance_multiplier"); d == nil || d.String() != "0.5" {
 			t.Errorf("inferred_tolerance_multiplier = %v, want 0.5 (registered default; alias slot is never written)", d)
+		}
+	})
+}
+
+// TestDefaultRegistryRenderCommas verifies the render_commas option registration:
+// default false; "TRUE" and "true" both accepted; non-boolean values rejected.
+func TestDefaultRegistryRenderCommas(t *testing.T) {
+	t.Run("default_false", func(t *testing.T) {
+		v := NewOptionValues()
+		if got := v.Bool("render_commas"); got != false {
+			t.Errorf("render_commas default = %v, want false", got)
+		}
+	})
+	t.Run("set_TRUE", func(t *testing.T) {
+		l := &Ledger{}
+		l.InsertAll([]Directive{&Option{Key: "render_commas", Value: "TRUE"}})
+		v, diags := ParseOptions(l)
+		if len(diags) != 0 {
+			t.Fatalf("ParseOptions: unexpected diags: %v", diags)
+		}
+		if got := v.Bool("render_commas"); got != true {
+			t.Errorf("render_commas after TRUE = %v, want true", got)
+		}
+	})
+	t.Run("set_true_lowercase", func(t *testing.T) {
+		l := &Ledger{}
+		l.InsertAll([]Directive{&Option{Key: "render_commas", Value: "true"}})
+		v, diags := ParseOptions(l)
+		if len(diags) != 0 {
+			t.Fatalf("ParseOptions: unexpected diags: %v", diags)
+		}
+		if got := v.Bool("render_commas"); got != true {
+			t.Errorf("render_commas after true = %v, want true", got)
+		}
+	})
+	t.Run("set_FALSE", func(t *testing.T) {
+		l := &Ledger{}
+		l.InsertAll([]Directive{&Option{Key: "render_commas", Value: "FALSE"}})
+		v, diags := ParseOptions(l)
+		if len(diags) != 0 {
+			t.Fatalf("ParseOptions: unexpected diags: %v", diags)
+		}
+		if got := v.Bool("render_commas"); got != false {
+			t.Errorf("render_commas after FALSE = %v, want false", got)
+		}
+	})
+	t.Run("set_invalid", func(t *testing.T) {
+		l := &Ledger{}
+		l.InsertAll([]Directive{&Option{Key: "render_commas", Value: "maybe"}})
+		_, diags := ParseOptions(l)
+		if len(diags) == 0 {
+			t.Errorf("render_commas invalid value: want diag, got none")
 		}
 	})
 }
