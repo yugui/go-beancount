@@ -2569,6 +2569,122 @@ func TestSerializeLedger(t *testing.T) {
 	})
 }
 
+// ledgerWithPrecision returns a Ledger whose PrecisionProfile is seeded with
+// (currency, precision) pairs; each precision is an integer fractional-digit count.
+func ledgerWithPrecision(t *testing.T, observations ...any) *ast.Ledger {
+	t.Helper()
+	if len(observations)%2 != 0 {
+		t.Fatalf("ledgerWithPrecision: odd argument count; pass (currency, precision) pairs")
+	}
+	pp := ast.NewPrecisionProfile()
+	for i := 0; i < len(observations); i += 2 {
+		ccy, ok := observations[i].(string)
+		if !ok {
+			t.Fatalf("ledgerWithPrecision: arg %d must be string (currency), got %T", i, observations[i])
+		}
+		prec, ok := observations[i+1].(int)
+		if !ok {
+			t.Fatalf("ledgerWithPrecision: arg %d must be int (precision), got %T", i+1, observations[i+1])
+		}
+		// "1." + prec zeros gives the desired exponent.
+		var s string
+		if prec == 0 {
+			s = "1"
+		} else {
+			s = "1."
+			for j := 0; j < prec; j++ {
+				s += "0"
+			}
+		}
+		d, _, err := apd.NewFromString(s)
+		if err != nil {
+			t.Fatalf("ledgerWithPrecision: apd.NewFromString(%q): %v", s, err)
+		}
+		pp.Update(d, ccy)
+	}
+	return &ast.Ledger{PrecisionProfile: pp}
+}
+
+// TestSerializeOptions verifies the options envelope emitted by SerializeParsed.
+func TestSerializeOptions(t *testing.T) {
+	t.Run("nil_precision_profile", func(t *testing.T) {
+		ledger := &ast.Ledger{PrecisionProfile: nil}
+		got, err := SerializeParsed(ledger)
+		if err != nil {
+			t.Fatalf("SerializeParsed: %v", err)
+		}
+		if got.Options != nil {
+			t.Errorf("Options = %s, want nil", got.Options)
+		}
+	})
+
+	t.Run("empty_precision_profile", func(t *testing.T) {
+		ledger := &ast.Ledger{PrecisionProfile: ast.NewPrecisionProfile()}
+		got, err := SerializeParsed(ledger)
+		if err != nil {
+			t.Fatalf("SerializeParsed: %v", err)
+		}
+		if got.Options != nil {
+			t.Errorf("Options = %s, want nil", got.Options)
+		}
+	})
+
+	t.Run("single_currency", func(t *testing.T) {
+		ledger := ledgerWithPrecision(t, "USD", 2)
+		got, err := SerializeParsed(ledger)
+		if err != nil {
+			t.Fatalf("SerializeParsed: %v", err)
+		}
+		want := `{"display_precision_by_currency":{"USD":2}}`
+		if string(got.Options) != want {
+			t.Errorf("Options = %s, want %s", got.Options, want)
+		}
+	})
+
+	t.Run("multiple_currencies_sorted", func(t *testing.T) {
+		// USD and JPY inserted out of alphabetical order; output must be
+		// alphabetical (JPY before USD).
+		ledger := ledgerWithPrecision(t, "USD", 2, "JPY", 0)
+		got, err := SerializeParsed(ledger)
+		if err != nil {
+			t.Fatalf("SerializeParsed: %v", err)
+		}
+		want := `{"display_precision_by_currency":{"JPY":0,"USD":2}}`
+		if string(got.Options) != want {
+			t.Errorf("Options = %s, want %s", got.Options, want)
+		}
+	})
+
+	t.Run("determinism", func(t *testing.T) {
+		// Byte-equal output across two calls on the same ledger. Guards
+		// against map iteration nondeterminism leaking through marshalSortedObject.
+		ledger := ledgerWithPrecision(t, "USD", 2, "JPY", 0)
+		got1, err := SerializeParsed(ledger)
+		if err != nil {
+			t.Fatalf("first SerializeParsed: %v", err)
+		}
+		got2, err := SerializeParsed(ledger)
+		if err != nil {
+			t.Fatalf("second SerializeParsed: %v", err)
+		}
+		if string(got1.Options) != string(got2.Options) {
+			t.Errorf("non-deterministic: first=%s second=%s", got1.Options, got2.Options)
+		}
+	})
+
+	t.Run("serialize_checked_same_output", func(t *testing.T) {
+		ledger := ledgerWithPrecision(t, "USD", 2, "JPY", 0)
+		want := `{"display_precision_by_currency":{"JPY":0,"USD":2}}`
+		checked, err := SerializeChecked(ledger)
+		if err != nil {
+			t.Fatalf("SerializeChecked: %v", err)
+		}
+		if string(checked.Options) != want {
+			t.Errorf("SerializeChecked Options = %s, want %s", checked.Options, want)
+		}
+	})
+}
+
 // TestCostPayload pins the check-tier "kind":"cost" envelope shape
 // emitted for a booked *ast.Cost. The transaction_with_cost fixture
 // covers the happy path end-to-end through the loader; this focused
