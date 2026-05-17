@@ -51,3 +51,10 @@ func WithBlankLinesBetweenDirectives(n int) Option {
 func WithInsertBlankLinesBetweenDirectives(v bool) Option {
 	return func(o *formatopt.Options) { o.InsertBlankLinesBetweenDirectives = v }
 }
+
+// WithDisplayContext enables per-currency amount quantization. When dc is
+// non-nil, each amount NUMBER token is rewritten to the fractional-digit count
+// returned by dc.MostCommon for its currency. Passing nil is a no-op.
+func WithDisplayContext(dc formatopt.DisplayContext) Option {
+	return func(o *formatopt.Options) { o.DisplayContext = dc }
+}

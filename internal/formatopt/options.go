@@ -14,6 +14,9 @@ type Options struct {
 	// existing blank lines are normalized to BlankLinesBetweenDirectives
 	// but no new blank lines are created where none exist.
 	InsertBlankLinesBetweenDirectives bool
+	// DisplayContext, when non-nil, quantizes amount NUMBER tokens to the
+	// per-currency fractional-digit count reported by MostCommon.
+	DisplayContext DisplayContext
 }
 
 // Default returns Options with sensible defaults.

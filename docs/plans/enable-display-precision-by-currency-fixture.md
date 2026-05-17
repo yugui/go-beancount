@@ -146,6 +146,78 @@ pkg/ast.PrecisionProfile             ─ struct (observed-amount statistics — 
 - **Verification**: 既存の format テスト (consistency, integration, diff など) が改変ゼロで pass する点を regression として確認。新規テストで pad / truncate / pass-through を網羅
 - **Dependency**: Step 1 (型と interface 充足)。Step 2 は不要 (callers が手動で PrecisionProfile を渡す経路でも動く)
 
+##### Detailed Design
+
+###### Contract
+
+- `internal/formatopt` exposes a new exported interface `DisplayContext` with single method `MostCommon(currency string) (int, bool)`. Structurally satisfied by `*ast.PrecisionProfile`. `internal/formatopt` MUST NOT import `pkg/ast`.
+- `formatopt.Options` gains exactly one new exported field of the interface type. Zero value `nil` = feature disabled.
+- `pkg/format/option.go` exposes exactly one new public function `WithDisplayContext(dc formatopt.DisplayContext) Option` assigning to the field. Passing `nil` is a no-op.
+- Quantization semantics, per NUMBER token in the format pipeline:
+  - Determine the currency the number is denominated in.
+  - If `DisplayContext` is `nil`, OR currency cannot be determined, OR `MostCommon(currency)` returns `ok=false` → text passes through unchanged.
+  - Otherwise rewrite to a fixed-point decimal with exactly `n` fractional digits where `n = MostCommon(currency)`:
+    - Pad with trailing zeros when source has fewer fractional digits.
+    - Round half-to-even when source has more. Negative numbers preserve sign; magnitude is quantized.
+    - Output never uses scientific notation. Integer results at `n == 0` MUST NOT carry trailing `.`.
+- Behavior preservation: every existing test under `pkg/format/` and `internal/formatopt/` MUST pass unchanged when no caller supplies `WithDisplayContext`. The nil default is the entire mechanism.
+
+###### Suggested Internals (advisory)
+
+**Pipeline placement**: insert a quantization sub-pass in `(*formatter).formatDirective` (`pkg/format/format.go:186-204`) immediately before `f.formatCommaGrouping(node)`. Comma insertion and amount alignment both read `tok.Raw` after rewriting, so quantize-first is sufficient — no changes to alignment code. Guard with `if f.opts.DisplayContext == nil { return }`.
+
+**Which NUMBER tokens get quantized** (per CST node kind):
+
+| CST node | Quantize? | Rationale |
+|---|:---:|---|
+| `AmountNode` (posting/price/custom value amount) | Yes | Adjacent `CURRENCY` token. Observed in Step 2. |
+| `BalanceAmountNode` (main + tolerance) | Yes | Trailing `CURRENCY`. Tolerance same currency. Observed in Step 2. |
+| `PriceAnnotNode` (`@`/`@@`) | **No** | Step 2 excludes from observation. Symmetric pass-through. |
+| `CostSpecNode` amount children | **No** | Step 2 excludes. Symmetric pass-through. |
+| `MetadataLineNode` value NUMBER | No | Not currency-denominated. Lookup always misses. |
+| Bare NUMBER in `ErrorNode` / `UnrecognizedLineNode` | No | Already short-circuited by `formatDirective` switch. |
+
+Exclusion of cost amounts and posting price annotations is deliberate symmetry with Step 2: imposing precision on positions we never observed would silently truncate user-supplied precision (e.g. `0.0001 BTC` price annotation) the statistics never accounted for.
+
+**Currency lookup**: top-down walk. `applyDisplayContext` walks directive children, descends into `PostingNode` and `BalanceDirective`, opens only `AmountNode` / `BalanceAmountNode`. Inside those: `node.FindToken(syntax.CURRENCY)` once, then iterate `node.Tokens()` for NUMBERs. Skips `PriceAnnotNode` and `CostSpecNode` outright. Pass-through on missing currency (parse-error recovery may produce one).
+
+**Quantization implementation**: new helper in `internal/formatopt/number.go`:
+
+```go
+// Quantize returns s rewritten to exactly digits fractional places using
+// half-even rounding. Returns s unchanged on parse failure.
+func Quantize(s string, digits int) string
+```
+
+Use `apd.BaseContext.WithPrecision(34)` with `Rounding = apd.RoundHalfEven` (matches `pkg/ast/lower.go:695`). Add `@com_github_cockroachdb_apd_v3//:apd` to `internal/formatopt`'s BUILD deps. Edge handling:
+- Sign: handled by `apd`.
+- Thousands-commas in source: strip before parsing. Re-application is `formatCommaGrouping`'s job.
+- Scientific notation: cannot appear (scanner has no `e`/`E` branch).
+- `digits == 0`: `Text('f')` omits trailing `.`; verify in test.
+- `digits < 0`: not reachable; defensive pass-through.
+- Parse failure: return input unchanged.
+
+**Test coverage** for `pkg/format/format_displaycontext_test.go`:
+- Pad: `50 USD` + USD→2 → `50.00 USD`.
+- Truncate half-even: `1.125 USD` + USD→2 → `1.12 USD`; `1.135 USD` + USD→2 → `1.14 USD`.
+- Pass-through when currency unknown / option not supplied (regression: identical to `Format(src)`).
+- Negative: `-1.125 USD` + USD→2 → `-1.12 USD`.
+- Balance tolerance number quantized to trailing currency.
+- Cost amount NOT quantized: `10 HOOL {502.123 USD}` + USD→2 leaves cost as `502.123`.
+- Price annotation NOT quantized: `... @ 0.0001 BTC` + BTC→2 unchanged.
+- Metadata NUMBER NOT quantized.
+- Alignment regression: padding 0dp→2dp still aligns currency at column 52.
+- Comma grouping interaction: USD→2 + comma grouping on `1234 USD` → `1,234.00 USD`.
+
+Use a map-backed stub `DisplayContext` defined locally in the test file — no dependency on `*ast.PrecisionProfile` (proves interface boundary is real).
+
+###### Alternatives discussed (Internals only)
+
+- **Pipeline placement: quantize-first vs alignment-aware quantize.** Rejected the latter as redundant — both passes read `tok.Raw` so quantize-first is sufficient.
+- **String rewrite vs `apd.Quantize`.** Picked `apd` (battle-tested rounding semantics; half-even ties are subtle). String rewrite left as fallback if Bazel-deps expansion is unacceptable.
+- **Excluding cost / price-annotation NUMBERs.** Could uniformly apply per-currency precision, but Step 2's observation pipeline never sees those positions. Asymmetric application would silently truncate user-supplied precision. Symmetry with observation-set wins.
+- **Top-down walk vs flat token walk.** Top-down matches `alignPostingAmount` style; flat walk would need parent-kind threading.
+
 #### Step 4 — `SerializeParsed` から options 出力
 - **Files**: `pkg/compat/beancompat/serialize.go` (新ヘルパ + dispatcher 修正、既存 82-85 行のコメント書き換え), `pkg/compat/beancompat/serialize_test.go` (新規 subtest)
 - **Verification**: 単体テストで shape (sorted key, int value), 観測ゼロ時の nil 維持を確認。`parse_fixtures_test` は Step 5 まで SKIP のままを維持
