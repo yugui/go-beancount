@@ -54,6 +54,28 @@ func (p *PrecisionProfile) MostCommon(currency string) (int, bool) {
 	return best, true
 }
 
+// observeLedger builds a PrecisionProfile from the transaction posting amounts,
+// balance amounts, and price amounts in ledger. Cost amounts and posting price
+// annotations are excluded, matching upstream beancount's dcontext behavior.
+func observeLedger(ledger *Ledger) *PrecisionProfile {
+	p := NewPrecisionProfile()
+	for _, d := range ledger.All() {
+		switch v := d.(type) {
+		case *Transaction:
+			for _, posting := range v.Postings {
+				if a := posting.Amount; a != nil {
+					p.Update(&a.Number, a.Currency)
+				}
+			}
+		case *Balance:
+			p.Update(&v.Amount.Number, v.Amount.Currency)
+		case *Price:
+			p.Update(&v.Amount.Number, v.Amount.Currency)
+		}
+	}
+	return p
+}
+
 // Currencies returns a sorted list of currencies with at least one observation.
 // Returns nil when p is nil. Each call returns a fresh slice.
 func (p *PrecisionProfile) Currencies() []string {

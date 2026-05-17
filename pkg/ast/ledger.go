@@ -16,10 +16,17 @@ import (
 // successful Load*, it is non-nil (registry defaults when no option directives
 // were present). It may be nil on a hand-built &Ledger{}; [OptionValues]
 // accessors are nil-safe and fall back to registry defaults.
+//
+// PrecisionProfile records the per-currency fractional-digit distribution
+// observed from transaction posting amounts, balance amounts, and price
+// amounts. Populated once at load time; Insert, InsertAll, and ReplaceAll do
+// not refresh it. May be nil on a hand-built &Ledger{}; [PrecisionProfile]
+// methods are nil-safe.
 type Ledger struct {
-	Files       []*File      // all files in load order (root first)
-	Diagnostics []Diagnostic // merged diagnostics from all files
-	Options     *OptionValues
+	Files            []*File      // all files in load order (root first)
+	Diagnostics      []Diagnostic // merged diagnostics from all files
+	Options          *OptionValues
+	PrecisionProfile *PrecisionProfile
 
 	// entries holds directives in canonical (sortKey) order. The slice is
 	// kept sorted as an invariant; Insert and InsertAll preserve it.
