@@ -491,6 +491,18 @@ func newDefaultRegistry() *registry {
 		parse:        parseStringOption,
 		defaultValue: "",
 	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "long_string_maxlines",
+		kind:         KindInt,
+		parse:        parseIntOption,
+		defaultValue: 64,
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "inferred_tolerance_default",
+		kind:         KindDecimalMap,
+		parse:        parseDecimalMapEntry,
+		defaultValue: map[string]*apd.Decimal(nil),
+	}))
 	return r
 }
 
