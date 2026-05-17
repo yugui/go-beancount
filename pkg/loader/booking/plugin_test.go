@@ -956,6 +956,101 @@ func TestApply_DoesNotCloneCostlessTransaction(t *testing.T) {
 	}
 }
 
+// TestApply_BookingMethodOptionResolvesDefault verifies the end-to-end path
+// from option "booking_method" through the booking plugin: an Open directive
+// without an explicit booking keyword must adopt the option's value so that
+// subsequent postings use the resolved method.
+//
+// We use Option (b) from the review: a sell that references a non-existent lot
+// label ("lot2" when only "lot1" exists). Under STRICT the reducer cannot find
+// lot2 and emits CodeNoMatchingLot; under NONE the sell is reclassified as an
+// augmentation (new short position) and no error is produced.
+func TestApply_BookingMethodOptionResolvesDefault(t *testing.T) {
+	openBrokerage := &ast.Open{
+		Date:    day(2024, 1, 1),
+		Account: "Assets:Brokerage",
+		Booking: ast.BookingDefault, // no keyword — resolved from option
+	}
+	openCash := &ast.Open{Date: day(2024, 1, 1), Account: "Assets:Cash"}
+
+	buy := &ast.Transaction{
+		Date:      day(2024, 1, 15),
+		Flag:      '*',
+		Narration: "buy",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("10", "ABC"),
+				Cost: &ast.CostSpec{
+					PerUnit:  decp("100"),
+					Currency: "USD",
+					Label:    "lot1",
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("-1000", "USD")},
+		},
+	}
+	// sell references "lot2" which does not exist in the inventory.
+	// Under STRICT: tries to reduce → no match for lot2 → CodeNoMatchingLot.
+	// Under NONE:   always augments  → creates short {90 USD, lot2} → 0 errors.
+	sell := &ast.Transaction{
+		Date:      day(2024, 2, 1),
+		Flag:      '*',
+		Narration: "sell",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  amt("-10", "ABC"),
+				Cost: &ast.CostSpec{
+					PerUnit:  decp("90"),
+					Currency: "USD",
+					Label:    "lot2",
+				},
+			},
+			{Account: "Assets:Cash", Amount: amt("900", "USD")},
+		},
+	}
+
+	directives := []ast.Directive{openBrokerage, openCash, buy, sell}
+
+	t.Run("NONE option: sell augments, no error", func(t *testing.T) {
+		optLedger := &ast.Ledger{}
+		optLedger.InsertAll([]ast.Directive{&ast.Option{Key: "booking_method", Value: "NONE"}})
+		opts, diags := ast.ParseOptions(optLedger)
+		if len(diags) > 0 {
+			t.Fatalf("ParseOptions: %v", diags)
+		}
+		in := api.Input{Directives: seqOf(directives), Options: opts}
+		res, err := booking.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("booking.Apply: %v", err)
+		}
+		if got := errorSeverityCount(res.Diagnostics); got != 0 {
+			for _, d := range res.Diagnostics {
+				t.Logf("diagnostic: %s [%s]", d.Message, d.Code)
+			}
+			t.Fatalf("booking.Apply error-severity diagnostics = %d, want 0", got)
+		}
+	})
+
+	t.Run("STRICT default: sell fails with no-matching-lot", func(t *testing.T) {
+		in := api.Input{Directives: seqOf(directives)} // no option → STRICT
+		res, err := booking.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("booking.Apply: %v", err)
+		}
+		var noMatchCount int
+		for _, d := range res.Diagnostics {
+			if d.Code == "no-matching-lot" {
+				noMatchCount++
+			}
+		}
+		if noMatchCount == 0 {
+			t.Errorf("booking.Apply: want at least one no-matching-lot diagnostic under STRICT, got diagnostics: %v", res.Diagnostics)
+		}
+	})
+}
+
 // TestApply_CashReductionExceedingInventoryIsAllowed pins the cash
 // overdraft rule: when a reducing posting consumes more units than the
 // account currently holds, but every matched candidate is cash (no

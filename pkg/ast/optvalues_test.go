@@ -217,6 +217,9 @@ func TestDefaultRegistryKeys(t *testing.T) {
 	if got := v.String("title"); got != "" {
 		t.Errorf("v.String(%q) = %q, want %q", "title", got, "")
 	}
+	if got := v.String("booking_method"); got != "STRICT" {
+		t.Errorf("v.String(%q) = %q, want %q", "booking_method", got, "STRICT")
+	}
 
 	// One subtest per new spec: a missing key panics in lookupSpec, so a
 	// passing subtest proves both registration and correct upstream default.

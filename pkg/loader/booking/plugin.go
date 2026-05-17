@@ -41,7 +41,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, nil
 	}
 
-	booked, errs := inventory.NewReducer(in.Directives).Walk(nil)
+	booked, errs := inventory.NewReducerWithOptions(in.Directives, in.Options).Walk(nil)
 
 	diags := make([]ast.Diagnostic, 0, len(errs))
 	for _, e := range errs {

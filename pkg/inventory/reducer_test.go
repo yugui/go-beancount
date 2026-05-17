@@ -622,6 +622,60 @@ func TestReducerWalk_OpenSetsBookingMethod(t *testing.T) {
 	}
 }
 
+// TestReducerWalk_BookingMethodOptionApplied verifies that when
+// NewReducerWithOptions is supplied with options carrying
+// booking_method = "NONE", an Open directive without an explicit booking
+// keyword resolves to BookingNone in the reducer's internal booking map.
+func TestReducerWalk_BookingMethodOptionApplied(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// Build option values with booking_method = "NONE".
+	optLedger := mkLedger(&ast.Option{Key: "booking_method", Value: "NONE"})
+	opts, diags := ast.ParseOptions(optLedger)
+	if len(diags) > 0 {
+		t.Fatalf("ParseOptions: %v", diags)
+	}
+
+	// Open without explicit booking; the option should resolve it to NONE.
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Brokerage", ast.BookingDefault),
+		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
+	)
+
+	r := NewReducerWithOptions(ledger.All(), opts)
+	_, errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v", errs)
+	}
+	if got, want := r.booking["Assets:Brokerage"], ast.BookingNone; got != want {
+		t.Errorf("booking[Assets:Brokerage] = %v, want %v", got, want)
+	}
+}
+
+// TestReducerWalk_ExplicitBookingIgnoresOption confirms that an explicit
+// booking keyword on the Open directive is never overridden by the option.
+func TestReducerWalk_ExplicitBookingIgnoresOption(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	optLedger := mkLedger(&ast.Option{Key: "booking_method", Value: "NONE"})
+	opts, diags := ast.ParseOptions(optLedger)
+	if len(diags) > 0 {
+		t.Fatalf("ParseOptions: %v", diags)
+	}
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:Stock", ast.BookingFIFO),
+	)
+	r := NewReducerWithOptions(ledger.All(), opts)
+	_, errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v", errs)
+	}
+	if got, want := r.booking["Assets:Stock"], ast.BookingFIFO; got != want {
+		t.Errorf("booking[Assets:Stock] = %v, want %v (explicit wins over option)", got, want)
+	}
+}
+
 // TestReducerWalk_BeforeNilForFirstTouch documents the before-snapshot
 // contract: an account that has not been touched before a transaction
 // must appear in before with a nil *Inventory rather than an empty

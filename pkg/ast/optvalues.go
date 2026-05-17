@@ -518,6 +518,14 @@ func newDefaultRegistry() *registry {
 		parse:        parseStringOption,
 		defaultValue: "",
 	}))
+	// booking_method: default for Open directives that omit the booking keyword.
+	// Consumer: ast.ResolveBookingMethod; validated at resolution time, not parse time.
+	mustRegisterDefault(r.register(spec{
+		key:          "booking_method",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "STRICT",
+	}))
 	mustRegisterDefault(r.register(spec{
 		key:          "long_string_maxlines",
 		kind:         KindInt,

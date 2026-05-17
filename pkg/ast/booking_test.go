@@ -4,6 +4,159 @@ import (
 	"testing"
 )
 
+// TestResolveBookingMethod covers every row of the locked semantics matrix.
+func TestResolveBookingMethod(t *testing.T) {
+	span := Span{Start: Position{Filename: "test.bean", Line: 3}}
+
+	// Helper to build an Open with a given booking method and span.
+	open := func(m BookingMethod) *Open {
+		return &Open{Account: "Assets:Test", Booking: m, Span: span}
+	}
+
+	// mkOpts builds an OptionValues with a specific booking_method value.
+	mkOpts := func(raw string) *OptionValues {
+		v := NewOptionValues()
+		_ = v.set("booking_method", raw) // parseStringOption never errors
+		return v
+	}
+
+	tests := []struct {
+		name       string
+		d          *Open
+		opts       *OptionValues
+		wantMethod BookingMethod
+		wantDiag   bool
+	}{
+		// Explicit booking on directive: option is ignored.
+		{
+			name:       "explicit strict ignores option",
+			d:          open(BookingStrict),
+			opts:       mkOpts("NONE"),
+			wantMethod: BookingStrict,
+		},
+		{
+			name:       "explicit fifo ignores option",
+			d:          open(BookingFIFO),
+			opts:       mkOpts("LIFO"),
+			wantMethod: BookingFIFO,
+		},
+		{
+			name:       "explicit lifo ignores option",
+			d:          open(BookingLIFO),
+			opts:       mkOpts("STRICT"),
+			wantMethod: BookingLIFO,
+		},
+		{
+			name:       "explicit none ignores option",
+			d:          open(BookingNone),
+			opts:       mkOpts("FIFO"),
+			wantMethod: BookingNone,
+		},
+		{
+			name:       "explicit average ignores option",
+			d:          open(BookingAverage),
+			opts:       mkOpts("NONE"),
+			wantMethod: BookingAverage,
+		},
+
+		// BookingDefault + option unset or empty → BookingStrict, no diagnostic.
+		{
+			name:       "default + nil opts → strict",
+			d:          open(BookingDefault),
+			opts:       nil,
+			wantMethod: BookingStrict,
+		},
+		{
+			name:       "default + empty option → strict",
+			d:          open(BookingDefault),
+			opts:       mkOpts(""),
+			wantMethod: BookingStrict,
+		},
+		{
+			name:       "default + default opts → strict",
+			d:          open(BookingDefault),
+			opts:       NewOptionValues(),
+			wantMethod: BookingStrict,
+		},
+
+		// BookingDefault + recognized keyword → corresponding method.
+		{
+			name:       "default + STRICT",
+			d:          open(BookingDefault),
+			opts:       mkOpts("STRICT"),
+			wantMethod: BookingStrict,
+		},
+		{
+			name:       "default + FIFO",
+			d:          open(BookingDefault),
+			opts:       mkOpts("FIFO"),
+			wantMethod: BookingFIFO,
+		},
+		{
+			name:       "default + LIFO",
+			d:          open(BookingDefault),
+			opts:       mkOpts("LIFO"),
+			wantMethod: BookingLIFO,
+		},
+		{
+			name:       "default + NONE",
+			d:          open(BookingDefault),
+			opts:       mkOpts("NONE"),
+			wantMethod: BookingNone,
+		},
+		{
+			name:       "default + AVERAGE",
+			d:          open(BookingDefault),
+			opts:       mkOpts("AVERAGE"),
+			wantMethod: BookingAverage,
+		},
+
+		// BookingDefault + unknown value → BookingStrict + Error diagnostic.
+		{
+			name:       "default + unknown → strict + diag",
+			d:          open(BookingDefault),
+			opts:       mkOpts("BOGUS"),
+			wantMethod: BookingStrict,
+			wantDiag:   true,
+		},
+		{
+			name:       "default + lowercase → strict + diag",
+			d:          open(BookingDefault),
+			opts:       mkOpts("strict"),
+			wantMethod: BookingStrict,
+			wantDiag:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, diags := ResolveBookingMethod(tt.d, tt.opts)
+			if got != tt.wantMethod {
+				t.Errorf("ResolveBookingMethod() method = %v, want %v", got, tt.wantMethod)
+			}
+			if tt.wantDiag {
+				if len(diags) == 0 {
+					t.Fatalf("ResolveBookingMethod() diags = nil, want non-empty")
+				}
+				d := diags[0]
+				if d.Code != invalidOptionCode {
+					t.Errorf("diag.Code = %q, want %q", d.Code, invalidOptionCode)
+				}
+				if d.Severity != Error {
+					t.Errorf("diag.Severity = %v, want Error", d.Severity)
+				}
+				if d.Span != span {
+					t.Errorf("diag.Span = %v, want %v", d.Span, span)
+				}
+			} else {
+				if len(diags) != 0 {
+					t.Errorf("ResolveBookingMethod() unexpected diags: %v", diags)
+				}
+			}
+		})
+	}
+}
+
 func TestParseBookingMethod(t *testing.T) {
 	tests := []struct {
 		name    string

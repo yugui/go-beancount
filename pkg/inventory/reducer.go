@@ -25,6 +25,7 @@ import (
 // non-Transaction directives pass through by reference.
 type Reducer struct {
 	directives iter.Seq2[int, ast.Directive]
+	opts       *ast.OptionValues
 	booking    map[ast.Account]ast.BookingMethod
 	state      map[ast.Account]*Inventory
 	errs       []Error
@@ -33,8 +34,22 @@ type Reducer struct {
 // NewReducer returns a Reducer that iterates directives on each
 // [Reducer.Walk] call. The sequence MUST be replayable
 // (e.g. [ast.Ledger.All]) and must not be mutated between calls.
+// Option-dependent behavior (e.g. the "booking_method" fallback for
+// Open directives without an explicit keyword) uses the registry
+// defaults. To supply per-ledger option values, use
+// [NewReducerWithOptions].
 func NewReducer(directives iter.Seq2[int, ast.Directive]) *Reducer {
 	return &Reducer{directives: directives}
+}
+
+// NewReducerWithOptions is like [NewReducer] but consults opts for any
+// option-dependent behavior the reducer needs. Passing nil opts is
+// equivalent to calling [NewReducer].
+//
+// Diagnostics from option resolution are silently consumed; the canonical
+// emitter is the validations plugin via accountstate.Build.
+func NewReducerWithOptions(directives iter.Seq2[int, ast.Directive], opts *ast.OptionValues) *Reducer {
+	return &Reducer{directives: directives, opts: opts}
 }
 
 // VisitFunc is called once per [ast.Transaction] during [Reducer.Walk].
@@ -83,7 +98,8 @@ func (r *Reducer) Walk(visit VisitFunc) ([]ast.Directive, []Error) {
 	for _, d := range r.directives {
 		switch d := d.(type) {
 		case *ast.Open:
-			r.booking[d.Account] = d.Booking
+			method, _ := ast.ResolveBookingMethod(d, r.opts)
+			r.booking[d.Account] = method
 			out = append(out, d)
 		case *ast.Close:
 			out = append(out, d)
