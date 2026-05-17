@@ -365,26 +365,41 @@ func TestForBalanceAssertion(t *testing.T) {
 	}
 }
 
-// TestInfer_ToleranceMultiplierAlias verifies that setting option "tolerance_multiplier"
-// produces the same inferred tolerance as setting "inferred_tolerance_multiplier"
-// with the same value.
+// TestInfer_ToleranceMultiplierAlias verifies that the deprecated
+// alias inferred_tolerance_multiplier and the canonical
+// tolerance_multiplier produce identical inferred tolerances. The
+// write redirect (see ast.OptionValues.set) means the canonical slot
+// receives the value regardless of which name the source ledger used.
 func TestInfer_ToleranceMultiplierAlias(t *testing.T) {
 	pos := amtStr(t, "100.00", "USD") // exp -2
 	postings := []ast.Posting{{Account: "Assets:Cash", Amount: &pos}}
 
-	viaAlias := mustOpts(t, map[string]string{"tolerance_multiplier": "1.0"})
-	viaDirect := mustOpts(t, map[string]string{"inferred_tolerance_multiplier": "1.0"})
+	viaCanonical := mustOpts(t, map[string]string{"tolerance_multiplier": "1.0"})
+	viaDeprecated := mustOpts(t, map[string]string{"inferred_tolerance_multiplier": "1.0"})
 
-	tolAlias, err := tolerance.Infer(postings, viaAlias, []string{"USD"})
+	tolCanonical, err := tolerance.Infer(postings, viaCanonical, []string{"USD"})
 	if err != nil {
-		t.Fatalf("Infer via alias: %v", err)
+		t.Fatalf("Infer via tolerance_multiplier: %v", err)
 	}
-	tolDirect, err := tolerance.Infer(postings, viaDirect, []string{"USD"})
+	tolDeprecated, err := tolerance.Infer(postings, viaDeprecated, []string{"USD"})
 	if err != nil {
-		t.Fatalf("Infer via direct: %v", err)
+		t.Fatalf("Infer via inferred_tolerance_multiplier: %v", err)
 	}
-	if tolAlias["USD"].Cmp(tolDirect["USD"]) != 0 {
-		t.Errorf("tolerance via alias = %s, want %s (same as direct)", tolAlias["USD"].Text('f'), tolDirect["USD"].Text('f'))
+	if tolCanonical["USD"].Cmp(tolDeprecated["USD"]) != 0 {
+		t.Errorf("tolerance via canonical = %s, via deprecated = %s; want equal (alias write redirect)",
+			tolCanonical["USD"].Text('f'), tolDeprecated["USD"].Text('f'))
+	}
+
+	// Verify the user-set multiplier actually takes effect (sanity check
+	// against accidentally falling back to the default).
+	viaDefault := mustOpts(t, map[string]string{})
+	tolDefault, err := tolerance.Infer(postings, viaDefault, []string{"USD"})
+	if err != nil {
+		t.Fatalf("Infer with defaults: %v", err)
+	}
+	if tolCanonical["USD"].Cmp(tolDefault["USD"]) == 0 {
+		t.Errorf("tolerance with multiplier=1.0 should differ from default=0.5; both got %s",
+			tolCanonical["USD"].Text('f'))
 	}
 }
 

@@ -296,37 +296,97 @@ Three concrete rules:
   `SerializeChecked`; the check-tier ledger carries the same profile
   populated at load time.
 
-## Future extension points
+## Implemented features
 
-### Option-driven override (`option "display_precision"`)
+### Option-driven override (`option "display_precision"`) — IMPLEMENTED
 
-Adding support for `option "display_precision" "USD:0.01"` does not require
-any consumer-side changes. The new behaviour fits as a separate
-`DisplayContext` implementation that decorates a `PrecisionProfile`:
+`option "display_precision" "USD:0.01"` is fully wired. The implementation:
 
-- Parse the option value into `map[string]int` (fractional-digit count
-  derived from the example Decimal).
-- Wrap the underlying `PrecisionProfile` with a struct whose `Precision`
-  returns the override when the currency is in the map and delegates to
-  the wrapped profile otherwise.
-- Plumb the wrapped value into `formatopt.Options.DisplayContext` (already
-  an interface field) and through the beancompat serializer.
+- Registers `display_precision` as `KindIntMap`; parser `parseDisplayPrecisionEntry`
+  converts an example decimal to a fractional-digit count (`"0.01"` → 2).
+- `DisplayPrecisionContext` in `pkg/ast/precision_profile.go` wraps a
+  `*PrecisionProfile` and overrides `Precision(currency)` from the map. The
+  struct structurally satisfies `formatopt.DisplayContext`; callers (including
+  tests) construct it inline from `ledger.PrecisionProfile` and
+  `ledger.Options.IntMap("display_precision")` and pass it to
+  `format.WithDisplayContext`.
+- The beancompat serializer emits `display_precision` from the generic `KindIntMap`
+  path; `display_precision_by_currency` remains a separately-derived view from
+  `PrecisionProfile`. The option-vs-derived-view split is preserved at every emit point.
 
-The bookkeeping/override split documented above is what makes this addition
-local: the formatter and the serializer stay untouched.
+A `pkg/ast`-side helper that wraps the inline construction was deliberately
+not added: no production caller exists today to dictate the right shape,
+and a helper layer can be introduced when the first real consumer (e.g. a
+ledger-aware CLI) lands.
 
-### `options_coverage.json` and wider option serialization
+### `options_coverage` fixture — IMPLEMENTED
 
-A larger task than this document covers. It requires:
+The upstream `parse/options_coverage` beancompat fixture passes (both Go and Python
+denylists are empty). All ~30 `BeancountOptions` keys are registered in the
+default registry and emitted by `serializeOptions` via `Snapshot()`.
 
-- Adding map-typed entries to the `OptionValues` registry — `string →
-  Decimal` for `inferred_tolerance_default`, `string → Decimal` for the
-  `display_precision` *option*, integer scalars for `long_string_maxlines`,
-  and so on.
-- Wiring approximately 30 BeancountOptions keys through the beancompat
-  serializer.
-- Distinguishing **the option** (settable via `option` directives) from
-  **the derived view** (computed from the ledger) at every emit point.
+### Comma rendering (`option "render_commas"`) — IMPLEMENTED (storage only)
 
-The [naming-trap](#the-naming-trap) section above is the single most
-important piece of context for that work.
+`render_commas` is registered as `KindBool` (default `false`). Callers read
+it via `ledger.Options.Bool("render_commas")` and pass the result to
+`format.WithCommaGrouping`. No production caller exists yet; the canonical
+wiring is exercised in tests.
+
+### `tolerance_multiplier` / `inferred_tolerance_multiplier` alias — IMPLEMENTED
+
+`tolerance_multiplier` is the canonical key; `inferred_tolerance_multiplier`
+is registered as its deprecated alias with `aliasOf: "tolerance_multiplier"`.
+Writes via either name reach the canonical slot through a one-directional
+write redirect in `OptionValues.set`; the deprecated slot is never written to
+after init, so it always reports its registered default in `Snapshot()`.
+This mirrors upstream beancount's `grammar.py:393-396`. Validation consumers
+(`pkg/validation/internal/tolerance`) read the canonical key.
+
+## Known divergences / future work
+
+The following options are registered with upstream defaults for cross-tool
+emission parity (so `Snapshot()` and the beancompat serializer produce the
+expected keys), but their consumers do not yet exist in Go.
+
+| Option | Upstream consumer | Deferral reason |
+|---|---|---|
+| `name_assets`, `name_liabilities`, `name_equity`, `name_income`, `name_expenses` | `get_account_types()` — account-type classification | Account-type classification subsystem not present. |
+| `account_previous_balances`, `account_previous_earnings`, `account_previous_conversions`, `account_current_earnings`, `account_current_conversions` | `get_previous_accounts()` / `get_current_accounts()` | No derived-account computation subsystem. |
+| `account_unrealized_gains` | `get_unrealized_account()` — unrealized-gains plugin | Unrealized-gains plugin not present. |
+| `account_rounding` | Rounding-error plugin | Plugin not present. Note: upstream default is Python `None`; Go uses `""`. The `options_coverage` fixture sets this option explicitly, so the default divergence is not exercised by containment matching. |
+| `conversion_currency` | Zero-rate conversion / currency conversion logic | No conversion logic in Go. |
+| `commodities` | Auto-populated by the parser (output key) | Parse-time commodity enumeration deferred; emits `[]`. |
+| `plugin` (option form) | Plugin runner (v2 captured form) | v3 directive form is the supported path; option form emits `[]`. |
+| `documents` | Document-discovery search paths | Document discovery not present. |
+| `pythonpath`, `insert_pythonpath` | Python sys.path manipulation | Python-specific; no Go analog. |
+| `allow_pipe_separator`, `allow_deprecated_none_for_tags_and_links` | Deprecated parser flags | Go parser does not implement these; stored as inert booleans. |
+| `long_string_maxlines` | Parser warning threshold | No warning channel for this in Go yet. |
+
+### Deliberate behavioral divergences
+
+- **`tolerance_multiplier` / `inferred_tolerance_default` vs upstream `get_balance_tolerance`.**
+  Upstream consults `inferred_tolerance_default` for balance assertions whose asserted
+  amount has zero fractional digits, even when posting-level inference is computable.
+  Go applies a simpler precedence chain (posting-level > per-currency default) uniformly
+  across all three computation functions (`Infer`, `ForAmount`, `ForBalanceAssertion`).
+  The divergence is documented in `pkg/validation/internal/tolerance/doc.go`. It is
+  reopenable if a real consumer encounters the integer-assertion nuance.
+
+- **No deprecation diagnostic on `inferred_tolerance_multiplier` writes.**
+  Upstream beancount's `grammar.py:387-391` emits a `DeprecatedError` warning
+  when the deprecated key is used. Go silently accepts and redirects the write
+  (the alias mechanism itself matches upstream). A warning-severity diagnostic
+  channel for option parsing is the prerequisite; once it exists, the deprecation
+  warning is a small addition.
+
+### Option-to-format wiring
+
+Callers wire option values into formatter/printer options inline at the
+call site:
+
+- `format.WithDisplayContext(&ast.DisplayPrecisionContext{Profile: ledger.PrecisionProfile, Overrides: ledger.Options.IntMap("display_precision")})`
+- `format.WithCommaGrouping(ledger.Options.Bool("render_commas"))`
+
+No `pkg/ast`-side helper wraps these patterns today. A helper layer can be
+introduced when a production caller (e.g. a ledger-aware CLI) defines the
+right shape.
