@@ -361,6 +361,10 @@ func (pr *postingResolution) addCashAugmentation(p *ast.Posting, weightCurrency 
 // installed, except for the cash-sentinel step (zero-value Lot): in
 // that case the parse-tier Cost holder is left alone so
 // [PostingWeight] falls through to the price branch.
+//
+// Unlike [postingResolution.addMultiLotReduction], an @@ total-form
+// Price needs no rewrite here: the single child carries the parent's
+// full |units|, so the parent's total still applies to it intact.
 func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
@@ -391,7 +395,27 @@ func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step Reductio
 // matched lots with different cost currencies (e.g. -20 AAPL {} can
 // reduce both AAPL{USD} and AAPL{EUR} lots). step.Lot.Currency is
 // always non-empty for multi-step results.
+//
+// When the parent posting carries an @@ total-form price annotation
+// (Price.IsTotal == true), each child's Price is replaced with the
+// per-unit equivalent (IsTotal=false, Amount.Number = total/|units|).
+// The total-form total is bound to the parent's |units|; each
+// synthetic child carries only a slice of those units, so reusing the
+// parent's total verbatim would overstate the price-side weight by a
+// factor of (#children). The per-unit form is the invariant under
+// splitting, mirroring upstream's parser-time @@-normalization at the
+// post-booking AST shape that downstream plugins observe (notably
+// sellgains). The replacement reuses step.SalePricePer, already
+// computed by [fillRealizedGain] from the same division, so the two
+// per-unit views (Reduction.SalePricePer and child.Price) are
+// numerically equal by construction.
+//
+// The asymmetry with [postingResolution.addSingleLotReduction] is
+// intentional: a single-lot child carries the parent's full |units|,
+// so a total-form Price is still correct for it and no rewrite is
+// needed.
 func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep) {
+	rewriteTotalPrice := p.Price != nil && p.Price.IsTotal && p.Price.Amount.Currency != ""
 	// step (the range value) is a fresh per-iteration variable in
 	// Go 1.22+, so &step is heap-owned by the BookedPosting below and
 	// does not alias the caller's steps slice — symmetric with
@@ -405,6 +429,17 @@ func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []Reduct
 			Currency: p.Amount.Currency,
 		}
 		child.Cost = step.Lot.Clone()
+		if rewriteTotalPrice && step.SalePricePer != nil {
+			// Span is left at its zero value: the per-unit child Price
+			// has no source-text origin to anchor to.
+			child.Price = &ast.PriceAnnotation{
+				Amount: ast.Amount{
+					Number:   *ast.CloneDecimal(step.SalePricePer),
+					Currency: p.Price.Amount.Currency,
+				},
+				IsTotal: false,
+			}
+		}
 		pr.booked = append(pr.booked, BookedPosting{
 			Account:   p.Account,
 			Units:     *child.Amount.Clone(),

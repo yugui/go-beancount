@@ -524,3 +524,43 @@ func TestTotalPricePositiveUnits(t *testing.T) {
 		t.Errorf("len(res.Diagnostics) = %d, want 0 (positive-units @@ contributes -total); errors = %v", len(res.Diagnostics), res.Diagnostics)
 	}
 }
+
+// TestTotalPriceAfterFifoSplit: pins the contract sellgains relies on
+// when a single user-written @@ sale fans out into per-lot children
+// during booking. Each synthetic child carries the per-unit equivalent
+// of the parent's total (IsTotal=false, total/|units|), so the price
+// side sums to the parent's total exactly once — no duplication. The
+// AST below mirrors what [pkg/inventory.postingResolution.addMultiLotReduction]
+// produces for the bug-report ledger (`-1,000 POINT { 0.3 JPY } @@ 200 JPY`
+// draining lots of 500 + 400 + 100 with per-unit 0.2). The regression
+// being guarded: a prior version preserved the parent's @@ 200 on each
+// child, summing price=600 against proceeds=200 and falsely flagging.
+func TestTotalPriceAfterFifoSplit(t *testing.T) {
+	mkChild := func(units string) ast.Posting {
+		a := amt(t, units, "POINT")
+		c := dec(t, "0.3")
+		pr := amt(t, "0.2", "JPY")
+		return ast.Posting{
+			Account: "Assets:A",
+			Amount:  &a,
+			Cost:    &ast.CostSpec{PerUnit: &c, Currency: "JPY"},
+			Price:   &ast.PriceAnnotation{Amount: pr, IsTotal: false},
+		}
+	}
+	tx := txn(2026, 5, 4,
+		plainPosting(t, "Expenses:E", "200", "JPY"),
+		mkChild("-500"),
+		mkChild("-400"),
+		mkChild("-100"),
+		plainPosting(t, "Income:I", "100", "JPY"),
+	)
+	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
+
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("len(res.Diagnostics) = %d, want 0 (per-unit children sum to 200 JPY, matching Expenses); errors = %v", len(res.Diagnostics), res.Diagnostics)
+	}
+}

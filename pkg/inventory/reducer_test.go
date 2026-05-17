@@ -2322,6 +2322,202 @@ func TestReducerWalk_MultiCurrencyMultiLotReductionGrouping(t *testing.T) {
 	}
 }
 
+// TestReducerWalk_MultiLotReduction_TotalPriceNormalizedToPerUnit pins
+// the post-booking AST shape for a sale whose @@ total-form price
+// spans several lots. The multi-lot expansion must rewrite each
+// child's Price to the per-unit equivalent (IsTotal=false, Number =
+// total/|units|) so downstream plugins (notably sellgains) see a
+// single per-unit valuation rate across siblings rather than the
+// parent's total replicated on every child.
+func TestReducerWalk_MultiLotReduction_TotalPriceNormalizedToPerUnit(t *testing.T) {
+	openDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	buy1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	buy2 := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	buy3 := time.Date(2025, 1, 3, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+
+	// Pre-compute the matching JPY counter-postings rather than relying
+	// on auto-balancing: keeps the test focused on the multi-lot Price
+	// rewrite.
+	mkBuy := func(date time.Time, qty, jpy string) *ast.Transaction {
+		return mkTxn(date,
+			&ast.Posting{
+				Account: "Assets:A",
+				Amount:  mkAmountPtr(t, qty, "POINT"),
+				Cost: &ast.CostSpec{
+					PerUnit:  decimalPtr(t, "0.3"),
+					Currency: "JPY",
+				},
+			},
+			&ast.Posting{Account: "Income:I", Amount: mkAmountPtr(t, jpy, "JPY")},
+		)
+	}
+
+	sell := mkTxn(sellDate,
+		&ast.Posting{Account: "Expenses:E", Amount: mkAmountPtr(t, "200", "JPY")},
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "-1000", "POINT"),
+			Cost: &ast.CostSpec{
+				PerUnit:  decimalPtr(t, "0.3"),
+				Currency: "JPY",
+			},
+			Price: &ast.PriceAnnotation{Amount: mkAmount(t, "200", "JPY"), IsTotal: true},
+		},
+		&ast.Posting{Account: "Income:I", Amount: mkAmountPtr(t, "100", "JPY")},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingFIFO),
+		mkOpen(openDate, "Income:I", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:E", ast.BookingDefault),
+		mkBuy(buy1, "500", "-150"),
+		mkBuy(buy2, "400", "-120"),
+		mkBuy(buy3, "200", "-60"),
+		sell,
+	)
+
+	r := NewReducer(ledger.All())
+	directives, errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+
+	var booked *ast.Transaction
+	for _, d := range directives {
+		tx, ok := d.(*ast.Transaction)
+		if !ok || !tx.Date.Equal(sellDate) {
+			continue
+		}
+		booked = tx
+		break
+	}
+	if booked == nil {
+		t.Fatalf("booked sell transaction not found in Walk output")
+	}
+
+	// Collect children of the -1000 POINT parent: each carries Cost and
+	// is in Assets:A. There should be 3 (500 + 400 + 100 across the
+	// three FIFO lots).
+	var children []*ast.Posting
+	for i := range booked.Postings {
+		p := &booked.Postings[i]
+		if p.Account == "Assets:A" && p.Cost != nil {
+			children = append(children, p)
+		}
+	}
+	if len(children) != 3 {
+		t.Fatalf("multi-lot expansion produced %d Assets:A children, want 3", len(children))
+	}
+
+	wantPerUnit := decimalVal(t, "0.2")
+	for i, c := range children {
+		if c.Price == nil {
+			t.Errorf("child[%d].Price = nil, want per-unit JPY", i)
+			continue
+		}
+		if c.Price.IsTotal {
+			t.Errorf("child[%d].Price.IsTotal = true, want false (per-unit form on synthetic child)", i)
+		}
+		if c.Price.Amount.Currency != "JPY" {
+			t.Errorf("child[%d].Price.Amount.Currency = %q, want JPY", i, c.Price.Amount.Currency)
+		}
+		if c.Price.Amount.Number.Cmp(&wantPerUnit) != 0 {
+			t.Errorf("child[%d].Price.Amount.Number = %s, want 0.2", i, c.Price.Amount.Number.Text('f'))
+		}
+	}
+}
+
+// TestReducerWalk_MultiLotReduction_PerUnitPriceUnchanged guards the
+// regression-safe branch: when the parent's Price is already per-unit
+// (IsTotal=false), the multi-lot rewrite must leave each child's
+// Price alone (per-unit is the invariant under splitting).
+func TestReducerWalk_MultiLotReduction_PerUnitPriceUnchanged(t *testing.T) {
+	openDate := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	buy1 := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	buy2 := time.Date(2025, 1, 2, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+
+	mkBuy := func(date time.Time, qty, jpy string) *ast.Transaction {
+		return mkTxn(date,
+			&ast.Posting{
+				Account: "Assets:A",
+				Amount:  mkAmountPtr(t, qty, "POINT"),
+				Cost: &ast.CostSpec{
+					PerUnit:  decimalPtr(t, "0.3"),
+					Currency: "JPY",
+				},
+			},
+			&ast.Posting{Account: "Income:I", Amount: mkAmountPtr(t, jpy, "JPY")},
+		)
+	}
+
+	sell := mkTxn(sellDate,
+		&ast.Posting{Account: "Expenses:E", Amount: mkAmountPtr(t, "200", "JPY")},
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "-1000", "POINT"),
+			Cost: &ast.CostSpec{
+				PerUnit:  decimalPtr(t, "0.3"),
+				Currency: "JPY",
+			},
+			Price: &ast.PriceAnnotation{Amount: mkAmount(t, "0.2", "JPY"), IsTotal: false},
+		},
+		&ast.Posting{Account: "Income:I", Amount: mkAmountPtr(t, "100", "JPY")},
+	)
+
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingFIFO),
+		mkOpen(openDate, "Income:I", ast.BookingDefault),
+		mkOpen(openDate, "Expenses:E", ast.BookingDefault),
+		mkBuy(buy1, "600", "-180"),
+		mkBuy(buy2, "500", "-150"),
+		sell,
+	)
+
+	r := NewReducer(ledger.All())
+	directives, errs := r.Walk(nil)
+	if len(errs) != 0 {
+		t.Fatalf("Walk errs = %v, want none", errs)
+	}
+
+	var booked *ast.Transaction
+	for _, d := range directives {
+		tx, ok := d.(*ast.Transaction)
+		if !ok || !tx.Date.Equal(sellDate) {
+			continue
+		}
+		booked = tx
+		break
+	}
+	if booked == nil {
+		t.Fatalf("booked sell transaction not found")
+	}
+
+	wantPerUnit := decimalVal(t, "0.2")
+	count := 0
+	for i := range booked.Postings {
+		p := &booked.Postings[i]
+		if p.Account != "Assets:A" || p.Cost == nil {
+			continue
+		}
+		count++
+		if p.Price == nil {
+			t.Errorf("child %d: Price = nil, want per-unit JPY", i)
+			continue
+		}
+		if p.Price.IsTotal {
+			t.Errorf("child %d: Price.IsTotal = true, want false (per-unit input must remain per-unit)", i)
+		}
+		if p.Price.Amount.Number.Cmp(&wantPerUnit) != 0 {
+			t.Errorf("child %d: Price.Amount.Number = %s, want 0.2", i, p.Price.Amount.Number.Text('f'))
+		}
+	}
+	if count != 2 {
+		t.Errorf("Assets:A children count = %d, want 2", count)
+	}
+}
+
 // ---- Drop-application: applyDrops rebuilds txn.Postings ----
 
 // TestReducerWalk_DroppedGroupOmittedFromTxnPostings verifies that the
