@@ -2847,7 +2847,6 @@ func TestFormatOptionValue(t *testing.T) {
 	})
 
 	t.Run("KindIntMap_empty", func(t *testing.T) {
-		// no KindIntMap key registered yet; Step 4 lands display_precision.
 		e := ast.OptionEntry{Kind: ast.KindIntMap}
 		raw, err := formatOptionValue(e)
 		if err != nil {
@@ -2858,10 +2857,45 @@ func TestFormatOptionValue(t *testing.T) {
 		}
 	})
 
-	// TODO(step-4): re-add KindIntMap_one_entry, KindIntMap_multiple_sorted, and
-	// KindIntMap_negative_value via display_precision once its parser exists.
-	// Step 4's parser takes decimal form ("USD:0.01") and derives the digit count
-	// via apd.Decimal.Exponent, so parseIntMapEntry is not suitable.
+	t.Run("KindIntMap_one_entry", func(t *testing.T) {
+		// "USD:0.01" → 2 fractional digits stored as int.
+		e := makeEntry(t, "display_precision", "USD:0.01")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `{"USD":2}` {
+			t.Errorf("got %s, want %q", raw, `{"USD":2}`)
+		}
+	})
+
+	t.Run("KindIntMap_multiple_sorted", func(t *testing.T) {
+		// Output must be alphabetically sorted by key.
+		l := &ast.Ledger{}
+		l.Insert(&ast.Option{Key: "display_precision", Value: "USD:0.01"})
+		l.Insert(&ast.Option{Key: "display_precision", Value: "JPY:1"})
+		opts, diags := ast.ParseOptions(l)
+		if len(diags) > 0 {
+			t.Fatalf("ParseOptions diagnostics: %v", diags)
+		}
+		var e ast.OptionEntry
+		for _, en := range opts.Snapshot() {
+			if en.Key == "display_precision" {
+				e = en
+				break
+			}
+		}
+		if e.Key == "" {
+			t.Fatal("display_precision entry not found in snapshot")
+		}
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `{"JPY":0,"USD":2}` {
+			t.Errorf("got %s, want %q", raw, `{"JPY":0,"USD":2}`)
+		}
+	})
 
 	t.Run("KindDecimal_negative", func(t *testing.T) {
 		e := makeEntry(t, "inferred_tolerance_multiplier", "-0.5")
@@ -2912,7 +2946,7 @@ func TestSerializeOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SerializeParsed: %v", err)
 		}
-		want := `{"account_current_conversions":"Conversions:Current","account_current_earnings":"Earnings:Current","account_previous_balances":"Opening-Balances","account_previous_conversions":"Conversions:Previous","account_previous_earnings":"Earnings:Previous","account_rounding":"","account_unrealized_gains":"Earnings:Unrealized","allow_deprecated_none_for_tags_and_links":false,"allow_pipe_separator":false,"commodities":[],"conversion_currency":"NOTHING","documents":[],"infer_tolerance_from_cost":false,"inferred_tolerance_default":{},"inferred_tolerance_multiplier":"0.5","insert_pythonpath":false,"long_string_maxlines":64,"name_assets":"Assets","name_equity":"Equity","name_expenses":"Expenses","name_income":"Income","name_liabilities":"Liabilities","operating_currency":[],"plugin":[],"plugin_processing_mode":"","pythonpath":[],"title":""}`
+		want := `{"account_current_conversions":"Conversions:Current","account_current_earnings":"Earnings:Current","account_previous_balances":"Opening-Balances","account_previous_conversions":"Conversions:Previous","account_previous_earnings":"Earnings:Previous","account_rounding":"","account_unrealized_gains":"Earnings:Unrealized","allow_deprecated_none_for_tags_and_links":false,"allow_pipe_separator":false,"commodities":[],"conversion_currency":"NOTHING","display_precision":{},"documents":[],"infer_tolerance_from_cost":false,"inferred_tolerance_default":{},"inferred_tolerance_multiplier":"0.5","insert_pythonpath":false,"long_string_maxlines":64,"name_assets":"Assets","name_equity":"Equity","name_expenses":"Expenses","name_income":"Income","name_liabilities":"Liabilities","operating_currency":[],"plugin":[],"plugin_processing_mode":"","pythonpath":[],"title":""}`
 		if string(got.Options) != want {
 			t.Errorf("default Options envelope mismatch:\ngot  %s\nwant %s", got.Options, want)
 		}

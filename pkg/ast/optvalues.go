@@ -503,6 +503,14 @@ func newDefaultRegistry() *registry {
 		parse:        parseDecimalMapEntry,
 		defaultValue: map[string]*apd.Decimal(nil),
 	}))
+	// display_precision: per-currency display precision example (e.g. "USD:0.01").
+	// Consumer: DisplayPrecisionContext in pkg/ast.
+	mustRegisterDefault(r.register(spec{
+		key:          "display_precision",
+		kind:         KindIntMap,
+		parse:        parseDisplayPrecisionEntry,
+		defaultValue: map[string]int(nil),
+	}))
 
 	// Account-type names — options.py get_account_types(); consumer deferred
 	// (account-type classification subsystem not yet present).
@@ -734,4 +742,46 @@ func parseIntMapEntry(raw string) (any, error) {
 		return nil, fmt.Errorf("invalid integer %q for key %q: %w", val, key, err)
 	}
 	return mapEntry[int]{subKey: key, value: n}, nil
+}
+
+// parseDisplayPrecisionEntry parses raw as "CURRENCY:DECIMAL" where DECIMAL is
+// a positive example value (e.g. "USD:0.01"). The stored integer is the
+// fractional-digit count derived from the example's exponent: max(0, -exponent).
+// Rejects NaN, Infinity, negative, and zero values.
+func parseDisplayPrecisionEntry(raw string) (any, error) {
+	key, val, err := splitMapEntry(raw)
+	if err != nil {
+		return nil, err
+	}
+	d, _, err := apd.BaseContext.NewFromString(val)
+	if err != nil {
+		return nil, fmt.Errorf("invalid decimal %q for currency %q: %w", val, key, err)
+	}
+	digits, err := digitsFromDecimal(key, d)
+	if err != nil {
+		return nil, err
+	}
+	return mapEntry[int]{subKey: key, value: digits}, nil
+}
+
+// digitsFromDecimal validates d as a positive non-special decimal and returns
+// the fractional-digit count max(0, -d.Exponent).
+func digitsFromDecimal(currency string, d *apd.Decimal) (int, error) {
+	switch d.Form {
+	case apd.NaN, apd.NaNSignaling:
+		return 0, fmt.Errorf("NaN is not a valid precision example for %q", currency)
+	case apd.Infinite:
+		return 0, fmt.Errorf("infinity is not a valid precision example for %q", currency)
+	}
+	if d.Sign() < 0 {
+		return 0, fmt.Errorf("negative value %s is not a valid precision example for %q", d, currency)
+	}
+	if d.IsZero() {
+		return 0, fmt.Errorf("zero is not a valid precision example for %q; use %q for zero fractional digits", currency, currency+":1")
+	}
+	digits := 0
+	if d.Exponent < 0 {
+		digits = int(-d.Exponent)
+	}
+	return digits, nil
 }

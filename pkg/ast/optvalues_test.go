@@ -815,6 +815,80 @@ func TestSnapshotOrderAndKinds(t *testing.T) {
 	}
 }
 
+// TestParseDisplayPrecisionEntry tests the parser for the display_precision option.
+// Input is parsed via ParseOptions on a synthetic ledger so the test exercises
+// the full registered path using parseDisplayPrecisionEntry.
+func TestParseDisplayPrecisionEntry(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		wantKey string
+		wantVal int
+		wantErr bool
+	}{
+		{name: "two decimals", raw: "USD:0.01", wantKey: "USD", wantVal: 2},
+		{name: "integer one", raw: "USD:1", wantKey: "USD", wantVal: 0},
+		{name: "four decimals", raw: "USD:0.0005", wantKey: "USD", wantVal: 4},
+		{name: "one decimal", raw: "USD:1.5", wantKey: "USD", wantVal: 1},
+		{name: "scientific notation", raw: "USD:1E-3", wantKey: "USD", wantVal: 3},
+		{name: "trailing zero", raw: "USD:1.50", wantKey: "USD", wantVal: 2},
+		{name: "trimmed whitespace", raw: "  USD : 0.01  ", wantKey: "USD", wantVal: 2},
+		{name: "zero value", raw: "USD:0", wantErr: true},
+		{name: "negative value", raw: "USD:-0.01", wantErr: true},
+		{name: "NaN", raw: "USD:NaN", wantErr: true},
+		{name: "Infinity", raw: "USD:Inf", wantErr: true},
+		{name: "missing separator", raw: "USD", wantErr: true},
+		{name: "empty key", raw: ":0.01", wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := &Ledger{}
+			l.InsertAll([]Directive{
+				&Option{Key: "display_precision", Value: tc.raw},
+			})
+			v, diags := ParseOptions(l)
+			if tc.wantErr {
+				if len(diags) == 0 {
+					t.Errorf("ParseOptions(%q): want error, got none", tc.raw)
+				}
+				return
+			}
+			if len(diags) != 0 {
+				t.Fatalf("ParseOptions(%q): unexpected diags: %v", tc.raw, diags)
+			}
+			m := v.IntMap("display_precision")
+			got, ok := m[tc.wantKey]
+			if !ok {
+				t.Fatalf("IntMap[%q] missing, map = %v", tc.wantKey, m)
+			}
+			if got != tc.wantVal {
+				t.Errorf("IntMap[%q] = %d, want %d", tc.wantKey, got, tc.wantVal)
+			}
+		})
+	}
+}
+
+// TestParseDisplayPrecisionAccumulation verifies that multiple display_precision
+// directives accumulate correctly: union of sub-keys, last-write-wins per sub-key.
+func TestParseDisplayPrecisionAccumulation(t *testing.T) {
+	l := &Ledger{}
+	l.InsertAll([]Directive{
+		&Option{Key: "display_precision", Value: "USD:0.01"},
+		&Option{Key: "display_precision", Value: "JPY:1"},
+	})
+	v, diags := ParseOptions(l)
+	if len(diags) != 0 {
+		t.Fatalf("ParseOptions: unexpected diags: %v", diags)
+	}
+	m := v.IntMap("display_precision")
+	if m["USD"] != 2 {
+		t.Errorf("USD = %d, want 2", m["USD"])
+	}
+	if m["JPY"] != 0 {
+		t.Errorf("JPY = %d, want 0", m["JPY"])
+	}
+}
+
 // TestSnapshotDecimalNilDefault verifies that Snapshot on a KindDecimal spec
 // whose default is nil does not panic and returns nil from Decimal().
 func TestSnapshotDecimalNilDefault(t *testing.T) {
