@@ -8,14 +8,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
-// specIsEmpty reports whether a cost holder is structurally empty,
-// i.e. it carries no per-unit, no total, no date, and no label. A nil
-// holder and an empty "{}" CostSpec both count as empty for the
-// purpose of the cost-currency hint rule: in both cases the posting
-// has no cost-selection constraint of its own, so when a price
-// annotation is present its currency is used as the cost currency to
-// match against. A booked [*ast.Cost] is never empty (the reducer
-// always fills at least one of Number / PerUnit / Total).
+// specIsEmpty reports whether c is nil or structurally empty (no
+// per-unit, no total, no date, no label) — the cases for which the
+// price-currency hint rule applies. A booked [*ast.Cost] is never
+// empty.
 func specIsEmpty(c ast.CostHolder) bool {
 	if c == nil {
 		return true
@@ -29,18 +25,9 @@ func specIsEmpty(c ast.CostHolder) bool {
 	return c.GetLabel() == ""
 }
 
-// costNumberMissing reports whether a cost holder has neither a
-// per-unit nor a total cost number, signalling that the user wants a
-// lot tracked but expects the booking layer to fill in the cost from
-// context. A holder with at least one of PerUnit or Total set is
-// concrete enough for [ResolveCost] to handle on its own and is
-// therefore not "missing" in this sense; a nil holder means no cost
-// was requested at all (cash/no-lot augmentation) and is also not
-// "missing". A booked [*ast.Cost] is by definition concrete and
-// returns false unconditionally — the explicit IsBooked short-circuit
-// makes the contract testable rather than relying on the (currently
-// unwitnessed) invariant that the reducer's terminal pass populates
-// PerUnit or Total on every produced *Cost.
+// costNumberMissing reports whether c is a [*ast.CostSpec] with
+// neither PerUnit nor Total — a deferred cost the booking layer must
+// fill in. nil and booked [*ast.Cost] return false.
 func costNumberMissing(c ast.CostHolder) bool {
 	if c == nil {
 		return false
@@ -51,44 +38,34 @@ func costNumberMissing(c ast.CostHolder) bool {
 	return c.GetPerUnit() == nil && c.GetTotal() == nil
 }
 
-// BookedPosting is the per-posting outcome the reducer publishes to its
-// visitors. Augmenting postings carry a Lot; reducing postings carry a
-// Reduction; cash / no-cost postings carry neither. Multi-lot
-// reductions are expanded by the reducer into one BookedPosting per
-// matched lot, so each record holds at most one [ReductionStep].
-// Source aliases into the rebuilt ast.Transaction so callers may index
-// back into the transaction via Source without a reverse lookup; the
-// reducer assigns Source after rebuilding txn.Postings so it always
-// reflects the post-expansion identity of the posting.
+// BookedPosting is the per-posting outcome the reducer publishes to
+// its visitors. An augmenting posting carries a Lot; a reducing
+// posting carries a Reduction; a cash / no-cost posting carries
+// neither. Multi-lot reductions are expanded into one BookedPosting
+// per matched lot.
 type BookedPosting struct {
-	// Source is the posting this record was booked from. It is an
-	// alias into the originating ast.Transaction; it is never a copy.
+	// Source aliases the rebuilt posting in the transaction (never a
+	// copy), so callers may index back into txn.Postings via Source
+	// without a reverse lookup.
 	Source *ast.Posting
 	// Account is the account the posting was recorded against.
 	Account ast.Account
-	// Units is the signed unit amount routed through the inventory.
-	// For explicit postings this mirrors Source.Amount; for auto-
-	// postings it is the residual amount inferred by the reducer
-	// (see InferredAuto).
+	// Units is the signed amount routed through the inventory. For
+	// auto-postings it is the residual inferred by the reducer (see
+	// InferredAuto).
 	Units ast.Amount
-	// Lot is the resolved cost lot, set iff this was an augmentation
-	// whose posting carried a cost spec. For cash augmentations and
-	// reductions this is nil.
+	// Lot is the resolved cost lot for an augmentation; nil for cash
+	// augmentations and reductions.
 	Lot *Lot
-	// Reduction is the per-lot record of a reducing posting (single
-	// step; multi-lot reductions are expanded into siblings by the
-	// reducer). It is non-nil iff the posting was classified as a
-	// reduction.
+	// Reduction is the per-lot reduction record; nil unless the
+	// posting was classified as a reduction.
 	Reduction *ReductionStep
 	// InferredAuto is true when Units was inferred from the residual
-	// of a transaction's other postings rather than read directly
-	// from the posting's Amount field.
+	// of the transaction's other postings.
 	InferredAuto bool
 }
 
-// kind tags the routing decision made by [classify]: either the
-// posting augments the inventory with a new (or merged) lot, or it
-// reduces existing lots via the account's booking method.
+// kind tags the routing decision made by [classify].
 type kind int
 
 const (
@@ -96,52 +73,35 @@ const (
 	kindReduce
 )
 
-// classify decides whether a posting augments or reduces the given
-// inventory under booking method m. BookingNone always augments: a
-// sign-opposite posting under NONE creates a negative-units lot — i.e.
-// a short position — rather than reducing an existing lot.
+// classify decides whether a posting augments or reduces inv under
+// booking method m. BookingNone always augments — a sign-opposite
+// posting creates a short position rather than reducing an existing
+// lot.
 //
-// The cost-currency hint is computed from the posting:
+// The cost-currency hint, used to filter candidate lots before the
+// sign check, is p.Cost.GetCurrency() when non-empty; otherwise, for a
+// structurally-empty cost spec paired with a price annotation, the
+// price's currency (matching the matcher-side fallback). With no
+// hint, every position for the commodity is considered.
 //
-//   - p.Cost.GetCurrency() when non-empty;
-//   - fallback: a structurally-empty cost spec (absent or "{}") paired
-//     with a price annotation uses p.Price.Amount.Currency. This keeps
-//     classify's hint in sync with the matcher's empty-spec fallback in
-//     matcher.go, which also falls back to the price currency;
-//   - otherwise "" (commodity-only classification).
+// A zero-sign posting and an empty candidate set both classify as
+// augmentation. Otherwise the posting reduces iff its sign opposes
+// the first candidate's.
 //
-// If a hint is available the candidate lots are filtered to that cost
-// currency before the sign check. Otherwise the check uses every
-// position for the commodity.
-//
-// If no existing positions remain after filtering, the posting is
-// classified as an augmentation. If existing positions have the SAME
-// sign as the posting's amount, it is an augmentation; the OPPOSITE
-// sign is a reduction. A zero-sign posting is treated as an
-// augmentation because "same sign" cannot be established.
-//
-// inv may be nil, which is treated as an empty inventory (all postings
-// are augmentations). p.Amount must be non-nil; auto-postings are
-// handled by the reducer in Pass 2 before this function is reached.
+// inv may be nil (treated as empty). p.Amount must be non-nil; auto-
+// postings are resolved upstream by the reducer.
 func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 	if m == ast.BookingNone {
 		return kindAugment
 	}
 	if p == nil || p.Amount == nil {
-		// Auto-postings must be resolved before reaching classify.
-		// Defend against the invariant violation with a descriptive
-		// panic rather than silently returning augmentation: a nil
-		// amount here means the reducer missed a pass.
+		// invariant: auto-postings resolved upstream.
 		panic("inventory.classify: posting has nil Amount (auto-postings must be resolved upstream)")
 	}
 	if inv == nil {
 		return kindAugment
 	}
 
-	// Compute the cost-currency hint from the posting. A structurally-
-	// empty cost spec ({}) is equivalent to no spec for hinting
-	// purposes: the price annotation supplies the currency so the
-	// matcher's empty-{} fallback is reachable from bookOne.
 	hintCcy := ""
 	if p.Cost != nil {
 		hintCcy = p.Cost.GetCurrency()
@@ -163,60 +123,32 @@ func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 	if len(existing) == 0 {
 		return kindAugment
 	}
-	postingSign := p.Amount.Number.Sign()
-	if postingSign == 0 {
-		// Zero-unit posting: no opposite direction to detect, treat
-		// as augmentation. bookOne decides whether to emit a lot or
-		// reject it.
+	if p.Amount.Number.Sign() == 0 {
 		return kindAugment
 	}
-	// Existing positions may contain both signs under exotic ledgers;
-	// use the first candidate's sign as the reference, matching the
-	// plan pseudocode.
-	existingSign := existing[0].Units.Number.Sign()
-	if existingSign == postingSign {
+	if existing[0].Units.Number.Sign() == p.Amount.Number.Sign() {
 		return kindAugment
 	}
 	return kindReduce
 }
 
-// bookOne routes a single posting through inv, mutating inv as needed,
-// and reports the booking outcome the reducer needs to assemble a
-// [BookedPosting]: the resolved cost lot for an augmentation, or the
-// per-lot reduction steps for a reduction. bookOne does NOT mutate the
-// backing ast.Posting and does NOT construct a BookedPosting — the
-// reducer owns the BookedPosting shape (Source, InferredAuto) and the
-// CostSpec → Cost install on the posting itself, because the same
-// outcome can map to several install shapes (lot augmentation, cash
-// augmentation, single-lot reduction, multi-lot expansion, second-run
-// fixed point) and that knowledge belongs next to the txn.Postings
-// rewrite, not split across this file.
+// bookOne routes a single posting through inv (mutating it) and
+// returns the booking outcome the reducer needs to assemble a
+// [BookedPosting]: a resolved lot for an augmentation, or per-lot
+// reduction steps for a reduction. bookOne does not mutate the
+// backing ast.Posting and does not construct the BookedPosting — the
+// CostSpec → Cost install and the BookedPosting shape live next to
+// the txn.Postings rewrite in the reducer.
 //
-// Augmentation path: resolves the cost spec via [ResolveCost], creates
-// a [Position], and calls [Inventory.Add]. The returned lot is non-nil
-// iff a cost was resolved.
+// txnDate is the default acquisition date for augmentations whose
+// cost spec omits one. method is the booking method for the
+// posting's account.
 //
-// Reduction path: builds a [CostMatcher] from the spec and, when the
-// spec is structurally empty but a price annotation is present, from
-// that price's currency (the cost-currency hint rule). It then calls
-// [Inventory.Reduce] under method and fills in SalePricePer,
-// RealizedGain, and GainCurrency on each [ReductionStep] from the
-// posting's price annotation when present.
-//
-// txnDate is used as the default acquisition date for augmentations
-// whose cost spec omits an explicit date. method is the caller-
-// resolved booking method for the posting's account; the reducer
-// tracks per-account state and passes the right one in.
-//
-// Preconditions:
-//
-//   - p.Amount must be non-nil. Auto-postings are resolved by the
-//     reducer before bookOne is called. A nil amount returns a
-//     [CodeInternalError] rather than panicking so the reducer can
-//     report it through the normal diagnostics channel.
-//   - An auto-posting that also carries a cost or price spec is
-//     structurally invalid and must be rejected upstream by the reducer
-//     with [CodeInvalidAutoPosting]; bookOne does not enforce it.
+// Preconditions: p.Amount must be non-nil (a nil amount returns
+// [CodeInternalError] rather than panicking, so the reducer can
+// surface it). The reducer rejects auto+cost/price combinations
+// upstream with [CodeInvalidAutoPosting]; bookOne does not enforce
+// it.
 func bookOne(
 	inv *Inventory,
 	p *ast.Posting,
@@ -266,11 +198,7 @@ func bookAugment(
 ) (*Lot, []Error) {
 	lot, err := ResolveCost(p.Cost, *p.Amount, txnDate)
 	if err != nil {
-		// ResolveCost returns inventory.Error values already; enrich
-		// them with the posting's span and account which ResolveCost
-		// does not know about. errors.As is used (rather than a
-		// direct type assertion) so wrapped Errors are still matched
-		// even though nothing wraps them today.
+		// enrich with span/account.
 		var invErr Error
 		if errors.As(err, &invErr) {
 			if invErr.Span == (ast.Span{}) {
@@ -289,8 +217,6 @@ func bookAugment(
 		}}
 	}
 
-	// Inventory.Add clones the position on append, so it does not alias
-	// the caller's posting amount.
 	pos := Position{
 		Units: *p.Amount.Clone(),
 		Cost:  lot,
@@ -320,16 +246,9 @@ func bookAugment(
 	return lot, nil
 }
 
-// bookReduce handles the reduction path of bookOne: build a matcher,
-// call Inventory.Reduce, then enrich each step with sale price and
-// realized gain from the posting's price annotation.
-//
-// The price-currency hint is forwarded to the matcher whenever the
-// cost spec is structurally empty (absent or "{}"). This mirrors the
-// hint gate in classify so that the matcher's empty-spec fallback in
-// matcher.go — which picks the cost currency from the price annotation
-// when no explicit cost currency is given — is actually reachable from
-// bookOne.
+// bookReduce is the reduction path of bookOne: build a matcher, call
+// [Inventory.Reduce], then enrich each step with sale price and
+// realized gain from p.Price.
 func bookReduce(
 	inv *Inventory,
 	p *ast.Posting,
@@ -340,18 +259,6 @@ func bookReduce(
 		priceCcy = p.Price.Amount.Currency
 	}
 	matcher := NewCostMatcher(p.Cost, priceCcy, p.Amount)
-
-	if inv == nil {
-		// A reduction against a nil inventory is structurally
-		// impossible — classify would have routed this to augment —
-		// but defend the invariant rather than crash.
-		return nil, []Error{{
-			Code:    CodeInternalError,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: "bookReduce called with a nil inventory",
-		}}
-	}
 
 	steps, err := inv.Reduce(*p.Amount, matcher, method)
 	if err != nil {
@@ -373,8 +280,6 @@ func bookReduce(
 		}}
 	}
 
-	// Enrich each step with sale price and realized gain, if the
-	// posting carries a usable price annotation.
 	if p.Price != nil && p.Price.Amount.Currency != "" {
 		if errs := fillRealizedGain(steps, p); len(errs) > 0 {
 			return nil, errs
@@ -384,23 +289,14 @@ func bookReduce(
 	return steps, nil
 }
 
-// fillRealizedGain computes SalePricePer, RealizedGain, and
-// GainCurrency on each ReductionStep in steps, using the posting's
-// price annotation. salePricePer is the per-unit sale price:
-//
-//   - p.Price.Amount.Number when p.Price.IsTotal is false (@ per-unit);
-//   - p.Price.Amount.Number / |p.Amount.Number| when p.Price.IsTotal is
-//     true (@@ total). The division uses quoContext (34-digit
-//     precision) so the quotient is well-defined for any reasonable
-//     ledger input.
-//
-// For each step, RealizedGain = (salePricePer - step.Lot.Number) *
-// step.Units, computed with apd.BaseContext (exact Sub/Mul on value-
-// stored decimals). GainCurrency is p.Price.Amount.Currency.
+// fillRealizedGain populates SalePricePer, RealizedGain, and
+// GainCurrency on each step from p.Price. salePricePer is
+// p.Price.Amount.Number for `@` (per-unit) and p.Price.Amount.Number /
+// |p.Amount.Number| (via [quoContext]) for `@@` (total). RealizedGain
+// is (salePricePer - step.Lot.Number) * step.Units.
 func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
 	var salePricePer *apd.Decimal
 	if p.Price.IsTotal {
-		// @@ total: salePricePer = total / |units|.
 		absUnits := new(apd.Decimal)
 		unitsNum := p.Amount.Number
 		if _, err := apd.BaseContext.Abs(absUnits, &unitsNum); err != nil {
@@ -412,7 +308,7 @@ func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
 			}}
 		}
 		if absUnits.Sign() == 0 {
-			// Cannot divide by zero. Leave gain fields unset.
+			// avoid div-by-zero
 			return nil
 		}
 		salePricePer = new(apd.Decimal)
@@ -433,11 +329,9 @@ func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
 	for i := range steps {
 		step := &steps[i]
 
-		// SalePricePer: per-step copy so later edits on one step do
-		// not alias another step's decimal.
+		// avoid aliasing across steps.
 		step.SalePricePer = ast.CloneDecimal(salePricePer)
 
-		// RealizedGain = (salePricePer - lot.Number) * step.Units.
 		diff := new(apd.Decimal)
 		lotNum := step.Lot.Number
 		if _, err := apd.BaseContext.Sub(diff, salePricePer, &lotNum); err != nil {
