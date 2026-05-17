@@ -19,10 +19,6 @@ triage. Mirrors ``pkg/compat/beancompat/denylist.go`` on the Go side.
 """
 
 DENIED_FIXTURES: dict[str, str] = {
-    "parse/display_precision_by_currency.json": (
-        "go-beancount fix pending: parse-tier serializer does not yet "
-        "emit the options envelope (display_precision_by_currency expected)."
-    ),
     "parse/options_coverage.json": (
         "go-beancount fix pending: parse-tier serializer does not yet "
         "emit the options envelope (~30 BeancountOptions keys expected)."
