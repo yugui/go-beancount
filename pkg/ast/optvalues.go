@@ -503,6 +503,146 @@ func newDefaultRegistry() *registry {
 		parse:        parseDecimalMapEntry,
 		defaultValue: map[string]*apd.Decimal(nil),
 	}))
+
+	// Account-type names — options.py get_account_types(); consumer deferred
+	// (account-type classification subsystem not yet present).
+	mustRegisterDefault(r.register(spec{
+		key:          "name_assets",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Assets",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "name_liabilities",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Liabilities",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "name_equity",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Equity",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "name_income",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Income",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "name_expenses",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Expenses",
+	}))
+
+	// Derived-account references — options.py get_previous_accounts(),
+	// get_current_accounts(), get_unrealized_account(); consumer deferred
+	// (no derived-account computation subsystem yet).
+	mustRegisterDefault(r.register(spec{
+		key:          "account_previous_balances",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Opening-Balances",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "account_previous_earnings",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Earnings:Previous",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "account_previous_conversions",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Conversions:Previous",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "account_current_earnings",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Earnings:Current",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "account_current_conversions",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Conversions:Current",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "account_unrealized_gains",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "Earnings:Unrealized",
+	}))
+	// account_rounding — upstream default is Python None; Go uses "".
+	// Consumer deferred (rounding-error plugin not present).
+	mustRegisterDefault(r.register(spec{
+		key:          "account_rounding",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "",
+	}))
+
+	// Python-only / Fava-expected keys — no Go consumer; stored for
+	// cross-tool compat.
+	mustRegisterDefault(r.register(spec{
+		key:          "pythonpath",
+		kind:         KindStringList,
+		parse:        parseStringOption,
+		defaultValue: []string(nil),
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "insert_pythonpath",
+		kind:         KindBool,
+		parse:        parseBoolOption,
+		defaultValue: false,
+	}))
+
+	// Deprecated parser flags — options.py; Go parser does not implement
+	// these features; stored as inert booleans.
+	mustRegisterDefault(r.register(spec{
+		key:          "allow_pipe_separator",
+		kind:         KindBool,
+		parse:        parseBoolOption,
+		defaultValue: false,
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "allow_deprecated_none_for_tags_and_links",
+		kind:         KindBool,
+		parse:        parseBoolOption,
+		defaultValue: false,
+	}))
+
+	// Other deferred options — storage-only; consumers tracked as TODOs.
+	// conversion_currency: options.py zero-rate conversion logic; no Go analog yet.
+	mustRegisterDefault(r.register(spec{
+		key:          "conversion_currency",
+		kind:         KindString,
+		parse:        parseStringOption,
+		defaultValue: "NOTHING",
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "commodities",
+		kind:         KindStringList,
+		parse:        parseStringOption,
+		defaultValue: []string(nil),
+	}))
+	// plugin: v2 option form (deprecated); v3 uses the plugin directive.
+	mustRegisterDefault(r.register(spec{
+		key:          "plugin",
+		kind:         KindStringList,
+		parse:        parseStringOption,
+		defaultValue: []string(nil),
+	}))
+	mustRegisterDefault(r.register(spec{
+		key:          "documents",
+		kind:         KindStringList,
+		parse:        parseStringOption,
+		defaultValue: []string(nil),
+	}))
+
 	return r
 }
 

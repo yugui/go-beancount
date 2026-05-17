@@ -217,6 +217,59 @@ func TestDefaultRegistryKeys(t *testing.T) {
 	if got := v.String("title"); got != "" {
 		t.Errorf("v.String(%q) = %q, want %q", "title", got, "")
 	}
+
+	// One subtest per new spec: a missing key panics in lookupSpec, so a
+	// passing subtest proves both registration and correct upstream default.
+	stringCases := []struct {
+		key  string
+		want string
+	}{
+		{"name_assets", "Assets"},
+		{"name_liabilities", "Liabilities"},
+		{"name_equity", "Equity"},
+		{"name_income", "Income"},
+		{"name_expenses", "Expenses"},
+		{"account_previous_balances", "Opening-Balances"},
+		{"account_previous_earnings", "Earnings:Previous"},
+		{"account_previous_conversions", "Conversions:Previous"},
+		{"account_current_earnings", "Earnings:Current"},
+		{"account_current_conversions", "Conversions:Current"},
+		{"account_unrealized_gains", "Earnings:Unrealized"},
+		{"account_rounding", ""},
+		{"conversion_currency", "NOTHING"},
+	}
+	for _, tc := range stringCases {
+		t.Run(tc.key, func(t *testing.T) {
+			if got := v.String(tc.key); got != tc.want {
+				t.Errorf("v.String(%q) = %q, want %q", tc.key, got, tc.want)
+			}
+		})
+	}
+
+	boolCases := []struct {
+		key  string
+		want bool
+	}{
+		{"insert_pythonpath", false},
+		{"allow_pipe_separator", false},
+		{"allow_deprecated_none_for_tags_and_links", false},
+	}
+	for _, tc := range boolCases {
+		t.Run(tc.key, func(t *testing.T) {
+			if got := v.Bool(tc.key); got != tc.want {
+				t.Errorf("v.Bool(%q) = %v, want %v", tc.key, got, tc.want)
+			}
+		})
+	}
+
+	stringListCases := []string{"pythonpath", "commodities", "plugin", "documents"}
+	for _, key := range stringListCases {
+		t.Run(key, func(t *testing.T) {
+			if got := v.StringList(key); got != nil {
+				t.Errorf("v.StringList(%q) = %v, want nil", key, got)
+			}
+		})
+	}
 }
 
 func TestOptionValuesNilSafeAccessors(t *testing.T) {

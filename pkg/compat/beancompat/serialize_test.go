@@ -2912,7 +2912,7 @@ func TestSerializeOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SerializeParsed: %v", err)
 		}
-		want := `{"infer_tolerance_from_cost":false,"inferred_tolerance_default":{},"inferred_tolerance_multiplier":"0.5","long_string_maxlines":64,"operating_currency":[],"plugin_processing_mode":"","title":""}`
+		want := `{"account_current_conversions":"Conversions:Current","account_current_earnings":"Earnings:Current","account_previous_balances":"Opening-Balances","account_previous_conversions":"Conversions:Previous","account_previous_earnings":"Earnings:Previous","account_rounding":"","account_unrealized_gains":"Earnings:Unrealized","allow_deprecated_none_for_tags_and_links":false,"allow_pipe_separator":false,"commodities":[],"conversion_currency":"NOTHING","documents":[],"infer_tolerance_from_cost":false,"inferred_tolerance_default":{},"inferred_tolerance_multiplier":"0.5","insert_pythonpath":false,"long_string_maxlines":64,"name_assets":"Assets","name_equity":"Equity","name_expenses":"Expenses","name_income":"Income","name_liabilities":"Liabilities","operating_currency":[],"plugin":[],"plugin_processing_mode":"","pythonpath":[],"title":""}`
 		if string(got.Options) != want {
 			t.Errorf("default Options envelope mismatch:\ngot  %s\nwant %s", got.Options, want)
 		}
