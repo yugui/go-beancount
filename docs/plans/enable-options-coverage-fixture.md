@@ -464,6 +464,52 @@ that otherwise fails.
 
 Quality: keep the precedence chain explicit and testable.
 
+### Detailed Design
+
+#### Contract
+
+**No exported API changes in `pkg/validation/internal/tolerance`.** The four existing functions (`Infer`, `ForAmount`, `ForBalanceAssertion`, `Within`) keep their current signatures and continue to take `*ast.OptionValues`. The new map is read internally via `opts.DecimalMap("inferred_tolerance_default")`. External callers (`pkg/validation/validations/transaction_balances.go`, `pkg/validation/balance/plugin.go`, the loader) require no edits.
+
+**Precedence chain (locked) for each residual currency `cur`:**
+
+1. **Posting-level inference present** → use that (posting/amount exponent × `inferred_tolerance_multiplier`, optionally maxed with cost-side via `infer_tolerance_from_cost`). Per-currency default NOT consulted, regardless of magnitude.
+2. **Posting-level inference absent** → consult `inferred_tolerance_default[cur]`. If entry exists and value is **positive**, use it.
+3. **Zero or negative entry** → treated as absent; fall through.
+4. **Map miss** → existing fallback (zero `*apd.Decimal`), unchanged.
+
+**Per-function application:**
+- `Infer`: per-currency default applies for residual currencies without a contributing posting (where the existing path emits `new(apd.Decimal)`).
+- `ForAmount` / `ForBalanceAssertion`: behavior unchanged. Posting-level inference is always present (the amount itself yields an exponent), so per-currency default is unreachable for these.
+
+**Deliberate divergence from upstream beancount.** Upstream's `get_balance_tolerance` consults the per-currency default for balance assertions whose asserted amount has zero fractional digits, even though posting-level inference (`2 × 0.5 × 1 = 1`) is computable. Step 5 honors the plan's precedence chain ("posting-level > per-currency default") uniformly across all three computation functions and does NOT replicate upstream's integer-assertion nuance. The divergence is documented in `pkg/validation/internal/tolerance/doc.go`. The fixture this step services (`parse/options_coverage`) only checks emission, not this behavioral nuance; the divergence is reopenable in a follow-up if a real consumer needs it.
+
+#### Suggested Internals
+
+- **Splice site**: inside `Infer`'s per-currency loop (currently around `tolerance.go:91-98`). Replace the `new(apd.Decimal)` zero-emission branch with a small helper that consults the per-currency default first.
+- **Helper shape**: hoist `opts.DecimalMap(...)` once before the loop (it clones), then `lookupDefault(defaults, cur)` per currency — a small gate enforcing "non-nil, non-zero, non-negative". Use `(*apd.Decimal).IsZero()` and `(*apd.Decimal).Sign() < 0` for consistency with existing checks.
+- **Helper placement**: unexported, adjacent to `Infer`. No new file.
+- **No change to `ForAmount` / `ForBalanceAssertion`** per Contract.
+- **Doc.go update**: a paragraph documenting the precedence chain, zero/negative→absent semantics, and the upstream divergence.
+- **Tests** (`pkg/validation/internal/tolerance/tolerance_test.go`):
+  1. Per-currency default applies when no posting for that currency.
+  2. Posting-level inference wins over per-currency default when both exist.
+  3. Zero entry ignored (falls through).
+  4. Negative entry ignored.
+  5. Missing currency falls through.
+  6. (No new tests for `ForAmount` / `ForBalanceAssertion` — behavior unchanged.)
+- **Integration test**: one loader-level test (in `pkg/validation/balance/plugin_test.go` or a sibling) exercising the option-directive → diagnostic path. If awkward to set up, a transaction-level test using `asttest.MustOptions` is sufficient.
+- **Out-of-scope guard**: do NOT pre-emptively consult `tolerance_multiplier` (Step 6's territory).
+
+#### Alternatives discussed
+
+1. **How the option flows in**: (a) status-quo `*ast.OptionValues` plumbing, (b) introduce a `Config` struct precomputed per ledger, (c) pass full `*ast.Ledger`. **Adopted (a)** — zero caller churn, symmetric with how the other two tolerance knobs are read today; one map clone per `Infer` is amortized over all currencies.
+2. **Precedence semantics**: plan's chain vs upstream-faithful (integer-assertion case consults per-currency default even when posting-level inference is computable). **Adopted plan's chain** — simple, monotonic, predictable; upstream nuance is a documented divergence reopenable later if a real consumer reports it.
+3. **Zero/negative entry handling**: treat as literal zero ("exact" tolerance) vs treat as absent (fall through). **Adopted absent** — avoids typo trapdoors; literal "0" is observationally identical to "unset" under the existing fallback; consistent with `digitsFromDecimal`'s zero-rejection.
+
+#### Recommendation + rationale
+
+A 4-line change inside `Infer`'s per-currency loop plus a small helper, a `doc.go` paragraph, and 5-6 unit tests + one integration test. The public surface is unchanged; the new map is consumed exactly where the existing zero-fallback fires; the chain is honored verbatim. The integer-assertion divergence from upstream is documented as a deliberate Step-5 trade. Zero/negative entries are absent to keep "set" / "unset" semantics monotonic.
+
 ### Step 6 — `tolerance_multiplier` alias semantics (design attempt)
 
 **Files:** `pkg/ast/optvalues.go`, optionally
