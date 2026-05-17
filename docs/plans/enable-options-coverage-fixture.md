@@ -600,6 +600,78 @@ configured default; setting `booking_method` to `"NONE"` propagates.
 
 Quality: lower-pass change should be local; if it isn't, fall back.
 
+### Detailed Design
+
+#### Contract
+
+**Plan-body phrasing was unworkable: design pivots to consumer-side resolution.**
+
+The plan body suggested modifying `pkg/ast/lower.go` to consult `option "booking_method"` when an Open directive omits the booking keyword. Investigation surfaced two blockers:
+
+1. **Ordering**: `Lower` runs per-file BEFORE `ParseOptions` is called in `load.finish()`. The lower-pass has no access to `*ast.OptionValues`.
+2. **Load-bearing source-faithfulness**: `Open.Booking == BookingDefault` is a meaningful signal — the printer suppresses the booking keyword on round-trip when it sees `BookingDefault`, and `pkg/compat/beancompat/serialize.go::bookingJSON` emits JSON `null` when it sees `BookingDefault`. Overwriting `Open.Booking` in the lower-pass would break round-trip round-trip AND the existing `open_single` parse fixture (which asserts `null`).
+
+**Adopted approach: consumer-side resolution helper.** A new `pkg/ast/booking.go::ResolveBookingMethod(d *Open, opts *OptionValues) (BookingMethod, []Diagnostic)` is called at the two sites that read `Open.Booking` for runtime behavior:
+
+- `pkg/inventory/reducer.go::Walk` (the per-account booking map).
+- `pkg/validation/internal/accountstate/build.go::Build` (the `State.Booking` field).
+
+**Locked semantics of `ResolveBookingMethod`:**
+
+| `d.Booking` | option `"booking_method"` | Result | Diagnostic |
+|---|---|---|---|
+| any explicit non-`BookingDefault` | any | unchanged | no |
+| `BookingDefault` | unset / `""` | `BookingStrict` | no |
+| `BookingDefault` | `"NONE"`, `"FIFO"`, `"LIFO"`, `"AVERAGE"` (etc.) | corresponding `BookingMethod` | no |
+| `BookingDefault` | unknown value | `BookingStrict` (fallback) | yes (Error severity, span = `d.Span`) |
+
+Diagnostic shape: `Code: "invalid-option"`, `Severity: Error`, `Span: d.Span`, `Message: invalid booking_method %q; falling back to STRICT`.
+
+**Option registration** in `pkg/ast/optvalues.go::defaultRegistry`:
+- Key `"booking_method"`. Kind `KindString`. Parser `parseStringOption` (any string). Default `"STRICT"`. Validation happens at resolution time, not parse time, so the diagnostic lands on the consuming Open span rather than the Option directive's span.
+
+**Out-of-scope (locked exclusions):**
+- `pkg/ast/lower.go` is NOT modified.
+- `Open.Booking` field semantics unchanged.
+- Printer (`pkg/printer/printer.go`) and beancompat serializer (`pkg/compat/beancompat/serialize.go::bookingJSON`) are NOT modified.
+- No new exported parser function (no `parseBookingMethodOption`).
+
+#### Suggested Internals
+
+- **Resolution helper** lives in `pkg/ast/booking.go` (or a sibling file). Body:
+  ```go
+  if d.Booking != BookingDefault { return d.Booking, nil }
+  raw := opts.String("booking_method")  // nil-safe; default "STRICT"
+  if raw == "" { return BookingStrict, nil }
+  m, err := ParseBookingMethod(raw)
+  if err != nil {
+      return BookingStrict, []Diagnostic{ /* span=d.Span, code=invalid-option */ }
+  }
+  return m, nil
+  ```
+- **Reducer wiring** (`pkg/inventory/reducer.go`): replace `r.booking[d.Account] = d.Booking` with the resolver. Plumb `*ast.OptionValues` into the Reducer either via constructor parameter or a setter method — implementer's choice based on which construction sites are cleanest. Existing callers fetch options from the loader's `api.Input` or equivalent.
+- **`accountstate.Build` wiring**: same shape; add `*ast.OptionValues` parameter (or extend `BuildResult` to also carry diagnostics). Callers in `pkg/validation` have access to the ledger's options.
+- **Diagnostic routing**: per-Open resolution surfaces diagnostics through the existing plugin/result channels. `BuildResult` can grow a `Diagnostics []ast.Diagnostic` field (parallel to its existing `DuplicateOpens`).
+- **No churn to existing tests**: today `BookingDefault` and `BookingStrict` are observationally identical in `classify`/`Reduce`. The resolver returns `BookingStrict` for `BookingDefault` when no option is set — same observable behavior. Existing tests pass `nil` (or empty options) to the new constructor and continue to work unchanged.
+- **Tests** (new):
+  - `pkg/ast/booking_test.go`: `TestResolveBookingMethod` covering every row of the locked matrix.
+  - `pkg/inventory/reducer_test.go`: one test for `option "booking_method" "NONE"` + Open without explicit booking → posting behavior matches NONE.
+  - `pkg/validation/internal/accountstate/build_test.go`: option-driven default flows into `State.Booking`.
+  - One end-to-end test in `pkg/loader/booking/plugin_test.go` (or sibling) verifying source-text → option-resolved booking behavior.
+- **Default registry test** (existing `TestDefaultRegistryKeys` or sibling): add the `booking_method` default-value assertion.
+- **Golden envelope** (`pkg/compat/beancompat/serialize_test.go::default_options_envelope`): add `"booking_method":"STRICT"`. 29 → 30 keys.
+
+#### Alternatives discussed
+
+1. **Plan-body approach: modify the lower-pass.** Rejected per the ordering and source-faithfulness blockers above.
+2. **Storage-only fallback** (register the option, no consumer effect). Rejected — the integration is small and ripple-free; the silent no-op would mask a user-visible feature beancount users do reach for. The plan's "ripple" concern doesn't materialize because (a) `BookingDefault` and `BookingStrict` are observationally identical in the reducer today, (b) only two consumer sites need a one-line change.
+3. **Validate option value at parse time** (allowlist in parser). Rejected: locks parse-time coupling for no diagnostic-quality gain; resolution-time validation surfaces the failure at the affected Open's span instead of the Option directive's span — more actionable.
+4. **Reducer plumbing**: constructor parameter vs setter method. Both work; constructor parameter is preferred for visible dependency. Implementer picks whichever fits the existing call sites cleanly.
+
+#### Recommendation + rationale
+
+Adopt the consumer-side resolver. Total estimated diff: one spec registration, one helper function (~15 lines), two consumer-side rewires (~10 lines each), one diagnostic-routing line in the booking plugin adapter, ~5 new unit tests + 1 end-to-end test. **No churn to existing tests.** No `known_divergences` entry. No arch-doc TODO. The decisive factor against the plan body's lower-pass approach is the existing `open_single` parse fixture — modifying `Open.Booking` in lowering would break it directly.
+
 ### Step 8 — `render_commas` formatter integration (design attempt)
 
 **Files:** `pkg/ast/optvalues.go`, `pkg/format/...`, related tests.
