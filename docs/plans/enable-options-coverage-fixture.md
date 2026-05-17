@@ -538,6 +538,51 @@ both keys appear in the serialized envelope with the same value.
 Quality: the alias mechanism must be small and easy to extend if
 upstream adds more deprecated aliases.
 
+### Detailed Design
+
+#### Contract
+
+**Adopted: mutual write-through with `inferred_tolerance_multiplier` as the canonical storage slot.** The full-alias path is chosen over the storage-only fallback because the implementation is small (one struct-field addition, one early line in `set()`, one paired registration) and the silent no-op for users writing the modern key would be a real user-visible regression.
+
+Locked observable behavior:
+
+1. **Both keys are always registered.** `Snapshot()` emits one entry per key (two entries total for this pair) in the existing ascending-key order.
+2. **Mutual write-through on `set()`.** `option "tolerance_multiplier" "X"` stores the parsed decimal under BOTH `tolerance_multiplier` AND `inferred_tolerance_multiplier`. Symmetric for the reverse. Last-write-wins across repeated directives in either name.
+3. **Reads return the same value.** Both `Decimal("tolerance_multiplier")` and `Decimal("inferred_tolerance_multiplier")` return numerically equal fresh clones. When neither has been set, both return `0.5` (shared default).
+4. **Snapshot emission cases:**
+   - Neither set → both `0.5`.
+   - User sets one → both carry the user's value.
+   - User sets both (A then B) → both carry B's value.
+5. **Consumer untouched.** `pkg/validation/internal/tolerance::Infer` continues to read `inferred_tolerance_multiplier`. Alias propagation is write-side, so the canonical slot is correct regardless of which key the user wrote.
+6. **No deprecation diagnostic.** Step 6 does NOT emit a warning when users write the deprecated key. Adding a deprecation channel is separable future work.
+7. **No exported API surface change.** The `aliasOf` field is unexported.
+
+#### Suggested Internals
+
+- **Spec extension**: unexported `aliasOf string` field on `spec`. Only the alias spec carries it (pointing at the canonical); the canonical spec is unchanged.
+- **`set()` resolution**: at the top of `set()`, resolve `canonical := key; if s.aliasOf != "" { canonical = s.aliasOf }`. Then mirror-write: `v.values[canonical] = parsed` AND `v.values[key] = parsed` when `canonical != key`. The kind-switch is unchanged.
+- **Critical subtlety**: the spec used for parsing (kind/parse) must remain the **input key's spec**; only the storage-slot write goes through the canonical. The implementer must distinguish the two lookups.
+- **Read-side: no change.** Mirror-write makes accessors work unchanged for both keys.
+- **Default-side parity**: both specs independently declare `defaultValue: apd.New(5, -1)`. Reading either key with neither set returns `0.5` from the spec's default.
+- **Tests** (`pkg/ast/optvalues_test.go`):
+  - `TestAliasMutualWriteThrough` — fresh registry with canonical + alias; setting either propagates to both reads.
+  - `TestAliasLastWriteWins` — alias then canonical; reverse. Final value matches last directive.
+  - `TestAliasDefaults` — with neither set, both reads return shared default.
+  - `TestSnapshotAliasPair` — snapshot lists both keys with same value after either is set; at defaults when unset.
+- **One end-to-end test** in `pkg/validation/internal/tolerance/tolerance_test.go`: setting `tolerance_multiplier "1.0"` changes the inferred tolerance the same way setting `inferred_tolerance_multiplier "1.0"` does.
+- **Out-of-scope guard**: `aliasOf` field is added once and used once. Do NOT generalize to a registry-level alias map. If a future step needs more aliases, the field already exists and the pattern is established.
+
+#### Alternatives discussed
+
+1. **(a) Mutual write-through (adopted).** Smallest change, automatic Snapshot, consumer untouched.
+2. **(b) Read-side alias fallback.** Each accessor consults alias on miss. Rejected — alias logic ripples into every accessor; Snapshot needs alias-awareness to emit both keys at same value.
+3. **(c) Renamed primary + deprecation diagnostic.** Make `tolerance_multiplier` canonical; consumer reads new name; warn on the deprecated form. Rejected — forces consumer rename, re-baselines many tests, requires a diagnostic channel that doesn't exist today. Largest blast radius for no fixture-visible benefit. Reopenable as follow-up if the project later builds a deprecation channel.
+4. **(d) Storage-only fallback.** Register `tolerance_multiplier` with no consumer effect. Rejected — silent no-op for users writing the modern key is a real user-visible regression; the alias mechanism is small enough that the divergence is not justified.
+
+#### Recommendation + rationale
+
+Adopt (a). Total Go-side diff: one `aliasOf` field on `spec`, one paired registration in `defaultRegistry`, two lines in `set()` (resolve canonical + mirror-write), ~5 additive tests. Consumer untouched. The decisive factor against (b)/(c)/(d) is that (a) keeps all alias logic inside `set()` while preserving consumer code, faithful upstream observability, and minimal risk.
+
 ### Step 7 — `booking_method` (open-directive default)
 
 **Files:** `pkg/ast/optvalues.go`, `pkg/ast/lower.go`, related tests.
