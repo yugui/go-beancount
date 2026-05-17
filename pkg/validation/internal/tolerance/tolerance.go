@@ -88,10 +88,13 @@ func Infer(postings []ast.Posting, opts *ast.OptionValues, residualCurrencies []
 		}
 	}
 
+	defaults := opts.DecimalMap("inferred_tolerance_default")
 	unitsTol := make(map[string]*apd.Decimal, len(residualCurrencies))
 	for _, cur := range residualCurrencies {
 		if e, ok := maxExpPerCurrency[cur]; ok {
 			unitsTol[cur] = forExponent(opts, e)
+		} else if d := lookupPerCurrencyDefault(defaults, cur); d != nil {
+			unitsTol[cur] = d
 		} else {
 			unitsTol[cur] = new(apd.Decimal)
 		}
@@ -209,6 +212,17 @@ func Within(diff, tol *apd.Decimal) (bool, error) {
 		return false, err
 	}
 	return abs.Cmp(tol) <= 0, nil
+}
+
+// Returns nil for absent, zero, or negative entries.
+func lookupPerCurrencyDefault(defaults map[string]*apd.Decimal, cur string) *apd.Decimal {
+	d, ok := defaults[cur]
+	if !ok || d == nil || d.IsZero() || d.Sign() < 0 {
+		return nil
+	}
+	out := new(apd.Decimal)
+	out.Set(d)
+	return out
 }
 
 // maxDecimal returns the larger of a and b. Both are assumed to be
