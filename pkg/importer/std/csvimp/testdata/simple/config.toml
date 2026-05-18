@@ -1,0 +1,12 @@
+[shape.simple]
+date_col         = "Date"
+date_format      = "2006-01-02"
+payee_col        = "Payee"
+default_currency = "USD"
+narration_cols      = ["Description", "Memo"]
+narration_separator = " / "
+account          = "Assets:Checking"
+
+[[shape.simple.amount]]
+col    = "Amount"
+negate = false
