@@ -262,20 +262,41 @@ type Output struct {
 ```go
 type Configurable interface {
     Importer
-    Configure(raw json.RawMessage) error
+    Configure(decode func(dest any) error) error
 }
 ```
 
 - Detected via type assertion; importers that do not implement it
   receive no configuration call.
-- `raw` is JSON bytes. The CLI parses user-facing TOML into a
-  generic structure and re-encodes the per-importer subtable as
-  JSON before handing it to Configure. Rationale: JSON is in the
-  stdlib (no second dependency for plugins), is the natural
-  serialization for declaration-only ABI types, and is the only
-  encoding that round-trips reliably across the goplug boundary.
-  TOML stays at the CLI / config-file edge; the framework
-  (and plugins) deal only in JSON.
+- `decode` is a caller-supplied callback that decodes whatever the
+  caller is holding (a TOML primitive, a JSON byte slice, a
+  pre-parsed map, …) into the destination value the importer
+  provides. The importer writes a small fixed pattern:
+  ```go
+  func (i *MyImporter) Configure(decode func(any) error) error {
+      var c MyConfig
+      if err := decode(&c); err != nil {
+          return err
+      }
+      i.cfg = c
+      return nil
+  }
+  ```
+  The CLI / harness chooses the decoder:
+  ```go
+  imp.Configure(func(dest any) error {
+      return tomlMeta.PrimitiveDecode(subtable, dest)
+  })
+  ```
+  Rationale: encoding-agnostic. The framework does not lock plugins
+  into JSON, and plugin authors inherit no extra encoding
+  dependency. The host stays free to swap decoders (TOML now,
+  YAML/CBOR later) without an ABI bump.
+- The `decode` callback MUST NOT be `nil` when Configure is invoked.
+  Callers that have no configuration to supply do not call
+  `Configure` at all; an importer that needs configuration to
+  function is responsible for returning a meaningful error from
+  Identify / Extract when its `cfg` field is the zero value.
 - `Configure` MUST be safe to call at most once per Importer
   instance before any `Identify` or `Extract` call. Calling
   Configure twice on the same instance has undefined behaviour;
@@ -283,10 +304,11 @@ type Configurable interface {
   pipeline early — `Apply` propagates it as a framework error
   (not a Diagnostic), since unconfigurable means the importer
   cannot be asked to do work.
-- Configure receiving an empty / nil `raw` is a legal call: the
-  CLI passes nil when the user supplied no `--config` flag and
-  the importer must decide whether that is an error or whether
-  defaults are acceptable.
+- Importers MAY call `decode` zero times (e.g. to react to "is
+  config available?" without actually decoding) or exactly once.
+  Calling `decode` multiple times is permitted; the caller's
+  decoder MUST be idempotent (each call re-decodes from the same
+  source), but a sensible importer decodes once.
 
 ##### `Streaming` optional sub-interface
 
@@ -613,16 +635,31 @@ sufficient because Identify itself is documented to be cheap.
   - Con: bifurcates the Contract — Dispatch's behaviour now
     depends on a flag. Test surface doubles.
 
-##### A2. `Configure` encoding: JSON vs. TOML vs. structured `Config any`
+##### A2. `Configure` encoding: decode-callback vs. raw bytes vs. typed `cfg any`
 
-- **`Configure(raw json.RawMessage) error` (recommended, locked).**
-  - Pro: JSON is stdlib; goplug-loaded plugins have no extra
-    dependency. JSON marshals declaration-only types
-    deterministically. The TOML→JSON conversion lives at the CLI
-    edge (`cmd/beanimport` 8f) where there is one TOML parser
-    anyway for the existing config file shape.
-  - Con: importer authors who already think in TOML have to write
-    a JSON-tagged struct.
+- **`Configure(decode func(dest any) error) error` (recommended, locked).**
+  - Pro: encoding-agnostic. The framework does not freeze the
+    plugin contract to JSON or any other wire format. The CLI
+    side picks the decoder for each invocation (TOML now, JSON
+    via `goplug.Load` fixtures, an in-memory map in tests).
+  - Pro: plugin authors inherit zero encoding dependency. The
+    importer writes `var c MyConfig; decode(&c)` and does not
+    import `encoding/json` or any TOML library.
+  - Pro: future-proof. Swapping the host decoder (e.g. adding
+    YAML support to `cmd/beanimport`) requires no plugin-side
+    change and no ABI bump.
+  - Con: slightly less obvious for plugin authors than
+    `json.Unmarshal(raw, &c)`; the callback indirection is one
+    extra level of "what does this argument mean?". Cheap to
+    document with a single example in the godoc.
+- **`Configure(raw json.RawMessage) error`** (originally proposed,
+  now rejected).
+  - Pro: simplest signature; `encoding/json` is stdlib.
+  - Con: freezes the wire format. The CLI must re-encode
+    user-facing TOML to JSON purely for the importer hand-off —
+    a wasted transcode whose only justification is interface
+    convenience. Importer authors gain an unnecessary dependency
+    on `encoding/json`. Rejected after review.
 - **`Configure(raw []byte, format string) error`** with format =
   `"toml"` | `"json"`.
   - Pro: importer chooses; CLI doesn't have to transcode.
@@ -635,12 +672,22 @@ sufficient because Identify itself is documented to be cheap.
   - Con: requires the importer to expose its config struct type
     to the CLI, which then has to know per-importer types — the
     opposite of a plugin model. Rejected.
-- **`Configurer` returning a destination value: `ConfigDest() any`
-  + framework decodes.**
+- **`Configure(cfg *T) error` where T is the importer's config
+  struct.**
+  - Pro: the most natural Go shape — typed destination, no
+    callback.
+  - Con: not expressible in a single `Importer` interface because
+    T varies per importer; would require generics on the registry
+    (`map[string]Importer[?]`), which Go's type system cannot
+    represent without erasure. Rejected on feasibility grounds.
+- **`ConfigDest() any` + framework decodes into the returned
+  pointer.**
   - Pro: terse for the importer.
-  - Con: an `any` return crossing the goplug boundary is
-    pointer-fragile; the framework would also need to commit to a
-    specific decoder. Rejected.
+  - Con: an `any` *return* crossing the goplug boundary is
+    pointer-fragile in a way `any` *parameter* in a callback is
+    not — the returned pointer outlives the call and the
+    framework has to know how to dispatch on it. The framework
+    also has to commit to a specific decoder. Rejected.
 
 ##### A3. Streaming vs. Extract precedence
 
@@ -723,13 +770,14 @@ non-trivial decisions resolved as follows:
    namespace so a future opt-in strict mode can use it without an
    ABI bump.
 
-2. **`Configure(json.RawMessage) error`, TOML at the CLI edge.**
-   The framework speaks only JSON because that is what survives
-   the goplug boundary without a second dependency. The
-   user-facing config syntax is TOML, decoded once at the CLI
-   and re-encoded as the JSON byte slice handed to Configure.
-   This puts the parser surface where the user surface is and
-   keeps the plugin contract small.
+2. **`Configure(decode func(dest any) error) error`, decoder
+   chosen at the CLI edge.** The framework is encoding-agnostic:
+   the CLI / harness picks the decoder per invocation and the
+   plugin author writes a small fixed pattern around a typed
+   destination. JSON-via-`json.RawMessage` was originally proposed
+   and was reverted after review — locking the wire format gave
+   no payoff and added an `encoding/json` dependency to every
+   plugin.
 
 3. **`Apply` uses `Extract`, never `StreamExtract`, in ABI v1.**
    Streaming exists for future callers (very large file handling,
