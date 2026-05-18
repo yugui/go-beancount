@@ -1394,6 +1394,376 @@ hits the Contract above.
   Adding new decorators in later phases must follow the same shape:
   pure functions, no global state.
 
+### Detailed Design
+
+#### Contract
+
+##### Package
+
+```
+package importerutil // import "github.com/yugui/go-beancount/pkg/importer/importerutil"
+```
+
+Plain Go. No goplug ABI surface. Imported directly by importer authors;
+not invoked by `pkg/importer.Apply` or `pkg/importer/hook.Chain`. Safe
+for concurrent use because every exported function is pure with respect
+to its arguments (no global state, no shared mutable buffers).
+
+##### `BalanceWith`
+
+```
+func BalanceWith(d ast.Directive, account string, currency string) ast.Directive
+```
+
+Adds a counterpart `Posting` to a single-posting `*ast.Transaction` so
+the transaction balances. The behaviour table is exhaustive — every
+documented case here is part of the contract:
+
+1.  `d` is `*ast.Transaction`, `len(t.Postings) == 1`, and
+    `t.Postings[0].Amount != nil`:
+    - The function returns `t.Clone()` with one additional `Posting`
+      appended (length 2). Order: the original posting at index 0, the
+      counterpart at index 1.
+    - Counterpart fields:
+      - `Account`: `ast.Account(account)` (unvalidated; see "Account
+        validation" below).
+      - `Amount`: a freshly allocated `*ast.Amount` whose `Number` is
+        the arithmetic negation of `t.Postings[0].Amount.Number` (via
+        `apd.BaseContext.Neg` into a new `apd.Decimal`), and whose
+        `Currency` is the resolved currency (see "Currency resolution"
+        below).
+      - `Cost`: `nil`.
+      - `Price`: `nil`.
+      - `Flag`: `0` (no explicit flag).
+      - `Span`: copied by value from the source `Posting.Span` so
+        diagnostics on the counterpart cite the same source location
+        as the original posting. Synthesising a zero `Span` is rejected
+        because downstream printers and diagnostics rely on a real
+        location.
+      - `Meta`: zero-value `ast.Metadata{}` (no Props map allocated).
+2.  `d` is `*ast.Transaction` and `len(t.Postings) != 1`: **no-op**.
+    Returns `d` unchanged (same interface value, same pointer; no
+    allocation). This covers:
+    - Zero postings (cannot infer an amount; not the helper's job).
+    - Two or more postings (assumed already balanced — the helper does
+      not re-check arithmetic).
+3.  `d` is `*ast.Transaction`, `len(t.Postings) == 1`, but
+    `t.Postings[0].Amount == nil`: **no-op**, returns `d` unchanged.
+    A nil Amount means an auto-balanced posting; there is nothing to
+    negate.
+4.  `d` is not `*ast.Transaction` (`*Open`, `*Close`, `*Balance`,
+    `*Pad`, `*Note`, `*Document`, `*Price`, `*Commodity`, `*Event`,
+    `*Query`, `*Custom`, `*Option`, `*Plugin`, `*Include`, or any
+    future directive type): **no-op**, returns `d` unchanged.
+5.  `d == nil`: returns `nil`.
+
+**Currency resolution.** The `currency` parameter is treated as an
+override:
+- If `currency != ""`, that value is used verbatim as the counterpart
+  `Amount.Currency`, regardless of the existing posting's currency.
+  This permits cross-currency layouts (e.g. importing a USD-denominated
+  bank line that books against an `Equity:Conversions:USD` posting
+  whose currency is the same USD; or a future user who wants to force
+  a specific currency string).
+- If `currency == ""`, the counterpart currency is copied from
+  `t.Postings[0].Amount.Currency`. The empty string in the source
+  Amount (legal in beancount only for auto-balanced postings, which
+  case 3 already excluded) is propagated as-is; the helper does not
+  diagnose it.
+
+**Account validation.** `BalanceWith` performs no validation of
+`account`. The string is assigned to `ast.Account` directly. A
+malformed account name produces a directive that will fail downstream
+validation (printer, lowerer re-parse, or
+`pkg/validation`); that is the caller's responsibility. The rationale
+is documented in the godoc and matches the lower-cost / explicit-error
+posture of the rest of the codebase: validating here would impose a
+syntax dependency on `pkg/importer/importerutil` and would punish the
+common case (the caller already knows their account string is valid).
+
+**Cloning discipline (case 1).** The returned `*Transaction` is
+produced by `t.Clone()` (defined in `pkg/ast/clone.go`). That clone
+reallocates `Postings`, deep-copies each existing `Posting` (including
+nested `Amount`, `Cost`, `Price`, and `Meta`), and allocates a fresh
+`Meta.Props` map. The counterpart `Posting` is then appended via
+`append` to the cloned slice. The post-condition: mutating any field
+of the returned `*Transaction` (its `Postings`, any inner `*Amount`'s
+coefficient buffer, any `Meta.Props` entry, etc.) does not affect the
+input `t`. The converse also holds.
+
+**Cloning discipline (no-op cases 2–5).** The input is returned
+**aliased**, not cloned. This mirrors the precedent set by
+`pkg/importer/hook.Chain` for empty chains and by
+`ast.Metadata.Without` / `ast.StripMetaKeys` for the no-change path:
+non-allocating no-ops are a documented invariant. Callers who need a
+clone in the no-op case can apply `t.Clone()` themselves; this helper
+does not pay the allocation when there is nothing to do.
+
+##### `StampMetadata`
+
+```
+func StampMetadata(d ast.Directive, key string, value string) ast.Directive
+```
+
+Sets a `MetaString` entry under `key` on the directive's `Meta` map.
+
+1.  `d` carries a `Meta` field (every concrete directive type in
+    `pkg/ast/directives.go` except `*Option`, `*Plugin`, `*Include`):
+    - If `d.Meta.Props[key]` already holds a `MetaValue{Kind:
+      MetaString, String: value}` (same kind, same string, all other
+      `MetaValue` fields at zero), the input is returned **aliased,
+      not cloned**. Idempotent re-stamps cost nothing.
+    - Otherwise the directive is deep-cloned via its `Clone()` method,
+      a fresh `Meta.Props` map is ensured (zero-cost when the clone
+      already allocated one), and `Props[key] = MetaValue{Kind:
+      MetaString, String: value}` is written. Any prior value for
+      `key` (any `Kind`) is overwritten. The returned directive's
+      `Meta.Props` is independent of the input's.
+2.  `d` is `*Option`, `*Plugin`, or `*Include`: **no-op**, returns `d`
+    unchanged. These types have no `Meta` field; the helper does not
+    invent one.
+3.  `d == nil`: returns `nil`.
+
+**Span of the stamped value.** `MetaValue` carries no Span field
+(verified in `pkg/ast/metadata.go`); there is no synthesised position
+to manage. The Span lives only on the enclosing directive and is
+preserved by the directive's `Clone()`.
+
+**Key validation.** `StampMetadata` does not validate `key`. An
+invalid metadata key (one that the beancount printer would reject)
+produces a directive that fails downstream; this is the caller's
+responsibility, for the same reason `BalanceWith` skips account
+validation. The godoc states this explicitly.
+
+**Empty inputs.** `key == ""` and `value == ""` are accepted verbatim
+and stored verbatim. Callers should not pass them, but the helper does
+not refuse.
+
+**Why string-only.** The first scheduled caller (8d CSV importer
+stamping `csvimp-rowhash`) writes string values; later importers will
+do the same for their identity keys. A multi-kind variant
+(`StampMetadataValue(d, key, MetaValue)`) can be added later without
+breaking this signature.
+
+##### Error semantics
+
+Neither function returns an error. Neither panics under normal use.
+Both treat a `nil` `ast.Directive` as `nil`. Both treat malformed
+`ast.Directive` values (e.g. a `*Transaction` whose `Postings` slice
+contains a posting with a nil `Amount` and a non-nil `Cost`) as
+unspecified behaviour; callers MUST pass directives produced by the
+parser / lowerer or by other documented constructors.
+
+##### Mutation guarantee
+
+For any non-aliased return (case 1 of `BalanceWith`; the
+write-or-overwrite branch of `StampMetadata`), the post-condition is:
+mutating any reachable field of the returned directive does not affect
+the input, and vice versa. "Reachable" includes `Postings` entries,
+each `Posting`'s `*Amount` / `Cost` / `Price` pointer targets, every
+`Meta.Props` map. Tags and Links remain shared by convention (matching
+`pkg/ast/clone.go`); callers MUST treat Tags and Links as append-only
+on both the input and the output.
+
+##### Boundaries with `pkg/ast`
+
+`pkg/importer/importerutil` MUST NOT add `Clone`-related symbols to
+`pkg/ast`. The directive-cloning facility already lives there
+(`pkg/ast/clone.go`); this package consumes it. If a future caller
+(8.1 ML hooks, custom decorators) needs a generic
+`func Clone(ast.Directive) ast.Directive`, it belongs in `pkg/ast`,
+not here, and lands in a separate change.
+
+#### Suggested Internals
+
+The implementer may adopt, modify, or replace any of the following.
+These are non-binding suggestions; the design phase does not have
+enough information to lock internals.
+
+##### File layout
+
+- `pkg/importer/importerutil/doc.go` — package godoc modelled on
+  `pkg/quote/sourceutil/doc.go`: orientation paragraph stating that
+  these are author-side helpers, an enumerated list of the available
+  decorators (`BalanceWith`, `StampMetadata`) with a one-line summary
+  each, and the goroutine-safety statement.
+- `pkg/importer/importerutil/balancewith.go` — `BalanceWith` and its
+  private helpers (currency resolution, counterpart construction).
+- `pkg/importer/importerutil/stampmetadata.go` — `StampMetadata` and
+  its private helpers (existing-value check, per-directive-type
+  metadata writer).
+
+Alternative: a single `decorators.go`. Rejected for the suggestion
+because two scheduled callers (8d, 8e) each want only one of the two
+helpers and a per-helper file is easier to grep.
+
+##### Per-directive-type metadata writer
+
+`StampMetadata` needs to dispatch over the directive's concrete type
+to clone and write its `Meta` field. Two reasonable shapes:
+
+- **Type switch** mirroring `ast.StripMetaKeys` in
+  `pkg/ast/metadata.go`. Verbose (eleven cases plus default), but the
+  pattern is already in the codebase and a future reader recognises
+  it. Recommended.
+- **Reflection** over a `Meta` field. Concise but inverts the
+  type-system contract and is harder to grep when adding a new
+  directive kind. Rejected.
+
+If the type-switch helper becomes useful elsewhere in `pkg/importer`,
+consider extracting it as an unexported `withMetaUpdated(d
+ast.Directive, fn func(*Metadata)) ast.Directive` in
+`pkg/importer/importerutil` — but only when a second caller appears.
+Do not pre-extract.
+
+##### Equality check for the idempotent path
+
+`StampMetadata`'s same-value branch needs to compare an existing
+`MetaValue` against the desired `MetaValue{Kind: MetaString, String:
+value}`. A direct struct comparison (`existing == desired`) is correct
+because every other `MetaValue` field is a comparable zero (`time.Time`
+zero, `apd.Decimal` zero, `Amount` zero with a zero `apd.Decimal`,
+`bool` false). Document the assumption with a one-line comment;
+revisit if `MetaValue` gains an incomparable field.
+
+Alternative: compare only `Kind` and `String`. Marginally faster, but
+makes a future incomparable field a silent bug; the direct comparison
+is more robust.
+
+##### Counterpart Posting construction
+
+Keep the counterpart Posting construction in a small unexported helper
+(`negatedCounterpart(src ast.Posting, account, currency string)
+ast.Posting`) to isolate the `apd.BaseContext.Neg` call and the
+Amount/Cost/Price clearing rules from the top-level function.
+
+##### Test layout
+
+Match the per-decorator file convention used by `pkg/quote/sourceutil`:
+
+- `balancewith_test.go` — single-posting happy path, already-balanced
+  no-op, zero-posting no-op, non-Transaction no-op (one sub-test per
+  directive kind covered by a fixture map), nil-Amount no-op,
+  currency-override happy path, currency-inference happy path, input
+  mutation check (mutate the returned `*Transaction`'s Postings /
+  Amount.Number; assert the input is unchanged via `cmp.Diff` with the
+  same `astCloneCmpOpts` set already defined in
+  `pkg/ast/clone_test.go`).
+- `stampmetadata_test.go` — set-new-key, overwrite-different-value,
+  idempotent-same-value (with identity-aliasing assertion via `==` on
+  the returned interface), non-metadata-bearing directives (Option,
+  Plugin, Include), nil input, input mutation check.
+- `fake_test.go` is unlikely to be useful — neither helper needs an
+  injectable dependency. Skip it unless something concrete requires it.
+
+Construction style: prefer `ast` constructors and the `MustSub`-based
+account literals (`ast.Assets.MustSub("Cash")`) used elsewhere in the
+codebase; do not hand-build raw struct literals with positional fields
+in tests.
+
+##### Benchmark
+
+A `BenchmarkStampMetadata` is worth adding because 8d calls it per
+emitted Transaction. Include three cases: fresh key, overwrite,
+idempotent-same-value (which must report zero allocations per op).
+`BenchmarkBalanceWith` is lower priority because 8e is the only
+scheduled caller and it runs at hook-rung scale, not per row.
+
+##### BUILD files
+
+`bazel run //:gazelle` regenerates `BUILD.bazel`; the implementer does
+not hand-author it.
+
+#### Alternatives discussed
+
+##### Clone-helper placement
+
+- **Adopted: reuse `pkg/ast/clone.go`.** Per-directive `Clone()`
+  methods already exist, are nil-safe, documented, and tested. The
+  importerutil functions dispatch over the concrete type (as
+  `ast.StripMetaKeys` already does) and delegate cloning to the
+  existing methods.
+- **Rejected: add an exported `Clone(d ast.Directive) ast.Directive`
+  in `pkg/importer/importerutil`.** Grows the package surface for a
+  helper that has no caller scheduled within Phase 8c–8f, and arguably
+  belongs in `pkg/ast` if it lives anywhere. If a generic version is
+  needed later, define it in `pkg/ast`.
+- **Rejected: add `(Directive).Clone() Directive` to the
+  `ast.Directive` interface.** Out of scope for 8c (modifies
+  `pkg/ast`'s public surface); deferred until a caller proves the
+  generic dispatcher pays for itself.
+- **Rejected: type-switch local to importerutil.** Mostly duplicates
+  what `Clone()` methods already do; would diverge as the AST evolves.
+
+##### No-op return: alias vs. always-clone
+
+- **Adopted: return aliased input on every no-op.** Matches `hook.Chain`
+  for empty chains, `ast.Metadata.Without` for empty-keys, and
+  `ast.StripMetaKeys` for "no keys present" — the codebase already
+  treats non-allocating no-ops as a feature. Callers that need an
+  isolated copy in every case can call `d.Clone()` (via the concrete
+  type) explicitly. Documented in the godoc and asserted in tests.
+- **Rejected: clone unconditionally.** Cleaner mental model
+  ("decorator always returns a fresh value") but pays an allocation
+  per emitted row for the importer's common path (a CSV importer
+  passing every emitted Transaction through `StampMetadata` followed
+  by a no-op `BalanceWith`). The cost compounds at 8d's per-row scale.
+
+##### Currency resolution policy
+
+- **Adopted: explicit-override, inferred otherwise.** Caller passes
+  `""` to mean "same as the existing posting's currency"; a non-empty
+  value overrides. Covers both common patterns (single-currency book,
+  cross-currency conversion) without two function signatures.
+- **Rejected: require an explicit `currency` always.** Forces every
+  same-currency caller (the dominant case) to repeat the currency
+  string. The 8e classify hook would have to read it back out of the
+  source Posting just to pass it in.
+- **Rejected: ignore the parameter and always infer.** Removes the
+  ability to balance against a different-currency account, which is a
+  legitimate (if minority) use case.
+
+##### `StampMetadata` value type
+
+- **Adopted: string-only signature.** Every scheduled caller writes
+  strings (`csvimp-rowhash`, future `ofximp-fitid`, future
+  `xmlimp-pathhash`). A typed-value variant can be added later as a
+  sibling function (`StampMetadataValue`) without breaking this one.
+- **Rejected: accept `ast.MetaValue` directly.** Cleaner in principle
+  but the only present caller is constructing a `MetaString` from a
+  hex digest; pushing the `MetaValue` literal to every call site adds
+  noise for zero benefit today.
+- **Rejected: variadic key/value pairs.** Encourages callers to batch
+  unrelated stamps and complicates the idempotency contract (do all
+  pairs have to match for the no-op return?). Compose multiple
+  `StampMetadata` calls instead.
+
+##### Directive types `StampMetadata` handles
+
+- **Adopted: every directive type that has a `Meta` field.** Mirrors
+  `ast.StripMetaKeys`'s coverage so the two helpers form a consistent
+  pair.
+- **Rejected: Transaction-only.** Surprising: a user stamping
+  `myimporter-id` on every emitted directive would need a separate
+  branch for Open / Balance / Note. The cost of the extra type-switch
+  cases is small and pays for itself the first time a caller emits a
+  non-Transaction directive.
+
+#### Recommendation
+
+Implement the two helpers as documented in the Contract above:
+`BalanceWith` and `StampMetadata`, both delegating to the existing
+`pkg/ast/clone.go` methods, both returning aliased input in every
+no-op case, both performing no syntactic validation of caller-supplied
+strings. Lay the package out as `doc.go` + `balancewith.go` +
+`stampmetadata.go` with per-decorator tests; skip a `fake_test.go`
+until a real need appears; add a `BenchmarkStampMetadata` because 8d
+hits this in a hot loop. This shape mirrors `pkg/quote/sourceutil`,
+reuses the already-shipped `pkg/ast` cloning facility, and matches the
+non-allocating-no-op precedent set by `pkg/importer/hook.Chain` —
+three consistency wins for the cost of one type-switch repeated across
+two functions.
+
 ### 8d — `pkg/importer/std/csvimp` reference importer
 
 - **Modules:** `pkg/importer/std/csvimp/csvimp.go` (importer impl;
