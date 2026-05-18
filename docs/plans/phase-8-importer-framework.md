@@ -814,6 +814,560 @@ Contract above.
 - **Quality requirements:** chain is non-allocating in the no-op case;
   godoc states the no-auto-run contract.
 
+### Detailed Design
+
+#### Contract
+
+##### Package and import path
+
+Package path `github.com/yugui/go-beancount/pkg/importer/hook`,
+package name `hook`. Single Go package; no `/api` split (per plan
+decision 1). All symbols below are exported from this package.
+
+##### `Hook` interface
+
+```go
+type Hook interface {
+    Name() string
+    Apply(ctx context.Context, in HookInput) (HookResult, error)
+}
+```
+
+- `Name()` returns the registry key. By convention, the upstream
+  tool's name for canonical reference hooks (`"classify"`) and the
+  Go fully-qualified package path otherwise — mirrors 8a's
+  `Importer.Name()` convention. Two registrations under the same
+  name panic; see `Register`.
+- `Apply` is the work-doing call. Error vs Diagnostic split mirrors
+  8a's `Importer.Extract` split exactly:
+  - A non-nil `error` indicates a **system-level / framework-level**
+    failure: ctx cancellation, programmer error, structural
+    inability to proceed. Non-nil `error` halts the chain; see
+    `Chain` below. When `error` is non-nil, `HookResult.Directives`
+    SHOULD be nil; `HookResult.Diagnostics` MAY still be non-nil
+    and is composed by `Chain` into the final diagnostic stream.
+  - Per-directive problems (no rule matched a single-leg
+    transaction, unparseable metadata, etc.) are reported as
+    `ast.Diagnostic` entries in `HookResult.Diagnostics`. They do
+    not halt the chain.
+  - ctx cancellation MUST surface as a non-nil error (typically
+    `ctx.Err()`); Apply implementations SHOULD check ctx between
+    expensive per-directive operations.
+- Apply MUST NOT mutate `in.Directives` or any directive it
+  contains. See the mutation policy below.
+
+##### `HookInput` struct
+
+```go
+type HookInput struct {
+    Directives []ast.Directive
+    Hints      map[string]string
+    Options    *ast.OptionValues
+}
+```
+
+- `Directives` — the directive slice produced by the previous step
+  (importer Extract for the first hook, the prior hook's
+  `HookResult.Directives` for subsequent hooks). Source-encounter
+  order. MAY be empty; MUST NOT be nil when reaching a registered
+  Hook (Chain normalises nil to an empty slice before invoking the
+  first hook).
+- `Hints` — caller-supplied free-form key/value bag, carried
+  through from `importer.Input.Hints` by the CLI. Same
+  framework-reserved keys as 8a's `Input.Hints` (notably
+  `"account"`); hooks that consume Hints MUST document the keys
+  they read in their package godoc. Hints MAY be nil; hooks MUST
+  treat nil Hints identically to an empty map. Adding new
+  framework-reserved keys does not break ABI.
+- `Options` — typed snapshot of ledger option values, matching the
+  `pkg/ext/postproc/api.Input.Options` shape (`*ast.OptionValues`,
+  not the non-existent `ast.Options` named in the plan-level 8b
+  outline; treat that as a typo). `Options` MAY be nil. Hooks MUST
+  tolerate nil `Options`; `*ast.OptionValues` accessor methods are
+  documented nil-safe and fall back to registry defaults. The CLI
+  in 8f passes nil in ABI v1 (`cmd/beanimport` does not load a
+  ledger to read options against); the field is present so a
+  later caller that *does* have an `*ast.OptionValues` (a future
+  in-process pipeline, a daemon import path) can pass it without
+  an ABI bump.
+
+**Mutation policy on `HookInput`.** A hook MUST NOT mutate the
+`Directives` slice header or any directive contained in it. The
+hook MUST NOT mutate the `Hints` map. `Options` is treated as
+read-only. Chain may pass the same slice header and the same map
+reference through multiple hooks; aliasing only stays safe under
+these rules.
+
+##### `HookResult` struct
+
+```go
+type HookResult struct {
+    Directives  []ast.Directive
+    Diagnostics []ast.Diagnostic
+}
+```
+
+- `Directives` is the (possibly transformed) directive list to
+  pass on. MAY be empty (a hook that drops everything is legal).
+  An Apply implementation that performs no transformation MAY
+  return `HookResult{Directives: in.Directives}` — the framework
+  takes the result slice header as logically immutable after
+  Apply returns, so a hook returning the input slice unchanged is
+  permitted and is what makes the chain non-allocating in the
+  no-op case.
+- `Diagnostics` MUST NOT include diagnostics carried in over
+  `HookInput` (HookInput has no `Diagnostics` field — see
+  alternatives). Each hook's `Diagnostics` represents only what
+  that hook itself found.
+- A hook returning a non-nil error MAY also populate `Directives`
+  and `Diagnostics`; Chain discards `Directives` on error (treating
+  the chain as halted at this rung) but does preserve the
+  `Diagnostics` slice in the composed output. See `Chain`.
+
+**Mutation policy on `HookResult`.** After Apply returns, the
+caller (Chain or a direct invoker) takes ownership of the
+returned `Directives` and `Diagnostics` slices and treats them as
+logically immutable. A hook that wants to keep a private cached
+slice MUST return a copy. A hook that returns `in.Directives`
+unchanged is asserting that it will not mutate it after return.
+
+##### `Configurable` optional sub-interface
+
+```go
+type Configurable interface {
+    Hook
+    Configure(decode func(dest any) error) error
+}
+```
+
+- Mirrors 8a's `importer.Configurable` verbatim. The signature,
+  semantics, and rationale are identical:
+  - `decode` is a caller-supplied callback that decodes whatever
+    the caller holds (TOML primitive, JSON bytes, in-memory map)
+    into the destination value the hook provides.
+  - `decode` MUST NOT be nil when Configure is invoked. Callers
+    with no configuration do not call Configure at all.
+  - Configure MUST be called at most once per Hook instance
+    before any Apply call. Calling Configure twice on the same
+    instance has undefined behaviour.
+  - A non-nil error fails the pipeline early. `Chain` does NOT
+    call Configure — configuration is the caller's responsibility
+    before the chain runs (same delegation as 8a's `Apply`).
+- No hook-specific divergence from 8a's `Configurable`. The name
+  `Configurable` is reused; callers disambiguate by package path
+  (`importer.Configurable` vs `hook.Configurable`).
+
+##### `Registry` interface and package-level functions
+
+```go
+type Registry interface {
+    Lookup(name string) (Hook, bool)
+    Names() []string
+}
+
+func Register(name string, h Hook)
+func Lookup(name string) (Hook, bool)
+func Names() []string
+func GlobalRegistry() Registry
+```
+
+Exact mirror of 8a's registry. Differences from 8a are the type
+substitution `Hook` for `Importer` and the panic message string.
+
+- `sync.RWMutex` over a package-level map. Lookup/Names take the
+  read lock, Register takes the write lock.
+- Safe to call from `init()` and from goplug `InitPlugin()`
+  callbacks; safe to call concurrently with Lookup/Names from
+  the main goroutine.
+- `Register` panics with
+  `hook: duplicate Hook registration for %q` on duplicate name.
+- `Names()` returns the registered names in ascending sorted
+  order. Unlike 8a, the sort order is NOT load-bearing for the
+  chain runner (Chain uses caller-supplied order), but a stable
+  ordering remains contractual for `--help`/listing UIs and for
+  test determinism.
+- `GlobalRegistry()` returns a `Registry` view over the
+  package-global state. The `Registry` interface includes both
+  `Lookup` and `Names` for parity with 8a; this lets a future
+  diagnostic surface ("here are all the hook names you could
+  spell") accept a Registry without a second helper.
+
+##### `Chain` function
+
+```go
+func Chain(ctx context.Context, reg Registry, names []string, in HookInput) (HookResult, error)
+```
+
+Behaviour, in order:
+
+1. **Empty names.** If `len(names) == 0`, return
+   `HookResult{Directives: in.Directives, Diagnostics: nil}` and
+   nil error. This is the non-allocating pass-through path; no
+   slice copy, no diagnostic allocation, no Lookup calls.
+2. **Per-rung loop.** For `i, name := range names`:
+   a. Check `ctx.Err()`. If non-nil, return the composed-so-far
+      `HookResult` together with `ctx.Err()` as the error.
+   b. `Lookup(reg, name)`. If not registered, **halt** the chain:
+      return the composed-so-far `HookResult` augmented with a
+      single Error-severity `ast.Diagnostic{Code: DiagHookNotRegistered, ...}`
+      and a nil error. (Rationale: a typo in `--hook` is a
+      ledger-content / user-input problem, not a framework
+      failure, mirroring 8a's `DiagImporterNone` treatment in
+      `Apply`. See "Alternatives discussed" for halt-vs-skip.)
+   c. Build the next `HookInput` by reusing `in.Hints` and
+      `in.Options` unchanged and setting `Directives` to the
+      previous rung's `HookResult.Directives` (or `in.Directives`
+      on the first rung). No defensive copy.
+   d. Call `h.Apply(ctx, nextInput)`.
+   e. Append `result.Diagnostics` onto the accumulator in chain
+      order.
+   f. If Apply returned a non-nil error, **halt**: return the
+      composed-so-far `HookResult` (with `Directives` set to the
+      *previous* rung's directives — the failing hook's output
+      is discarded) and the error verbatim. The composed
+      `Diagnostics` includes any diagnostics the failing hook
+      emitted before erroring.
+   g. Otherwise, set the running `Directives` to
+      `result.Directives` and continue.
+3. **Successful exit.** Return
+   `HookResult{Directives: <last rung's Directives>, Diagnostics: <accumulator>}`
+   and nil error. When no rung emitted any diagnostic, the
+   accumulator is nil (not an empty non-nil slice), matching
+   8a's `Apply` discipline.
+
+**ctx cancellation.** Checked at the top of every rung
+iteration. ctx.Err() is the surfaced error; the running
+`HookResult` is preserved.
+
+**Composition aliasing.** Chain MUST NOT defensively copy
+`Directives` between rungs. The mutation policy stated above
+makes the zero-copy pass safe: each rung's Apply has the
+input-immutability contract.
+
+**Diagnostic ordering.** `HookResult.Diagnostics` lists the
+diagnostics in the order they were produced: rung 0 first, then
+rung 1, etc. A `DiagHookNotRegistered` from a missing rung
+appears in chain position.
+
+**Allocation budget.**
+
+- Empty `names`: zero allocations. Returned `HookResult` reuses
+  `in.Directives`.
+- One rung, hook returns `in.Directives` unchanged with no
+  diagnostics: zero allocations beyond what the hook itself does
+  internally.
+- N rungs: at most one diagnostic slice grow per rung that emits.
+
+##### Diagnostic codes
+
+```go
+const (
+    DiagHookNotRegistered = "hook-not-registered"
+)
+```
+
+- `DiagHookNotRegistered` — emitted by `Chain` when a name in the
+  caller-supplied chain is not in the registry. Severity: Error.
+  `Span.Start.Filename` is left empty (there is no source file
+  associated with a CLI-level hook list); `Message` SHOULD include
+  the offending name.
+
+Only one code ships in 8b. Other speculative codes
+(`DiagHookError`, `DiagHookCancelled`, etc.) are deliberately NOT
+reserved — reserving a code without an emit site is speculative
+generality and the codes are append-only, so a future hook
+needing a new code can add it without an ABI bump. This diverges
+from 8a, which reserved `DiagImporterAmbiguous`; the divergence
+is justified because 8a had a concrete future use (a strict-mode
+flag already named in the plan), whereas 8b has no concrete future
+use to point at.
+
+##### goplug ABI considerations
+
+- All Contract-level types declared above are declaration-only
+  (`HookInput`, `HookResult`, `Registry`, diagnostic constants)
+  or pure interfaces (`Hook`, `Configurable`). Same ABI shape as
+  8a; a plugin built against `pkg/importer/hook` shares type
+  identities with the host through the standard Go plugin-load
+  mechanism.
+- Optional sub-interfaces are the chosen evolution hedge per plan
+  decision 8. Phase 8.1 ML hooks add new optional sub-interfaces
+  (`CorpusAware`, `Tokenized`, etc.) rather than modifying `Hook`
+  or `HookInput`.
+- Once 8b ships, the following changes require a
+  `goplug.APIVersion` bump:
+  - Adding a method to `Hook` or `Configurable`.
+  - Adding or retyping a field in `HookInput` or `HookResult`.
+  - Removing or renaming any exported symbol above.
+- Append-only changes that do NOT require a bump: new diagnostic
+  code constants, new reserved keys in `HookInput.Hints`, new
+  optional sub-interfaces with disjoint method sets.
+
+#### Suggested Internals
+
+These are non-binding; the implementer adopts, modifies, or
+replaces them based on what they discover while coding.
+
+##### File decomposition
+
+Three plausible layouts:
+
+- **Variant A (plan as written).** Three files: `hook.go`
+  (interface + types + diagnostic constants), `registry.go`
+  (registry mirror), `chain.go` (Chain). Pro: matches the plan
+  and 8a's three-file split (importer.go / registry.go /
+  dispatch.go) one-to-one. Con: `chain.go` is small.
+- **Variant B.** Two files: `hook.go` (interface + types + diag
+  + Chain), `registry.go`. Pro: collapses the smallest file
+  into the type-declaration file; Chain reads naturally next
+  to HookInput / HookResult. Con: diverges from 8a's layout.
+- **Variant C.** One file `hook.go` until a real reason to
+  split. Pro: package is small. Con: same goplug-ABI-grep
+  argument as 8a's Variant C — declaration-only ABI surface
+  ends up co-mingled with state-bearing registry code.
+
+Recommended: **Variant A** (matches 8a). Easy to merge to B
+later if `chain.go` stays trivial.
+
+##### Test layout
+
+- `hook_test.go` — type-assertion tests for `Configurable`
+  (analogue of 8a's `TestOptionalInterface_ConfigurableAssertion`).
+  This is cheap, catches accidental interface-method-set drift,
+  and matches 8a verbatim.
+- `registry_test.go` — port `pkg/quote/registry_test.go`'s
+  structure and 8a's `registry_test.go`: register/lookup/names,
+  duplicate-panics, missing lookup, `GlobalRegistry()`
+  round-trip.
+- `chain_test.go` — table-driven coverage:
+  - Empty names → pass-through (asserts identical slice header
+    via slice-aliasing check, which proves the no-allocation
+    contract).
+  - Single hook, transforming.
+  - Two hooks, ordering preserved (caller order, not sorted).
+  - Missing rung emits DiagHookNotRegistered and halts.
+  - Apply error halts and surfaces verbatim; preceding
+    diagnostics preserved.
+  - ctx cancellation between rungs surfaces ctx.Err().
+  - Diagnostics from successive rungs concatenate in order.
+- `concurrency_test.go` — goroutine stress: N concurrent
+  Lookups while Register is interleaved; `-race` required.
+  Same shape as 8a's concurrency test.
+
+##### Fake hook
+
+Small struct in a shared test helper:
+
+```go
+type fakeHook struct {
+    name      string
+    applyFn   func(ctx context.Context, in HookInput) (HookResult, error)
+}
+```
+
+with `Name()` returning `name` and `Apply` delegating to
+`applyFn`. Single source of fakes prevents per-test divergence.
+
+##### Slice-aliasing check
+
+The empty-names allocation contract is testable via
+`reflect.SliceHeader` or `unsafe.SliceData`. Suggested: a small
+helper `sameSliceData(a, b []ast.Directive) bool` in the test
+file that compares backing-array pointers. Optional; adopt only
+if the implementer wants to lock the contract in CI.
+
+##### Configurable sub-interface helper
+
+If `Configurable` is exercised in tests for 8b at all (not
+strictly required — no in-package consumer of it ships until 8e),
+add a one-line type-assertion test:
+
+```go
+var _ Configurable = (*fakeConfigurableHook)(nil)
+```
+
+mirroring 8a. This catches method-set-shape regressions at
+compile time.
+
+#### Alternatives discussed
+
+##### B1. Missing-hook policy: halt vs skip
+
+- **Halt with DiagHookNotRegistered (recommended, locked above).**
+  The chain stops at the offending rung; the composed result
+  reflects the work done up to that point, plus a Diagnostic.
+  - Pro: matches 8a's `Apply` discipline of "ledger-content
+    problems are Diagnostics, not errors" — the diagnostic is
+    Error-severity, surfaceable in the CLI's standard
+    diagnostic formatter.
+  - Pro: silent skipping of a typo'd `--hook` name is a footgun.
+    Users wire chains explicitly; a misspelled rung silently
+    elided produces output that looks correct but isn't, with
+    no recourse.
+  - Pro: matches users' mental model of pipe composition — a
+    missing program in `a | b | c` does not silently become
+    `a | c`.
+- **Skip with DiagHookNotRegistered.** Emit the diagnostic but
+  continue the chain with the previous rung's output.
+  - Pro: more forgiving on partial-plugin-load failures.
+  - Con: hides the misconfiguration. If `classify` is missing
+    from a build, the user sees single-leg transactions
+    indistinguishable from a working "I chose not to balance"
+    invocation.
+  - Con: changes the chain length silently, which violates the
+    chain-as-explicit-composition principle.
+- **Halt with an error (not a diagnostic).** Return ctx.Err()-shaped
+  framework error.
+  - Pro: simpler to test.
+  - Con: misclassifies — a typo'd hook name is a user-input
+    problem, not a framework failure. The error channel is
+    reserved for I/O and ctx cancellation, mirroring 8a.
+
+##### B2. `HookInput.Directives` aliasing and mutation policy
+
+- **Caller-owns-input, hook-owns-output, no mutation of input
+  (recommended, locked above).**
+  - Pro: enables the zero-allocation pass-through contract for
+    empty chains and no-op hooks. Plan requirement #6.
+  - Pro: mirrors 8a's `Output` policy ("not mutated by the
+    framework after Extract returns; importers free to return
+    shared / cached slices as long as they treat them as
+    logically immutable").
+  - Con: a hook author who wants to "tweak field X on directive
+    Y" in place is locked out; they must build a new slice. In
+    practice cheap and idiomatic.
+- **Defensive copy at every rung.** Chain copies
+  `HookResult.Directives` before passing it to the next rung.
+  - Pro: bulletproof against accidental mutation.
+  - Con: O(N) allocation per rung in the steady state, with no
+    payoff for correct hooks. Defeats the non-allocating-no-op
+    contract.
+- **Mutation explicitly permitted, document the order.**
+  - Pro: maximum hook-author flexibility.
+  - Con: pinning down the visible state for a multi-rung chain
+    becomes a per-hook concern; aliasing rules become a chain
+    of obligations rather than a single statement.
+
+##### B3. `HookInput.Options` field: include now, defer, or omit
+
+- **Include as `*ast.OptionValues`, document MAY-be-nil
+  (recommended, locked above).**
+  - Pro: declared types are part of the goplug ABI. Adding the
+    field later requires `goplug.APIVersion` bump (see ABI
+    rules above). Including it now at zero cost (8e and the 8f
+    CLI pass nil) keeps the door open for a future in-process
+    pipeline that has a real `*ast.OptionValues`.
+  - Pro: matches `pkg/ext/postproc/api.Input.Options`'s
+    declared type and discipline ("Nil only when Input is
+    constructed directly rather than via [ast.Load]...; nil-safe
+    accessors fall back to registry defaults"), giving hook
+    authors a familiar shape.
+- **Defer to Phase 8.1 via a new optional sub-interface
+  `OptionsAware`.**
+  - Pro: keeps `HookInput` minimal in v1.
+  - Con: hooks that want options would have to type-assert,
+    cast, and read out-of-band — heavier ergonomics than a
+    plain field for a thing that is logically input.
+  - Con: the field is one pointer; the ABI cost of including
+    it is nil-when-not-used, no method-set drift, no
+    type-assertion dance.
+- **Omit entirely (8b ABI v1 does not carry Options).**
+  - Con: when 8.1 needs it, adding it requires `APIVersion`
+    bump. Cheap insurance lost.
+
+The fact that the plan's high-level 8b outline literally names
+`*ast.Options` — a type that does not exist in `pkg/ast` —
+forces a Contract-level decision here. The recommended fix is
+to bind the field to the real type (`*ast.OptionValues`) and
+leave the plan outline as a typo of historical record.
+
+##### B4. Single diagnostic code vs. reserved set
+
+- **Ship only DiagHookNotRegistered (recommended, locked above).**
+  - Pro: every shipped code has an emit site; the constant
+    inventory matches the behaviour inventory.
+  - Pro: codes are append-only, so adding more later costs
+    nothing.
+- **Reserve DiagHookError, DiagHookCancelled, DiagHookOptions, …**
+  - Pro: parity with 8a's `DiagImporterAmbiguous` reservation.
+  - Con: 8a reserved one code with a concrete near-term use
+    (strict-mode flag already in the plan). 8b has no concrete
+    near-term use. Reserving names without users is speculative
+    generality, and the append-only rule already insures the
+    upgrade path.
+
+##### B5. `Configurable` naming: reuse the name or pick a hook-specific name
+
+- **Reuse `Configurable` (recommended, locked above).**
+  - Pro: callers reading two packages with the same evolution
+    hedge see the same shape.
+  - Pro: the package path disambiguates
+    (`importer.Configurable` vs `hook.Configurable`).
+- **`HookConfigurable`.**
+  - Pro: less risk of confusion in code that imports both
+    packages.
+  - Con: stutters with the package name (`hook.HookConfigurable`).
+
+##### B6. Chain signature: take `Registry` or take a slice of resolved Hooks
+
+- **Take `Registry` and a `names []string` (recommended,
+  locked above).**
+  - Pro: matches 8a's `Dispatch` shape; tests substitute a fake
+    Registry.
+  - Pro: the missing-name path is inside Chain, where the
+    diagnostic emission belongs.
+- **Take `[]Hook` directly; caller does Lookup.**
+  - Pro: Chain becomes a tiny for-loop.
+  - Con: pushes the missing-name diagnostic emission into the
+    caller (`cmd/beanimport` in 8f), which would then have to
+    duplicate the diag-code knowledge. Worse: every test of the
+    happy path has to do its own lookup-and-handle code.
+
+#### Recommendation
+
+Adopt the Contract as locked above. The six contested decisions
+resolved as follows:
+
+1. **Halt on missing hook with `DiagHookNotRegistered`.** Silent
+   skipping of a typo'd `--hook` rung is a footgun; the chain is
+   an explicit user composition and a missing rung deserves a
+   surfaced diagnostic. The diagnostic-not-error classification
+   mirrors 8a's treatment of "no importer identified" — both
+   are ledger-content/user-input problems, not framework
+   failures.
+
+2. **Caller-owns-input, hook-owns-output, no input mutation.**
+   This is the only policy that simultaneously delivers the
+   plan-required non-allocating no-op chain and the 8a-style
+   "returned slices are logically immutable" discipline.
+   Defensive copying is wasteful; permitting in-place mutation
+   makes multi-rung chains analytically painful.
+
+3. **`HookInput.Options *ast.OptionValues`, document MAY-be-nil.**
+   The plan outline named `*ast.Options`; that type does not
+   exist. The closest real type is `*ast.OptionValues` and it
+   is already what `pkg/ext/postproc/api.Input.Options` uses,
+   giving hook authors a familiar shape. Including it now keeps
+   the door open for future option-aware hooks without an ABI
+   bump; the 8e classify hook and the 8f CLI pass nil and the
+   ABI cost is one pointer.
+
+4. **Ship only `DiagHookNotRegistered`.** Codes are append-only;
+   reserving names without near-term users is speculative.
+
+5. **Reuse `Configurable` as the optional-sub-interface name.**
+   Package-path disambiguation is sufficient and gives reviewers
+   one shape to learn.
+
+6. **`Chain` takes `(Registry, names)`.** Missing-name diagnostic
+   emission is centralised; tests substitute a fake Registry the
+   same way 8a's Dispatch tests do.
+
+The Suggested Internals (Variant A file layout, slice-aliasing
+helper, fakeHook shape, Configurable type-assertion test) are
+advisory. The implementer is free to pick any arrangement that
+hits the Contract above.
+
 ### 8c — `pkg/importer/importerutil` building blocks
 
 - **Modules:** `pkg/importer/importerutil/balancewith.go` (`BalanceWith(d
