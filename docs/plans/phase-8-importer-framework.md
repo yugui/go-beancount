@@ -2360,6 +2360,441 @@ Adopt the Contract above:
 - **Quality requirements:** O(rules) per single-leg txn; regex
   compilation cached at `Configure` time.
 
+### Detailed Design
+
+#### Contract
+
+##### Package and import path
+
+```
+package classify // import "github.com/yugui/go-beancount/pkg/importer/hook/std/classify"
+```
+
+A single Go package implementing one `hook.Hook` plus `hook.Configurable`. All
+exported symbols below are part of the goplug ABI; changes follow 8b's ABI
+rules.
+
+##### Registration and `Name()`
+
+The package `init` function registers a single process-global `*Hook` value
+under TWO names:
+
+```
+func init() {
+    h := &Hook{}
+    hook.Register("classify", h)
+    hook.Register("github.com/yugui/go-beancount/pkg/importer/hook/std/classify", h)
+}
+```
+
+The **same instance** is registered under both names; either lookup returns
+the same `*Hook` (pointer equality). This is the dual-registration pattern
+fixed by 8d's `pkg/importer/std/csvimp` `init` (see `pkg/importer/std/csvimp/doc.go`)
+and is mandatory.
+
+`Name()` returns `"classify"` (the canonical short name), not the Go-path
+alias. Independent of configuration state. Matches the 8d csvimp precedent
+that `Name()` reports the short identity even when registered under two keys.
+
+The hook is therefore a process-global singleton. `Configure` mutates state on
+this singleton; `Apply` reads it. Concurrency: see below.
+
+##### TOML configuration schema
+
+The configuration is a TOML document with a top-level `rule` array of tables.
+The Go schema is:
+
+```
+type config struct {
+    Rules []ruleConfig `toml:"rule"`
+}
+
+type ruleConfig struct {
+    PayeeRegex     string `toml:"payee_regex"`     // optional
+    NarrationRegex string `toml:"narration_regex"` // optional
+    Currency       string `toml:"currency"`        // optional; "" means infer
+    Account        string `toml:"account"`         // required
+}
+```
+
+Canonical TOML form (illustrative):
+
+```toml
+[[rule]]
+payee_regex = "(?i)acme"
+account     = "Expenses:Office"
+
+[[rule]]
+narration_regex = "(?i)salary"
+currency        = "USD"
+account         = "Income:Salary"
+```
+
+- **Declaration order is load-bearing.** `[[rule]]` produces an ordered TOML
+  array; the decoder preserves array order; `Apply` walks the resulting slice
+  in that order. This is the central reason `[[rule]]` is chosen over a
+  `[rule.<name>]` map (see Alternatives A1).
+- **Per-rule validation at Configure time** (in this order; first failure
+  fails Configure):
+  1. At least one of `PayeeRegex` and `NarrationRegex` is non-empty.
+     Otherwise: `rule[i]: at least one of payee_regex/narration_regex
+     required`. Rationale: a selector-less rule matches every txn and is
+     either a footgun or a typo; refusing it at Configure is cheap and
+     prevents silent surprise. See Alternatives A4.
+  2. `Account` is non-empty. Otherwise: `rule[i]: account is required`.
+  3. If `PayeeRegex` is non-empty it MUST compile as a Go regular expression.
+     Compiled regexp cached on the internal rule.
+  4. If `NarrationRegex` is non-empty it MUST compile. Compiled regexp
+     cached on the internal rule.
+- **No regex semantics imposed beyond `regexp.Compile`.** Anchors are the
+  caller's responsibility; case-insensitivity uses `(?i)`. The hook does NOT
+  silently wrap the user's pattern with `^...$` or `(?i)`.
+- **Account validation** is not performed (matches `importerutil.BalanceWith`'s
+  policy at `pkg/importer/importerutil/balancewith.go`). A malformed account
+  fails downstream.
+- **Currency validation** is not performed; empty means infer, non-empty is
+  passed through to `BalanceWith` verbatim.
+- **Unknown TOML keys**: not classify's concern. Per the 8a Configure
+  encoding-agnostic contract, surfacing strict-decoding failures is the
+  caller's responsibility (CLI's decoder closure).
+
+##### `Configurable.Configure`
+
+```
+func (h *Hook) Configure(decode func(dest any) error) error
+```
+
+Behaviour:
+
+- `decode == nil` → returns `classify: configure: nil decoder`.
+- `decode(&cfg)` is called exactly once with a local `config`. A non-nil
+  decode error is wrapped: `classify: configure: <err>`.
+- Validation runs in the order listed above. Any validation failure returns
+  `classify: configure: <message>` and **leaves any previously installed
+  rules untouched**.
+- On success, the freshly built rule slice replaces `h.rules` atomically
+  under `h.mu`.
+- A non-Configure'd Hook has an empty rule list. `Apply` is well-defined in
+  that state: every single-leg transaction produces a `classify-no-rule`
+  diagnostic and is passed through unchanged.
+- Re-Configure replaces the previous rule list. (The 8b Contract documents
+  multiple Configure calls as undefined; classify treats it as legal
+  replacement, mirroring 8d csvimp.)
+
+##### `Apply`
+
+```
+func (h *Hook) Apply(ctx context.Context, in hook.HookInput) (hook.HookResult, error)
+```
+
+Per-directive behaviour:
+
+1. **Non-Transaction directive**: pass through unchanged (output entry
+   aliases input entry).
+2. **`*ast.Transaction` with `len(Postings) != 1`** (zero, two, or more):
+   pass through unchanged (idempotency; balanced transactions are already
+   done).
+3. **`*ast.Transaction` with `len(Postings) == 1`**: walk the rule list in
+   declaration order. For each rule:
+   - If `payeeRegex != nil`, require `payeeRegex.MatchString(tx.Payee)`.
+     No match → skip rule.
+   - If `narrationRegex != nil`, require
+     `narrationRegex.MatchString(tx.Narration)`. No match → skip rule.
+   - If both selectors are set, BOTH must match; if only one is set, that
+     one alone matches.
+   - First rule that satisfies the above selectors wins. The output entry
+     for this directive is
+     `importerutil.BalanceWith(tx, rule.account, rule.currency)`. Rule
+     iteration stops.
+   - If no rule matches: append one Warning `Diagnostic{Code:
+     DiagNoRule, ...}` (see below) to the output diagnostics; the output
+     entry aliases the input directive.
+
+`Apply` checks `ctx.Err()` once at the top and once at every Nth directive
+(N is at the implementer's discretion; suggestion below). On cancellation,
+returns the composed-so-far `HookResult` together with `ctx.Err()`. The
+Chain runner discards the partial Directives on error per the 8b Contract
+but preserves the Diagnostics; this is consistent with that handling.
+
+##### Mutation policy
+
+- `Apply` MUST NOT mutate `in.Directives`, any directive in it, `in.Hints`,
+  or `in.Options`. Mandated by 8b's HookInput contract
+  (`pkg/importer/hook/hook.go` lines 34–46).
+- The directives `Apply` writes into the output that are modified (the
+  ones the matched rule rewrote) are the results of
+  `importerutil.BalanceWith`, which deep-clones via `pkg/ast/clone.go`.
+  These are independent of `in.Directives` entries.
+- The directives `Apply` writes through unchanged alias the input entries.
+  Permitted by 8b's HookResult contract (returned slices are logically
+  immutable after Apply returns).
+
+##### `HookResult.Directives` aliasing
+
+Two cases, locked:
+
+- **No single-leg `*ast.Transaction` in `in.Directives`.** The output
+  `HookResult.Directives` aliases `in.Directives` directly (same slice
+  header). No fresh slice is allocated. Zero diagnostics are emitted in
+  this case (`classify-no-rule` fires only on single-leg txns). This is
+  the "whole input has nothing for me" no-op, matching 8b Chain's
+  empty-names pass-through (`pkg/importer/hook/chain.go`) and 8c
+  BalanceWith's no-op aliasing (`pkg/importer/importerutil/balancewith.go`
+  lines 22–29).
+- **At least one single-leg `*ast.Transaction` is present.** The output
+  `Directives` is a fresh `make([]ast.Directive, len(in.Directives))`.
+  Each entry is either `in.Directives[i]` aliased (unmodified path) or
+  the `BalanceWith` return (modified path). The mixed case is normal.
+
+Detecting which case applies requires a pre-scan or a lazy upgrade:
+either is acceptable (Suggested Internals below). The Contract only
+fixes the observable behaviour: when no candidate is present, no fresh
+slice is allocated.
+
+##### `HookResult.Diagnostics`
+
+- `nil` when no `classify-no-rule` fires.
+- Otherwise a freshly allocated slice in directive-walk order (rule walk
+  order does not appear in the diagnostic stream; only the
+  source-encounter order of the transactions does).
+- Severity is `ast.Warning` for every diagnostic emitted by this hook in
+  ABI v1.
+
+##### Diagnostic codes
+
+Exported package constants:
+
+```
+const (
+    DiagNoRule = "classify-no-rule"
+)
+```
+
+`classify-no-rule` is emitted once per single-leg `*ast.Transaction` for
+which no rule matched. Severity: `ast.Warning`.
+
+- **Span**: copied verbatim from `tx.Span`. For csvimp-produced
+  Transactions this is currently the zero `Span` (8d does not synthesise a
+  CSV-row span); future importers that carry Span will surface usable
+  locations automatically.
+- **Message**: `fmt.Sprintf("no classify rule matched (payee=%q narration=%q)", tx.Payee, tx.Narration)`.
+  The two fields are the inputs to the rule selectors; quoting them gives
+  the user enough information to write a matching rule. Empty values are
+  shown as `""` (Go quoting handles it).
+- **Code**: `DiagNoRule`.
+
+Rationale for Warning severity (vs. Error): a single-leg transaction with
+no matching rule is a "your classify config might want another rule"
+signal, not "your import is broken". The CLI's strict mode promotes
+Warning to Error if the operator chooses; the default is permissive
+because a freshly-onboarded user is expected to iterate on their rule
+list across runs. See Alternatives A3.
+
+##### Concurrency
+
+The hook is a process-global singleton. Configure / Apply are NOT safe
+to call concurrently on the same instance from the perspective of the
+8b Hook contract (Chain serialises them by construction). An internal
+`sync.Mutex` is held around Configure's rule-list swap and around Apply's
+rule-list read, as a defensive measure for the race detector and for the
+edge case where a goplug InitPlugin callback Configures the hook while a
+foreground call holds it. Documented in package godoc; mirrors 8d csvimp
+(`pkg/importer/std/csvimp/csvimp.go` lines 14–30).
+
+##### Reads from `in.Hints` and `in.Options`
+
+- `in.Hints`: not consulted.
+- `in.Options`: not consulted.
+
+These fields are accepted (per 8b) and tolerated as nil; the classify
+reference hook simply does not need them. Future ML-style classification
+hooks may consume them and add new optional sub-interfaces.
+
+##### Out-of-scope behaviours
+
+- Tokenisation, term-frequency models, ledger-history learning: deferred
+  to Phase 8.1.
+- Re-balancing already-balanced transactions: not performed (idempotency
+  case 2 above).
+- Stamping any metadata on classified Transactions: not performed. The
+  classification act is intentionally invisible in the directive; only
+  the additional Posting is observable.
+- Mutating Payee/Narration/Tags/Links/Meta of the matched Transaction:
+  not performed. `BalanceWith` only adds a Posting.
+
+##### goplug ABI considerations
+
+- `*Hook` is the only exported type. `DiagNoRule` is the only exported
+  diagnostic constant. The interface implementations (`Name`, `Apply`,
+  `Configure`) are bound to the `pkg/importer/hook` types and share their
+  ABI rules.
+- Once 8e ships, the following changes require a `goplug.APIVersion`
+  bump:
+  - Removing or renaming any exported symbol above.
+  - Changing the severity of `classify-no-rule` from Warning to Error
+    (callers may key alerting on the severity field).
+  - Adding a required TOML key that breaks existing configurations.
+- Append-only changes that do NOT require a bump: new diagnostic codes,
+  new optional TOML keys with defaulted behaviour, new optional
+  sub-interface implementations.
+
+#### Suggested Internals
+
+These are non-binding; the implementer adopts, modifies, or replaces
+them based on what they discover while coding.
+
+##### File decomposition
+
+Three plausible files, picking any subset:
+
+- `classify.go` — `Hook` struct, `Name`, `Apply`, per-directive match loop.
+- `config.go` — `config`/`ruleConfig` TOML structs, internal `rule` struct
+  (with compiled regexps), `Configure`, validation.
+- `doc.go` — package godoc + `init()` dual-registration. Mirrors
+  `pkg/importer/std/csvimp/doc.go`.
+
+The single `DiagNoRule` constant lives in `classify.go`; split to a
+separate `diag.go` only if a second code is ever added.
+
+##### Internal rule representation
+
+```
+type rule struct {
+    payeeRegex     *regexp.Regexp // nil when PayeeRegex was unset
+    narrationRegex *regexp.Regexp // nil when NarrationRegex was unset
+    currency       string         // "" means infer
+    account        string
+}
+```
+
+Compiled regexps cached at Configure time; Apply does no regex compilation
+in the hot path.
+
+##### No-op-fast-path detection
+
+Pre-scan: walk `in.Directives` once looking for at least one
+`*ast.Transaction` with `len(Postings) == 1`. If none found, return
+`HookResult{Directives: in.Directives}` aliased verbatim with nil
+Diagnostics. If found, allocate the output slice and re-walk to classify.
+A lazy-upgrade variant is plausible but trickier; stick with pre-scan for
+the first cut.
+
+##### Apply mutex granularity
+
+Hold `h.mu` for the duration of one `Apply` call. Rules and compiled
+regexps are immutable after Configure; the mutex serves to synchronise
+the rule-list pointer load with a concurrent Configure. A `sync.RWMutex`
+is equivalent; either is fine.
+
+##### Test layout
+
+- `classify_test.go` — table-driven coverage of rule matching (payee-only,
+  narration-only, both, neither-rejected-at-Configure), currency override
+  vs. inference (forwarded to `BalanceWith`), declaration-order
+  precedence, mixed directive list (non-Transaction + balanced + single-leg
+  + Note), `classify-no-rule` Warning emission and Message content,
+  idempotency on already-balanced txns (aliased input), no-Configure path.
+- `config_test.go` — Configure validation: empty rule list accepted,
+  selector-less rule rejected, missing account rejected, bad regex
+  rejected (both selectors), decoder error wrapped with `classify:
+  configure:`. Prior rules untouched on a failed re-Configure.
+- `concurrency_test.go` — N concurrent Apply calls interleaved with
+  Configure under `-race`. Same shape as
+  `pkg/importer/hook/concurrency_test.go`.
+- `register_test.go` — round-trip `hook.Lookup("classify")` and
+  `hook.Lookup("github.com/yugui/go-beancount/pkg/importer/hook/std/classify")`
+  return the same pointer.
+
+##### Pre-filter vs. delegate to BalanceWith
+
+`importerutil.BalanceWith` is already a no-op on already-balanced /
+non-Transaction / nil-Amount cases. The hook COULD pass every directive
+through it. **Do not** — the hook needs to distinguish "matched a rule and
+balanced" from "should emit `classify-no-rule`", and that requires
+inspecting the directive shape at the hook level anyway. Inspect at the
+hook level; call `BalanceWith` only on the single-leg path.
+
+#### Alternatives discussed
+
+##### A1. TOML schema: `[[rule]]` array vs. named-rules map
+
+- **`[[rule]]` array (recommended, locked above).** TOML array of tables;
+  order is part of the encoding; iteration order in the decoded
+  `[]ruleConfig` is the declaration order. Visible at the config-file
+  level. Matches user's mental model: rule precedence is a pipeline of
+  `if/else if`.
+- **Named-rules map (`[rule.acme]`).** TOML maps are unordered; csvimp
+  resolves this with lex order, but classify's first-match semantics
+  REQUIRES caller-specified order. Lex-order would force `01_acme`,
+  `02_default` naming gymnastics. Rejected.
+- **Named map with `priority` integer per rule.** Two ways to spell
+  ordering; conflict resolution at equal priorities falls back to lex
+  anyway. Rejected.
+
+##### A2. `HookResult.Directives` aliasing policy
+
+- **Conditional alias (recommended, locked above).** Alias `in.Directives`
+  when no single-leg txn is present; fresh slice otherwise. Honours 8b's
+  no-mutation contract AND the no-allocation pass-through goal.
+- **Always alias + replace in-place.** Violates 8b's no-mutation contract.
+  Rejected.
+- **Always allocate.** Pays an allocation on every Apply. Rejected.
+
+##### A3. `classify-no-rule` severity: Warning vs. Error
+
+- **Warning (recommended, locked above).** Missing rule is a
+  "you might want to add another rule" signal; iterative workflow. CLI's
+  `--strict` mode promotes to Error.
+- **Error.** Hundreds of these on a fresh user's first run is bad
+  ergonomics. Rejected.
+- **Configurable severity (TOML knob).** Speculative; CLI strict mode
+  already covers elevation. Rejected.
+
+##### A4. Selector-less rule: Configure error vs. matches-everything
+
+- **Configure-time error (recommended, locked above).** Selector-less is
+  almost always a user mistake. A deliberate catchall is spelled
+  `narration_regex = ".*"` (one line, intent visible).
+- **Permit and treat as "matches everything".** Footgun: a catchall at
+  the top of the list swallows every transaction. Rejected.
+
+##### A5. Currency parameter forwarding
+
+- **Pass `rule.currency` to `BalanceWith` verbatim (recommended).**
+  `BalanceWith` already has the empty-string-means-infer contract; single
+  source of truth.
+- **Re-implement inference in classify.** Duplicates logic. Rejected.
+
+##### A6. Diagnostic Message content
+
+- **Include Payee and Narration (recommended).** Gives the user enough
+  information to write a matching rule from the diagnostic alone.
+- **"no rule matched" only.** Empty signal. Rejected.
+- **Include `csvimp-rowhash` metadata.** Couples classify to csvimp's
+  metadata key; classify is importer-agnostic. Rejected.
+
+##### A7. Zero-rule Configure: permit or reject
+
+- **Permit (recommended, locked above).** Same runtime as no-Configure;
+  supports incremental rule authoring.
+- **Reject.** Pure bookkeeping; rejection adds rule surface without
+  benefit. Rejected.
+
+#### Recommendation
+
+Adopt the Contract above. The seven contested decisions resolved:
+
+1. **TOML `[[rule]]` array.** Order-preservation is the central semantics.
+2. **Alias-on-empty-of-single-leg, fresh-slice otherwise.**
+3. **`classify-no-rule` is Warning.** Strict-mode promotion lives in CLI.
+4. **Selector-less rule is a Configure error.** Catchalls are explicit.
+5. **`rule.currency` forwarded to `BalanceWith` verbatim.**
+6. **Diagnostic Message includes Payee and Narration.**
+7. **Zero-rule Configure is permitted.**
+
+Suggested Internals (file layout, pre-scan, compiled-regexp cache, test
+fixture shape) are advisory.
+
 ### 8f — `cmd/beanimport` CLI
 
 - **Modules:** `cmd/beanimport/main.go`, `cmd/beanimport/flags.go`,
