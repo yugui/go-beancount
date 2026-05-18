@@ -18,9 +18,4 @@ pending" or "go-beancount fix pending" so stale entries are easy to
 triage. Mirrors ``pkg/compat/beancompat/denylist.go`` on the Go side.
 """
 
-DENIED_FIXTURES: dict[str, str] = {
-    "parse/options_coverage.json": (
-        "go-beancount fix pending: parse-tier serializer does not yet "
-        "emit the options envelope (~30 BeancountOptions keys expected)."
-    ),
-}
+DENIED_FIXTURES: dict[str, str] = {}

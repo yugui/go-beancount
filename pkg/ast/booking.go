@@ -2,6 +2,42 @@ package ast
 
 import "fmt"
 
+// ResolveBookingMethod returns the effective booking method for d, consulting
+// opts when d.Booking is BookingDefault (i.e. the Open directive omitted the
+// keyword).
+//
+// Semantics:
+//   - d.Booking != BookingDefault → return d.Booking unchanged, no diagnostic.
+//   - d.Booking == BookingDefault, opts nil or option unset → BookingStrict via
+//     registry default ("STRICT"), no diagnostic.
+//   - d.Booking == BookingDefault, option set to "" explicitly → BookingStrict, nil.
+//   - d.Booking == BookingDefault, option is a recognized keyword → corresponding method, nil.
+//   - d.Booking == BookingDefault, option is an unrecognized value → BookingStrict plus
+//     an Error-severity diagnostic with Code "invalid-option" and Span d.Span.
+//
+// opts may be nil; a nil receiver falls back to the registered default ("STRICT").
+// Callers that expect another consumer (typically validations.Apply) to surface
+// the returned diagnostics may discard them.
+func ResolveBookingMethod(d *Open, opts *OptionValues) (BookingMethod, []Diagnostic) {
+	if d.Booking != BookingDefault {
+		return d.Booking, nil
+	}
+	raw := opts.String("booking_method")
+	if raw == "" {
+		return BookingStrict, nil
+	}
+	m, err := ParseBookingMethod(raw)
+	if err != nil {
+		return BookingStrict, []Diagnostic{{
+			Code:     invalidOptionCode,
+			Severity: Error,
+			Span:     d.Span,
+			Message:  fmt.Sprintf("invalid booking_method %q; falling back to STRICT", raw),
+		}}
+	}
+	return m, nil
+}
+
 // BookingMethod identifies the lot-booking strategy associated with an Open
 // directive. The zero value BookingDefault indicates that the directive did
 // not specify a booking keyword, in which case consumers should fall back to

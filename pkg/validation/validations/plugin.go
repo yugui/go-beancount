@@ -35,7 +35,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 
 	// Build per-run state once and share it across the validators that
 	// need an open/close view of the ledger.
-	build := accountstate.Build(in.Directives)
+	build := accountstate.Build(in.Directives, in.Options)
 
 	validators := []entryValidator{
 		newOpenClose(build),
@@ -44,7 +44,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 		newTransactionBalances(in.Options),
 	}
 
-	var diags []ast.Diagnostic
+	diags := append([]ast.Diagnostic(nil), build.Diagnostics...)
 	if in.Directives != nil {
 		for _, d := range in.Directives {
 			for _, v := range validators {

@@ -69,6 +69,11 @@ func ledgerOf(t *testing.T, directives ...ast.Directive) *ast.Ledger {
 // result alongside the diff so the author can copy-paste the corrected
 // expectation into the test source instead of hand-editing JSON to match
 // a textual diff.
+//
+// Options are compared only when wantJSON includes an "options" field.
+// When absent, the actual Options value is adopted into the expectation
+// so callers that test directive-level concerns are not forced to enumerate
+// the full options envelope.
 func assertSerializeMatches(t *testing.T, ledger *ast.Ledger, wantJSON string) {
 	t.Helper()
 	got, err := SerializeParsed(ledger)
@@ -78,6 +83,11 @@ func assertSerializeMatches(t *testing.T, ledger *ast.Ledger, wantJSON string) {
 	var want Result
 	if err := json.Unmarshal([]byte(wantJSON), &want); err != nil {
 		t.Fatalf("unmarshal want: %v", err)
+	}
+	if want.Options == nil {
+		// Caller did not assert Options; adopt the actual value so the diff
+		// focuses on directives and errors.
+		want.Options = got.Options
 	}
 	if diff := cmp.Diff(want, got, cmpJSONRawMessage); diff != "" {
 		t.Errorf("SerializeParsed mismatch (-want +got):\n%s", diff)
@@ -2605,27 +2615,384 @@ func ledgerWithPrecision(t *testing.T, observations ...any) *ast.Ledger {
 	return &ast.Ledger{PrecisionProfile: pp}
 }
 
+// TestFormatOptionValue exercises formatOptionValue directly for each OptionKind.
+func TestFormatOptionValue(t *testing.T) {
+	// makeEntry builds an OptionEntry by constructing a ledger with a single
+	// option directive set and calling Snapshot to get the typed entry.
+	makeEntry := func(t *testing.T, key, raw string) ast.OptionEntry {
+		t.Helper()
+		l := &ast.Ledger{}
+		l.Insert(&ast.Option{Key: key, Value: raw})
+		opts, diags := ast.ParseOptions(l)
+		if len(diags) > 0 {
+			t.Fatalf("ParseOptions diagnostics: %v", diags)
+		}
+		for _, e := range opts.Snapshot() {
+			if e.Key == key {
+				return e
+			}
+		}
+		t.Fatalf("key %q not found in Snapshot", key)
+		return ast.OptionEntry{}
+	}
+
+	t.Run("KindString_plain", func(t *testing.T) {
+		e := makeEntry(t, "title", "My Ledger")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `"My Ledger"` {
+			t.Errorf("got %s, want %q", raw, `"My Ledger"`)
+		}
+	})
+
+	t.Run("KindString_with_quotes", func(t *testing.T) {
+		// Strings containing special characters must be JSON-escaped.
+		e := makeEntry(t, "title", `say "hello"`)
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		var got string
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got != `say "hello"` {
+			t.Errorf("round-trip = %q, want %q", got, `say "hello"`)
+		}
+	})
+
+	t.Run("KindBool_true", func(t *testing.T) {
+		e := makeEntry(t, "infer_tolerance_from_cost", "TRUE")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "true" {
+			t.Errorf("got %s, want true", raw)
+		}
+	})
+
+	t.Run("KindBool_false", func(t *testing.T) {
+		e := makeEntry(t, "infer_tolerance_from_cost", "FALSE")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "false" {
+			t.Errorf("got %s, want false", raw)
+		}
+	})
+
+	t.Run("KindDecimal_typical", func(t *testing.T) {
+		e := makeEntry(t, "tolerance_multiplier", "0.5")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `"0.5"` {
+			t.Errorf("got %s, want %q", raw, `"0.5"`)
+		}
+	})
+
+	t.Run("KindDecimal_nil", func(t *testing.T) {
+		// Defensive branch: no registered KindDecimal has a nil default, so this
+		// path is unreachable via Snapshot today. Tested via struct literal to
+		// ensure formatOptionValue does not panic and emits "null".
+		e := ast.OptionEntry{Kind: ast.KindDecimal}
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "null" {
+			t.Errorf("got %s, want null", raw)
+		}
+	})
+
+	t.Run("KindStringList_nonempty", func(t *testing.T) {
+		l := &ast.Ledger{}
+		l.Insert(&ast.Option{Key: "operating_currency", Value: "USD"})
+		l.Insert(&ast.Option{Key: "operating_currency", Value: "EUR"})
+		opts, diags := ast.ParseOptions(l)
+		if len(diags) > 0 {
+			t.Fatalf("ParseOptions diagnostics: %v", diags)
+		}
+		var e ast.OptionEntry
+		for _, en := range opts.Snapshot() {
+			if en.Key == "operating_currency" {
+				e = en
+				break
+			}
+		}
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		var got []string
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		want := []string{"USD", "EUR"}
+		if diff := cmp.Diff(want, got); diff != "" {
+			t.Errorf("formatOptionValue(KindStringList) mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("KindStringList_nil_emits_empty_array", func(t *testing.T) {
+		// Default operating_currency is nil; must serialize as [].
+		var e ast.OptionEntry
+		opts := ast.NewOptionValues()
+		for _, en := range opts.Snapshot() {
+			if en.Key == "operating_currency" {
+				e = en
+				break
+			}
+		}
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "[]" {
+			t.Errorf("got %s, want []", raw)
+		}
+	})
+
+	t.Run("KindInt_zero", func(t *testing.T) {
+		e := makeEntry(t, "long_string_maxlines", "0")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "0" {
+			t.Errorf("got %s, want 0", raw)
+		}
+	})
+
+	t.Run("KindInt_positive", func(t *testing.T) {
+		e := makeEntry(t, "long_string_maxlines", "42")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "42" {
+			t.Errorf("got %s, want 42", raw)
+		}
+	})
+
+	t.Run("KindInt_negative", func(t *testing.T) {
+		e := makeEntry(t, "long_string_maxlines", "-7")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "-7" {
+			t.Errorf("got %s, want -7", raw)
+		}
+	})
+
+	t.Run("KindDecimalMap_empty", func(t *testing.T) {
+		// inferred_tolerance_default is registered with an empty default; Step 5 lands consumer.
+		opts := ast.NewOptionValues()
+		var e ast.OptionEntry
+		for _, en := range opts.Snapshot() {
+			if en.Key == "inferred_tolerance_default" {
+				e = en
+				break
+			}
+		}
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "{}" {
+			t.Errorf("got %s, want {}", raw)
+		}
+	})
+
+	t.Run("KindDecimalMap_one_entry", func(t *testing.T) {
+		e := makeEntry(t, "inferred_tolerance_default", "USD:0.01")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `{"USD":"0.01"}` {
+			t.Errorf("got %s, want %q", raw, `{"USD":"0.01"}`)
+		}
+	})
+
+	t.Run("KindDecimalMap_multiple_sorted", func(t *testing.T) {
+		// EUR and USD inserted in reverse alphabetical order; output must be sorted.
+		l := &ast.Ledger{}
+		l.Insert(&ast.Option{Key: "inferred_tolerance_default", Value: "USD:0.01"})
+		l.Insert(&ast.Option{Key: "inferred_tolerance_default", Value: "EUR:0.001"})
+		opts, diags := ast.ParseOptions(l)
+		if len(diags) > 0 {
+			t.Fatalf("ParseOptions diagnostics: %v", diags)
+		}
+		var e ast.OptionEntry
+		for _, en := range opts.Snapshot() {
+			if en.Key == "inferred_tolerance_default" {
+				e = en
+				break
+			}
+		}
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `{"EUR":"0.001","USD":"0.01"}` {
+			t.Errorf("got %s, want %q", raw, `{"EUR":"0.001","USD":"0.01"}`)
+		}
+	})
+
+	t.Run("KindIntMap_empty", func(t *testing.T) {
+		e := ast.OptionEntry{Kind: ast.KindIntMap}
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != "{}" {
+			t.Errorf("got %s, want {}", raw)
+		}
+	})
+
+	t.Run("KindIntMap_one_entry", func(t *testing.T) {
+		// "USD:0.01" → 2 fractional digits stored as int.
+		e := makeEntry(t, "display_precision", "USD:0.01")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `{"USD":2}` {
+			t.Errorf("got %s, want %q", raw, `{"USD":2}`)
+		}
+	})
+
+	t.Run("KindIntMap_multiple_sorted", func(t *testing.T) {
+		// Output must be alphabetically sorted by key.
+		l := &ast.Ledger{}
+		l.Insert(&ast.Option{Key: "display_precision", Value: "USD:0.01"})
+		l.Insert(&ast.Option{Key: "display_precision", Value: "JPY:1"})
+		opts, diags := ast.ParseOptions(l)
+		if len(diags) > 0 {
+			t.Fatalf("ParseOptions diagnostics: %v", diags)
+		}
+		var e ast.OptionEntry
+		for _, en := range opts.Snapshot() {
+			if en.Key == "display_precision" {
+				e = en
+				break
+			}
+		}
+		if e.Key == "" {
+			t.Fatal("display_precision entry not found in snapshot")
+		}
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `{"JPY":0,"USD":2}` {
+			t.Errorf("got %s, want %q", raw, `{"JPY":0,"USD":2}`)
+		}
+	})
+
+	t.Run("KindDecimal_negative", func(t *testing.T) {
+		e := makeEntry(t, "tolerance_multiplier", "-0.5")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `"-0.5"` {
+			t.Errorf("got %s, want %q", raw, `"-0.5"`)
+		}
+	})
+
+	t.Run("KindDecimal_exponent", func(t *testing.T) {
+		// apd normalizes 1E-3 to 0.001; the JSON form preserves that representation.
+		e := makeEntry(t, "tolerance_multiplier", "1E-3")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		if string(raw) != `"0.001"` {
+			t.Errorf("got %s, want %q", raw, `"0.001"`)
+		}
+	})
+
+	t.Run("KindString_with_newline", func(t *testing.T) {
+		e := makeEntry(t, "title", "line1\nline2")
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			t.Fatalf("formatOptionValue: %v", err)
+		}
+		var got string
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if got != "line1\nline2" {
+			t.Errorf("round-trip = %q, want %q", got, "line1\nline2")
+		}
+	})
+}
+
 // TestSerializeOptions verifies the options envelope emitted by SerializeParsed.
 func TestSerializeOptions(t *testing.T) {
-	t.Run("nil_precision_profile", func(t *testing.T) {
+	t.Run("default_options_envelope", func(t *testing.T) {
+		// Golden test: pins the exact JSON for an empty ledger so drift in
+		// default-options serialization surfaces immediately. When a new option
+		// is added to the registry, update this snapshot.
+		got, err := SerializeParsed(&ast.Ledger{})
+		if err != nil {
+			t.Fatalf("SerializeParsed: %v", err)
+		}
+		want := `{"account_current_conversions":"Conversions:Current","account_current_earnings":"Earnings:Current","account_previous_balances":"Opening-Balances","account_previous_conversions":"Conversions:Previous","account_previous_earnings":"Earnings:Previous","account_rounding":"","account_unrealized_gains":"Earnings:Unrealized","allow_deprecated_none_for_tags_and_links":false,"allow_pipe_separator":false,"booking_method":"STRICT","commodities":[],"conversion_currency":"NOTHING","display_precision":{},"documents":[],"infer_tolerance_from_cost":false,"inferred_tolerance_default":{},"inferred_tolerance_multiplier":"0.5","insert_pythonpath":false,"long_string_maxlines":64,"name_assets":"Assets","name_equity":"Equity","name_expenses":"Expenses","name_income":"Income","name_liabilities":"Liabilities","operating_currency":[],"plugin":[],"plugin_processing_mode":"","pythonpath":[],"render_commas":false,"title":"","tolerance_multiplier":"0.5"}`
+		if string(got.Options) != want {
+			t.Errorf("default Options envelope mismatch:\ngot  %s\nwant %s", got.Options, want)
+		}
+	})
+
+	t.Run("nil_precision_profile_emits_registry_defaults", func(t *testing.T) {
+		// Even with no PrecisionProfile, the envelope is emitted with all
+		// registered option defaults.
 		ledger := &ast.Ledger{PrecisionProfile: nil}
 		got, err := SerializeParsed(ledger)
 		if err != nil {
 			t.Fatalf("SerializeParsed: %v", err)
 		}
-		if got.Options != nil {
-			t.Errorf("Options = %s, want nil", got.Options)
+		if got.Options == nil {
+			t.Fatalf("Options = nil, want non-nil envelope")
+		}
+		var gotMap map[string]any
+		if err := json.Unmarshal(got.Options, &gotMap); err != nil {
+			t.Fatalf("unmarshal Options: %v", err)
+		}
+		// display_precision_by_currency must be absent with nil profile.
+		if _, ok := gotMap["display_precision_by_currency"]; ok {
+			t.Errorf("display_precision_by_currency present, want absent")
+		}
+		// Registered defaults must be present.
+		if _, ok := gotMap["infer_tolerance_from_cost"]; !ok {
+			t.Errorf("infer_tolerance_from_cost missing from envelope")
 		}
 	})
 
-	t.Run("empty_precision_profile", func(t *testing.T) {
+	t.Run("empty_precision_profile_omits_dpbc", func(t *testing.T) {
+		// Empty PrecisionProfile (no observations): display_precision_by_currency absent.
 		ledger := &ast.Ledger{PrecisionProfile: ast.NewPrecisionProfile()}
 		got, err := SerializeParsed(ledger)
 		if err != nil {
 			t.Fatalf("SerializeParsed: %v", err)
 		}
-		if got.Options != nil {
-			t.Errorf("Options = %s, want nil", got.Options)
+		if got.Options == nil {
+			t.Fatalf("Options = nil, want non-nil envelope")
+		}
+		var gotMap map[string]any
+		if err := json.Unmarshal(got.Options, &gotMap); err != nil {
+			t.Fatalf("unmarshal Options: %v", err)
+		}
+		if _, ok := gotMap["display_precision_by_currency"]; ok {
+			t.Errorf("display_precision_by_currency present for empty profile, want absent")
 		}
 	})
 
@@ -2635,29 +3002,110 @@ func TestSerializeOptions(t *testing.T) {
 		if err != nil {
 			t.Fatalf("SerializeParsed: %v", err)
 		}
-		want := `{"display_precision_by_currency":{"USD":2}}`
-		if string(got.Options) != want {
-			t.Errorf("Options = %s, want %s", got.Options, want)
+		var gotMap map[string]any
+		if err := json.Unmarshal(got.Options, &gotMap); err != nil {
+			t.Fatalf("unmarshal Options: %v", err)
+		}
+		dpbc, ok := gotMap["display_precision_by_currency"]
+		if !ok {
+			t.Fatalf("display_precision_by_currency missing")
+		}
+		inner, ok := dpbc.(map[string]any)
+		if !ok {
+			t.Fatalf("display_precision_by_currency = %T, want map", dpbc)
+		}
+		if v, ok := inner["USD"]; !ok || v != float64(2) {
+			t.Errorf("USD precision = %v, want 2", v)
 		}
 	})
 
 	t.Run("multiple_currencies_sorted", func(t *testing.T) {
-		// USD and JPY inserted out of alphabetical order; output must be
-		// alphabetical (JPY before USD).
+		// USD and JPY inserted out of alphabetical order; output must be alphabetical.
 		ledger := ledgerWithPrecision(t, "USD", 2, "JPY", 0)
 		got, err := SerializeParsed(ledger)
 		if err != nil {
 			t.Fatalf("SerializeParsed: %v", err)
 		}
-		want := `{"display_precision_by_currency":{"JPY":0,"USD":2}}`
-		if string(got.Options) != want {
-			t.Errorf("Options = %s, want %s", got.Options, want)
+		// Extract raw display_precision_by_currency to verify key order.
+		want := `{"JPY":0,"USD":2}`
+		var gotMap map[string]json.RawMessage
+		if err := json.Unmarshal(got.Options, &gotMap); err != nil {
+			t.Fatalf("unmarshal Options: %v", err)
+		}
+		dpbcRaw, ok := gotMap["display_precision_by_currency"]
+		if !ok {
+			t.Fatalf("display_precision_by_currency missing")
+		}
+		if string(dpbcRaw) != want {
+			t.Errorf("display_precision_by_currency = %s, want %s", dpbcRaw, want)
+		}
+	})
+
+	t.Run("full_envelope_with_options_and_dpbc", func(t *testing.T) {
+		// Ledger with a few options set plus a populated PrecisionProfile: both
+		// the registered options and display_precision_by_currency must appear.
+		ledger := ledgerWithPrecision(t, "USD", 2)
+		synthLedger := &ast.Ledger{}
+		synthLedger.Insert(&ast.Option{Key: "title", Value: "Test Ledger"})
+		synthLedger.Insert(&ast.Option{Key: "infer_tolerance_from_cost", Value: "TRUE"})
+		opts, diags := ast.ParseOptions(synthLedger)
+		if len(diags) > 0 {
+			t.Fatalf("ParseOptions: %v", diags)
+		}
+		ledger.Options = opts
+		got, err := SerializeParsed(ledger)
+		if err != nil {
+			t.Fatalf("SerializeParsed: %v", err)
+		}
+		var gotMap map[string]any
+		if err := json.Unmarshal(got.Options, &gotMap); err != nil {
+			t.Fatalf("unmarshal Options: %v", err)
+		}
+		if gotMap["title"] != "Test Ledger" {
+			t.Errorf("title = %v, want Test Ledger", gotMap["title"])
+		}
+		if gotMap["infer_tolerance_from_cost"] != true {
+			t.Errorf("infer_tolerance_from_cost = %v, want true", gotMap["infer_tolerance_from_cost"])
+		}
+		if _, ok := gotMap["display_precision_by_currency"]; !ok {
+			t.Errorf("display_precision_by_currency missing")
+		}
+	})
+
+	t.Run("dpbc_absent_when_no_observations", func(t *testing.T) {
+		// Confirm display_precision_by_currency is absent for both nil and
+		// empty PrecisionProfile while the rest of the envelope is present.
+		cases := []struct {
+			name    string
+			profile *ast.PrecisionProfile
+		}{
+			{"nil_profile", nil},
+			{"empty_profile", ast.NewPrecisionProfile()},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				ledger := &ast.Ledger{PrecisionProfile: tc.profile}
+				got, err := SerializeParsed(ledger)
+				if err != nil {
+					t.Fatalf("SerializeParsed: %v", err)
+				}
+				var gotMap map[string]any
+				if err := json.Unmarshal(got.Options, &gotMap); err != nil {
+					t.Fatalf("unmarshal: %v", err)
+				}
+				if _, ok := gotMap["display_precision_by_currency"]; ok {
+					t.Errorf("display_precision_by_currency present, want absent")
+				}
+				// At least one registered key must be present.
+				if _, ok := gotMap["title"]; !ok {
+					t.Errorf("title key missing from envelope")
+				}
+			})
 		}
 	})
 
 	t.Run("determinism", func(t *testing.T) {
-		// Byte-equal output across two calls on the same ledger. Guards
-		// against map iteration nondeterminism leaking through marshalSortedObject.
+		// Byte-equal output across two calls guards against map iteration nondeterminism.
 		ledger := ledgerWithPrecision(t, "USD", 2, "JPY", 0)
 		got1, err := SerializeParsed(ledger)
 		if err != nil {
@@ -2674,13 +3122,18 @@ func TestSerializeOptions(t *testing.T) {
 
 	t.Run("serialize_checked_same_output", func(t *testing.T) {
 		ledger := ledgerWithPrecision(t, "USD", 2, "JPY", 0)
-		want := `{"display_precision_by_currency":{"JPY":0,"USD":2}}`
 		checked, err := SerializeChecked(ledger)
 		if err != nil {
 			t.Fatalf("SerializeChecked: %v", err)
 		}
-		if string(checked.Options) != want {
-			t.Errorf("SerializeChecked Options = %s, want %s", checked.Options, want)
+		var gotMap map[string]json.RawMessage
+		if err := json.Unmarshal(checked.Options, &gotMap); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		want := `{"JPY":0,"USD":2}`
+		if string(gotMap["display_precision_by_currency"]) != want {
+			t.Errorf("SerializeChecked display_precision_by_currency = %s, want %s",
+				gotMap["display_precision_by_currency"], want)
 		}
 	})
 }

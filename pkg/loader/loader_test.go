@@ -348,7 +348,7 @@ option "operating_currency" "USD"
 		const src = `option "operating_currency" "USD"
 option "operating_currency" "JPY"
 option "infer_tolerance_from_cost" "TRUE"
-option "inferred_tolerance_multiplier" "0.25"
+option "tolerance_multiplier" "0.25"
 `
 		ctx := context.Background()
 		ledger, err := loader.Load(ctx, src)
@@ -368,8 +368,8 @@ option "inferred_tolerance_multiplier" "0.25"
 		if !ledger.Options.Bool("infer_tolerance_from_cost") {
 			t.Error("infer_tolerance_from_cost = false, want true")
 		}
-		if d := ledger.Options.Decimal("inferred_tolerance_multiplier"); d == nil || d.String() != "0.25" {
-			t.Errorf("inferred_tolerance_multiplier = %v, want 0.25", d)
+		if d := ledger.Options.Decimal("tolerance_multiplier"); d == nil || d.String() != "0.25" {
+			t.Errorf("tolerance_multiplier = %v, want 0.25", d)
 		}
 	})
 }

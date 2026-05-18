@@ -182,6 +182,131 @@ func TestInfer_CostDisabledIgnoresCost(t *testing.T) {
 	}
 }
 
+// TestInfer_PerCurrencyDefault covers the inferred_tolerance_default precedence
+// chain: posting-level inference > per-currency default > zero.
+func TestInfer_PerCurrencyDefault(t *testing.T) {
+	t.Run("default applies when no posting for currency", func(t *testing.T) {
+		// EUR has no posting; the default "EUR:0.005" should apply.
+		pos := amtStr(t, "100.00", "USD")
+		postings := []ast.Posting{{Account: "Assets:Cash", Amount: &pos}}
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "EUR:0.005"})
+		tol, err := tolerance.Infer(postings, opts, []string{"EUR"})
+		if err != nil {
+			t.Fatalf("Infer: unexpected error: %v", err)
+		}
+		got := tol["EUR"]
+		if got == nil {
+			t.Fatalf("Infer: EUR tolerance missing")
+		}
+		if got.Text('f') != "0.005" {
+			t.Errorf("EUR tolerance = %q, want %q", got.Text('f'), "0.005")
+		}
+	})
+
+	t.Run("posting-level inference wins over per-currency default", func(t *testing.T) {
+		// USD has a posting at exp -2 → inferred tol = 0.005.
+		// The per-currency default is "USD:0.1" (larger), but posting-level wins.
+		pos := amtStr(t, "100.00", "USD")
+		postings := []ast.Posting{{Account: "Assets:Cash", Amount: &pos}}
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "USD:0.1"})
+		tol, err := tolerance.Infer(postings, opts, []string{"USD"})
+		if err != nil {
+			t.Fatalf("Infer: unexpected error: %v", err)
+		}
+		got := tol["USD"]
+		if got == nil {
+			t.Fatalf("Infer: USD tolerance missing")
+		}
+		if got.Text('f') != "0.005" {
+			t.Errorf("USD tolerance = %q, want %q (posting-level must win)", got.Text('f'), "0.005")
+		}
+	})
+
+	t.Run("zero entry treated as absent", func(t *testing.T) {
+		// The "EUR:0" entry is zero; fall through to zero tolerance.
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "EUR:0.0"})
+		tol, err := tolerance.Infer(nil, opts, []string{"EUR"})
+		if err != nil {
+			t.Fatalf("Infer: unexpected error: %v", err)
+		}
+		got := tol["EUR"]
+		if got == nil {
+			t.Fatalf("Infer: EUR tolerance missing")
+		}
+		if !got.IsZero() {
+			t.Errorf("EUR tolerance = %q, want 0 (zero entry must be treated as absent)", got.Text('f'))
+		}
+	})
+
+	t.Run("negative entry treated as absent", func(t *testing.T) {
+		// The "EUR:-0.005" entry is negative; fall through to zero tolerance.
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "EUR:-0.005"})
+		tol, err := tolerance.Infer(nil, opts, []string{"EUR"})
+		if err != nil {
+			t.Fatalf("Infer: unexpected error: %v", err)
+		}
+		got := tol["EUR"]
+		if got == nil {
+			t.Fatalf("Infer: EUR tolerance missing")
+		}
+		if !got.IsZero() {
+			t.Errorf("EUR tolerance = %q, want 0 (negative entry must be treated as absent)", got.Text('f'))
+		}
+	})
+
+	t.Run("missing currency falls through to zero", func(t *testing.T) {
+		// Default map has USD; EUR is not present → fall through to zero.
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "USD:0.005"})
+		tol, err := tolerance.Infer(nil, opts, []string{"EUR"})
+		if err != nil {
+			t.Fatalf("Infer: unexpected error: %v", err)
+		}
+		got := tol["EUR"]
+		if got == nil {
+			t.Fatalf("Infer: EUR tolerance missing")
+		}
+		if !got.IsZero() {
+			t.Errorf("EUR tolerance = %q, want 0 (missing map entry must fall through to zero)", got.Text('f'))
+		}
+	})
+
+	t.Run("cost contribution wins over per-currency default", func(t *testing.T) {
+		// Posting: 2 GOOG {1.00 USD} at exp -2 on the amount.
+		// Units-based USD (from the cash leg): posting at exp -2 → 0.5 * 10^-2 = 0.005.
+		// Cost-based USD: |2| * 0.5 * 10^-2 = 0.01.
+		// max(0.005, 0.01) = 0.01.
+		// Per-currency default "USD:1.0" is NOT consulted because posting-level
+		// inference is present. Final tolerance must be 0.01, not 1.0.
+		units := amtStr(t, "2", "GOOG")
+		perUnit := decimalFromString(t, "1.00")
+		usdAmt := amtStr(t, "-2.00", "USD")
+		postings := []ast.Posting{
+			{
+				Account: "Assets:Brokerage",
+				Amount:  &units,
+				Cost:    &ast.CostSpec{PerUnit: &perUnit, Currency: "USD"},
+			},
+			{Account: "Assets:Cash", Amount: &usdAmt},
+		}
+		opts := mustOpts(t, map[string]string{
+			"inferred_tolerance_default": "USD:1.0",
+			"infer_tolerance_from_cost":  "TRUE",
+		})
+		tol, err := tolerance.Infer(postings, opts, []string{"USD"})
+		if err != nil {
+			t.Fatalf("Infer: unexpected error: %v", err)
+		}
+		got := tol["USD"]
+		if got == nil {
+			t.Fatalf("Infer: USD tolerance missing")
+		}
+		want := decimalFromString(t, "0.01")
+		if got.Cmp(&want) != 0 {
+			t.Errorf("USD tolerance = %s, want 0.01 (cost must win; 1.0 default must not appear)", got.Text('f'))
+		}
+	})
+}
+
 // TestForAmount_Exponents exercises ForAmount for a few representative
 // precisions with the default multiplier 0.5.
 func TestForAmount_Exponents(t *testing.T) {
@@ -237,6 +362,44 @@ func TestForBalanceAssertion(t *testing.T) {
 				t.Errorf("ForBalanceAssertion(%q, mult=%q) = %s, want %s", tc.in, tc.mult, got.Text('f'), tc.want)
 			}
 		})
+	}
+}
+
+// TestInfer_ToleranceMultiplierAlias verifies that the deprecated
+// alias inferred_tolerance_multiplier and the canonical
+// tolerance_multiplier produce identical inferred tolerances. The
+// write redirect (see ast.OptionValues.set) means the canonical slot
+// receives the value regardless of which name the source ledger used.
+func TestInfer_ToleranceMultiplierAlias(t *testing.T) {
+	pos := amtStr(t, "100.00", "USD") // exp -2
+	postings := []ast.Posting{{Account: "Assets:Cash", Amount: &pos}}
+
+	viaCanonical := mustOpts(t, map[string]string{"tolerance_multiplier": "1.0"})
+	viaDeprecated := mustOpts(t, map[string]string{"inferred_tolerance_multiplier": "1.0"})
+
+	tolCanonical, err := tolerance.Infer(postings, viaCanonical, []string{"USD"})
+	if err != nil {
+		t.Fatalf("Infer via tolerance_multiplier: %v", err)
+	}
+	tolDeprecated, err := tolerance.Infer(postings, viaDeprecated, []string{"USD"})
+	if err != nil {
+		t.Fatalf("Infer via inferred_tolerance_multiplier: %v", err)
+	}
+	if tolCanonical["USD"].Cmp(tolDeprecated["USD"]) != 0 {
+		t.Errorf("tolerance via canonical = %s, via deprecated = %s; want equal (alias write redirect)",
+			tolCanonical["USD"].Text('f'), tolDeprecated["USD"].Text('f'))
+	}
+
+	// Verify the user-set multiplier actually takes effect (sanity check
+	// against accidentally falling back to the default).
+	viaDefault := mustOpts(t, map[string]string{})
+	tolDefault, err := tolerance.Infer(postings, viaDefault, []string{"USD"})
+	if err != nil {
+		t.Fatalf("Infer with defaults: %v", err)
+	}
+	if tolCanonical["USD"].Cmp(tolDefault["USD"]) == 0 {
+		t.Errorf("tolerance with multiplier=1.0 should differ from default=0.5; both got %s",
+			tolCanonical["USD"].Text('f'))
 	}
 }
 

@@ -3,6 +3,8 @@ package format
 import (
 	"strings"
 	"testing"
+
+	"github.com/yugui/go-beancount/pkg/ast"
 )
 
 // stubDC implements DisplayContext for tests.
@@ -226,4 +228,55 @@ func TestDisplayContextArithExprPerOperand(t *testing.T) {
 		t.Errorf(`arith expr: want per-operand quantization (1.12 and 2.50), got:
 %s`, got)
 	}
+}
+
+// TestDisplayContextWithOptionOverride verifies the end-to-end path from
+// option "display_precision" through DisplayPrecisionContext to the formatter.
+// Callers build the context inline from ledger fields; no helper exists in
+// pkg/ast.
+func TestDisplayContextWithOptionOverride(t *testing.T) {
+	t.Run("override_forces_precision", func(t *testing.T) {
+		src := `option "display_precision" "USD:0.01"
+
+2024-01-15 * "Coffee"
+  Expenses:Food  1.2 USD
+  Assets:Cash
+`
+		ledger, err := ast.Load(src)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		dc := &ast.DisplayPrecisionContext{
+			Profile:   ledger.PrecisionProfile,
+			Overrides: ledger.Options.IntMap("display_precision"),
+		}
+		got := Format(src, WithDisplayContext(dc))
+		// 1.2 USD with display_precision "USD:0.01" → 2 fractional digits → 1.20 USD.
+		if !strings.Contains(got, "1.20 USD") {
+			t.Errorf("want 1.20 USD in output, got:\n%s", got)
+		}
+	})
+
+	t.Run("empty_overrides_falls_back_to_profile", func(t *testing.T) {
+		// Without display_precision option the override map is empty; the
+		// context delegates to the inferred PrecisionProfile, which observed
+		// "1.2" (one fractional digit). Output matches that profile's
+		// precision.
+		src := `2024-01-15 * "Coffee"
+  Expenses:Food  1.2 USD
+  Assets:Cash
+`
+		ledger, err := ast.Load(src)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		dc := &ast.DisplayPrecisionContext{
+			Profile:   ledger.PrecisionProfile,
+			Overrides: ledger.Options.IntMap("display_precision"),
+		}
+		got := Format(src, WithDisplayContext(dc))
+		if !strings.Contains(got, "1.2 USD") {
+			t.Errorf("want 1.2 USD in output, got:\n%s", got)
+		}
+	})
 }

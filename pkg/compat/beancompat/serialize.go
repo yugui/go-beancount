@@ -107,28 +107,89 @@ func serialize(ledger *ast.Ledger) (Result, error) {
 }
 
 // serializeOptions builds the beancompat Result.Options envelope for ledger.
-// Returns (nil, nil) when there are no options to emit; the omitempty tag on
-// Result.Options then drops the envelope from the JSON output entirely.
+// It always emits all registered option keys (via Snapshot), plus
+// display_precision_by_currency when PrecisionProfile has observations.
 func serializeOptions(ledger *ast.Ledger) (json.RawMessage, error) {
-	if ledger.PrecisionProfile == nil {
-		return nil, nil
+	entries := ledger.Options.Snapshot()
+	keys := make([]string, 0, len(entries)+1)
+	values := make(map[string]any, len(entries)+1)
+	for _, e := range entries {
+		raw, err := formatOptionValue(e)
+		if err != nil {
+			return nil, fmt.Errorf("beancompat: serializeOptions: key %q: %w", e.Key, err)
+		}
+		keys = append(keys, e.Key)
+		values[e.Key] = json.RawMessage(raw)
 	}
-	currencies := ledger.PrecisionProfile.Currencies()
-	if len(currencies) == 0 {
-		return nil, nil
+	if ledger.PrecisionProfile != nil {
+		currencies := ledger.PrecisionProfile.Currencies()
+		if len(currencies) > 0 {
+			inner := make(map[string]any, len(currencies))
+			for _, ccy := range currencies {
+				prec, _ := ledger.PrecisionProfile.Precision(ccy)
+				inner[ccy] = prec
+			}
+			innerRaw, err := marshalSortedObject(currencies, inner)
+			if err != nil {
+				return nil, err
+			}
+			const dpbcKey = "display_precision_by_currency"
+			keys = append(keys, dpbcKey)
+			values[dpbcKey] = json.RawMessage(innerRaw)
+		}
 	}
-	inner := make(map[string]any, len(currencies))
-	for _, ccy := range currencies {
-		prec, _ := ledger.PrecisionProfile.Precision(ccy)
-		inner[ccy] = prec
+	sort.Strings(keys)
+	return marshalSortedObject(keys, values)
+}
+
+// formatOptionValue encodes the entry's value as JSON according to its Kind.
+func formatOptionValue(e ast.OptionEntry) (json.RawMessage, error) {
+	switch e.Kind {
+	case ast.KindString:
+		return json.Marshal(e.String())
+	case ast.KindBool:
+		return json.Marshal(e.Bool())
+	case ast.KindDecimal:
+		d := e.Decimal()
+		if d == nil {
+			return json.RawMessage("null"), nil
+		}
+		return json.Marshal(d.String()) // preserve source exponent
+	case ast.KindStringList:
+		sl := e.StringList()
+		if sl == nil {
+			sl = []string{}
+		}
+		return json.Marshal(sl)
+	case ast.KindInt:
+		return json.Marshal(e.Int())
+	case ast.KindDecimalMap:
+		dm := e.DecimalMap()
+		keys := make([]string, 0, len(dm))
+		for k := range dm {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		vals := make(map[string]any, len(dm))
+		for k, d := range dm {
+			vals[k] = d.String()
+		}
+		return marshalSortedObject(keys, vals)
+	case ast.KindIntMap:
+		im := e.IntMap()
+		keys := make([]string, 0, len(im))
+		for k := range im {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		vals := make(map[string]any, len(im))
+		for k, n := range im {
+			vals[k] = n
+		}
+		return marshalSortedObject(keys, vals)
+	default:
+		return nil, fmt.Errorf("unsupported OptionKind %v", e.Kind)
 	}
-	innerRaw, err := marshalSortedObject(currencies, inner)
-	if err != nil {
-		return nil, err
-	}
-	outerKeys := []string{"display_precision_by_currency"}
-	outerValues := map[string]any{"display_precision_by_currency": json.RawMessage(innerRaw)}
-	return marshalSortedObject(outerKeys, outerValues)
 }
 
 // serializeDirective dispatches on the directive's concrete Go type and

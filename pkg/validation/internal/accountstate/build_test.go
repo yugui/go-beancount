@@ -30,7 +30,7 @@ func mustDate(t *testing.T, s string) time.Time {
 }
 
 func TestBuild_Empty(t *testing.T) {
-	got := accountstate.Build(seqOf(nil))
+	got := accountstate.Build(seqOf(nil), nil)
 	if len(got.State) != 0 {
 		t.Errorf("State = %v, want empty map", got.State)
 	}
@@ -40,7 +40,7 @@ func TestBuild_Empty(t *testing.T) {
 }
 
 func TestBuild_NilSeq(t *testing.T) {
-	got := accountstate.Build(nil)
+	got := accountstate.Build(nil, nil)
 	if got.State == nil {
 		t.Errorf("State = nil, want non-nil empty map")
 	}
@@ -59,7 +59,7 @@ func TestBuild_SingleOpen(t *testing.T) {
 		Currencies: []string{"USD", "EUR"},
 		Booking:    ast.BookingStrict,
 	}
-	got := accountstate.Build(seqOf([]ast.Directive{open}))
+	got := accountstate.Build(seqOf([]ast.Directive{open}), nil)
 	if len(got.State) != 1 {
 		t.Fatalf("len(State) = %d, want 1", len(got.State))
 	}
@@ -93,7 +93,7 @@ func TestBuild_OpenClose(t *testing.T) {
 		Date:    mustDate(t, "2024-06-01"),
 		Account: "Assets:Cash",
 	}
-	got := accountstate.Build(seqOf([]ast.Directive{open, close}))
+	got := accountstate.Build(seqOf([]ast.Directive{open, close}), nil)
 	st, ok := got.State["Assets:Cash"]
 	if !ok {
 		t.Fatalf("State[%q] missing", "Assets:Cash")
@@ -120,7 +120,7 @@ func TestBuild_DuplicateOpen(t *testing.T) {
 		Account:    "Assets:Cash",
 		Currencies: []string{"EUR"},
 	}
-	got := accountstate.Build(seqOf([]ast.Directive{first, second}))
+	got := accountstate.Build(seqOf([]ast.Directive{first, second}), nil)
 	st, ok := got.State["Assets:Cash"]
 	if !ok {
 		t.Fatalf("State[%q] missing", "Assets:Cash")
@@ -145,12 +145,128 @@ func TestBuild_CloseWithoutOpen_Ignored(t *testing.T) {
 		Date:    mustDate(t, "2024-06-01"),
 		Account: "Assets:Cash",
 	}
-	got := accountstate.Build(seqOf([]ast.Directive{close}))
+	got := accountstate.Build(seqOf([]ast.Directive{close}), nil)
 	if len(got.State) != 0 {
 		t.Errorf("State = %v, want empty map (orphan close is not diagnosed here)", got.State)
 	}
 	if len(got.DuplicateOpens) != 0 {
 		t.Errorf("DuplicateOpens = %v, want nil", got.DuplicateOpens)
+	}
+}
+
+// parseOpts builds an *ast.OptionValues from a single option directive,
+// for feeding into accountstate.Build in option-driven tests.
+func parseOpts(t *testing.T, key, value string) *ast.OptionValues {
+	t.Helper()
+	l := &ast.Ledger{}
+	l.InsertAll([]ast.Directive{&ast.Option{Key: key, Value: value}})
+	opts, diags := ast.ParseOptions(l)
+	if len(diags) > 0 {
+		t.Fatalf("ParseOptions: %v", diags)
+	}
+	return opts
+}
+
+// TestBuild_OptionDrivenBookingDefault verifies that an Open without an
+// explicit booking keyword picks up the resolved booking from the
+// "booking_method" option, and that the result is stored in State.Booking.
+func TestBuild_OptionDrivenBookingDefault(t *testing.T) {
+	opts := parseOpts(t, "booking_method", "NONE")
+	open := &ast.Open{
+		Date:    mustDate(t, "2024-01-01"),
+		Account: "Assets:Cash",
+		Booking: ast.BookingDefault,
+	}
+	got := accountstate.Build(seqOf([]ast.Directive{open}), opts)
+	st, ok := got.State["Assets:Cash"]
+	if !ok {
+		t.Fatalf("State[%q] missing", "Assets:Cash")
+	}
+	if st.Booking != ast.BookingNone {
+		t.Errorf("Booking = %v, want BookingNone (from option)", st.Booking)
+	}
+	if len(got.Diagnostics) != 0 {
+		t.Errorf("Diagnostics = %v, want none", got.Diagnostics)
+	}
+}
+
+// TestBuild_OptionDrivenBookingExplicitWins confirms that an explicit booking
+// keyword on the Open directive takes precedence over the option.
+func TestBuild_OptionDrivenBookingExplicitWins(t *testing.T) {
+	opts := parseOpts(t, "booking_method", "NONE")
+	open := &ast.Open{
+		Date:    mustDate(t, "2024-01-01"),
+		Account: "Assets:Investments",
+		Booking: ast.BookingFIFO,
+	}
+	got := accountstate.Build(seqOf([]ast.Directive{open}), opts)
+	st, ok := got.State["Assets:Investments"]
+	if !ok {
+		t.Fatalf("State[%q] missing", "Assets:Investments")
+	}
+	if st.Booking != ast.BookingFIFO {
+		t.Errorf("Booking = %v, want BookingFIFO (explicit wins over option)", st.Booking)
+	}
+	if len(got.Diagnostics) != 0 {
+		t.Errorf("Diagnostics = %v, want none", got.Diagnostics)
+	}
+}
+
+// TestBuild_InvalidBookingMethodOption verifies that an unrecognized
+// booking_method option value surfaces as a diagnostic and falls back to STRICT.
+func TestBuild_InvalidBookingMethodOption(t *testing.T) {
+	// parseStringOption accepts any string, so "BOGUS" is stored as-is.
+	// The error surfaces at resolution time.
+	opts := parseOpts(t, "booking_method", "BOGUS")
+	open := &ast.Open{
+		Date:    mustDate(t, "2024-01-01"),
+		Account: "Assets:Cash",
+		Booking: ast.BookingDefault,
+	}
+	got := accountstate.Build(seqOf([]ast.Directive{open}), opts)
+	st, ok := got.State["Assets:Cash"]
+	if !ok {
+		t.Fatalf("State[%q] missing", "Assets:Cash")
+	}
+	if st.Booking != ast.BookingStrict {
+		t.Errorf("Booking = %v, want BookingStrict (fallback)", st.Booking)
+	}
+	if len(got.Diagnostics) != 1 {
+		t.Fatalf("len(Diagnostics) = %d, want 1", len(got.Diagnostics))
+	}
+	if got.Diagnostics[0].Severity != ast.Error {
+		t.Errorf("Diagnostics[0].Severity = %v, want Error", got.Diagnostics[0].Severity)
+	}
+}
+
+// TestBuild_InvalidBookingMethodOption_MultiOpenSpan verifies that each
+// Open directive with BookingDefault and a bad booking_method option
+// surfaces its own diagnostic with the Open's own span.
+func TestBuild_InvalidBookingMethodOption_MultiOpenSpan(t *testing.T) {
+	opts := parseOpts(t, "booking_method", "BOGUS")
+	span1 := ast.Span{Start: ast.Position{Filename: "test.bean", Line: 1}}
+	span2 := ast.Span{Start: ast.Position{Filename: "test.bean", Line: 5}}
+	open1 := &ast.Open{
+		Date:    mustDate(t, "2024-01-01"),
+		Account: "Assets:Cash",
+		Booking: ast.BookingDefault,
+		Span:    span1,
+	}
+	open2 := &ast.Open{
+		Date:    mustDate(t, "2024-02-01"),
+		Account: "Assets:Savings",
+		Booking: ast.BookingDefault,
+		Span:    span2,
+	}
+	got := accountstate.Build(seqOf([]ast.Directive{open1, open2}), opts)
+	if len(got.Diagnostics) != 2 {
+		t.Fatalf("len(Diagnostics) = %d, want 2", len(got.Diagnostics))
+	}
+	if got.Diagnostics[0].Span != span1 {
+		t.Errorf("Diagnostics[0].Span = %v, want %v", got.Diagnostics[0].Span, span1)
+	}
+	if got.Diagnostics[1].Span != span2 {
+		t.Errorf("Diagnostics[1].Span = %v, want %v", got.Diagnostics[1].Span, span2)
 	}
 }
 

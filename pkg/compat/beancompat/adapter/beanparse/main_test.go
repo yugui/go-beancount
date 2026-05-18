@@ -152,10 +152,13 @@ func TestRun_DirectivesPresent(t *testing.T) {
 			{Type: "open", Date: "2020-01-01"},
 		},
 	}
-	// Meta and Data are verified by TestRun_JSONMatchesSerializeChecked;
+	// Meta, Data, and Options are verified by TestRun_JSONMatchesSerializeChecked;
 	// this test's stated purpose is "directives survive serialization with
 	// correct type/date and count", so ignore those fields here.
-	if diff := cmp.Diff(want, got, cmpopts.IgnoreFields(beancompat.Directive{}, "Meta", "Data")); diff != "" {
+	if diff := cmp.Diff(want, got,
+		cmpopts.IgnoreFields(beancompat.Directive{}, "Meta", "Data"),
+		cmpopts.IgnoreFields(beancompat.Result{}, "Options"),
+	); diff != "" {
 		t.Errorf("result mismatch (-want +got):\n%s", diff)
 	}
 }

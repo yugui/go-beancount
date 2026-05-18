@@ -117,6 +117,52 @@ func TestPrecisionProfileNilReceiver(t *testing.T) {
 	}
 }
 
+func TestDisplayPrecisionContext(t *testing.T) {
+	profile := NewPrecisionProfile()
+	profile.Update(mustDecimal(t, "1.000"), "USD") // 3 fractional digits
+
+	t.Run("override_hit", func(t *testing.T) {
+		c := &DisplayPrecisionContext{
+			Profile:   profile,
+			Overrides: map[string]int{"USD": 2},
+		}
+		prec, ok := c.Precision("USD")
+		if !ok || prec != 2 {
+			t.Errorf("Precision(USD) = (%d, %v), want (2, true)", prec, ok)
+		}
+	})
+
+	t.Run("miss_delegates_to_profile", func(t *testing.T) {
+		c := &DisplayPrecisionContext{
+			Profile:   profile,
+			Overrides: map[string]int{"JPY": 0},
+		}
+		prec, ok := c.Precision("USD")
+		if !ok || prec != 3 {
+			t.Errorf("Precision(USD) = (%d, %v), want (3, true) from profile", prec, ok)
+		}
+	})
+
+	t.Run("miss_nil_profile", func(t *testing.T) {
+		c := &DisplayPrecisionContext{
+			Profile:   nil,
+			Overrides: map[string]int{"JPY": 0},
+		}
+		prec, ok := c.Precision("USD")
+		if ok || prec != 0 {
+			t.Errorf("Precision(USD) with nil profile = (%d, %v), want (0, false)", prec, ok)
+		}
+	})
+
+	t.Run("nil_receiver", func(t *testing.T) {
+		var c *DisplayPrecisionContext
+		prec, ok := c.Precision("USD")
+		if ok || prec != 0 {
+			t.Errorf("nil.Precision(USD) = (%d, %v), want (0, false)", prec, ok)
+		}
+	})
+}
+
 func TestPrecisionProfileNoOpUpdate(t *testing.T) {
 	p := NewPrecisionProfile()
 	d := mustDecimal(t, "1.23")

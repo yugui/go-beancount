@@ -55,6 +55,35 @@ func (p *PrecisionProfile) Precision(currency string) (int, bool) {
 	return best, true
 }
 
+// DisplayPrecisionContext combines an inferred *PrecisionProfile with
+// per-currency overrides supplied by callers (typically derived from option
+// "display_precision"). Both fields are read-only after construction;
+// callers must not modify them.
+//
+// The Precision method makes *DisplayPrecisionContext structurally implement
+// the formatter's display-context contract, so values of this type can be
+// passed directly to [github.com/yugui/go-beancount/pkg/format.WithDisplayContext].
+// The zero value is usable: a nil Profile and empty Overrides cause Precision
+// to return (0, false) for every currency. Nil receiver is also safe.
+type DisplayPrecisionContext struct {
+	Profile   *PrecisionProfile
+	Overrides map[string]int
+}
+
+// Precision returns the display precision for currency. When currency appears
+// in Overrides, that value is returned with ok=true. Otherwise the call
+// delegates to Profile.Precision. Returns (0, false) on a nil receiver or
+// when neither source has an entry for currency.
+func (c *DisplayPrecisionContext) Precision(currency string) (int, bool) {
+	if c == nil {
+		return 0, false
+	}
+	if v, ok := c.Overrides[currency]; ok {
+		return v, true
+	}
+	return c.Profile.Precision(currency)
+}
+
 // observeLedger builds a PrecisionProfile from the transaction posting amounts,
 // balance amounts, and price amounts in ledger. Cost amounts and posting price
 // annotations are excluded, matching upstream beancount's dcontext behavior.

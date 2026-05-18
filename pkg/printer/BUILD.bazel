@@ -17,6 +17,7 @@ go_test(
     name = "printer_test",
     srcs = [
         "printer_displaycontext_test.go",
+        "printer_render_commas_test.go",
         "printer_test.go",
     ],
     deps = [

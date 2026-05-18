@@ -22,9 +22,7 @@ package beancompat
 // divergences not yet reflected upstream — annotate the reason with
 // "upstream-PR pending" or "go-beancount fix pending" so stale entries are
 // easy to triage.
-var parseDivergences = map[string]string{
-	"options_coverage": "go-beancount fix pending: parse-tier serializer does not yet emit the options envelope (~30 BeancountOptions keys expected).",
-}
+var parseDivergences = map[string]string{}
 
 // checkDivergences mirrors parseDivergences for check-tier fixtures, using
 // the same two-tier policy and annotation convention.

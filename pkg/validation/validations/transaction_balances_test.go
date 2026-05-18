@@ -312,6 +312,81 @@ func TestTransactionBalances_MixedPrecisionResidualWithinCoarseTolerance(t *test
 	}
 }
 
+// TestTransactionBalances_InferredToleranceDefault exercises the
+// inferred_tolerance_default option via the full Infer path. The
+// per-currency default only applies when a residual currency has no
+// contributing amount posting — i.e. the residual arises from price
+// conversion rather than from a literal amount in that currency.
+//
+// Shape: two STOCK legs annotated with slightly different USD prices.
+// The weights are 2×0.502 USD = 1.004 USD and -2×0.500 USD = -1.000 USD,
+// so the USD weight residual is 0.004 USD. STOCK is balanced (2−2=0).
+// Because no posting has Amount.Currency=="USD", Infer finds no USD
+// exponent in the posting scan and falls through to the per-currency
+// default. With "USD:0.005" the 0.004 residual is within tolerance;
+// without the option the fallback is zero and it fails.
+func TestTransactionBalances_InferredToleranceDefault(t *testing.T) {
+	// price-conversion residual: STOCK is balanced; USD residual is 0.004
+	// from the difference in per-unit prices. No USD amount posting exists,
+	// so posting-level tolerance inference produces no USD exponent.
+	makeTxn := func(t *testing.T) *ast.Transaction {
+		t.Helper()
+		buyAmt := amtStrDec(t, "2", "STOCK")
+		buyPrice := amtStrDec(t, "0.502", "USD")
+		sellAmt := amtStrDec(t, "-2", "STOCK")
+		sellPrice := amtStrDec(t, "0.500", "USD")
+		return &ast.Transaction{
+			Date: day(2024, 2, 1),
+			Span: ast.Span{Start: ast.Position{Line: 1}},
+			Postings: []ast.Posting{
+				{Account: "Assets:Brokerage", Amount: &buyAmt, Price: &ast.PriceAnnotation{Amount: buyPrice}},
+				{Account: "Assets:Brokerage", Amount: &sellAmt, Price: &ast.PriceAnnotation{Amount: sellPrice}},
+			},
+		}
+	}
+
+	t.Run("without option USD residual 0.004 fails (zero fallback)", func(t *testing.T) {
+		txn := makeTxn(t)
+		v := newTransactionBalances(mustDefaults())
+		errs := v.ProcessEntry(txn)
+		if len(errs) != 1 || errs[0].Code != string(validation.CodeUnbalancedTransaction) {
+			t.Errorf("got errs = %v, want one CodeUnbalancedTransaction (USD residual 0.004 > zero tol)", errs)
+		}
+	})
+
+	t.Run("with USD:0.005 default USD residual 0.004 passes", func(t *testing.T) {
+		txn := makeTxn(t)
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "USD:0.005"})
+		v := newTransactionBalances(opts)
+		if errs := v.ProcessEntry(txn); len(errs) != 0 {
+			t.Errorf("got %v, want no errors (USD residual 0.004 within USD default tol 0.005)", errs)
+		}
+	})
+
+	t.Run("with USD:0.003 default USD residual 0.004 still fails", func(t *testing.T) {
+		txn := makeTxn(t)
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "USD:0.003"})
+		v := newTransactionBalances(opts)
+		errs := v.ProcessEntry(txn)
+		if len(errs) != 1 || errs[0].Code != string(validation.CodeUnbalancedTransaction) {
+			t.Errorf("got errs = %v, want one CodeUnbalancedTransaction (USD residual 0.004 > USD default tol 0.003)", errs)
+		}
+	})
+
+	t.Run("EUR default irrelevant: USD residual still fails", func(t *testing.T) {
+		// Default is EUR:1.0 (large, but wrong currency). The USD residual
+		// of 0.004 has no per-currency default entry, so the fallback is zero
+		// and the transaction must still be rejected.
+		txn := makeTxn(t)
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "EUR:1.0"})
+		v := newTransactionBalances(opts)
+		errs := v.ProcessEntry(txn)
+		if len(errs) != 1 || errs[0].Code != string(validation.CodeUnbalancedTransaction) {
+			t.Errorf("got errs = %v, want one CodeUnbalancedTransaction (EUR default must not affect USD residual)", errs)
+		}
+	})
+}
+
 // TestTransactionBalances_InferToleranceFromCost verifies that with
 // infer_tolerance_from_cost enabled, a per-unit cost spec broadens the
 // cost-currency tolerance enough to absorb a residual that would
