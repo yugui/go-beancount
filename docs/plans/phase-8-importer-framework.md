@@ -1843,6 +1843,503 @@ two functions.
   canonical layouts (single-signed-column and debit/credit) shown as
   examples.
 
+### Detailed Design
+
+#### Contract
+
+##### Package and import path
+
+Package path `github.com/yugui/go-beancount/pkg/importer/std/csvimp`,
+package name `csvimp`. Single Go package. The package depends only on
+the standard library (`encoding/csv`, `crypto/sha256`, `encoding/hex`,
+`regexp`, `strings`, `time`, `io`, `bufio`, `unicode`),
+`github.com/cockroachdb/apd/v3` (decimal parsing, already a module
+dependency), `github.com/BurntSushi/toml` (TOML decoder, already a
+module dependency and the project's standing TOML library — see
+`pkg/distribute/route/routeconfig`), and the in-tree packages
+`pkg/ast`, `pkg/importer`, and `pkg/importer/importerutil`.
+
+##### Registration and `Name()`
+
+The package's `init()` function (in `doc.go`) registers a single
+package-level `*Importer` value under TWO names:
+
+```go
+func init() {
+    imp := &Importer{}
+    importer.Register("csv", imp)
+    importer.Register("github.com/yugui/go-beancount/pkg/importer/std/csvimp", imp)
+}
+```
+
+- The **same instance** is registered under both names. Looking up
+  either name returns the same `*Importer` value (pointer equality).
+  This matches the dual-registration pattern used by
+  `pkg/quote/std/*`.
+- `Name()` returns `"csv"` (the canonical short name), not the
+  Go-path alias. Rationale: `Name()` is the identity an importer
+  presents to logs and diagnostics; one importer must present one
+  identity. Choosing the short name aligns with the 8a Contract's
+  convention that canonical reference importers use the upstream
+  tool's name.
+- The importer is therefore a **process-global singleton**. `Configure`
+  mutates state on this singleton; `Identify` writes the picked-shape
+  cache on this singleton; `Extract` reads it. See "Concurrency"
+  below for the threading rule this implies.
+
+##### TOML configuration schema
+
+The configuration is a TOML document with a top-level `shape` table
+whose entries are themselves tables keyed by shape name. The Go
+schema is:
+
+```go
+type config struct {
+    Shapes map[string]shapeConfig `toml:"shape"`
+}
+
+type shapeConfig struct {
+    Match              string         `toml:"match"`               // optional path regex
+    Delimiter          string         `toml:"delimiter"`           // "," (default) or "\t"
+    SkipLines          int            `toml:"skip_lines"`          // lines before the header line; default 0
+    DateCol            string         `toml:"date_col"`            // required
+    DateFormat         string         `toml:"date_format"`         // required Go time layout
+    PayeeCol           string         `toml:"payee_col"`           // optional
+    CurrencyCol        string         `toml:"currency_col"`        // optional
+    DefaultCurrency    string         `toml:"default_currency"`    // optional
+    NarrationCols      []string       `toml:"narration_cols"`      // optional
+    NarrationSeparator string         `toml:"narration_separator"` // default ""
+    Account            string         `toml:"account"`             // optional; falls back from Hints["account"]
+    Amount             []amountColumn `toml:"amount"`              // required: at least one entry
+}
+
+type amountColumn struct {
+    Col    string `toml:"col"`    // required, must appear in the header
+    Negate bool   `toml:"negate"` // default false
+}
+```
+
+- **Multi-shape**: A single TOML file holds one or more shapes; the
+  caller (8f CLI or a test) decodes the entire `config` struct. The
+  importer iterates the shapes during Identify.
+- **Shape iteration order**: TOML maps are unordered. For Identify
+  to be deterministic, the importer iterates shapes in
+  **lexicographic order of shape name**. Order ties are impossible
+  (TOML keys are unique).
+- **Unknown TOML keys**: not csvimp's concern. The CLI's decoder
+  closure inspects `toml.MetaData.Undecoded()` and fails before
+  csvimp sees the data (see D7).
+- **Validation at Configure time** (in this order; first failure
+  returns an error from Configure):
+  1. At least one shape entry exists. Otherwise: `csvimp: no shapes defined`.
+  2. For each shape (iterated in lexicographic name order):
+     a. `date_col` is non-empty.
+     b. `date_format` is non-empty AND `time.Parse(layout, layout)`
+        round-trips (catches obvious typos).
+     c. `len(amount) >= 1`. Each entry has non-empty `col`.
+     d. If `Match` is non-empty it MUST compile as a Go regular
+        expression. The compiled regexp is cached on the internal
+        shape value.
+     e. If `Delimiter` is non-empty it MUST decode to exactly one
+        rune. The decoded rune is cached on the internal shape.
+     f. `DefaultCurrency` and `CurrencyCol` MAY both be empty; that
+        becomes a per-row `csvimp-missing-currency` diagnostic at
+        Extract time if encountered.
+
+- **Validation failure semantics**: a non-nil error returned from
+  Configure propagates through `importer.Apply` as a framework error.
+  Either Configure succeeds entirely or `i.shapes` remains nil.
+
+##### `Configurable.Configure`
+
+Signature inherited from `importer.Configurable`:
+
+```go
+func (i *Importer) Configure(decode func(dest any) error) error
+```
+
+Behaviour:
+- Calls `decode(&cfg)` exactly once where `cfg` is a local `config`.
+- On `decode` error: returns the error prefixed `"csvimp: configure: "`.
+- Runs the validation list above; any failure returns
+  `csvimp: configure: <message>`.
+- On success: replaces `i.shapes` with a freshly built, sorted slice
+  of internal shape representations under the importer's mutex.
+- Re-Configure: replaces the previous configuration (the 8a Contract
+  documents this as undefined; csvimp treats it as legal replacement).
+- No Configure: `i.shapes` is empty, Identify always returns false.
+
+##### `Name()`
+
+```go
+func (i *Importer) Name() string { return "csv" }
+```
+
+Constant. Independent of configuration state.
+
+##### `Identify`
+
+```go
+func (i *Importer) Identify(ctx context.Context, in importer.Input) bool
+```
+
+Behaviour:
+1. If `i.shapes` is empty: return false.
+2. Extension/MIME gate:
+   - Lowercase extension of `in.Path` is `.csv` or `.tsv`: proceed.
+   - Otherwise, if `in.MIME` is `"text/csv"` or
+     `"text/tab-separated-values"`: proceed.
+   - Else: return false. (Empty Path AND empty MIME is rejected
+     here; the CLI's `--importer csv` flag bypasses Identify per
+     the 8a Apply contract.)
+3. For each shape in lexicographic name order:
+   a. If `shape.Match` is set, test `compiledMatch.MatchString(in.Path)`.
+      No match → continue.
+   b. Open the file via `in.Opener()`, skip `shape.SkipLines` LINES
+      (counted as lines, not CSV records), read the next non-blank
+      line as the header, parse it with `encoding/csv` configured
+      with the shape's delimiter. Failure to read or parse the
+      header: continue (another shape may use a different
+      delimiter and succeed).
+   c. Column-presence check: every required column name
+      (`date_col`, each `amount[].col`, each `narration_cols`
+      entry, `payee_col` if non-empty, `currency_col` if non-empty)
+      MUST appear in the header. Comparison is **case-sensitive
+      with whitespace trimmed on the header side** (header field
+      `" Date "` matches config `"Date"`); config-side names are
+      used verbatim with no trimming.
+   d. If all required columns are present, cache the selection
+      (see "Identify/Extract handoff") and return true.
+4. No shape matched: return false.
+
+Identify MUST close every reader it opens before returning.
+
+##### Identify / Extract handoff
+
+The importer caches the most recent successful Identify selection on
+the struct, serialised by `i.mu`:
+
+```go
+type identifyCache struct {
+    inputKey  string         // Path + "\x1f" + MIME
+    shape     *shape         // internal shape representation
+    columnIdx map[string]int // trimmed header name → index
+}
+```
+
+- The cache is invalidated when the next Identify arrives with a
+  different `inputKey`.
+- Extract called on the same Input reuses the cache. Extract called
+  on a different Input (or before any Identify, e.g. via the CLI's
+  `--importer csv` flag) re-runs the selection internally.
+- If Extract's internal selector finds no matching shape:
+  return `(importer.Output{}, error)` where error is
+  `csvimp: no shape matched for <path>` (framework error per 8a).
+
+Implementers MAY drop the cache and re-select on every call; the
+Contract permits either form.
+
+##### `Extract`
+
+```go
+func (i *Importer) Extract(ctx context.Context, in importer.Input) (importer.Output, error)
+```
+
+Behaviour:
+1. Resolve the shape from the cache or re-run the selector. If
+   no shape matches: framework error as above.
+2. Open the file via `in.Opener()`. Opener error: wrap and return
+   `(importer.Output{}, err)`.
+3. Skip `shape.SkipLines` lines, read the next non-blank line as
+   the header, build the header → column-index map.
+4. Missing columns at this point: emit one
+   `csvimp-missing-column` Error diagnostic per missing column,
+   return `(importer.Output{Diagnostics: ...}, nil)` with no
+   directives. (Defensive — should not happen for an immutable
+   file just identified.)
+5. Iterate remaining records via `encoding/csv.Reader` with
+   `FieldsPerRecord = -1`, `LazyQuotes = true`.
+6. For each row:
+   a. Check `ctx.Err()`. If non-nil: return composed
+      `(Output{Directives: so-far, Diagnostics: so-far}, ctx.Err())`.
+   b. Skip rows where every field is empty (after trimming).
+   c. Compute the row's `csvimp-rowhash` from the raw record
+      bytes (see "Row hash" below).
+   d. Parse the row's fields:
+      - **Date**: `time.Parse(shape.DateFormat, trimmed(row[dateIdx]))`.
+        Error → `csvimp-bad-date` diagnostic, skip row.
+      - **Amount sum**: for each amount column, trim and parse via
+        `apd.NewFromString`. Empty cell → 0. Parse error →
+        `csvimp-bad-amount` diagnostic, skip row (no partial
+        application of earlier columns). All blank →
+        `csvimp-all-blank-amount` diagnostic, skip row. A non-blank
+        row that sums to zero is NOT skipped. Negate is per-column:
+        `Negate=true` subtracts the parsed value from the running
+        sum.
+      - **Currency**: read trimmed `currencyCol` value (if any),
+        else `default_currency`. Both empty →
+        `csvimp-missing-currency` diagnostic, skip row.
+      - **Payee**: trimmed `payeeCol` value if set, else "".
+      - **Narration**: walk `narration_cols` in declaration order,
+        collect trimmed values, drop empty entries, join with
+        `narration_separator`. Empty list → "". Separator never
+        appears at the edges nor doubled between non-empty entries.
+      - **Account**: `Hints["account"]` first (if non-empty), else
+        `shape.Account`. Both empty → `csvimp-missing-account`
+        diagnostic, skip row.
+   e. Construct a single-leg Transaction:
+      ```go
+      tx := &ast.Transaction{
+          Date:      parsedDate,
+          Flag:      '*',
+          Payee:     payee,
+          Narration: narration,
+          Postings: []ast.Posting{{
+              Account: ast.Account(account),
+              Amount:  &ast.Amount{Number: *sum, Currency: currency},
+          }},
+      }
+      ```
+      Span left zero (no CSV-row span representation in the AST today).
+   f. Stamp:
+      `stamped := importerutil.StampMetadata(tx, "csvimp-rowhash", rowHash)`.
+      Append `stamped` to the directives.
+7. Return `(importer.Output{Directives: out, Diagnostics: diags}, nil)`.
+
+##### Row hash for `csvimp-rowhash`
+
+Canonical form fed to SHA-256:
+
+```
+shape-name || "\x1e" || field0 || "\x1f" || field1 || "\x1f" || ... || fieldN
+```
+
+Where:
+- `shape-name` is the TOML shape key (e.g. `"mybank"`), UTF-8 bytes.
+- `\x1e` (Record Separator) divides shape name from row payload.
+- `\x1f` (Unit Separator) divides individual CSV fields.
+- `fieldN` are the **trimmed-of-leading-and-trailing-whitespace
+  raw CSV field bytes** as returned by `csv.Reader.Read()`. No other
+  normalisation.
+
+The shape name is included so the same raw row interpreted under
+two different shapes hashes differently. Trimming makes the hash
+stable against trivial whitespace drift across reruns.
+
+Hash output: SHA-256, **first 8 bytes** hex-encoded (16 lowercase
+hex characters). Stamped as `MetaString` under key
+`"csvimp-rowhash"`.
+
+The hash is computed BEFORE any field-level parsing. This keeps the
+hash stable across configuration tweaks that don't change source
+bytes or shape selection: changing `narration_separator`,
+`date_format`, `currency_col`, or `account` does NOT change the
+hash; changing the shape name DOES; changing the `amount` column
+list does NOT (same raw fields feed in regardless).
+
+The package godoc documents `csvimp-rowhash` as csvimp's identity
+metadata key per the 8a Decision 6 convention.
+
+##### Diagnostic codes
+
+Exported package constants, all Severity `ast.Error`:
+
+```go
+const (
+    DiagBadDate         = "csvimp-bad-date"
+    DiagBadAmount       = "csvimp-bad-amount"
+    DiagAllBlankAmount  = "csvimp-all-blank-amount"
+    DiagMissingCurrency = "csvimp-missing-currency"
+    DiagMissingAccount  = "csvimp-missing-account"
+    DiagMissingColumn   = "csvimp-missing-column"
+)
+```
+
+`csvimp-no-shape-matched` is intentionally NOT defined; that case
+returns a framework error.
+
+##### Concurrency
+
+The importer is a process-global singleton. `Configure`, `Identify`,
+and `Extract` are NOT safe to call concurrently on the same
+instance. Callers MUST serialise. An internal `sync.Mutex` is held
+around configuration mutation and the Identify/Extract cache as a
+defensive measure for the race detector. Documented in package
+godoc.
+
+##### Imports of `pkg/importer.Input` fields
+
+- `in.Path`: read.
+- `in.Opener`: called by Identify (header probe) and Extract (full
+  scan). Fresh reader per call; closed before return.
+- `in.Sniff`: not consulted.
+- `in.MIME`: extension-gate fallback only.
+- `in.Hints["account"]`: per-row primary account override.
+
+##### Out-of-scope behaviours
+
+- Counterpart posting: produced by the classify hook (8e) or a
+  user-composed `importerutil.BalanceWith`.
+- Cost/price annotations: not produced.
+- Tags/links: not produced.
+- Streaming: csvimp does NOT implement `importer.Streaming` in ABI v1.
+- Sniff-based magic detection: not used.
+
+#### Suggested Internals
+
+These are advisory; the implementer is free to adopt, modify, or
+replace based on what they discover while coding.
+
+##### File decomposition
+
+- `doc.go` — package godoc (TOML schema with the two canonical
+  examples; documented `csvimp-rowhash` metadata key; documented
+  `Hints["account"]`) + `init()` dual-registration.
+- `csvimp.go` — `Importer` struct, `Name`, `Identify`, `Extract`
+  entry points, the Identify/Extract cache.
+- `config.go` — TOML structs, internal shape representation,
+  `Configure` method, validation.
+- `rowhash.go` — canonicalisation + SHA-256 + hex truncation.
+- `extract.go` — per-row parsing.
+- `diag.go` — diagnostic-code constants and `ast.Diagnostic`
+  construction helpers.
+
+A four-file variant (folding `extract.go` and `diag.go` into
+`csvimp.go`) is equally reasonable.
+
+##### Internal shape representation
+
+Private `shape` struct holding compiled regexp + delimiter rune + the
+fields from `shapeConfig`. Importer holds `shapes []*shape` in
+lexicographic name order.
+
+##### Reading the header line
+
+A helper `openAtHeader(rc io.Reader, delim rune, skipLines int) (header []string, rdr *csv.Reader, err error)`:
+skip `skipLines` lines via `bufio.Reader`, then wrap the rest in
+`csv.Reader`. Decouples line-counting skip from CSV parsing (matters
+for banks that prefix a free-text banner).
+
+##### Per-row construction
+
+A `processRow(s *shape, hdr headerIndex, row []string, hints map[string]string) (ast.Directive, *ast.Diagnostic)`
+helper returning one-or-the-other.
+
+##### Idempotency test
+
+Fixture: `testdata/<shape>/{config.toml, statement.csv, expected.beancount}`.
+Test loads config, builds an `importer.Input` whose Opener returns a
+`bytes.Reader`, runs Extract twice on fresh `*Importer` instances,
+prints both via `pkg/printer.Fprint`, asserts byte-for-byte equality
+between runs AND against `expected.beancount`. A second variant
+reuses the same instance to verify the cache doesn't pollute.
+
+##### Test layout
+
+- `csvimp_test.go` — Identify dispatch (extension gate, MIME
+  fallback, multi-shape selection by name order, match regex,
+  missing-column rejection).
+- `extract_test.go` — per-row happy paths and every diagnostic code;
+  account-from-Hints vs. account-from-shape precedence;
+  currency-col vs. default precedence; narration empty-skip and
+  separator handling; debit/credit two-column negate sum.
+- `rowhash_test.go` — hash determinism across runs, sensitivity to
+  shape name, insensitivity to whitespace drift, length exactly 16
+  hex chars.
+- `config_test.go` — TOML decode happy path; each Configure
+  validation error; unknown-keys rejection via a CLI-style decoder
+  closure.
+- `idempotency_test.go` — two-run byte-identical stdout.
+
+Fixture directory: `testdata/<shape-name>/` with at minimum a
+single-signed-amount shape and a debit/credit-split shape.
+
+##### BUILD.bazel
+
+`bazel run //:gazelle`; testdata via `go_test(data = glob(["testdata/**"]))`.
+
+#### Alternatives discussed
+
+##### D1. Row-hash canonical form: raw bytes vs. parsed values
+
+- **Raw bytes (recommended, locked above).** Stable across
+  configuration tweaks; cheap; easy to reproduce.
+- **Parsed values.** Rejected: parses must succeed before hashing,
+  so failing rows can't be stamped — the exact rows users most
+  need to dedup.
+- **Hybrid (bytes + format).** Rejected: muddies the
+  "identity follows source" model.
+
+##### D2. Identify/Extract shape state: cached vs. recomputed
+
+- **Cache on instance keyed by Path+MIME (recommended, locked).**
+  Avoids redundant header parse in the common Dispatch+Extract
+  path.
+- **Stateless.** Rejected: one extra header parse per Extract is
+  not material, but the cache lets the Contract document the
+  `inputKey` artefact explicitly.
+
+The Contract permits implementations to drop the cache (Suggested
+Internals layer).
+
+##### D3. Column-name case sensitivity
+
+- **Case-sensitive, header-side trimmed (recommended, locked).**
+  Unambiguous; matches Beancount tool conventions; catches typos.
+- **Case-insensitive.** Rejected: hides real config mismatches.
+
+##### D4. Multi-shape vs. single-shape TOML
+
+- **Multi-shape (recommended, locked).** Users with multiple banks
+  ship one config; lexicographic iteration keeps Identify
+  deterministic.
+- **Single-shape.** Rejected: pushes shape selection to the CLI.
+
+##### D5. Non-blank non-numeric amount handling
+
+- **Skip row with `csvimp-bad-amount` (recommended, locked).** Any
+  one amount column failing to parse fails the whole row. Avoids
+  silent partial sums on debit/credit typos.
+- **Zero-out the bad cell.** Rejected: silent data loss.
+- **Halt the whole Extract.** Rejected: violates "never aborts".
+
+##### D6. `Name()` choice when dual-registered
+
+- **Canonical short name `"csv"` (recommended, locked).** One
+  identity per importer; matches 8a convention and
+  `pkg/quote/std/ecb`.
+
+##### D7. Unknown TOML keys: csvimp vs. CLI
+
+- **CLI's responsibility (recommended, locked).** The decoder
+  closure inspects `toml.MetaData.Undecoded` before csvimp sees
+  the data. Preserves csvimp's encoding-agnostic Configure.
+- **csvimp parses TOML directly.** Rejected: violates 8a's
+  encoding-agnostic decoder design.
+
+##### D8. Diagnostic code prefix
+
+- **`csvimp-*` (recommended, locked).** Mirrors `importer-*` and
+  `hook-*`.
+
+#### Recommendation
+
+Adopt the Contract above:
+- Process-global singleton dual-registered as `"csv"` + Go-path,
+  `Name()` returns `"csv"`.
+- Multi-shape TOML; lex-order iteration; aggressive Configure-time
+  validation.
+- Identify combines extension/MIME gate + optional regex match +
+  case-sensitive (header-trimmed) column-presence check; selection
+  cached by Path+MIME with Extract fallback.
+- Extract emits one single-posting Transaction per non-skipped row
+  stamped with `csvimp-rowhash`. Per-row failures emit one
+  diagnostic and skip; structural failures abort with framework
+  error or diagnostic-only Output.
+- Row hash is SHA-256 of `shape-name || RS || field0 || US || ...`
+  over trimmed raw field bytes, truncated to 16 hex chars.
+- Concurrency: serialised by caller; defensive mutex; godoc.
+
 ### 8e — `pkg/importer/hook/std/classify` reference hook
 
 - **Modules:** `pkg/importer/hook/std/classify/classify.go` (hook
