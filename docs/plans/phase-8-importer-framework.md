@@ -133,6 +133,621 @@ the Contract for each as it is picked up.
   convention); Lookup is lock-light; Dispatch is O(N) with N small;
   panic messages name the duplicate registration site.
 
+### Detailed Design
+
+#### Contract
+
+##### Package and import path
+
+Package path `github.com/yugui/go-beancount/pkg/importer`, package name
+`importer`. Single Go package; no `/api` split (per plan decision 1).
+All symbols listed below are exported from this package.
+
+##### `Importer` interface
+
+```go
+type Importer interface {
+    Name() string
+    Identify(ctx context.Context, in Input) bool
+    Extract(ctx context.Context, in Input) (Output, error)
+}
+```
+
+- `Name()` returns the registry key. By convention, the upstream
+  tool's name (e.g. `"csv"`, `"ofx"`) for canonical reference
+  importers and the Go fully-qualified package path otherwise — the
+  same convention `pkg/quote` uses. Two registrations under the same
+  name panic; see `Register` below.
+- `Identify` is a **pure, side-effect-free, cheap** check. It MUST
+  NOT consume `in.Opener` unless the implementation cannot make a
+  decision from `in.Path`, `in.MIME`, and `in.Sniff` alone. If it
+  does call `Opener`, it MUST close the returned `io.ReadCloser`
+  before returning. Identify returning `true` is a non-binding
+  preference — Dispatch may still pick a different importer if this
+  one is not the first match in sorted-by-name order.
+- `Extract` is the work-doing call. It returns:
+  - a possibly-empty `Output.Directives` slice in source-encounter
+    order;
+  - a possibly-empty `Output.Diagnostics` slice for **per-row /
+    per-record** problems the importer recovered from (bad date,
+    unparseable amount, malformed row), each carrying its own
+    `Severity`;
+  - a non-nil `error` ONLY when the import as a whole could not
+    proceed (Opener failed before any directive was produced, the
+    file format is structurally broken beyond per-row recovery, the
+    context was cancelled). When `error` is non-nil, `Output.Directives`
+    SHOULD be nil; `Output.Diagnostics` MAY still be non-nil and is
+    composed by `Apply` into the final diagnostic stream.
+  - `error` is reserved for system-level / framework-level failures
+    (ctx cancellation, I/O, programmer errors). Anything attributable
+    to ledger contents — including "row 14 has no date column" — is
+    a Diagnostic.
+
+##### `Input` struct
+
+```go
+type Input struct {
+    Path    string
+    Opener  func() (io.ReadCloser, error)
+    Sniff   []byte
+    MIME    string
+    Hints   map[string]string
+}
+```
+
+- `Path` — display name passed to diagnostics and to `Identify`'s
+  extension/regex checks. SHOULD be the user-visible path the CLI
+  was invoked with (not a temp-file path); the data on disk is
+  reached via `Opener`, not via `os.Open(Path)`. Empty Path is
+  permitted (stdin invocation, `--importer NAME` forcing a specific
+  importer); importers MUST tolerate `Path == ""`.
+- `Opener` — closure returning a fresh `io.ReadCloser` on each call.
+  - MAY be called zero, one, or many times by `Identify` and
+    `Extract` combined. Each call returns a reader positioned at the
+    start of the file; closing one reader does not invalidate
+    subsequent Opener calls.
+  - MUST NOT be `nil` for any Input reaching a registered Importer.
+    `cmd/beanimport` (8f) is responsible for installing a working
+    Opener; tests and plugin authors construct one explicitly.
+  - If Opener returns a non-nil error, the caller (Identify or
+    Extract) is responsible for handling it. Identify treats Opener
+    failure as "cannot identify" and returns false. Extract returns
+    a non-nil framework error wrapping the Opener error.
+- `Sniff` — pre-read prefix of the input, **up to 4096 bytes** (the
+  guarantee is "up to", not "at least": short files yield a
+  short `Sniff`). Callers MUST NOT mutate the byte slice; importers
+  MUST treat it as read-only. The caller (`cmd/beanimport`) is
+  responsible for populating Sniff before calling Identify; an
+  empty Sniff is permitted (for example when `--importer NAME`
+  bypasses Identify entirely) and importers MUST tolerate it.
+- `MIME` — best-effort hint sourced from the OS / HTTP header /
+  user override. Empty string means "no hint"; importers MUST NOT
+  treat empty MIME as a refusal signal.
+- `Hints` — caller-supplied free-form key/value bag for parameters
+  that survive across Identify and Extract. The framework reserves
+  these keys, listed here as ABI-level surface:
+  - `"account"` — primary account override (set by `cmd/beanimport
+    --account`). Used by the CSV reference importer in 8d; available
+    to any importer that wants to honor it.
+  - All other keys are importer-specific. Importers that consume
+    Hints MUST document the keys they read in their package godoc.
+  - Adding new framework-reserved keys in later phases does not
+    break ABI because consumers tolerate unknown keys.
+  - Hints MAY be nil; importers MUST treat nil Hints identically
+    to an empty map.
+
+##### `Output` struct
+
+```go
+type Output struct {
+    Directives  []ast.Directive
+    Diagnostics []ast.Diagnostic
+}
+```
+
+- `Directives` is in source-encounter order. Empty `Output` is a
+  legal successful return (e.g. a CSV with header only).
+- `Diagnostics` carries per-row problems. Severity is whatever the
+  importer chose; `--strict` in 8f is responsible for warning→error
+  promotion, not the framework.
+- `Output` is **not** mutated by the framework after Extract
+  returns; `Apply` composes the importer's Output with diagnostics
+  it generates itself by appending into a fresh slice, never by
+  mutating the slices Extract returned. Importers are likewise
+  free to return shared / cached slices as long as they treat them
+  as logically immutable after return.
+
+##### `Configurable` optional sub-interface
+
+```go
+type Configurable interface {
+    Importer
+    Configure(raw json.RawMessage) error
+}
+```
+
+- Detected via type assertion; importers that do not implement it
+  receive no configuration call.
+- `raw` is JSON bytes. The CLI parses user-facing TOML into a
+  generic structure and re-encodes the per-importer subtable as
+  JSON before handing it to Configure. Rationale: JSON is in the
+  stdlib (no second dependency for plugins), is the natural
+  serialization for declaration-only ABI types, and is the only
+  encoding that round-trips reliably across the goplug boundary.
+  TOML stays at the CLI / config-file edge; the framework
+  (and plugins) deal only in JSON.
+- `Configure` MUST be safe to call at most once per Importer
+  instance before any `Identify` or `Extract` call. Calling
+  Configure twice on the same instance has undefined behaviour;
+  callers SHOULD NOT do so. A non-nil error fails the dispatch
+  pipeline early — `Apply` propagates it as a framework error
+  (not a Diagnostic), since unconfigurable means the importer
+  cannot be asked to do work.
+- Configure receiving an empty / nil `raw` is a legal call: the
+  CLI passes nil when the user supplied no `--config` flag and
+  the importer must decide whether that is an error or whether
+  defaults are acceptable.
+
+##### `Streaming` optional sub-interface
+
+```go
+type Streaming interface {
+    Importer
+    StreamExtract(ctx context.Context, in Input) iter.Seq2[ast.Directive, error]
+}
+```
+
+- `iter.Seq2[ast.Directive, error]`: each yield is either
+  `(directive, nil)` for a successful directive or `(zero, err)`
+  for a per-record problem the consumer decides whether to
+  continue past.
+- Diagnostics in the streaming path: the iterator MUST NOT be
+  asked to carry diagnostics inline. Instead, an importer that
+  also wants to emit Diagnostics in streaming mode SHOULD
+  implement the optional method `StreamDiagnostics() []ast.Diagnostic`
+  which the caller invokes AFTER the iterator has been fully
+  consumed (or the consumer abandons it). This keeps the iterator
+  signature clean and matches `iter.Seq2`'s native shape. Importers
+  that have no diagnostics in streaming mode simply do not
+  implement `StreamDiagnostics`.
+
+  ```go
+  // optional companion method on a Streaming importer
+  type StreamDiagnoser interface {
+      StreamDiagnostics() []ast.Diagnostic
+  }
+  ```
+
+- **Streaming vs. Extract precedence in Apply:** if an importer
+  implements `Streaming`, `Apply` MAY call either `StreamExtract`
+  or `Extract`. Apply's documented choice for ABI v1 is to call
+  `Extract` (i.e. the buffered path) by default, because the
+  Phase 8 CLI ultimately materialises the full directive slice for
+  printing and the streaming path's only payoff is at very large
+  scale. The Contract reserves the right for a future
+  `--stream` flag (or for downstream consumers that genuinely
+  stream) to call `StreamExtract` when the importer supports it.
+  Importers MAY implement both; if an importer implements ONLY
+  `Streaming` (no `Extract` … not possible because Streaming
+  embeds Importer which has Extract; so every Streaming importer
+  also has Extract).
+- An importer implementing both MUST produce equivalent directive
+  sequences from `Extract` and `StreamExtract` for the same Input.
+  This equivalence is the importer author's obligation; the
+  framework does not cross-check.
+
+##### `Registry` interface and package-level functions
+
+```go
+type Registry interface {
+    Lookup(name string) (Importer, bool)
+    Names() []string
+}
+
+func Register(name string, imp Importer)
+func Lookup(name string) (Importer, bool)
+func Names() []string
+func GlobalRegistry() Registry
+```
+
+- Shape and concurrency model are an exact mirror of
+  `pkg/quote/registry.go`:
+  - `sync.RWMutex`, Lookup/Names take the read lock, Register takes
+    the write lock.
+  - Safe to call from `init()` and from goplug `InitPlugin()`
+    callbacks; safe to call concurrently with Lookup/Names from
+    the main goroutine.
+- `Register` panics with a message containing the duplicate name
+  when a name is already registered. Panic message format:
+  `importer: duplicate Importer registration for %q`. This matches
+  `pkg/quote`'s panic discipline (init-time duplicate is a
+  programmer error, not a runtime error).
+- `Names()` returns the registered names sorted in ascending order.
+  The sort order is part of the Contract because `Dispatch` walks
+  in this order and the picked-first-match behaviour is only
+  meaningful with a stable order.
+- `GlobalRegistry()` returns a `Registry` view over the
+  package-global state. The `Registry` interface (exported, with
+  exported methods `Lookup` and `Names`) lets callers — notably
+  Dispatch — accept a `Registry` argument so tests can substitute
+  a fake. **Difference from `pkg/quote`**: pkg/quote's Registry
+  interface exposes only `Lookup`; this Registry adds `Names`
+  because Dispatch needs ordered iteration, not just point
+  lookups. This is a deliberate, justified divergence.
+
+##### Diagnostic codes
+
+The following code strings are exported as package constants in
+`pkg/importer`. They are not lifted into `pkg/ast/ast.go` because
+they are framework-specific and `pkg/ast.Diagnostic.Code` is a
+free-form string by design.
+
+```go
+const (
+    DiagImporterNotRegistered = "importer-not-registered"
+    DiagImporterNone          = "importer-none"
+    DiagImporterAmbiguous     = "importer-ambiguous"
+)
+```
+
+- `DiagImporterNotRegistered` — emitted by `Apply` when the user
+  forced an importer name via `--importer` (the upcoming 8f flag)
+  but no such name is registered. Severity: Error.
+- `DiagImporterNone` — emitted by `Dispatch` when every registered
+  importer's `Identify` returned false. Severity: Error.
+- `DiagImporterAmbiguous` — RESERVED for future use. Phase 8a's
+  `Dispatch` does NOT emit this; see the "Dispatch ambiguity
+  policy" subsection below.
+
+##### `Dispatch` function
+
+```go
+func Dispatch(ctx context.Context, reg Registry, in Input) (Importer, bool, []ast.Diagnostic)
+```
+
+- Walks `reg.Names()` in returned order (sorted ascending, per
+  Registry contract) and calls `Identify(ctx, in)` on each.
+- Returns `(importer, true, nil)` on the **first** importer whose
+  Identify returns true.
+- Returns `(nil, false, []ast.Diagnostic{ {Code: DiagImporterNone, …} })`
+  when no importer identifies the input. Severity Error;
+  Diagnostic.Span carries the input Path in Filename with line/col
+  zero (no source location inside the file).
+- ctx cancellation is observed between Identify calls; on
+  cancellation Dispatch returns `(nil, false, nil)` and the caller
+  (`Apply`) is responsible for converting ctx.Err() into a
+  framework-level error.
+
+**Dispatch ambiguity policy.** Dispatch does NOT probe every
+registered importer to detect collisions. The first match wins
+and Dispatch returns immediately. Rationale and alternatives are
+in "Alternatives discussed". `DiagImporterAmbiguous` is reserved
+in the diagnostic code namespace so a future opt-in strict mode
+can use it without an ABI bump.
+
+##### `Apply` convenience
+
+```go
+func Apply(ctx context.Context, reg Registry, in Input) (Output, error)
+```
+
+- Composition of Dispatch + Extract:
+  1. Call `Dispatch(ctx, reg, in)`.
+  2. If Dispatch returned no importer, return
+     `Output{Diagnostics: <dispatch's diagnostics>}, nil`. The
+     absence of a matching importer is a ledger-content problem,
+     not a framework error.
+  3. Otherwise call `imp.Extract(ctx, in)`.
+  4. Compose the result: returned Output has Directives from
+     Extract and Diagnostics = append(dispatch diagnostics, extract
+     diagnostics…) in that order.
+  5. If Extract returned a non-nil error, return
+     `Output{Diagnostics: <composed so far>}, err`. The error is
+     the system-level signal; Diagnostics still reflect the partial
+     progress.
+- `Apply` always uses the buffered `Extract` path in ABI v1, even
+  if the importer satisfies `Streaming`. See the Streaming section
+  for the rationale.
+- `Apply` does NOT call `Configure` on a `Configurable` importer.
+  Configuration is the CLI's / caller's responsibility before
+  Apply is invoked; this keeps `Apply` re-entrant on a
+  pre-configured importer instance.
+
+##### goplug ABI considerations
+
+- All Contract-level types declared above are declaration-only
+  (no methods that would be sensitive to private state): `Input`,
+  `Output`, `Registry`, and the diagnostic code constants. The
+  `Importer`, `Configurable`, `Streaming`, and `StreamDiagnoser`
+  interfaces are pure interfaces. This means a plugin built
+  against `pkg/importer` shares the same type identities as the
+  host through the standard Go plugin-load mechanism, exactly as
+  `pkg/quote`'s ABI does today.
+- Optional sub-interfaces (`Configurable`, `Streaming`,
+  `StreamDiagnoser`) are the chosen evolution hedge per plan
+  decision 8: Phase 8.1/8.2 extensions add new optional
+  sub-interfaces rather than modifying `Importer`. The
+  diagnostic-code constants are append-only (new codes can be
+  added; existing codes never change).
+- Once 8a ships, the following changes require a
+  `goplug.APIVersion` bump:
+  - Adding a method to `Importer`, `Configurable`, `Streaming`,
+    or `StreamDiagnoser`.
+  - Adding a field to `Input` or `Output` in a position that
+    changes a struct's layout assumptions (Go's plugin loader
+    is layout-tolerant for struct field additions at the end,
+    but the conservative ABI rule is: any field addition is a
+    bump).
+  - Changing the type of an existing field.
+  - Removing or renaming any of the exported symbols above.
+- Adding new reserved keys in `Input.Hints`, adding new diagnostic
+  code constants, and adding wholly new optional sub-interfaces
+  (with disjoint method sets) do NOT require an APIVersion bump.
+
+#### Suggested Internals
+
+These are non-binding; the implementer adopts, modifies, or
+replaces them based on what they discover while coding.
+
+##### File decomposition
+
+Plan calls for four files (`importer.go`, `registry.go`,
+`dispatch.go`, `apply.go`). Two reasonable variants:
+
+- **Variant A (plan as written):** four files, one per concern.
+  Pro: matches the plan precisely; mirrors the de-facto layout
+  in `pkg/quote` (which has `registry.go`, `fetch.go`, etc.).
+  Con: `apply.go` ends up a 30-line file; the `Apply` function
+  is small enough to live next to `Dispatch` in `dispatch.go`.
+- **Variant B:** three files: `importer.go` (interfaces + types +
+  diagnostic constants), `registry.go` (registry), `dispatch.go`
+  (both Dispatch and Apply because they form one pipeline).
+  Pro: fewer files; Apply and Dispatch share enough context that
+  reading them side by side is convenient.
+- **Variant C:** one file `importer.go` until a real reason to
+  split appears. Pro: the package is small. Con: mixes
+  declaration-only ABI types with state-bearing registry code;
+  reviewers asked "what's the goplug ABI surface here?" have to
+  scan one big file.
+
+Recommended starting point: Variant B. Easy to split into A
+later if `apply.go` grows.
+
+##### Test-helper input construction
+
+The test suite needs to build `Input` values from `(path, body)`
+pairs. Two options:
+
+- **Internal helper:** a `newTestInput(t *testing.T, path, body string)
+  Input` in `importer_test.go` (or `internal/importertest` for
+  shared use by 8d/8e tests). Pro: stays out of the ABI; can
+  evolve freely. Con: out-of-tree plugin authors writing their
+  own tests have to copy it.
+- **Exported `NewInput` constructor:**
+  `NewInput(path string, body []byte) Input` that fills Sniff
+  (up to 4 KiB), sets an Opener that returns `io.NopCloser(bytes.NewReader(body))`,
+  leaves MIME and Hints zero. Pro: also useful for 8f's
+  fixture-driven tests and for plugin authors. Con: now part of
+  the ABI; freezes the helper's signature.
+
+Recommended: ship the internal helper now (`internal/importertest`
+or a `testhelper_test.go`); promote to exported `NewInput` if and
+when an out-of-tree consumer asks. The Contract is already
+permissive enough that constructing an Input directly is a
+one-liner.
+
+##### Registry concurrency placement
+
+Reuse the exact `pkg/quote/registry.go` pattern verbatim:
+package-level `sync.RWMutex` plus package-level map, no
+`type registry struct{}` wrapper. Reason: identical concurrency
+guarantees, identical init-time vs. dynamic-load behaviour, and
+reviewers reading both packages get a single mental model.
+
+The `globalRegistry` adapter type is unexported, exactly as in
+`pkg/quote`. `GlobalRegistry()` returns it.
+
+##### Dispatch implementation hint
+
+Straightforward `for _, name := range reg.Names() { if imp, ok :=
+reg.Lookup(name); ok && imp.Identify(ctx, in) { return imp, true,
+nil } }`. The ctx-check between iterations is the only
+non-obvious bit; placing it at the top of the loop body is
+sufficient because Identify itself is documented to be cheap.
+
+##### Test layout
+
+- `importer_test.go` — table-driven tests for Dispatch ordering
+  (multiple fakes; assert sorted-by-name first-match).
+- `registry_test.go` — port the structure of
+  `pkg/quote/registry_test.go` directly: register/lookup/names,
+  duplicate-panics, missing lookup, `GlobalRegistry()` round-trip.
+- `concurrency_test.go` — goroutine stress: N concurrent
+  Lookups while Register is interleaved (use `-race` to catch
+  mutex regressions). The plan calls this out and matching it is
+  cheap.
+- `apply_test.go` — composition tests using a `fakeImporter` that
+  has a switchable Identify-result and Extract-result; assert
+  diagnostic composition, error propagation, no-match path.
+- Fake importer: small struct
+  ```go
+  type fakeImporter struct {
+      name        string
+      identifyFn  func(in Input) bool
+      extractFn   func(in Input) (Output, error)
+  }
+  ```
+  declared once in a shared test helper file.
+
+#### Alternatives discussed
+
+##### A1. Dispatch ambiguity: first-match vs. probe-all
+
+- **First-match (recommended, locked above).** Walk
+  `Names()` in sorted order; return on the first Identify=true.
+  - Pro: O(1) Identify calls in the happy path; importer authors
+    only need to make Identify fast for one "did I match"
+    decision, not for "am I the unique match".
+  - Pro: matches beangulp's behaviour; user expectations carry
+    over.
+  - Con: silently picks an importer when two could plausibly handle
+    the input. Mitigation: `--importer NAME` (an explicit override
+    flag landing in 8f) lets users force the choice; the CSV
+    importer's TOML `match` regex (8d) lets users disambiguate
+    via configuration.
+- **Probe-all-and-collect.** Walk every name, count matches; if
+  >1, emit `importer-ambiguous` and either fail or pick the first
+  anyway.
+  - Pro: catches collisions early; user-visible.
+  - Con: O(N) Identify calls always, including in the no-conflict
+    common case. Locking O(N) into the ABI is a real cost: every
+    Identify call must remain cheap forever. Importer authors
+    writing slow Identify implementations get punished invisibly.
+  - Con: forces a "fail or pick first" policy choice into the
+    Contract with no obvious right answer.
+  - Con: ambiguity is rare in the canonical pipeline (one CSV
+    config per shape, regex `match` already disambiguates).
+- **Hybrid: probe-all only under a `--strict` mode.** First-match
+  by default, probe-all when the caller opts in.
+  - Pro: pays the O(N) cost only when asked.
+  - Con: bifurcates the Contract — Dispatch's behaviour now
+    depends on a flag. Test surface doubles.
+
+##### A2. `Configure` encoding: JSON vs. TOML vs. structured `Config any`
+
+- **`Configure(raw json.RawMessage) error` (recommended, locked).**
+  - Pro: JSON is stdlib; goplug-loaded plugins have no extra
+    dependency. JSON marshals declaration-only types
+    deterministically. The TOML→JSON conversion lives at the CLI
+    edge (`cmd/beanimport` 8f) where there is one TOML parser
+    anyway for the existing config file shape.
+  - Con: importer authors who already think in TOML have to write
+    a JSON-tagged struct.
+- **`Configure(raw []byte, format string) error`** with format =
+  `"toml"` | `"json"`.
+  - Pro: importer chooses; CLI doesn't have to transcode.
+  - Con: every importer now needs both decoders or it advertises
+    a format and refuses the other. The framework now has to know
+    about TOML on the ABI surface. Rejected.
+- **`Configure(cfg any) error`** with the caller passing a
+  pre-decoded struct.
+  - Pro: zero-marshal cost at the boundary.
+  - Con: requires the importer to expose its config struct type
+    to the CLI, which then has to know per-importer types — the
+    opposite of a plugin model. Rejected.
+- **`Configurer` returning a destination value: `ConfigDest() any`
+  + framework decodes.**
+  - Pro: terse for the importer.
+  - Con: an `any` return crossing the goplug boundary is
+    pointer-fragile; the framework would also need to commit to a
+    specific decoder. Rejected.
+
+##### A3. Streaming vs. Extract precedence
+
+- **Apply always uses Extract in ABI v1 (recommended, locked).**
+  - Pro: keeps Apply's behaviour predictable; Streaming is opt-in
+    for callers that genuinely need it.
+  - Con: Streaming importers do extra work for nothing under the
+    default CLI.
+- **Apply prefers Streaming when available, materialises into a
+  slice.**
+  - Pro: importers see a single calling pattern.
+  - Con: forces Streaming importers to also emit Diagnostics
+    through the StreamDiagnostics back-channel even when the
+    caller would have happily called Extract. More moving parts
+    for no observable gain.
+- **Make Streaming the only path; remove Extract.**
+  - Pro: one method on Importer.
+  - Con: Identify+Extract is beangulp's mental model and is
+    simpler for one-shot importers; forcing every importer to
+    write an iterator is gratuitous.
+
+##### A4. Diagnostic codes: package constants vs. `pkg/ast` constants
+
+- **Package constants in `pkg/importer` (recommended, locked).**
+  - Pro: framework-specific codes live with the framework; new
+    codes do not touch `pkg/ast`.
+  - Con: callers grepping `pkg/ast` for "all known diagnostic
+    codes" miss them.
+- **Constants in `pkg/ast/diagnostic.go` (a file that does not yet
+  exist; codes currently live as string literals at emit sites).**
+  - Pro: single inventory of codes.
+  - Con: `pkg/ast` is the AST package; flooding it with
+    framework-namespaced codes blurs the boundary. Existing
+    `pkg/ext/postproc/apply.go` uses an inline string literal
+    `"plugin-not-registered"` rather than a constant, so the
+    project has no convention to follow here; defining constants
+    in the owning package is consistent with the broader Go style.
+
+##### A5. `Input.Opener` shape: closure vs. `io.ReaderAt` vs. `*os.File`
+
+- **`func() (io.ReadCloser, error)` (recommended, locked).**
+  - Pro: works for stdin (a closure that returns a wrapper around
+    `os.Stdin` once), for regular files (returns a fresh `os.Open`
+    each call), and for in-memory test fixtures
+    (`bytes.NewReader` + `io.NopCloser`). Identify can re-open
+    cheaply for the rare case it needs to.
+  - Con: callers that hold a real file must remember each Opener
+    call is a fresh open (cost is negligible for the import use
+    case).
+- **`io.ReaderAt`.**
+  - Pro: explicit "you can seek to any offset" semantic.
+  - Con: doesn't work for stdin or pipes. Locks out the common
+    `beanimport <(curl …)` invocation pattern the plan mentions.
+- **`*os.File`.**
+  - Pro: simplest signature.
+  - Con: only works for on-disk files; same stdin problem as
+    `io.ReaderAt`.
+
+##### A6. `Registry` interface scope: Lookup-only vs. Lookup+Names
+
+- **Lookup + Names (recommended, locked).** Dispatch needs ordered
+  iteration; making it accept a `Registry` for testability means
+  the interface has to expose iteration. `pkg/quote`'s registry
+  exposes only Lookup because pkg/quote's `Fetch` works from a
+  caller-supplied request list rather than registry iteration.
+- **Lookup-only.** Dispatch would have to accept the package-level
+  `Names()` directly, which makes Dispatch un-testable against a
+  fake registry without monkey-patching. Rejected.
+
+#### Recommendation
+
+Adopt the Contract as locked in the section above. The four
+non-trivial decisions resolved as follows:
+
+1. **Dispatch returns on first match; no probe-all.** O(1)
+   Identify-call budget is the right ABI guarantee; users who need
+   determinism in collision cases have `--importer NAME` and the
+   per-importer config-file disambiguation (TOML `match` regex
+   in 8d). `DiagImporterAmbiguous` is reserved in the diagnostic
+   namespace so a future opt-in strict mode can use it without an
+   ABI bump.
+
+2. **`Configure(json.RawMessage) error`, TOML at the CLI edge.**
+   The framework speaks only JSON because that is what survives
+   the goplug boundary without a second dependency. The
+   user-facing config syntax is TOML, decoded once at the CLI
+   and re-encoded as the JSON byte slice handed to Configure.
+   This puts the parser surface where the user surface is and
+   keeps the plugin contract small.
+
+3. **`Apply` uses `Extract`, never `StreamExtract`, in ABI v1.**
+   Streaming exists for future callers (very large file handling,
+   downstream pipelining) and is correctly available as an opt-in
+   capability via a type assertion on `Streaming`. Forcing Apply
+   to prefer it would make StreamDiagnostics mandatory for every
+   Streaming importer with no current consumer benefit.
+
+4. **Registry interface exposes Names.** Dispatch needs ordered
+   iteration, and the test path needs a fake Registry. Diverging
+   from `pkg/quote`'s Lookup-only Registry is justified by
+   Dispatch's iteration requirement.
+
+The Suggested Internals (file decomposition, test-helper shape,
+exact internal mutex layout) are advisory. The implementer is
+free to pick Variant B or any other arrangement that hits the
+Contract above.
+
 ### 8b — `pkg/importer/hook` interface + registry + Chain
 
 - **Modules:** `pkg/importer/hook/hook.go` (`Hook` interface
