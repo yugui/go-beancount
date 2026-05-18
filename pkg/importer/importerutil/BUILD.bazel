@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "importerutil",
+    srcs = [
+        "balancewith.go",
+        "doc.go",
+        "stampmetadata.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/importer/importerutil",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "importerutil_test",
+    srcs = [
+        "balancewith_test.go",
+        "stampmetadata_test.go",
+    ],
+    race = "on",
+    deps = [
+        ":importerutil",
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)
