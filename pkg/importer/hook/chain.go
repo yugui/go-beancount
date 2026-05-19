@@ -7,24 +7,31 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
-// Chain runs the hooks named by names from reg, in caller-supplied order.
+// Chain runs every Hook in reg.Names() order against in and returns the
+// composed HookResult.
 //
-// Empty names returns HookResult{Directives: in.Directives, Diagnostics: nil}
-// with zero allocations — the returned Directives shares the same backing
-// array as in.Directives.
+// Empty registry (reg.Names() returns empty) returns
+// HookResult{Directives: in.Directives, Diagnostics: nil} with zero
+// allocations; the returned Directives shares the same backing array as
+// in.Directives.
 //
-// For each rung, Chain checks ctx.Err() first; on cancellation it returns the
-// composed-so-far HookResult together with ctx.Err(). If a name is not in the
-// registry, Chain halts and returns the composed-so-far HookResult augmented
-// with a DiagHookNotRegistered Error diagnostic and a nil error. If Apply
-// returns a non-nil error, Chain halts: it returns the previous rung's
-// Directives (the failing hook's Directives are discarded), the composed
-// diagnostics (including any the failing hook emitted), and the error.
+// Before each rung, Chain checks ctx.Err(). On cancellation it returns the
+// composed-so-far HookResult together with ctx.Err().
+//
+// If a name returned by [Registry.Names] is not resolved by [Registry.Lookup],
+// Chain halts and returns the composed-so-far HookResult augmented with a
+// [DiagHookNotRegistered] Error diagnostic and a nil error.
+//
+// If a hook's Apply returns a non-nil error, Chain halts: it returns the
+// previous rung's Directives (the failing hook's Directives are discarded),
+// the composed Diagnostics (including any the failing hook emitted), and the
+// error.
 //
 // Diagnostics from successive rungs concatenate in chain order. When no rung
 // emits any diagnostic, the returned Diagnostics is nil (not an empty slice).
 // Chain MUST NOT defensively copy Directives between rungs.
-func Chain(ctx context.Context, reg Registry, names []string, in HookInput) (HookResult, error) {
+func Chain(ctx context.Context, reg Registry, in HookInput) (HookResult, error) {
+	names := reg.Names()
 	if len(names) == 0 {
 		return HookResult{Directives: in.Directives}, nil
 	}

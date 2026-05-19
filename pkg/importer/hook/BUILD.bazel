@@ -15,11 +15,13 @@ go_library(
 go_test(
     name = "hook_test",
     srcs = [
+        "apply_concurrency_test.go",
         "chain_test.go",
-        "concurrency_test.go",
+        "factory_test.go",
         "fake_test.go",
-        "hook_test.go",
-        "registry_test.go",
+        "instance_registry_test.go",
+        "kind_registry_concurrency_test.go",
+        "kind_registry_test.go",
     ],
     embed = [":hook"],
     race = "on",

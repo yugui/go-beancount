@@ -9,26 +9,54 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
-// DiagHookNotRegistered is emitted by Chain when a name in the caller-supplied
-// chain is not in the registry. Severity: Error.
+// DiagHookNotRegistered is emitted by [Chain] when a name returned by
+// [Registry.Names] is not resolved by [Registry.Lookup] — indicating a
+// Registry implementation that violates its own invariant. Severity: Error.
 const DiagHookNotRegistered = "hook-not-registered"
 
-// Hook transforms a directive list produced by an importer or a prior hook
-// rung. Implementations are registered with [Register] and composed by [Chain].
-//
-// Name returns the registry key. By convention, use the upstream tool's name
-// for canonical reference hooks (e.g. "classify") and the Go fully-qualified
-// package path otherwise — mirrors [github.com/yugui/go-beancount/pkg/importer.Importer.Name].
-//
-// Apply is the work-doing call. Error vs Diagnostic split mirrors
-// [github.com/yugui/go-beancount/pkg/importer.Importer.Extract]: a non-nil
-// error indicates a system-level failure (ctx cancellation, I/O, programmer
-// error); per-directive problems are [ast.Diagnostic] entries in
-// HookResult.Diagnostics. Apply MUST NOT mutate in.Directives, in.Hints, or
-// in.Options.
+// Hook transforms a directive list produced by an importer or a prior rung of
+// [Chain]. A Hook is produced by a [Factory]; its internal state is frozen at
+// that point and Apply is safe for concurrent invocation on the same value.
 type Hook interface {
+	// Name returns the instance name supplied to the Factory that
+	// produced this Hook. The value is stable for the lifetime of the
+	// instance and is the key under which a Registry holds it.
 	Name() string
+
+	// Apply returns the directive list and any per-directive Diagnostics.
+	// The returned Directives MAY be in.Directives unmodified (no copy
+	// is required when the hook makes no changes). A non-nil error is
+	// reserved for system-level failures (ctx cancellation, I/O,
+	// programmer error); ledger-content problems are Diagnostics.
+	// Apply MUST NOT mutate in.Directives, in.Hints, or in.Options.
+	// Context cancellation MUST surface as a non-nil error.
 	Apply(ctx context.Context, in HookInput) (HookResult, error)
+}
+
+// Factory produces a single fully-configured Hook instance. The New call IS
+// the Configure step; there is no separately exposed Configure method on Hook.
+// A non-nil error aborts creation and MUST be returned without a
+// partially-constructed Hook leaking out; on error the first return MUST be nil.
+//
+// The decode callback decodes the caller's per-instance configuration (the TOML
+// table body, with reserved keys "kind" and "name" stripped) into a destination
+// the factory supplies. It MUST NOT be nil; factories that take no configuration
+// may ignore it.
+//
+// Factory.New is called at most once per (name, decode) pair by the caller
+// building a Registry. Multiple New calls for distinct instances of the same
+// kind MAY run concurrently; a Factory holding shared state across calls is
+// responsible for its own synchronisation.
+type Factory interface {
+	New(name string, decode func(dest any) error) (Hook, error)
+}
+
+// FactoryFunc adapts a function to the [Factory] interface, analogous to
+// http.HandlerFunc.
+type FactoryFunc func(name string, decode func(dest any) error) (Hook, error)
+
+func (f FactoryFunc) New(name string, decode func(dest any) error) (Hook, error) {
+	return f(name, decode)
 }
 
 // HookInput carries the directive list and metadata into each hook rung.
@@ -56,16 +84,4 @@ type HookInput struct {
 type HookResult struct {
 	Directives  []ast.Directive
 	Diagnostics []ast.Diagnostic
-}
-
-// Configurable is an optional sub-interface for hooks that accept structured
-// configuration. Detected via type assertion; hooks that do not implement it
-// receive no Configure call. Configure is called at most once per instance,
-// before any Apply call.
-//
-// Implementors must call decode to populate their config and return any
-// resulting error. decode is guaranteed non-nil.
-type Configurable interface {
-	Hook
-	Configure(decode func(dest any) error) error
 }

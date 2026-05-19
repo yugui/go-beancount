@@ -1,71 +1,113 @@
 package hook
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
 )
 
-// concurrent access guarded by registryMu
+// Kind registry — populated at init time or via goplug InitPlugin callbacks
+
 var (
-	registryMu sync.RWMutex
-	registry   = map[string]Hook{}
+	kindMu sync.RWMutex
+	kinds  = map[string]Factory{}
 )
 
-// Registry is the lookup-and-iteration interface that Chain accepts so callers
-// can substitute a fake in tests. The package-global registry returned by
-// GlobalRegistry satisfies this interface.
-//
-// Names returns names in ascending sorted order; this ordering is contractual
-// for listing UIs and test determinism. Unlike [github.com/yugui/go-beancount/pkg/importer.Registry],
-// the sort order is not load-bearing for the chain runner — Chain uses
-// caller-supplied order, not registry order.
-type Registry interface {
-	Lookup(name string) (Hook, bool)
-	Names() []string
-}
-
-// Register adds h to the package-global registry under the given name. It
-// panics if the name has already been registered. Intended to be called from
-// init (in-tree hooks) or from a goplug InitPlugin callback (plugin hooks).
-// Safe for concurrent use.
-func Register(name string, h Hook) {
-	registryMu.Lock()
-	defer registryMu.Unlock()
-	if _, exists := registry[name]; exists {
-		panic(fmt.Sprintf("hook: duplicate Hook registration for %q", name))
+// RegisterFactory installs f under the given kind in the package-global kind
+// registry. Panics if a Factory has already been registered under the same
+// kind. Intended to be called from an init() function or a goplug InitPlugin
+// callback. Safe for concurrent use alongside [LookupFactory] and [KindNames];
+// in practice all registrations land before reads begin.
+func RegisterFactory(kind string, f Factory) {
+	kindMu.Lock()
+	defer kindMu.Unlock()
+	if _, exists := kinds[kind]; exists {
+		panic(fmt.Sprintf("hook: duplicate Factory registration for %q", kind))
 	}
-	registry[name] = h
+	kinds[kind] = f
 }
 
-// Lookup returns the registered Hook for name. The second return value is
-// false if no such hook is registered.
-func Lookup(name string) (Hook, bool) {
-	registryMu.RLock()
-	defer registryMu.RUnlock()
-	h, ok := registry[name]
-	return h, ok
+// LookupFactory returns the Factory registered for kind. The second return
+// value is false if no such kind is registered.
+func LookupFactory(kind string) (Factory, bool) {
+	kindMu.RLock()
+	defer kindMu.RUnlock()
+	f, ok := kinds[kind]
+	return f, ok
 }
 
-// Names returns the registered hook names. See [Registry.Names] for the
-// ordering contract.
-func Names() []string {
-	registryMu.RLock()
-	defer registryMu.RUnlock()
-	names := make([]string, 0, len(registry))
-	for name := range registry {
-		names = append(names, name)
+// KindNames returns the registered kinds sorted in ascending order so that
+// diagnostics and tests have deterministic output.
+func KindNames() []string {
+	kindMu.RLock()
+	defer kindMu.RUnlock()
+	names := make([]string, 0, len(kinds))
+	for k := range kinds {
+		names = append(names, k)
 	}
 	sort.Strings(names)
 	return names
 }
 
-type globalRegistry struct{}
+// Instance registry — built per run from configured Hook values
 
-func (globalRegistry) Lookup(name string) (Hook, bool) { return Lookup(name) }
-func (globalRegistry) Names() []string                 { return Names() }
+// Registry is the per-run lookup of fully-configured Hook instances. The CLI
+// builds one Registry per beanimport invocation from the [[hook]] entries in
+// TOML and hands it to Chain.
+//
+// Names returns instance names in the order Chain walks them: the order they
+// were supplied to [NewRegistry] (declaration order in TOML). Implementations
+// MUST preserve a stable, deterministic order across repeated calls on the
+// same Registry value.
+//
+// All Registry methods are safe for concurrent use. A Registry's contents are
+// immutable after construction.
+type Registry interface {
+	Lookup(name string) (Hook, bool)
+	Names() []string
+}
 
-// GlobalRegistry returns a Registry view over the package-global state.
-func GlobalRegistry() Registry {
-	return globalRegistry{}
+// MapRegistry is the default in-memory Registry implementation. Build one with
+// [NewRegistry]; the zero value behaves as an empty Registry.
+type MapRegistry struct {
+	m     map[string]Hook
+	names []string // declaration order
+}
+
+// Lookup returns the Hook registered under name and whether the name was found.
+func (r *MapRegistry) Lookup(name string) (Hook, bool) {
+	h, ok := r.m[name]
+	return h, ok
+}
+
+// Names returns instance names in declaration order.
+func (r *MapRegistry) Names() []string {
+	out := make([]string, len(r.names))
+	copy(out, r.names)
+	return out
+}
+
+// NewRegistry returns a Registry populated with the given Hooks in the order
+// supplied; that order is the Chain walk order. NewRegistry returns an error
+// if any Hook is nil, if two Hooks share the same Name(), or if any Name() is
+// the empty string.
+func NewRegistry(hooks []Hook) (*MapRegistry, error) {
+	m := make(map[string]Hook, len(hooks))
+	names := make([]string, 0, len(hooks))
+	for i, h := range hooks {
+		if h == nil {
+			return nil, fmt.Errorf("hook: hooks[%d] is nil", i)
+		}
+		name := h.Name()
+		if name == "" {
+			return nil, errors.New("hook: Hook with empty Name()")
+		}
+		if _, dup := m[name]; dup {
+			return nil, fmt.Errorf("hook: duplicate instance name %q", name)
+		}
+		m[name] = h
+		names = append(names, name)
+	}
+	return &MapRegistry{m: m, names: names}, nil
 }
