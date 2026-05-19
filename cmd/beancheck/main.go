@@ -116,7 +116,7 @@ func report(w io.Writer, diags []ast.Diagnostic, strict bool) int {
 	hasWarning := false
 
 	for _, d := range sorted {
-		fmt.Fprintln(w, formatDiagnostic(d))
+		fmt.Fprintln(w, d.Error())
 		switch d.Severity {
 		case ast.Error:
 			hasError = true
@@ -132,32 +132,5 @@ func report(w io.Writer, diags []ast.Diagnostic, strict bool) int {
 		return 1
 	default:
 		return 0
-	}
-}
-
-// formatDiagnostic renders an ast.Diagnostic in the canonical greppable form:
-// "<path>:<line>:<col>: <severity>: <message>", or "<severity>: <message>"
-// when the span has no filename. When Code is non-empty it is appended in
-// brackets so callers can grep on the machine-readable classifier.
-func formatDiagnostic(d ast.Diagnostic) string {
-	sev := severityString(d.Severity)
-	msg := d.Message
-	if d.Code != "" {
-		msg = fmt.Sprintf("%s [%s]", msg, d.Code)
-	}
-	pos := d.Span.Start
-	if pos.Filename == "" {
-		return fmt.Sprintf("%s: %s", sev, msg)
-	}
-	return fmt.Sprintf("%s:%d:%d: %s: %s", pos.Filename, pos.Line, pos.Column, sev, msg)
-}
-
-// severityString maps ast.Severity to its lowercase label.
-func severityString(s ast.Severity) string {
-	switch s {
-	case ast.Warning:
-		return "warning"
-	default:
-		return "error"
 	}
 }

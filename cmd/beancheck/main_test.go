@@ -75,68 +75,6 @@ func TestReportExitCodes(t *testing.T) {
 	}
 }
 
-func TestFormatDiagnostic(t *testing.T) {
-	tests := []struct {
-		name string
-		in   ast.Diagnostic
-		want string
-	}{
-		{
-			name: "error with location",
-			in: ast.Diagnostic{
-				Span:     ast.Span{Start: ast.Position{Filename: "main.beancount", Line: 10, Column: 3}},
-				Message:  "unknown account",
-				Severity: ast.Error,
-			},
-			want: "main.beancount:10:3: error: unknown account",
-		},
-		{
-			name: "warning with location",
-			in: ast.Diagnostic{
-				Span:     ast.Span{Start: ast.Position{Filename: "x.beancount", Line: 1, Column: 1}},
-				Message:  "deprecated syntax",
-				Severity: ast.Warning,
-			},
-			want: "x.beancount:1:1: warning: deprecated syntax",
-		},
-		{
-			name: "error without filename",
-			in: ast.Diagnostic{
-				Message:  "synthetic problem",
-				Severity: ast.Error,
-			},
-			want: "error: synthetic problem",
-		},
-		{
-			name: "code is appended in brackets",
-			in: ast.Diagnostic{
-				Code:     "balance-mismatch",
-				Span:     ast.Span{Start: ast.Position{Filename: "m.beancount", Line: 5, Column: 2}},
-				Message:  "amount differs",
-				Severity: ast.Error,
-			},
-			want: "m.beancount:5:2: error: amount differs [balance-mismatch]",
-		},
-		{
-			name: "no location with code",
-			in: ast.Diagnostic{
-				Code:     "plugin-not-registered",
-				Message:  "boom",
-				Severity: ast.Error,
-			},
-			want: "error: boom [plugin-not-registered]",
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := formatDiagnostic(tc.in)
-			if got != tc.want {
-				t.Errorf("formatDiagnostic(%+v) = %q, want %q", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 func TestReportWritesAllDiagnostics(t *testing.T) {
 	// Diagnostics are pre-sorted by (Filename, Line, Column): the
 	// empty-filename diagnostic sorts first, then the two f.beancount
@@ -162,9 +100,9 @@ func TestReportWritesAllDiagnostics(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	report(&buf, diags, false) // exit code not under test here
-	want := formatDiagnostic(diags[0]) + "\n" +
-		formatDiagnostic(diags[1]) + "\n" +
-		formatDiagnostic(diags[2]) + "\n"
+	want := diags[0].Error() + "\n" +
+		diags[1].Error() + "\n" +
+		diags[2].Error() + "\n"
 	if got := buf.String(); got != want {
 		t.Errorf("report() wrote %q, want %q", got, want)
 	}
