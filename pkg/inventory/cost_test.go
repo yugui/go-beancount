@@ -1,7 +1,6 @@
 package inventory
 
 import (
-	"errors"
 	"testing"
 	"time"
 
@@ -145,9 +144,12 @@ func TestResolveCost(t *testing.T) {
 	specDate := time.Date(2023, 12, 1, 0, 0, 0, 0, time.UTC)
 
 	t.Run("nil spec", func(t *testing.T) {
-		got, err := ResolveCost(nil, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		got, finding, err := ResolveCost(nil, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if finding != nil {
+			t.Fatalf("unexpected finding: %v", finding)
 		}
 		if got != nil {
 			t.Errorf("got %+v, want nil", got)
@@ -156,16 +158,20 @@ func TestResolveCost(t *testing.T) {
 
 	t.Run("empty spec", func(t *testing.T) {
 		spec := &ast.CostSpec{}
-		_, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
-		if err == nil {
-			t.Fatal("expected error, got nil")
+		_, d, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		if err != nil {
+
+			t.Fatalf("system error: %v", err)
+
 		}
-		var invErr Error
-		if !errors.As(err, &invErr) {
-			t.Fatalf("error type = %T, want inventory.Error", err)
+
+		if d == nil {
+
+			t.Fatal("expected finding, got nil")
+
 		}
-		if invErr.Code != CodeAugmentationRequiresCost {
-			t.Errorf("Code = %v, want CodeAugmentationRequiresCost", invErr.Code)
+		if d.Code != CodeAugmentationRequiresCost {
+			t.Errorf("Code = %v, want CodeAugmentationRequiresCost", d.Code)
 		}
 	})
 
@@ -177,9 +183,12 @@ func TestResolveCost(t *testing.T) {
 			Date:     &specDate,
 			Label:    "lot-a",
 		}
-		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if finding != nil {
+			t.Fatalf("unexpected finding: %v", finding)
 		}
 		if got := cost.Number.String(); got != "100" {
 			t.Errorf("Number = %q, want %q", got, "100")
@@ -201,9 +210,12 @@ func TestResolveCost(t *testing.T) {
 			PerUnit:  &perUnit,
 			Currency: "USD",
 		}
-		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if finding != nil {
+			t.Fatalf("unexpected finding: %v", finding)
 		}
 		if !cost.Date.Equal(txnDate) {
 			t.Errorf("Date = %v, want txnDate %v", cost.Date, txnDate)
@@ -216,9 +228,12 @@ func TestResolveCost(t *testing.T) {
 			Total:    &total,
 			Currency: "USD",
 		}
-		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if finding != nil {
+			t.Fatalf("unexpected finding: %v", finding)
 		}
 		want := decimalVal(t, "100")
 		if cost.Number.Cmp(&want) != 0 {
@@ -238,9 +253,12 @@ func TestResolveCost(t *testing.T) {
 			Total:    &total,
 			Currency: "USD",
 		}
-		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "-5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "-5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if finding != nil {
+			t.Fatalf("unexpected finding: %v", finding)
 		}
 		want := decimalVal(t, "100")
 		if cost.Number.Cmp(&want) != 0 {
@@ -259,9 +277,12 @@ func TestResolveCost(t *testing.T) {
 			Total:    &total,
 			Currency: "USD",
 		}
-		cost, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if finding != nil {
+			t.Fatalf("unexpected finding: %v", finding)
 		}
 		// 100 + 50/5 = 110
 		want := decimalVal(t, "110")
@@ -274,20 +295,57 @@ func TestResolveCost(t *testing.T) {
 	})
 
 	t.Run("total only with zero units", func(t *testing.T) {
-		// Division-by-zero on user input currently surfaces as
-		// CodeInternalError; TODO: consider a dedicated code.
+		// A cost spec with a non-nil Total paired with zero units
+		// makes the per-unit cost undefined. ResolveCost reports it
+		// as a user finding with CodeZeroUnitsCostTotal rather than
+		// letting the underlying division-by-zero surface as a
+		// system error.
 		total := decimalVal(t, "500")
 		spec := &ast.CostSpec{
 			Total:    &total,
 			Currency: "USD",
 		}
-		_, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "0"), Currency: "ACME"}, txnDate)
-		if err == nil {
-			t.Fatal("expected error, got nil")
+		_, d, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "0"), Currency: "ACME"}, txnDate)
+		if err != nil {
+
+			t.Fatalf("system error: %v", err)
+
 		}
-		var invErr Error
-		if !errors.As(err, &invErr) {
-			t.Fatalf("error type = %T, want inventory.Error", err)
+
+		if d == nil {
+
+			t.Fatal("expected finding, got nil")
+
+		}
+		if d.Code != CodeZeroUnitsCostTotal {
+			t.Errorf("Code = %q, want %q", d.Code, CodeZeroUnitsCostTotal)
+		}
+	})
+
+	t.Run("per-unit and total with zero units", func(t *testing.T) {
+		// The combined surcharge form also divides Total by units;
+		// zero units triggers the same diagnostic.
+		perUnit := decimalVal(t, "10")
+		total := decimalVal(t, "50")
+		spec := &ast.CostSpec{
+			PerUnit:  &perUnit,
+			Total:    &total,
+			Currency: "USD",
+		}
+		_, d, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "0"), Currency: "ACME"}, txnDate)
+		if err != nil {
+
+			t.Fatalf("system error: %v", err)
+
+		}
+
+		if d == nil {
+
+			t.Fatal("expected finding, got nil")
+
+		}
+		if d.Code != CodeZeroUnitsCostTotal {
+			t.Errorf("Code = %q, want %q", d.Code, CodeZeroUnitsCostTotal)
 		}
 	})
 }

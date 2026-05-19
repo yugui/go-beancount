@@ -14,11 +14,15 @@ go_library(
 
 go_test(
     name = "booking_test",
-    srcs = ["plugin_test.go"],
+    srcs = [
+        "assemble_internal_test.go",
+        "plugin_test.go",
+    ],
+    embed = [":booking"],
     deps = [
-        ":booking",
         "//pkg/ast",
         "//pkg/ext/postproc/api",
+        "//pkg/inventory",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_google_go_cmp//cmp",
         "@com_github_google_go_cmp//cmp/cmpopts",

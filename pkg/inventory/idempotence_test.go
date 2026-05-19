@@ -32,9 +32,12 @@ func TestResolveCost_BookedShortCircuit(t *testing.T) {
 		Date:     time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 		Total:    &ast.Amount{Number: mkAmount(t, "4.2", "JPY").Number, Currency: "JPY"},
 	}
-	got, err := ResolveCost(booked, mkAmount(t, "4.1", "STOCK"), time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
+	got, finding, err := ResolveCost(booked, mkAmount(t, "4.1", "STOCK"), time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ResolveCost(*ast.Cost): %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	// Pointer identity: a fresh clone must be returned (the booked
 	// input is never reused) and its Total Amount must also be a

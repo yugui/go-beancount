@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
@@ -25,12 +26,15 @@ type Lot = ast.Lot
 // ResolveCost turns an [ast.CostHolder] on an augmenting posting into
 // a concrete [Cost]:
 //
-//   - nil c: returns (nil, nil) — a cash augmentation.
+//   - nil c: returns (nil, nil, nil) — a cash augmentation.
 //   - *[ast.Cost]: returns a clone — the reducer is re-entering its
 //     own output.
-//   - *[ast.CostSpec] with PerUnit and Total both nil: returns
-//     [CodeAugmentationRequiresCost]. Reductions take the
+//   - *[ast.CostSpec] with PerUnit and Total both nil: returns a
+//     [CodeAugmentationRequiresCost] finding. Reductions take the
 //     [CostMatcher] path instead.
+//   - *[ast.CostSpec] with a non-nil Total but |units| == 0: returns a
+//     [CodeZeroUnitsCostTotal] finding. Per-unit cost (Total/units)
+//     is undefined.
 //   - *[ast.CostSpec] otherwise: derives Number from the spec — X for
 //     per-unit-only, T/|units| for total-only, X + T/|units| for the
 //     combined form.
@@ -39,20 +43,25 @@ type Lot = ast.Lot
 // PerUnit / Total literals so the printer round-trips the surcharge
 // form. Number is always positive. Date defaults to txnDate; Label is
 // copied verbatim.
-func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, error) {
+//
+// At most one of the second (user finding) and third (system error)
+// returns is non-nil. The error return is reserved for implementation
+// bugs — apd.BaseContext arithmetic failures from inputs the grammar
+// cannot produce.
+func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, *ast.Diagnostic, error) {
 	if c == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if cost, ok := c.(*ast.Cost); ok {
-		return cost.Clone(), nil
+		return cost.Clone(), nil, nil
 	}
 	spec := c.(*ast.CostSpec)
 	if spec.PerUnit == nil && spec.Total == nil {
-		return nil, Error{
+		return nil, &ast.Diagnostic{
 			Code:    CodeAugmentationRequiresCost,
 			Span:    spec.Span,
 			Message: "augmenting posting has an empty cost spec; a concrete cost is required",
-		}
+		}, nil
 	}
 
 	out := &Cost{Currency: spec.Currency}
@@ -68,41 +77,36 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 	absUnits := new(apd.Decimal)
 	unitsNum := units.Number
 	if _, err := apd.BaseContext.Abs(absUnits, &unitsNum); err != nil {
-		return nil, Error{
-			Code:    CodeInternalError,
+		return nil, nil, fmt.Errorf("inventory.ResolveCost: abs units: %w", err)
+	}
+
+	// Pre-check the only user-reachable failure of [quoContext.Quo]
+	// below: zero units paired with a non-nil Total makes the per-unit
+	// cost undefined.
+	if spec.Total != nil && absUnits.Sign() == 0 {
+		return nil, &ast.Diagnostic{
+			Code:    CodeZeroUnitsCostTotal,
 			Span:    spec.Span,
-			Message: "abs units: " + err.Error(),
-		}
+			Message: "augmenting posting with total cost has zero units; per-unit cost is undefined",
+		}, nil
 	}
 
 	switch {
 	case spec.PerUnit != nil && spec.Total != nil:
 		quo := new(apd.Decimal)
 		if _, err := quoContext.Quo(quo, spec.Total, absUnits); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Span:    spec.Span,
-				Message: "divide total by units: " + err.Error(),
-			}
+			return nil, nil, fmt.Errorf("inventory.ResolveCost: divide total by units: %w", err)
 		}
 		if _, err := apd.BaseContext.Add(&out.Number, spec.PerUnit, quo); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Span:    spec.Span,
-				Message: "add per-unit and residual: " + err.Error(),
-			}
+			return nil, nil, fmt.Errorf("inventory.ResolveCost: add per-unit and residual: %w", err)
 		}
 	case spec.Total != nil:
 		if _, err := quoContext.Quo(&out.Number, spec.Total, absUnits); err != nil {
-			return nil, Error{
-				Code:    CodeInternalError,
-				Span:    spec.Span,
-				Message: "divide total by units: " + err.Error(),
-			}
+			return nil, nil, fmt.Errorf("inventory.ResolveCost: divide total by units: %w", err)
 		}
 	default:
 		out.Number = *ast.CloneDecimal(spec.PerUnit)
 	}
 
-	return out, nil
+	return out, nil, nil
 }

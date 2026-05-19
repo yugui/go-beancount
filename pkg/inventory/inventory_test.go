@@ -1,7 +1,6 @@
 package inventory
 
 import (
-	"errors"
 	"testing"
 	"time"
 
@@ -138,13 +137,16 @@ func TestInventoryReduceFIFO(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-12"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingFIFO,
 	)
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 
 	if len(steps) != 2 {
@@ -200,13 +202,16 @@ func TestInventoryReduceLIFO(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-3"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingLIFO,
 	)
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 
 	if len(steps) != 1 {
@@ -245,13 +250,16 @@ func TestInventoryReduceStrictSingleMatch(t *testing.T) {
 	}
 
 	matcher := CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"}
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-4"), Currency: "ACME"},
 		matcher,
 		ast.BookingStrict,
 	)
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("len(steps) = %d, want 1", len(steps))
@@ -278,20 +286,24 @@ func TestInventoryReduceStrictAmbiguous(t *testing.T) {
 	}
 
 	// An empty matcher sees both lots; STRICT must reject that.
-	_, err := inv.Reduce(
+	_, d, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-1"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingStrict,
 	)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	var invErr Error
-	if !errors.As(err, &invErr) {
-		t.Fatalf("Reduce: error type = %T, want inventory.Error", err)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
 	}
-	if invErr.Code != CodeAmbiguousLotMatch {
-		t.Errorf("Code = %v, want CodeAmbiguousLotMatch", invErr.Code)
+	if d.Code != CodeAmbiguousLotMatch {
+		t.Errorf("Code = %v, want CodeAmbiguousLotMatch", d.Code)
 	}
 }
 
@@ -316,13 +328,16 @@ func TestInventoryReduceStrictTotalMatch(t *testing.T) {
 	// `{ 100 USD }` matcher: per-unit cost matches both lots; magnitudes
 	// (10 + 10) sum to exactly the requested 20.
 	matcher := CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"}
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-20"), Currency: "ACME"},
 		matcher,
 		ast.BookingStrict,
 	)
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 2 {
 		t.Fatalf("len(steps) = %d, want 2", len(steps))
@@ -358,13 +373,16 @@ func TestInventoryReduceStrictTotalMatchEmptyMatcher(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-20"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingStrict,
 	)
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 2 {
 		t.Fatalf("len(steps) = %d, want 2", len(steps))
@@ -388,13 +406,16 @@ func TestInventoryReduceDefaultTotalMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-20"), Currency: "ACME"},
 		CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"},
 		ast.BookingDefault,
 	)
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 2 {
 		t.Fatalf("len(steps) = %d, want 2", len(steps))
@@ -430,20 +451,24 @@ func TestInventoryReduceStrictAlmostTotalMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := inv.Reduce(
+	_, d, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-15"), Currency: "ACME"},
 		CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"},
 		ast.BookingStrict,
 	)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	var invErr Error
-	if !errors.As(err, &invErr) {
-		t.Fatalf("Reduce: error type = %T, want inventory.Error", err)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
 	}
-	if invErr.Code != CodeAmbiguousLotMatch {
-		t.Errorf("Code = %v, want CodeAmbiguousLotMatch", invErr.Code)
+	if d.Code != CodeAmbiguousLotMatch {
+		t.Errorf("Code = %v, want CodeAmbiguousLotMatch", d.Code)
 	}
 	// The inventory must not have been partially mutated.
 	want10 := decimalVal(t, "10")
@@ -470,20 +495,24 @@ func TestInventoryReduceStrictOverdraftBeatsAmbiguity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := inv.Reduce(
+	_, d, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-25"), Currency: "ACME"},
 		CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"},
 		ast.BookingStrict,
 	)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	var invErr Error
-	if !errors.As(err, &invErr) {
-		t.Fatalf("Reduce: error type = %T, want inventory.Error", err)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
 	}
-	if invErr.Code != CodeReductionExceedsInventory {
-		t.Errorf("Code = %v, want CodeReductionExceedsInventory", invErr.Code)
+	if d.Code != CodeReductionExceedsInventory {
+		t.Errorf("Code = %v, want CodeReductionExceedsInventory", d.Code)
 	}
 	// The inventory must not have been partially mutated.
 	want10 := decimalVal(t, "10")
@@ -512,13 +541,16 @@ func TestInventoryReduceStrictTotalMatchThreeLots(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-20"), Currency: "ACME"},
 		CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "100"), Currency: "USD"},
 		ast.BookingStrict,
 	)
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 3 {
 		t.Fatalf("len(steps) = %d, want 3", len(steps))
@@ -546,20 +578,24 @@ func TestInventoryReduceExceedsInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := inv.Reduce(
+	_, d, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-15"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingFIFO,
 	)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	var invErr Error
-	if !errors.As(err, &invErr) {
-		t.Fatalf("error type = %T", err)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
 	}
-	if invErr.Code != CodeReductionExceedsInventory {
-		t.Errorf("Code = %v, want CodeReductionExceedsInventory", invErr.Code)
+	if d.Code != CodeReductionExceedsInventory {
+		t.Errorf("Code = %v, want CodeReductionExceedsInventory", d.Code)
 	}
 	// The inventory must not have been partially mutated.
 	want10 := decimalVal(t, "10")
@@ -581,13 +617,16 @@ func TestInventoryReduceCashOverflowAllowed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-1000"), Currency: "JPY"},
 		CostMatcher{},
 		ast.BookingFIFO,
 	)
 	if err != nil {
 		t.Fatalf("Reduce returned unexpected error: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) == 0 {
 		t.Fatalf("Reduce returned no steps; want at least one cash consumption step")
@@ -609,20 +648,24 @@ func TestInventoryReduceNoMatchingLot(t *testing.T) {
 	}
 
 	matcher := CostMatcher{HasPerUnit: true, PerUnit: decimalVal(t, "999"), Currency: "USD"}
-	_, err := inv.Reduce(
+	_, d, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-1"), Currency: "ACME"},
 		matcher,
 		ast.BookingFIFO,
 	)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	var invErr Error
-	if !errors.As(err, &invErr) {
-		t.Fatalf("error type = %T", err)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
 	}
-	if invErr.Code != CodeNoMatchingLot {
-		t.Errorf("Code = %v, want CodeNoMatchingLot", invErr.Code)
+	if d.Code != CodeNoMatchingLot {
+		t.Errorf("Code = %v, want CodeNoMatchingLot", d.Code)
 	}
 }
 
@@ -632,20 +675,24 @@ func TestInventoryReduceAverageRejected(t *testing.T) {
 	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	_, err := inv.Reduce(
+	_, d, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-1"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingAverage,
 	)
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	var invErr Error
-	if !errors.As(err, &invErr) {
-		t.Fatalf("error type = %T", err)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
 	}
-	if invErr.Code != CodeInvalidBookingMethod {
-		t.Errorf("Code = %v, want CodeInvalidBookingMethod", invErr.Code)
+	if d.Code != CodeInvalidBookingMethod {
+		t.Errorf("Code = %v, want CodeInvalidBookingMethod", d.Code)
 	}
 }
 
@@ -655,20 +702,19 @@ func TestInventoryReduceNoneRejected(t *testing.T) {
 	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	_, err := inv.Reduce(
+	_, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-1"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingNone,
 	)
 	if err == nil {
-		t.Fatal("expected error, got nil")
+		t.Fatal("expected system error, got nil")
 	}
-	var invErr Error
-	if !errors.As(err, &invErr) {
-		t.Fatalf("error type = %T", err)
-	}
-	if invErr.Code != CodeInternalError {
-		t.Errorf("Code = %v, want CodeInternalError", invErr.Code)
+	// BookingNone reaching Reduce is an invariant violation
+	// (classify routes it to augment): it MUST flow through the
+	// system-error slot, not the finding slot.
+	if finding != nil {
+		t.Errorf("Reduce returned a Diagnostic for an invariant violation; want non-Diagnostic system error, got %v", finding)
 	}
 }
 
@@ -678,13 +724,16 @@ func TestInventoryReduceFullyConsumesLot(t *testing.T) {
 	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	steps, err := inv.Reduce(
+	steps, finding, err := inv.Reduce(
 		ast.Amount{Number: decimalVal(t, "-10"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingFIFO,
 	)
 	if err != nil {
 		t.Fatalf("Reduce: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("len(steps) = %d, want 1", len(steps))
@@ -730,7 +779,7 @@ func TestInventoryCloneAfterReduceIndependent(t *testing.T) {
 	clone := inv.Clone()
 
 	// Reducing the clone must not touch the original.
-	if _, err := clone.Reduce(
+	if _, _, err := clone.Reduce(
 		ast.Amount{Number: decimalVal(t, "-3"), Currency: "ACME"},
 		CostMatcher{},
 		ast.BookingFIFO,

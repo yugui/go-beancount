@@ -57,15 +57,15 @@ func loadInspectionFixture(t *testing.T) *ast.Ledger {
 	if err != nil {
 		t.Fatalf("ast.LoadFile(%q): %v", path, err)
 	}
-	var errs []string
+	var diags []string
 	for _, d := range ledger.Diagnostics {
 		if d.Severity == ast.Error {
-			errs = append(errs, d.Message)
+			diags = append(diags, d.Message)
 		}
 	}
-	if len(errs) != 0 {
+	if len(diags) != 0 {
 		t.Fatalf("ast.LoadFile(%q): got %d error-severity diagnostics, want 0:\n  %s",
-			path, len(errs), strings.Join(errs, "\n  "))
+			path, len(diags), strings.Join(diags, "\n  "))
 	}
 	return ledger
 }
@@ -162,12 +162,12 @@ func TestInventoryIntegration_RunProducesFinalState(t *testing.T) {
 	ledger := loadInspectionFixture(t)
 
 	r := inventory.NewReducer(ledger.All())
-	_, errs := r.Run()
-	if len(errs) != 0 {
-		for _, e := range errs {
+	_, diags, _ := r.Run()
+	if len(diags) != 0 {
+		for _, e := range diags {
 			t.Logf("reducer error: %s", e)
 		}
-		t.Fatalf("Reducer.Run: got %d errors, want 0", len(errs))
+		t.Fatalf("Reducer.Run: got %d errors, want 0", len(diags))
 	}
 
 	// BrokerA: lot-2025a was fully sold; lot-2025b remains.
@@ -228,12 +228,12 @@ func TestInventoryIntegration_InspectReductionTransaction(t *testing.T) {
 		t.Fatalf("could not find the ACME sale transaction in the fixture")
 	}
 
-	insp, errs := r.Inspect(sale)
-	if len(errs) != 0 {
-		for _, e := range errs {
+	insp, diags, _ := r.Inspect(sale)
+	if len(diags) != 0 {
+		for _, e := range diags {
 			t.Logf("inspect error: %s", e)
 		}
-		t.Fatalf("Inspect: got %d errors, want 0", len(errs))
+		t.Fatalf("Inspect: got %d errors, want 0", len(diags))
 	}
 	if insp == nil {
 		t.Fatalf("Inspect returned nil inspection")
@@ -414,12 +414,12 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 		t.Fatalf("could not find the GIZMO FIFO sale transaction in the fixture")
 	}
 
-	insp, errs := r.Inspect(sale)
-	if len(errs) != 0 {
-		for _, e := range errs {
+	insp, diags, _ := r.Inspect(sale)
+	if len(diags) != 0 {
+		for _, e := range diags {
 			t.Logf("inspect error: %s", e)
 		}
-		t.Fatalf("Inspect: got %d errors, want 0", len(errs))
+		t.Fatalf("Inspect: got %d errors, want 0", len(diags))
 	}
 	if insp == nil {
 		t.Fatalf("Inspect returned nil inspection")
@@ -537,15 +537,15 @@ func loadIdempotencyFixture(t *testing.T) *ast.Ledger {
 	if err != nil {
 		t.Fatalf("ast.LoadFile(%q): %v", path, err)
 	}
-	var errs []string
+	var diags []string
 	for _, d := range ledger.Diagnostics {
 		if d.Severity == ast.Error {
-			errs = append(errs, d.Message)
+			diags = append(diags, d.Message)
 		}
 	}
-	if len(errs) != 0 {
+	if len(diags) != 0 {
 		t.Fatalf("ast.LoadFile(%q): got %d error-severity diagnostics, want 0:\n  %s",
-			path, len(errs), strings.Join(errs, "\n  "))
+			path, len(diags), strings.Join(diags, "\n  "))
 	}
 	return ledger
 }
@@ -578,12 +578,12 @@ func TestReducerRun_OutputIsFixedPoint(t *testing.T) {
 	ledger := loadIdempotencyFixture(t)
 
 	r1 := inventory.NewReducer(ledger.All())
-	out1, errs1 := r1.Run()
-	if len(errs1) != 0 {
-		for _, e := range errs1 {
+	out1, diags1, _ := r1.Run()
+	if len(diags1) != 0 {
+		for _, e := range diags1 {
 			t.Logf("1st-run error: %s", e)
 		}
-		t.Fatalf("1st Run: got %d errors, want 0", len(errs1))
+		t.Fatalf("1st Run: got %d errors, want 0", len(diags1))
 	}
 
 	// Witness the terminal CostSpec→Cost pass: after the first run
@@ -618,12 +618,12 @@ func TestReducerRun_OutputIsFixedPoint(t *testing.T) {
 	}
 
 	r2 := inventory.NewReducer(slices.All(out1))
-	out2, errs2 := r2.Run()
-	if len(errs2) != 0 {
-		for _, e := range errs2 {
+	out2, diags2, _ := r2.Run()
+	if len(diags2) != 0 {
+		for _, e := range diags2 {
 			t.Logf("2nd-run error: %s", e)
 		}
-		t.Fatalf("2nd Run: got %d errors, want 0", len(errs2))
+		t.Fatalf("2nd Run: got %d errors, want 0", len(diags2))
 	}
 
 	if diff := cmp.Diff(out1, out2, invCmpOpts); diff != "" {
@@ -678,12 +678,12 @@ func TestInventoryIntegration_AutoPostingInference(t *testing.T) {
 		t.Fatalf("sale has %d postings, want 3", len(sale.Postings))
 	}
 
-	insp, errs := r.Inspect(sale)
-	if len(errs) != 0 {
-		for _, e := range errs {
+	insp, diags, _ := r.Inspect(sale)
+	if len(diags) != 0 {
+		for _, e := range diags {
 			t.Logf("inspect error: %s", e)
 		}
-		t.Fatalf("Inspect: got %d errors, want 0", len(errs))
+		t.Fatalf("Inspect: got %d errors, want 0", len(diags))
 	}
 	if insp == nil {
 		t.Fatalf("Inspect returned nil inspection")
@@ -742,12 +742,12 @@ func TestInventoryIntegration_MultiLotExpansionWithAutoPosting(t *testing.T) {
 		t.Fatalf("input sale has %d postings, want 3 (reducing, cash, auto)", len(sale.Postings))
 	}
 
-	insp, errs := r.Inspect(sale)
-	if len(errs) != 0 {
-		for _, e := range errs {
+	insp, diags, _ := r.Inspect(sale)
+	if len(diags) != 0 {
+		for _, e := range diags {
 			t.Logf("inspect error: %s", e)
 		}
-		t.Fatalf("Inspect: got %d errors, want 0", len(errs))
+		t.Fatalf("Inspect: got %d errors, want 0", len(diags))
 	}
 	if insp == nil {
 		t.Fatalf("Inspect returned nil inspection")

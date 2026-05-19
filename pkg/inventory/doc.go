@@ -68,10 +68,20 @@
 // a [CostMatcher] built from the raw [ast.CostSpec] plus any
 // cost-currency hint derived from the posting's price annotation.
 //
+// # Diagnostics
+//
+// The booking pass reports problems via [ast.Diagnostic]. Each
+// constant declared at package level in this package (e.g.
+// [CodeAmbiguousLotMatch], [CodeNoMatchingLot]) is the stable
+// machine-readable Code value that appears on the Diagnostic. The
+// [Reducer.Walk] / [Reducer.Run] / [Reducer.Errors] outputs are
+// always []ast.Diagnostic; consumers never have to translate between
+// inventory-private and ledger-wide diagnostic shapes.
+//
 // # Package contents
 //
 // The package provides the foundational value types [Cost] and
-// [Position] together with the [Error]/[Code] diagnostic model, the
+// [Position] together with the [Code] diagnostic vocabulary, the
 // [Inventory] container, the [CostMatcher] used to select lots on
 // reducing postings, the per-transaction booking algorithm, and the
 // [Reducer] that drives them across a ledger.

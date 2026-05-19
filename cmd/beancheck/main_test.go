@@ -100,9 +100,9 @@ func TestReportWritesAllDiagnostics(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	report(&buf, diags, false) // exit code not under test here
-	want := diags[0].Error() + "\n" +
-		diags[1].Error() + "\n" +
-		diags[2].Error() + "\n"
+	want := diags[0].String() + "\n" +
+		diags[1].String() + "\n" +
+		diags[2].String() + "\n"
 	if got := buf.String(); got != want {
 		t.Errorf("report() wrote %q, want %q", got, want)
 	}

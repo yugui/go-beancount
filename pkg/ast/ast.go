@@ -49,20 +49,23 @@ const (
 // zero value is Error so freshly constructed diagnostics default to
 // error severity.
 //
-// Diagnostic implements the [error] interface so a single Diagnostic can
-// be returned from a function that also produces non-data system errors
-// (I/O, context cancellation, internal-bug panics recovered as errors).
-// The conventional split is:
+// Diagnostic is a pure data type: it deliberately does NOT implement
+// the [error] interface. The two channels are kept structurally
+// distinct throughout the pipeline:
 //
 //   - Input-data findings — every problem attributable to the ledger
-//     under analysis — flow through Diagnostic, typically as a slice
-//     [`[]Diagnostic`] collected by the pipeline.
-//   - System failures unrelated to ledger contents flow through a
-//     separate `error` return; they are not Diagnostics.
+//     under analysis — flow as [Diagnostic] values (typically through
+//     a [`[]Diagnostic`] slot or a `*Diagnostic` "optional finding"
+//     return).
+//   - System failures unrelated to ledger contents (I/O, context
+//     cancellation, implementation bugs) flow through a separate
+//     `error` return.
 //
-// A Warning Diagnostic surfaced as `error` would still satisfy the
-// `error` interface, so callers that branch on severity should consult
-// [Diagnostic.Severity] rather than relying on the `error` type alone.
+// Functions that may produce either return both in separate slots
+// (e.g. `(result, *Diagnostic, error)`) so callers cannot confuse a
+// finding for a bug and vice versa. CLI rendering goes through the
+// [fmt.Stringer] implementation below; the canonical greppable shape
+// is the contract.
 type Diagnostic struct {
 	Code     string
 	Span     Span
@@ -70,14 +73,14 @@ type Diagnostic struct {
 	Severity Severity
 }
 
-// Error renders the diagnostic in the canonical greppable form
+// String renders the diagnostic in the canonical greppable form
 //
 //	<path>:<line>:<col>: <severity>: <message> [<code>]
 //
 // omitting the location prefix when [Span.Start.Filename] is empty and
 // the trailing `[<code>]` when [Code] is empty. The format is part of
 // the diagnostic contract: tools that grep CLI output rely on it.
-func (d Diagnostic) Error() string {
+func (d Diagnostic) String() string {
 	sev := "error"
 	if d.Severity == Warning {
 		sev = "warning"
@@ -91,22 +94,6 @@ func (d Diagnostic) Error() string {
 		return fmt.Sprintf("%s: %s", sev, msg)
 	}
 	return fmt.Sprintf("%s:%d:%d: %s: %s", pos.Filename, pos.Line, pos.Column, sev, msg)
-}
-
-// Is reports whether target is a Diagnostic with the same non-empty
-// [Code]. It enables sentinel-style classification:
-//
-//	var ErrBalanceMismatch = ast.Diagnostic{Code: "balance-mismatch"}
-//	if errors.Is(err, ErrBalanceMismatch) { ... }
-//
-// Diagnostics with an empty Code never match, since the empty Code is
-// the unclassified category.
-func (d Diagnostic) Is(target error) bool {
-	t, ok := target.(Diagnostic)
-	if !ok {
-		return false
-	}
-	return d.Code != "" && d.Code == t.Code
 }
 
 // File is the result of lowering a single CST file into an AST.

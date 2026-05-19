@@ -116,7 +116,7 @@ func report(w io.Writer, diags []ast.Diagnostic, strict bool) int {
 	hasWarning := false
 
 	for _, d := range sorted {
-		fmt.Fprintln(w, d.Error())
+		fmt.Fprintln(w, d)
 		switch d.Severity {
 		case ast.Error:
 			hasError = true

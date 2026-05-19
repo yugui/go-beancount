@@ -81,7 +81,7 @@ func TestReducerWalk_BasicTwoPostings(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var visited int
-	_, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		visited++
 		if got != txn {
 			t.Errorf("visit: txn pointer mismatch")
@@ -103,8 +103,8 @@ func TestReducerWalk_BasicTwoPostings(t *testing.T) {
 		}
 		return true
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk returned errors: %v", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk returned errors: %v", diags)
 	}
 	if visited != 1 {
 		t.Errorf("visitor called %d times, want 1", visited)
@@ -132,7 +132,7 @@ func TestReducerWalk_AutoPostingInference(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var inferredSeen bool
-	booked, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	booked, diags, _ := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if len(booked) != 2 {
 			t.Fatalf("len(booked) = %d, want 2", len(booked))
 		}
@@ -148,8 +148,8 @@ func TestReducerWalk_AutoPostingInference(t *testing.T) {
 		}
 		return true
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk returned errors: %v", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk returned errors: %v", diags)
 	}
 	if !inferredSeen {
 		t.Errorf("no BookedPosting with InferredAuto=true was observed")
@@ -224,7 +224,7 @@ func TestReducerWalk_AutoPostingWithCostRejected(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	visited := 0
-	_, errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
 		visited++
 		return true
 	})
@@ -233,8 +233,8 @@ func TestReducerWalk_AutoPostingWithCostRejected(t *testing.T) {
 	if visited != 0 {
 		t.Errorf("visitor called %d times on rejected txn, want 0", visited)
 	}
-	if len(errs) != 1 || errs[0].Code != CodeInvalidAutoPosting {
-		t.Fatalf("Walk errs = %v, want [CodeInvalidAutoPosting]", errs)
+	if len(diags) != 1 || diags[0].Code != CodeInvalidAutoPosting {
+		t.Fatalf("Walk diags = %v, want [CodeInvalidAutoPosting]", diags)
 	}
 }
 
@@ -263,15 +263,15 @@ func TestReducerWalk_AutoPostingWithPriceRejected(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	visited := 0
-	_, errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
 		visited++
 		return true
 	})
 	if visited != 0 {
 		t.Errorf("visitor called %d times on rejected txn, want 0", visited)
 	}
-	if len(errs) != 1 || errs[0].Code != CodeInvalidAutoPosting {
-		t.Fatalf("Walk errs = %v, want [CodeInvalidAutoPosting]", errs)
+	if len(diags) != 1 || diags[0].Code != CodeInvalidAutoPosting {
+		t.Fatalf("Walk diags = %v, want [CodeInvalidAutoPosting]", diags)
 	}
 }
 
@@ -300,12 +300,12 @@ func TestReducerWalk_AutoPostingZeroResidual(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var gotBooked []BookedPosting
-	_, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		gotBooked = append(gotBooked, booked...)
 		return true
 	})
-	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
-		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	if len(diags) != 1 || diags[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk diags = %v, want [CodeUnresolvableInterpolation]", diags)
 	}
 	// The two explicit postings were booked in pass 1; the auto
 	// posting is rejected in pass 2 without producing a BookedPosting.
@@ -342,11 +342,11 @@ func TestReducerWalk_AutoPostingZeroResidualDroppedFromTxnPostings(t *testing.T)
 	)
 
 	r := NewReducer(ledger.All())
-	directives, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	directives, diags, _ := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		return true
 	})
-	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
-		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	if len(diags) != 1 || diags[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk diags = %v, want [CodeUnresolvableInterpolation]", diags)
 	}
 
 	var bookedTxn *ast.Transaction
@@ -406,11 +406,11 @@ func TestReducerWalk_AmbiguousCommittedGroup_DropsCurrencyGroup(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	directives, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	directives, diags, _ := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		return true
 	})
 	var ambiguous int
-	for _, e := range errs {
+	for _, e := range diags {
 		if e.Code == CodeUnresolvableInterpolation {
 			ambiguous++
 		} else {
@@ -465,12 +465,12 @@ func TestReducerWalk_AutoPostingMultiCurrencyResidual(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var gotBooked []BookedPosting
-	_, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		gotBooked = append(gotBooked, booked...)
 		return true
 	})
-	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
-		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	if len(diags) != 1 || diags[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk diags = %v, want [CodeUnresolvableInterpolation]", diags)
 	}
 	for _, bp := range gotBooked {
 		if bp.Account == "Equity:Plug" {
@@ -496,9 +496,9 @@ func TestReducerWalk_MultipleAutoPostings(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 1 || errs[0].Code != CodeMultipleAutoPostings {
-		t.Fatalf("Walk errs = %v, want [CodeMultipleAutoPostings]", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 1 || diags[0].Code != CodeMultipleAutoPostings {
+		t.Fatalf("Walk diags = %v, want [CodeMultipleAutoPostings]", diags)
 	}
 }
 
@@ -533,7 +533,7 @@ func TestReducerWalk_StatePersistsAcrossTransactions(t *testing.T) {
 	r := NewReducer(ledger.All())
 	var afterT1 *Inventory
 	call := 0
-	_, errs := r.Walk(func(txn *ast.Transaction, before, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(txn *ast.Transaction, before, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		call++
 		switch call {
 		case 1:
@@ -552,8 +552,8 @@ func TestReducerWalk_StatePersistsAcrossTransactions(t *testing.T) {
 		}
 		return true
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v", diags)
 	}
 	if call != 2 {
 		t.Errorf("visitor called %d times, want 2", call)
@@ -588,12 +588,12 @@ func TestReducerWalk_VisitorEarlyReturn(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	calls := 0
-	_, errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
 		calls++
 		return false // stop after first
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v", diags)
 	}
 	if calls != 1 {
 		t.Errorf("visitor called %d times, want 1 (early stop)", calls)
@@ -613,9 +613,9 @@ func TestReducerWalk_OpenSetsBookingMethod(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v", diags)
 	}
 	if got, want := r.booking["Assets:Stock"], ast.BookingFIFO; got != want {
 		t.Errorf("booking[Assets:Stock] = %v, want %v", got, want)
@@ -643,9 +643,9 @@ func TestReducerWalk_BookingMethodOptionApplied(t *testing.T) {
 	)
 
 	r := NewReducerWithOptions(ledger.All(), opts)
-	_, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v", errs)
+	_, diags, _ = r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v", diags)
 	}
 	if got, want := r.booking["Assets:Brokerage"], ast.BookingNone; got != want {
 		t.Errorf("booking[Assets:Brokerage] = %v, want %v", got, want)
@@ -667,9 +667,9 @@ func TestReducerWalk_ExplicitBookingIgnoresOption(t *testing.T) {
 		mkOpen(openDate, "Assets:Stock", ast.BookingFIFO),
 	)
 	r := NewReducerWithOptions(ledger.All(), opts)
-	_, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v", errs)
+	_, diags, _ = r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v", diags)
 	}
 	if got, want := r.booking["Assets:Stock"], ast.BookingFIFO; got != want {
 		t.Errorf("booking[Assets:Stock] = %v, want %v (explicit wins over option)", got, want)
@@ -697,7 +697,7 @@ func TestReducerWalk_BeforeNilForFirstTouch(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(func(_ *ast.Transaction, before, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(_ *ast.Transaction, before, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		v, ok := before["Assets:Cash"]
 		if !ok {
 			t.Errorf("before map missing Assets:Cash entry")
@@ -707,8 +707,8 @@ func TestReducerWalk_BeforeNilForFirstTouch(t *testing.T) {
 		}
 		return true
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v", diags)
 	}
 }
 
@@ -730,15 +730,15 @@ func TestReducerWalk_ReusableWalk(t *testing.T) {
 	)
 
 	collect := func(r *Reducer) (visits int, firstAfter map[ast.Account]*Inventory) {
-		_, errs := r.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+		_, diags, _ := r.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 			visits++
 			if firstAfter == nil {
 				firstAfter = after
 			}
 			return true
 		})
-		if len(errs) != 0 {
-			t.Fatalf("Walk errs = %v", errs)
+		if len(diags) != 0 {
+			t.Fatalf("Walk diags = %v", diags)
 		}
 		return visits, firstAfter
 	}
@@ -788,18 +788,18 @@ func TestReducerRun_RetainsFinalState(t *testing.T) {
 	// Collect the walk's final per-account state via Walk for reference.
 	refR := NewReducer(ledger.All())
 	var refFinal map[ast.Account]*Inventory
-	_, refErrs := refR.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, refDiags, _ := refR.Walk(func(_ *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		refFinal = after
 		return true
 	})
-	if len(refErrs) != 0 {
-		t.Fatalf("reference Walk errs = %v", refErrs)
+	if len(refDiags) != 0 {
+		t.Fatalf("reference Walk diags = %v", refDiags)
 	}
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Run()
-	if len(errs) != 0 {
-		t.Fatalf("Run errs = %v", errs)
+	_, diags, _ := r.Run()
+	if len(diags) != 0 {
+		t.Fatalf("Run diags = %v", diags)
 	}
 
 	for acct, wantInv := range refFinal {
@@ -815,20 +815,20 @@ func TestReducerRun_RetainsFinalState(t *testing.T) {
 
 	// Errors() should mirror the slice Run returned.
 	gotErrs := r.Errors()
-	if len(gotErrs) != len(errs) {
-		t.Errorf("Errors() len = %d, Run len = %d", len(gotErrs), len(errs))
+	if len(gotErrs) != len(diags) {
+		t.Errorf("Errors() len = %d, Run len = %d", len(gotErrs), len(diags))
 	}
 }
 
 // TestReducerRun_ClonesErrorsSlice confirms that the slice returned by
-// Errors is independent of the reducer's internal errs slice; mutating
+// Errors is independent of the reducer's internal diags slice; mutating
 // it must not be visible on subsequent calls.
 func TestReducerRun_ClonesErrorsSlice(t *testing.T) {
 	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 
 	// Construct a ledger that produces exactly one error
-	// (CodeMultipleAutoPostings) so we have a non-empty errs slice to
+	// (CodeMultipleAutoPostings) so we have a non-empty diags slice to
 	// mutate.
 	ledger := mkLedger(
 		mkOpen(openDate, "Assets:Cash", ast.BookingDefault),
@@ -840,14 +840,14 @@ func TestReducerRun_ClonesErrorsSlice(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Run()
-	if len(errs) != 1 {
-		t.Fatalf("Run errs len = %d, want 1", len(errs))
+	_, diags, _ := r.Run()
+	if len(diags) != 1 {
+		t.Fatalf("Run diags len = %d, want 1", len(diags))
 	}
 	// Mutate the returned slice with a sentinel Code value no real
-	// error ever uses, so a leak would be obvious.
-	const tampered Code = "tampered-sentinel"
-	errs[0] = Error{Code: tampered, Message: "tampered"}
+	// diagnostic ever uses, so a leak would be obvious.
+	const tampered = "tampered-sentinel"
+	diags[0] = ast.Diagnostic{Code: tampered, Message: "tampered"}
 
 	fresh := r.Errors()
 	if len(fresh) != 1 {
@@ -879,8 +879,8 @@ func TestReducerFinal_Untouched(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	if _, errs := r.Run(); len(errs) != 0 {
-		t.Fatalf("Run errs = %v", errs)
+	if _, diags, _ := r.Run(); len(diags) != 0 {
+		t.Fatalf("Run diags = %v", diags)
 	}
 	if got := r.Final("Assets:Unrelated"); got != nil {
 		t.Errorf("Final(Assets:Unrelated) = %v, want nil", got)
@@ -921,9 +921,9 @@ func TestReducerInspect_FirstTransaction(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	insp, errs := r.Inspect(txn1)
-	if len(errs) != 0 {
-		t.Fatalf("Inspect errs = %v", errs)
+	insp, diags, _ := r.Inspect(txn1)
+	if len(diags) != 0 {
+		t.Fatalf("Inspect diags = %v", diags)
 	}
 	if insp == nil {
 		t.Fatalf("Inspect returned nil Inspection for known txn")
@@ -991,7 +991,7 @@ func TestReducerInspect_MiddleTransaction(t *testing.T) {
 	// depend on the visitor call order.
 	refR := NewReducer(ledger.All())
 	var afterT1, afterT2 map[ast.Account]*Inventory
-	_, refErrs := refR.Walk(func(got *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, refDiags, _ := refR.Walk(func(got *ast.Transaction, _, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		switch got {
 		case txn1:
 			afterT1 = map[ast.Account]*Inventory{}
@@ -1006,14 +1006,14 @@ func TestReducerInspect_MiddleTransaction(t *testing.T) {
 		}
 		return true
 	})
-	if len(refErrs) != 0 {
-		t.Fatalf("reference Walk errs = %v", refErrs)
+	if len(refDiags) != 0 {
+		t.Fatalf("reference Walk diags = %v", refDiags)
 	}
 
 	r := NewReducer(ledger.All())
-	insp, errs := r.Inspect(txn2)
-	if len(errs) != 0 {
-		t.Fatalf("Inspect errs = %v", errs)
+	insp, diags, _ := r.Inspect(txn2)
+	if len(diags) != 0 {
+		t.Fatalf("Inspect diags = %v", diags)
 	}
 	if insp == nil {
 		t.Fatalf("Inspect returned nil Inspection for txn2")
@@ -1048,7 +1048,7 @@ func TestReducerInspect_MiddleTransaction(t *testing.T) {
 
 // TestReducerInspect_NotFound constructs a ledger with one transaction
 // and inspects a separately constructed (pointer-distinct) transaction.
-// Inspect must report a miss by returning (nil, errs).
+// Inspect must report a miss by returning (nil, diags).
 func TestReducerInspect_NotFound(t *testing.T) {
 	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	d1 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
@@ -1074,12 +1074,12 @@ func TestReducerInspect_NotFound(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	insp, errs := r.Inspect(other)
+	insp, diags, _ := r.Inspect(other)
 	if insp != nil {
 		t.Errorf("Inspect(other) = %v, want nil", insp)
 	}
-	if len(errs) != 0 {
-		t.Errorf("Inspect(other) errs = %v, want none for clean ledger", errs)
+	if len(diags) != 0 {
+		t.Errorf("Inspect(other) diags = %v, want none for clean ledger", diags)
 	}
 }
 
@@ -1113,9 +1113,9 @@ func TestReducerInspect_SnapshotIndependence(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	insp, errs := r.Inspect(txn1)
-	if len(errs) != 0 {
-		t.Fatalf("Inspect errs = %v", errs)
+	insp, diags, _ := r.Inspect(txn1)
+	if len(diags) != 0 {
+		t.Fatalf("Inspect diags = %v", diags)
 	}
 	if insp == nil {
 		t.Fatalf("Inspect returned nil for txn1")
@@ -1142,10 +1142,10 @@ func TestReducerInspect_SnapshotIndependence(t *testing.T) {
 	bookedLen := len(insp.Booked)
 
 	// Re-walk with a no-op visitor so reducer state advances past txn2.
-	if _, errs := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
+	if _, diags, _ := r.Walk(func(*ast.Transaction, map[ast.Account]*Inventory, map[ast.Account]*Inventory, []BookedPosting) bool {
 		return true
-	}); len(errs) != 0 {
-		t.Fatalf("post-Inspect Walk errs = %v", errs)
+	}); len(diags) != 0 {
+		t.Fatalf("post-Inspect Walk diags = %v", diags)
 	}
 
 	// Inspection must remain unchanged.
@@ -1249,14 +1249,14 @@ func TestReducerWalk_InterpolatesSingleDeferred_DateLabel(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var xferBooked []BookedPosting
-	_, errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == xfer {
 			xferBooked = append([]BookedPosting(nil), booked...)
 		}
 		return true
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 	if len(xferBooked) != 2 {
 		t.Fatalf("xfer booked len = %d, want 2", len(xferBooked))
@@ -1342,14 +1342,14 @@ func TestReducerWalk_InterpolatesSingleDeferred_EmptyBraces(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var xferBooked []BookedPosting
-	_, errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == xfer {
 			xferBooked = append([]BookedPosting(nil), booked...)
 		}
 		return true
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 	want := decimalVal(t, "100")
 	var sawA bool
@@ -1410,7 +1410,7 @@ func TestReducerWalk_DeferredCostZeroResidualInterpolates(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var stockBooked *BookedPosting
-	dirs, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	dirs, diags, _ := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		for i := range booked {
 			if booked[i].Account == "Assets:Stock" {
 				bp := booked[i]
@@ -1419,8 +1419,8 @@ func TestReducerWalk_DeferredCostZeroResidualInterpolates(t *testing.T) {
 		}
 		return true
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 	if stockBooked == nil {
 		t.Fatalf("Walk: Assets:Stock BookedPosting not observed")
@@ -1488,9 +1488,9 @@ func TestReducerWalk_InterpolationAmbiguousMultipleResidualCurrencies(t *testing
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
-		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 1 || diags[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk diags = %v, want [CodeUnresolvableInterpolation]", diags)
 	}
 }
 
@@ -1545,11 +1545,11 @@ func TestReducerWalk_InterpolationAmbiguousMultipleDeferred(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 2 {
-		t.Fatalf("Walk errs = %v, want 2 entries (one per deferred posting)", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 2 {
+		t.Fatalf("Walk diags = %v, want 2 entries (one per deferred posting)", diags)
 	}
-	for _, e := range errs {
+	for _, e := range diags {
 		if e.Code != CodeUnresolvableInterpolation {
 			t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", e.Code)
 		}
@@ -1603,11 +1603,11 @@ func TestReducerWalk_InterpolationAmbiguousDeferredPlusAutoPosting(t *testing.T)
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 2 {
-		t.Fatalf("Walk errs = %v, want 2 entries", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 2 {
+		t.Fatalf("Walk diags = %v, want 2 entries", diags)
 	}
-	for _, e := range errs {
+	for _, e := range diags {
 		if e.Code != CodeUnresolvableInterpolation {
 			t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", e.Code)
 		}
@@ -1662,9 +1662,9 @@ func TestReducerWalk_AutoPostingResidualUsesBookedReductions(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	booked, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	booked, diags, _ := r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 	if sell.Postings[1].Amount != nil {
 		t.Errorf("input auto-posting Amount = %v, want nil (input must be immutable)", sell.Postings[1].Amount)
@@ -1733,9 +1733,9 @@ func TestReducerWalk_InterpolationZeroUnits(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 1 || errs[0].Code != CodeUnresolvableInterpolation {
-		t.Fatalf("Walk errs = %v, want [CodeUnresolvableInterpolation]", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 1 || diags[0].Code != CodeUnresolvableInterpolation {
+		t.Fatalf("Walk diags = %v, want [CodeUnresolvableInterpolation]", diags)
 	}
 }
 
@@ -1823,9 +1823,9 @@ func TestReducerWalk_InterpolatesMultipleDeferred_DistinctWeightCurrency(t *test
 	)
 
 	r := NewReducer(ledger.All())
-	dirs, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	dirs, diags, _ := r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 	booked := findBookedTxn(t, dirs, txnDate)
 	wantA := decimalVal(t, "10")
@@ -1894,11 +1894,11 @@ func TestReducerWalk_AmbiguousMultipleDeferred_SameWeightCurrency(t *testing.T) 
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 2 {
-		t.Fatalf("Walk errs = %v, want 2 entries", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 2 {
+		t.Fatalf("Walk diags = %v, want 2 entries", diags)
 	}
-	for _, e := range errs {
+	for _, e := range diags {
 		if e.Code != CodeUnresolvableInterpolation {
 			t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", e.Code)
 		}
@@ -1935,9 +1935,9 @@ func TestReducerWalk_CommittedPlusFree(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	dirs, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	dirs, diags, _ := r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 	booked := findBookedTxn(t, dirs, txnDate)
 	wantA := decimalVal(t, "10")
@@ -2005,15 +2005,15 @@ func TestReducerWalk_CommittedPlusFree_FreeMultiResidual(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 1 {
-		t.Fatalf("Walk errs = %v, want exactly 1", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 1 {
+		t.Fatalf("Walk diags = %v, want exactly 1", diags)
 	}
-	if errs[0].Code != CodeUnresolvableInterpolation {
-		t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", errs[0].Code)
+	if diags[0].Code != CodeUnresolvableInterpolation {
+		t.Errorf("err.Code = %v, want CodeUnresolvableInterpolation", diags[0].Code)
 	}
-	if !strings.Contains(errs[0].Message, "residual spans") {
-		t.Errorf("err.Message = %q, want substring %q", errs[0].Message, "residual spans")
+	if !strings.Contains(diags[0].Message, "residual spans") {
+		t.Errorf("err.Message = %q, want substring %q", diags[0].Message, "residual spans")
 	}
 }
 
@@ -2116,9 +2116,9 @@ func TestReducerWalk_DoesNotMutateInput(t *testing.T) {
 
 	ledger := mkLedger(openInv, openCash, openOpen, buy1, buy2, cashTxn, deferred, sell)
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	_, diags, _ := r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 
 	for _, s := range snaps {
@@ -2193,7 +2193,7 @@ func TestReducerWalk_FailedGroupDroppedAtomically(t *testing.T) {
 		sellAfter  map[ast.Account]*Inventory
 		sellBooked []BookedPosting
 	)
-	_, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == sell {
 			sellBefore = before
 			sellAfter = after
@@ -2203,11 +2203,11 @@ func TestReducerWalk_FailedGroupDroppedAtomically(t *testing.T) {
 	})
 
 	// The failing reduction must emit exactly one error.
-	if len(errs) != 1 {
-		t.Fatalf("Walk errs = %v (len=%d), want exactly 1 error", errs, len(errs))
+	if len(diags) != 1 {
+		t.Fatalf("Walk diags = %v (len=%d), want exactly 1 error", diags, len(diags))
 	}
-	if errs[0].Code != CodeReductionExceedsInventory {
-		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", errs[0].Code)
+	if diags[0].Code != CodeReductionExceedsInventory {
+		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", diags[0].Code)
 	}
 
 	// Verification is via the sellBooked slice populated by the visitor.
@@ -2317,14 +2317,14 @@ func TestReducerWalk_MultiCurrencyMultiLotReductionGrouping(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var sellBooked []BookedPosting
-	_, errs := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == sell {
 			sellBooked = append([]BookedPosting(nil), booked...)
 		}
 		return true
 	})
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 
 	// The multi-lot reduction expands into two child postings, one per matched
@@ -2432,9 +2432,9 @@ func TestReducerWalk_MultiLotReduction_TotalPriceNormalizedToPerUnit(t *testing.
 	)
 
 	r := NewReducer(ledger.All())
-	directives, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	directives, diags, _ := r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 
 	var booked *ast.Transaction
@@ -2530,9 +2530,9 @@ func TestReducerWalk_MultiLotReduction_PerUnitPriceUnchanged(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	directives, errs := r.Walk(nil)
-	if len(errs) != 0 {
-		t.Fatalf("Walk errs = %v, want none", errs)
+	directives, diags, _ := r.Walk(nil)
+	if len(diags) != 0 {
+		t.Fatalf("Walk diags = %v, want none", diags)
 	}
 
 	var booked *ast.Transaction
@@ -2623,15 +2623,15 @@ func TestReducerWalk_DroppedGroupOmittedFromTxnPostings(t *testing.T) {
 	r := NewReducer(ledger.All())
 	var bookedDirectives []ast.Directive
 	var sellBooked []BookedPosting
-	var walkErrs []Error
-	bookedDirectives, walkErrs = r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	var diags []ast.Diagnostic
+	bookedDirectives, diags, _ = r.Walk(func(got *ast.Transaction, _, _ map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == sell {
 			sellBooked = append([]BookedPosting(nil), booked...)
 		}
 		return true
 	})
-	if len(walkErrs) != 1 || walkErrs[0].Code != CodeReductionExceedsInventory {
-		t.Fatalf("Walk errs = %v, want [CodeReductionExceedsInventory]", walkErrs)
+	if len(diags) != 1 || diags[0].Code != CodeReductionExceedsInventory {
+		t.Fatalf("Walk diags = %v, want [CodeReductionExceedsInventory]", diags)
 	}
 
 	// Find the booked clone of the sell transaction in the directive output.
@@ -2737,7 +2737,7 @@ func TestReducerWalk_DroppedGroupRollsBackAugmentation(t *testing.T) {
 	)
 
 	r := NewReducer(ledger.All())
-	_, errs := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(_ *ast.Transaction, _, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		// The visitor is called for the buy (booked postings, before-state
 		// touches). For the mixed transaction, all postings are dropped —
 		// the visitor may or may not be called; we check Final state only.
@@ -2745,7 +2745,7 @@ func TestReducerWalk_DroppedGroupRollsBackAugmentation(t *testing.T) {
 	})
 
 	// One error from the failing reduction.
-	if len(errs) == 0 {
+	if len(diags) == 0 {
 		t.Fatalf("Walk returned no errors, want at least 1 (reduction failure)")
 	}
 
@@ -2831,7 +2831,7 @@ func TestReducerWalk_DroppedGroupMultipleFailedAccounts(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	var sellBefore, sellAfter map[ast.Account]*Inventory
-	_, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	_, diags, _ := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		if got == sell {
 			sellBefore = before
 			sellAfter = after
@@ -2841,12 +2841,12 @@ func TestReducerWalk_DroppedGroupMultipleFailedAccounts(t *testing.T) {
 
 	// Both reductions fail, so Walk must return exactly two errors, both
 	// with CodeReductionExceedsInventory.
-	if len(errs) != 2 {
-		t.Fatalf("Walk errs = %v (len=%d), want exactly 2 errors (one per failing account)", errs, len(errs))
+	if len(diags) != 2 {
+		t.Fatalf("Walk diags = %v (len=%d), want exactly 2 errors (one per failing account)", diags, len(diags))
 	}
-	for i, err := range errs {
+	for i, err := range diags {
 		if err.Code != CodeReductionExceedsInventory {
-			t.Errorf("errs[%d].Code = %v, want CodeReductionExceedsInventory", i, err.Code)
+			t.Errorf("diags[%d].Code = %v, want CodeReductionExceedsInventory", i, err.Code)
 		}
 	}
 
@@ -2919,12 +2919,12 @@ func TestReducerWalk_AllPostingsDroppedEmitsEmptyTxn(t *testing.T) {
 
 	r := NewReducer(ledger.All())
 	visitCount := 0
-	directives, errs := r.Walk(func(_ *ast.Transaction, _ map[ast.Account]*Inventory, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
+	directives, diags, _ := r.Walk(func(_ *ast.Transaction, _ map[ast.Account]*Inventory, _ map[ast.Account]*Inventory, _ []BookedPosting) bool {
 		visitCount++
 		return true
 	})
-	if len(errs) != 1 || errs[0].Code != CodeReductionExceedsInventory {
-		t.Fatalf("Walk errs = %v, want [CodeReductionExceedsInventory]", errs)
+	if len(diags) != 1 || diags[0].Code != CodeReductionExceedsInventory {
+		t.Fatalf("Walk diags = %v, want [CodeReductionExceedsInventory]", diags)
 	}
 
 	// The visitor is not called for the all-dropped transaction (no booked
@@ -3027,7 +3027,7 @@ func TestReducerWalk_Pass2UnknownJoinsDroppedGroup(t *testing.T) {
 	var sellVisited bool
 	var sellBefore, sellAfter map[ast.Account]*Inventory
 	var sellBooked []BookedPosting
-	dirs, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	dirs, diags, _ := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == sell {
 			sellVisited = true
 			sellBefore = before
@@ -3038,11 +3038,11 @@ func TestReducerWalk_Pass2UnknownJoinsDroppedGroup(t *testing.T) {
 	})
 
 	// Only the AAPL reduction error; no additional error from D6 or applyDrops.
-	if len(errs) != 1 {
-		t.Fatalf("Walk errs = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", errs, len(errs))
+	if len(diags) != 1 {
+		t.Fatalf("Walk diags = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", diags, len(diags))
 	}
-	if errs[0].Code != CodeReductionExceedsInventory {
-		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", errs[0].Code)
+	if diags[0].Code != CodeReductionExceedsInventory {
+		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", diags[0].Code)
 	}
 
 	// All postings belong to the dropped USD group (including the auto-posting
@@ -3159,7 +3159,7 @@ func TestReducerWalk_Pass2UnknownBookOneFailsDropsCurrency(t *testing.T) {
 	r := NewReducer(ledger.All())
 	var txnVisited bool
 	var txnBefore, txnAfter map[ast.Account]*Inventory
-	dirs, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	dirs, diags, _ := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == txn {
 			txnVisited = true
 			txnBefore = before
@@ -3169,11 +3169,11 @@ func TestReducerWalk_Pass2UnknownBookOneFailsDropsCurrency(t *testing.T) {
 	})
 
 	// Expect exactly 1 error: CodeReductionExceedsInventory from Pass 2 bookOne.
-	if len(errs) != 1 {
-		t.Fatalf("Walk errs = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", errs, len(errs))
+	if len(diags) != 1 {
+		t.Fatalf("Walk diags = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", diags, len(diags))
 	}
-	if errs[0].Code != CodeReductionExceedsInventory {
-		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", errs[0].Code)
+	if diags[0].Code != CodeReductionExceedsInventory {
+		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", diags[0].Code)
 	}
 
 	// All postings belong to the AAPL group (now dropped in Pass 2), so the
@@ -3324,8 +3324,8 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 	var sellBooked []BookedPosting
 	var sellBefore, sellAfter map[ast.Account]*Inventory
 	var bookedDirectives []ast.Directive
-	var walkErrs []Error
-	bookedDirectives, walkErrs = r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	var diags []ast.Diagnostic
+	bookedDirectives, diags, _ = r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got == sell {
 			sellBefore = before
 			sellAfter = after
@@ -3335,11 +3335,11 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 	})
 
 	// Exactly one error: the STOCK reduction failure.
-	if len(walkErrs) != 1 {
-		t.Fatalf("Walk errs = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", walkErrs, len(walkErrs))
+	if len(diags) != 1 {
+		t.Fatalf("Walk diags = %v (len=%d), want exactly 1 (CodeReductionExceedsInventory)", diags, len(diags))
 	}
-	if walkErrs[0].Code != CodeReductionExceedsInventory {
-		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", walkErrs[0].Code)
+	if diags[0].Code != CodeReductionExceedsInventory {
+		t.Errorf("err.Code = %v, want CodeReductionExceedsInventory", diags[0].Code)
 	}
 
 	// The EUR child of the AAPL reduction must survive; the USD child and

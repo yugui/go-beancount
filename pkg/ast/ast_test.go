@@ -1,7 +1,6 @@
 package ast
 
 import (
-	"errors"
 	"testing"
 )
 
@@ -20,7 +19,7 @@ func TestSeverityZeroValueIsError(t *testing.T) {
 	}
 }
 
-func TestDiagnosticError(t *testing.T) {
+func TestDiagnosticString(t *testing.T) {
 	tests := []struct {
 		name string
 		in   Diagnostic
@@ -74,72 +73,9 @@ func TestDiagnosticError(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.in.Error(); got != tc.want {
-				t.Errorf("Diagnostic.Error() = %q, want %q", got, tc.want)
+			if got := tc.in.String(); got != tc.want {
+				t.Errorf("Diagnostic.String() = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestDiagnosticIs(t *testing.T) {
-	balanceMismatch := Diagnostic{Code: "balance-mismatch"}
-	noOpen := Diagnostic{Code: "account-not-open"}
-
-	cases := []struct {
-		name   string
-		err    Diagnostic
-		target error
-		want   bool
-	}{
-		{
-			name:   "same code matches regardless of message and span",
-			err:    Diagnostic{Code: "balance-mismatch", Message: "x", Span: Span{Start: Position{Line: 1}}},
-			target: balanceMismatch,
-			want:   true,
-		},
-		{
-			name:   "different code does not match",
-			err:    Diagnostic{Code: "balance-mismatch"},
-			target: noOpen,
-			want:   false,
-		},
-		{
-			// errors.Is short-circuits when err == target, so two
-			// distinct empty-code diagnostics with different messages
-			// exercise Is() itself rather than the equality fast path.
-			name:   "empty code never matches by code alone",
-			err:    Diagnostic{Message: "lhs"},
-			target: Diagnostic{Message: "rhs"},
-			want:   false,
-		},
-		{
-			name:   "non-Diagnostic target does not match",
-			err:    balanceMismatch,
-			target: errors.New("balance-mismatch"),
-			want:   false,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := errors.Is(tc.err, tc.target); got != tc.want {
-				t.Errorf("errors.Is(%v, %v) = %v, want %v", tc.err, tc.target, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestDiagnosticErrorsAs(t *testing.T) {
-	orig := Diagnostic{
-		Code:    "balance-mismatch",
-		Span:    Span{Start: Position{Filename: "f.beancount", Line: 3, Column: 1}},
-		Message: "amount differs",
-	}
-	var wrapped error = orig
-	var got Diagnostic
-	if !errors.As(wrapped, &got) {
-		t.Fatalf("errors.As failed to extract Diagnostic from %T", wrapped)
-	}
-	if got != orig {
-		t.Errorf("extracted Diagnostic = %+v, want %+v", got, orig)
 	}
 }
