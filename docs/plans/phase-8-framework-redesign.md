@@ -1205,10 +1205,233 @@ fixtures flatten to bare bodies. A concurrent-Apply test under
 
 **Verification:**
 
-- `bazel test //pkg/importer/hook/std/classify/... --test_output=errors`
+- `bazel build //pkg/importer/hook/std/classify:classify`
+- `bazel test //pkg/importer/hook/std/classify:classify_test --test_output=errors`
 - New concurrent-Apply test with `-race`.
+- **PR-α convergence:** after α-4, run the wildcard build/test —
+  `bazel build //...` and `bazel test //... --test_output=errors`
+  must both succeed. This is the PR-α-level invariant that's been
+  deferred since α-1.
 
 **Quality requirements:** exported godoc.
+
+### Detailed Design
+
+#### Contract
+
+##### Package surface after migration
+
+The package exports exactly one symbol after this step:
+
+```go
+// Hook is the classify hook for one declared instance. It is produced
+// by the package's [hook.Factory] (registered under kind "classify");
+// its internal state is frozen at construction and Apply is safe for
+// concurrent invocation on the same value.
+type Hook struct { /* unexported fields only */ }
+
+func (h *Hook) Name() string
+func (h *Hook) Apply(ctx context.Context, in hook.HookInput) (hook.HookResult, error)
+```
+
+Required fields (unexported); MUST NOT add `sync.Mutex` or any field
+that mutates post-construction:
+
+- instance name (returned by `Name()`)
+- rule list (the `[]rule` already used in PR #83), populated once at
+  factory time.
+
+**Deleted:**
+
+- the `Configure` method,
+- the dual-name `hook.Register(...)` calls (the Go-import-path alias
+  is gone),
+- the singleton-construction idiom (`h := &Hook{}` from `init()` and
+  from tests).
+
+`DiagNoRule` exported constant keeps its value and severity
+(`ast.Warning`). The unexported helpers (`isSingleLeg`, `applyRules`,
+`buildRules`, `validateRule`, `ruleConfig`, `rule`, `config`) keep
+their PR #83 semantics byte-for-byte.
+
+##### Factory registration
+
+At init time:
+
+```go
+hook.RegisterFactory("classify", hook.FactoryFunc(newHook))
+```
+
+Only one kind is registered. The PR #83 Go-import-path alias is
+dropped without replacement.
+
+##### Factory function
+
+```go
+func newHook(name string, decode func(dest any) error) (hook.Hook, error)
+```
+
+Binding requirements:
+
+1. `decode` MUST NOT be nil. A nil `decode` yields
+   `fmt.Errorf("classify: configure: nil decoder")`.
+2. The decode target is the existing `config` struct (with
+   `Rules []ruleConfig` tagged `toml:"rule"`). The factory calls
+   `decode(&cfg)` where `cfg` is a fresh `config`. This preserves
+   the existing `[[rule]]` TOML schema verbatim.
+3. Validation reuses PR #83's `buildRules` / `validateRule`
+   unchanged, producing a `[]rule`.
+4. On any error the factory returns `(nil, err)` and the error
+   message is prefixed `"classify: configure: "`.
+5. On success the factory returns a fully-initialised `*Hook` whose
+   `Name()` is the `name` argument verbatim (NOT `"classify"`).
+6. The factory MUST NOT register the resulting `*Hook` in any
+   global state.
+7. An empty `[[rule]]` list is accepted (matches PR #83's
+   `TestConfigure_EmptyRules`); such a `Hook` emits `DiagNoRule` for
+   every single-leg transaction.
+
+##### Name() returns the instance name
+
+`Name()` returns the string supplied to the factory. PR #83's
+`return "classify"` becomes `return h.name`. The kind name
+`"classify"` is visible only at the `RegisterFactory` call site.
+
+##### Apply semantics — behaviour preservation (binding)
+
+For any input that PR #83's classify accepted after a successful
+`Configure`, the migrated package MUST produce byte-identical
+output:
+
+- Non-Transaction directives pass through aliased.
+- Transactions with zero or 2+ postings pass through aliased.
+- The "no single-leg in input" fast path returns
+  `HookResult{Directives: in.Directives}` aliasing the input slice
+  (no allocation), Diagnostics nil.
+- When at least one single-leg transaction is present:
+  - A fresh `out := make([]ast.Directive, len(in.Directives))` is
+    allocated.
+  - Each non-single-leg directive is copied aliased into `out`.
+  - Each single-leg transaction is matched against the rule list in
+    declaration order; the first matching rule produces a
+    `importerutil.BalanceWith(tx, r.account, r.currency)` directive.
+  - On no-match: the original transaction is aliased into `out` and
+    a `DiagNoRule` Warning diagnostic is appended (Code =
+    `DiagNoRule`, Span = `tx.Span`, Severity = `ast.Warning`,
+    Message format unchanged).
+- Rule matching semantics unchanged: AND between `payeeRegex` and
+  `narrationRegex` when both set; a nil regex skips that selector.
+- `ctx.Err()` checked at entry; mid-loop checks at `i%64==0`
+  produce partial output `out[:i]` and accumulated diagnostics on
+  cancellation.
+- Hints / Options on `HookInput` are NOT consulted.
+- Input directives are NOT mutated; counterpart postings come from
+  `importerutil.BalanceWith` which clones.
+
+`Apply`'s body is preserved verbatim from PR #83 except that
+`h.rules` is now an immutable factory-time field.
+
+##### Concurrency contract per symbol
+
+| Symbol       | Contract |
+| ------------ | -------- |
+| `Hook.Name`  | Safe for concurrent use; pure read of an immutable field. |
+| `Hook.Apply` | Safe for concurrent invocation on the same value; no state mutation. The `[]rule` slice and its regex pointers are read-only after factory return. |
+| `newHook`    | Caller invokes at most once per instance; distinct instances MAY be constructed concurrently. |
+
+#### Suggested Internals
+
+**File layout.**
+
+- `classify.go` keeps `type Hook struct`, `Name`, `Apply`, the
+  `DiagNoRule` constant, and the `isSingleLeg` / `applyRules`
+  helpers.
+- `config.go` keeps `config`, `ruleConfig`, `rule`, `buildRules`,
+  `validateRule`. `Configure` deleted; `newHook(name, decode)` added
+  here next to the validation logic.
+- `doc.go` rewritten: package overview reflects the per-instance
+  model; `init()` calls
+  `hook.RegisterFactory("classify", hook.FactoryFunc(newHook))`.
+
+  Alternative: place `newHook` and `init()` in a new `factory.go`.
+  Equivalent.
+
+**Rule compilation: factory-time vs lazy.** Factory-time
+(unchanged from PR #83). Compiling regexes at construction catches
+malformed regex during CLI startup. Lazy compilation would
+re-introduce a write-after-construction path and break the
+frozen-state contract.
+
+**Hook struct shape.**
+
+```go
+type Hook struct {
+    name  string
+    rules []rule
+}
+```
+
+Two unexported fields, both set in `newHook` and never written
+again.
+
+**Test file layout.**
+
+- `classify_test.go`: rewrite the `newHook` helper to drive through
+  `hook.LookupFactory("classify")`. `newHook(t, tomlSrc)` becomes
+  `f, _ := hook.LookupFactory("classify"); h, err := f.New("test", permissiveDecode(tomlSrc))`.
+  Replace bare-`&classify.Hook{}` constructions in
+  `TestApply_NoRuleDiagSpan`, `TestApply_NoConfigurePath` (rename
+  to `TestApply_EmptyRules`), `TestApply_NonTransactionPassThrough`,
+  `TestApply_BalancedTxnPassThrough`,
+  `TestApply_AliasOnNoSingleLeg`, `TestApply_CancelledContext` with
+  a factory call decoding an empty TOML body. The "no Configure"
+  scenario is structurally unrepresentable; the renamed test
+  preserves the assertion that every single-leg txn yields
+  `DiagNoRule`.
+- `config_test.go`: rename `TestConfigure_*` → `TestFactory_*`.
+  `TestConfigure_PriorRulesUntouched` **deleted** — re-Configure
+  rollback is no longer a concept. Other tests are mechanical
+  rewrites: replace `h := &classify.Hook{}; err := h.Configure(...)`
+  with `_, err := f.New("test", ...)`. Error prefix assertions
+  unchanged.
+- `register_test.go`: **deleted**. Both tests assert dual-name
+  registration / singleton lookup that no longer exists. The
+  factory-side analogue is covered by the new `factory_test.go`.
+- New `factory_test.go`:
+  - `TestFactory_NameReturnsInstanceName`
+  - `TestFactory_RegisteredUnderKindClassify`
+  - `TestFactory_NoGoPathAlias` (pins the deletion)
+  - `TestFactory_DecoderError`
+  - `TestFactory_ValidationError`
+  - `TestFactory_NilDecoder` (asserts exact message).
+- New `concurrency_test.go`: build one `*Hook` via the factory with
+  a non-trivial rule list; run `Apply` from N goroutines (≥8)
+  against shared `HookInput` values whose `Directives` are
+  read-only. Race-clean.
+
+**Multi-instance test scenarios.** The classify hook is naturally
+single-instance per CLI run. No PR #83 test asserts multi-instance
+dispatch to migrate. Skip speculatively adding multi-instance
+scenarios.
+
+#### Alternatives
+
+- **Where to put `newHook`.** `config.go` next to validation.
+- **Inline `rules` directly on `Hook` vs keep the unexported `rule`
+  type.** Keep `rule`.
+- **Compile regex eagerly vs lazily.** Eagerly (mirrors PR #83).
+- **Drop the Go-import-path alias retention.** Drop.
+- **Empty-rule-list acceptance.** Keep accepting (matches PR #83).
+- **Driving tests through `hook.LookupFactory` vs an exported
+  `NewHook`.** Lookup-driven, mirroring α-3. Exporting the factory
+  function would widen the package's published surface for no test
+  benefit.
+
+#### Recommendation
+
+Adopt the contract above. After α-4 the wildcard `bazel build //...`
+and `bazel test //... --test_output=errors` both succeed — PR-α
+converges and is ready for review.
 
 ### Step α-5 — Append redesign subsections to `docs/plans/phase-8-importer-framework.md`
 
