@@ -32,26 +32,6 @@ func (f *fakeImporter) Extract(_ context.Context, in Input) (Output, error) {
 	return f.extractFn(in)
 }
 
-// withCleanRegistry swaps the global registry for an empty one for the
-// duration of a single test and restores it in t.Cleanup. Direct access to
-// the unexported global is justified here because the package has no exported
-// reset API and the concurrent-stress test requires atomic swap.
-func withCleanRegistry(t interface {
-	Helper()
-	Cleanup(func())
-}) {
-	t.Helper()
-	registryMu.Lock()
-	old := registry
-	registry = map[string]Importer{}
-	registryMu.Unlock()
-	t.Cleanup(func() {
-		registryMu.Lock()
-		registry = old
-		registryMu.Unlock()
-	})
-}
-
 // streamingImporter satisfies both Importer and Streaming.
 type streamingImporter struct {
 	fakeImporter
@@ -75,23 +55,6 @@ func (s *streamDiagnoserImporter) StreamDiagnostics() []ast.Diagnostic {
 	return s.diags
 }
 
-// configurableImporter satisfies both Importer and Configurable.
-type configurableImporter struct {
-	fakeImporter
-	configureCalled bool
-	decodeDest      any
-}
-
-func (c *configurableImporter) Configure(decode func(dest any) error) error {
-	c.configureCalled = true
-	var dest any
-	if err := decode(&dest); err != nil {
-		return err
-	}
-	c.decodeDest = dest
-	return nil
-}
-
 // newTestInput builds an Input from a path and body string; Sniff capped at 4096 bytes.
 func newTestInput(path, body string) Input {
 	b := []byte(body)
@@ -106,4 +69,25 @@ func newTestInput(path, body string) Input {
 			return io.NopCloser(bytes.NewReader(b)), nil
 		},
 	}
+}
+
+// withCleanKindRegistry swaps the global kind registry for an empty one for the
+// duration of a single test and restores it in t.Cleanup. Direct access to
+// the unexported global is justified here because the package has no exported
+// reset API and the concurrent-stress test requires atomic swap.
+// Must not be used in tests that call t.Parallel(); the global swap is process-wide.
+func withCleanKindRegistry(t interface {
+	Helper()
+	Cleanup(func())
+}) {
+	t.Helper()
+	kindMu.Lock()
+	old := kinds
+	kinds = map[string]Factory{}
+	kindMu.Unlock()
+	t.Cleanup(func() {
+		kindMu.Lock()
+		kinds = old
+		kindMu.Unlock()
+	})
 }

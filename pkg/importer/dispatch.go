@@ -7,16 +7,18 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
-// Dispatch walks reg.Names() in sorted order and calls Identify on each
-// registered importer. It returns the first importer whose Identify returns
-// true. Between calls it checks for ctx cancellation; on cancellation it
-// returns (nil, false, nil) and the caller is responsible for converting
-// ctx.Err() into an error.
+// Dispatch walks reg.Names() in the registry's declared order and
+// returns the first Importer whose Identify returns true. Between
+// calls it checks ctx.Err(); on cancellation it returns
+// (nil, false, nil) and the caller converts ctx.Err() into an error.
 //
-// When no importer matches, Dispatch returns (nil, false, diags) where diags
-// contains a single Error diagnostic with Code [DiagImporterNone] and
-// Span.Start.Filename set to in.Path.
+// When no instance matches, Dispatch returns (nil, false, diags) where
+// diags carries a single Error diagnostic with Code [DiagImporterNone]
+// and Span.Start.Filename = in.Path.
 func Dispatch(ctx context.Context, reg Registry, in Input) (Importer, bool, []ast.Diagnostic) {
+	if ctx.Err() != nil {
+		return nil, false, nil
+	}
 	for _, name := range reg.Names() {
 		if ctx.Err() != nil {
 			return nil, false, nil
@@ -37,19 +39,18 @@ func Dispatch(ctx context.Context, reg Registry, in Input) (Importer, bool, []as
 	}}
 }
 
-// Apply returns the directives and diagnostics produced by the first registered
-// importer that identifies in. When no importer matches, it returns an Output
-// whose Diagnostics contains a single DiagImporterNone error diagnostic and a
-// nil error — the absence of a matching importer is a ledger-content problem,
-// not a framework error. On a successful match, Output.Diagnostics is the
-// concatenation of dispatch diagnostics followed by Extract diagnostics; it is
-// nil when both sides produce none. On Extract error, Apply returns an Output
-// with nil Directives and the diagnostics composed so far, plus the non-nil
-// error. On ctx cancellation Apply returns an empty Output and ctx.Err().
+// Apply dispatches in against reg and runs Extract on the chosen
+// instance. Diagnostics from Dispatch and Extract are concatenated in
+// that order; if both sides produce none, Output.Diagnostics is nil.
+// When no instance matches, Apply returns an Output whose Diagnostics
+// contains the [DiagImporterNone] diagnostic and a nil error — the
+// absence of a matching importer is a ledger-content problem, not a
+// framework error. On Extract error, Directives is nil regardless of
+// what Extract returned; Diagnostics reflects any partial output.
+// On ctx cancellation Apply returns (Output{}, ctx.Err()).
 //
 // Apply always uses the buffered Extract path in ABI v1, even when the
-// importer satisfies [Streaming]. Apply does NOT call [Configurable.Configure];
-// configuration is the caller's responsibility before Apply is invoked.
+// importer satisfies [Streaming].
 func Apply(ctx context.Context, reg Registry, in Input) (Output, error) {
 	imp, ok, dispatchDiags := Dispatch(ctx, reg, in)
 	if ctx.Err() != nil {

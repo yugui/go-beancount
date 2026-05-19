@@ -137,24 +137,6 @@ func TestApply_CancelledContext(t *testing.T) {
 	}
 }
 
-func TestApply_DoesNotCallConfigure(t *testing.T) {
-	ci := &configurableImporter{
-		fakeImporter: fakeImporter{
-			name:       "csv",
-			identifyFn: func(Input) bool { return true },
-			extractFn:  func(Input) (Output, error) { return Output{}, nil },
-		},
-	}
-
-	reg := &fakeRegistry{imps: []Importer{ci}}
-	if _, err := Apply(context.Background(), reg, newTestInput("", "")); err != nil {
-		t.Fatal(err)
-	}
-	if ci.configureCalled {
-		t.Error("Apply called Configure; it must not")
-	}
-}
-
 func TestApply_StreamingImporterUsesExtract(t *testing.T) {
 	extractCalled := false
 	streamExtractCalled := false
@@ -206,27 +188,7 @@ func TestApply_EmptyOutputHasNilDiagnostics(t *testing.T) {
 	}
 }
 
-func TestOptionalInterface_ConfigurableAssertion(t *testing.T) {
-	withCleanRegistry(t)
-
-	ci := &configurableImporter{
-		fakeImporter: fakeImporter{name: "cfg"},
-	}
-	Register("cfg", ci)
-
-	imp, ok := Lookup("cfg")
-	if !ok {
-		t.Fatal("Lookup returned ok=false")
-	}
-	_, ok = imp.(Configurable)
-	if !ok {
-		t.Error("registered configurableImporter does not satisfy Configurable via type assertion")
-	}
-}
-
 func TestOptionalInterface_StreamingAssertion(t *testing.T) {
-	withCleanRegistry(t)
-
 	directive := &ast.Transaction{}
 	streamErr := errors.New("stream error")
 
@@ -241,15 +203,10 @@ func TestOptionalInterface_StreamingAssertion(t *testing.T) {
 			}
 		},
 	}
-	Register("stream", si)
 
-	imp, ok := Lookup("stream")
+	streaming, ok := any(si).(Streaming)
 	if !ok {
-		t.Fatal("Lookup returned ok=false")
-	}
-	streaming, ok := imp.(Streaming)
-	if !ok {
-		t.Fatal("registered streamingImporter does not satisfy Streaming via type assertion")
+		t.Fatal("streamingImporter does not satisfy Streaming via type assertion")
 	}
 
 	var directives []ast.Directive
@@ -270,8 +227,6 @@ func TestOptionalInterface_StreamingAssertion(t *testing.T) {
 }
 
 func TestOptionalInterface_StreamDiagnoserAssertion(t *testing.T) {
-	withCleanRegistry(t)
-
 	wantDiag := ast.Diagnostic{Code: "stream-diag", Severity: ast.Warning, Message: "test"}
 	sdi := &streamDiagnoserImporter{
 		streamingImporter: streamingImporter{
@@ -279,17 +234,12 @@ func TestOptionalInterface_StreamDiagnoserAssertion(t *testing.T) {
 		},
 		diags: []ast.Diagnostic{wantDiag},
 	}
-	Register("streamdiag", sdi)
 
-	imp, ok := Lookup("streamdiag")
-	if !ok {
-		t.Fatal("Lookup returned ok=false")
-	}
-	streaming, ok := imp.(Streaming)
+	streaming, ok := any(sdi).(Streaming)
 	if !ok {
 		t.Fatal("streamDiagnoserImporter does not satisfy Streaming")
 	}
-	diagnoser, ok := imp.(StreamDiagnoser)
+	diagnoser, ok := any(sdi).(StreamDiagnoser)
 	if !ok {
 		t.Fatal("streamDiagnoserImporter does not satisfy StreamDiagnoser")
 	}
