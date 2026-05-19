@@ -3102,3 +3102,372 @@ Once this plan is approved via ExitPlanMode and copied to
 `docs/plans/<slug>.md`, the orchestration skill loops Phases 4–8 over
 each sub-phase 8a → 8g. The first iteration starts at Phase 4
 (per-step detailed design) for 8a.
+
+---
+
+## Redesign record (PR-α)
+
+The two sections below record the new Contracts that landed in PR-α
+(`claude/phase-8-orchestration-redesign-8PhfV`). The original 8a/8b
+Detailed Designs above remain as historical record of the pre-redesign
+API (the singleton-per-kind model). The authoritative reasoning behind
+every design choice is in
+`docs/plans/phase-8-framework-redesign.md`.
+
+### 8a-redesign — Factory pattern + instance Registry (PR-α)
+
+#### Context
+
+PR #83 merged 8a on the assumption that each registered importer is a
+process-global singleton identified by a fixed name. Code review
+surfaced that this assumption is wrong: a real CLI invocation needs
+multiple instances of the same kind — e.g. a `csv` importer configured
+for a BOA checking account and another configured for an Amex credit
+card in the same `beanimport` run.
+
+The redesign replaces the singleton-per-kind registry with a
+factory-per-kind + instance-registry model. Configure is fused into
+instance creation (the factory call IS the Configure step), so an
+unconfigured importer is structurally unrepresentable. Mutexes inside
+importers are eliminated: once a factory returns, its instance's state
+is frozen and all methods are safe for concurrent invocation.
+
+The 8a Detailed Design above remains as historical record of the
+pre-redesign API.
+
+#### Contract
+
+All symbols below are exported from `pkg/importer`.
+
+##### `Importer`
+
+```go
+// Importer is a fully-configured import driver for one declared instance
+// (e.g. "boa_checking"). An Importer is produced by a Factory; its
+// internal state is frozen at that point and Identify/Extract are safe
+// for concurrent invocation on the same value.
+type Importer interface {
+    // Name returns the instance name supplied to the Factory that
+    // produced this Importer. Stable for the lifetime of the instance.
+    Name() string
+
+    // Identify is a cheap, side-effect-free check. MUST NOT consume
+    // in.Opener unless Path/MIME/Sniff are insufficient; if it does, it
+    // MUST close the returned io.ReadCloser before returning. A true
+    // result is a non-binding preference; Dispatch picks the first
+    // match in Registry.Names() order. Identify reports no error: a
+    // failure to identify is simply false.
+    Identify(ctx context.Context, in Input) bool
+
+    // Extract returns directives in source-encounter order plus
+    // per-record diagnostics. A non-nil error is reserved for
+    // system-level failures (I/O, ctx cancellation, structural format
+    // corruption); ledger-content problems are Diagnostics, not errors.
+    // Context cancellation MUST surface as a non-nil error.
+    Extract(ctx context.Context, in Input) (Output, error)
+}
+```
+
+`Input` and `Output` are unchanged from PR #83.
+
+##### `Factory` and `FactoryFunc`
+
+```go
+// Factory produces a single fully-configured Importer instance. The
+// New call IS the Configure step; there is no separately exposed
+// Configure method on Importer. A non-nil error aborts creation; on
+// error the first return MUST be nil.
+//
+// The decode callback decodes the caller's per-instance configuration
+// (the TOML table body, with reserved keys "kind" and "name" stripped)
+// into a destination the factory supplies. It MUST NOT be nil.
+//
+// Multiple New calls for distinct instances of the same kind MAY run
+// concurrently; a Factory holding shared state is responsible for its
+// own synchronisation.
+type Factory interface {
+    New(name string, decode func(dest any) error) (Importer, error)
+}
+
+// FactoryFunc adapts a plain function to Factory, mirroring
+// http.Handler / http.HandlerFunc. Stateless factory functions
+// register via FactoryFunc(myFactoryFn).
+type FactoryFunc func(name string, decode func(dest any) error) (Importer, error)
+
+func (f FactoryFunc) New(name string, decode func(dest any) error) (Importer, error) {
+    return f(name, decode)
+}
+```
+
+Contractual invariants:
+
+- A `Factory` MUST NOT return `(nil, nil)`. `MapRegistry` enforces this.
+- The factory MUST set the returned `Importer`'s `Name()` to the
+  `name` argument verbatim.
+
+##### Kind registry
+
+```go
+// RegisterFactory installs f under the given kind in the package-global
+// kind registry. Panics on duplicate kind (mirrors pkg/quote.Register).
+// Intended to be called from init() or a goplug InitPlugin callback.
+// Safe for concurrent use.
+func RegisterFactory(kind string, f Factory)
+
+// LookupFactory returns the Factory registered for kind, or false if none.
+func LookupFactory(kind string) (Factory, bool)
+
+// KindNames returns the registered kinds sorted in ascending order for
+// deterministic diagnostics and test output.
+func KindNames() []string
+```
+
+These three symbols **replace** `Register` / `Lookup` / `Names` /
+`GlobalRegistry` from PR #83. The old names are deleted with no
+compatibility shim.
+
+##### Instance registry
+
+```go
+// Registry is the per-run lookup of fully-configured Importer instances.
+// The CLI builds one Registry per beanimport invocation from the
+// [[importer]] entries in TOML and hands it to Dispatch/Apply.
+//
+// Names returns instance names in the order Dispatch must walk them
+// (declaration order). All Registry methods are safe for concurrent use.
+// A Registry's contents are immutable after construction.
+type Registry interface {
+    Lookup(name string) (Importer, bool)
+    Names() []string
+}
+
+// MapRegistry is the default in-memory Registry implementation.
+// Build one with NewRegistry; the zero value is not usable.
+type MapRegistry struct { /* unexported fields */ }
+
+func (r *MapRegistry) Lookup(name string) (Importer, bool)
+func (r *MapRegistry) Names() []string
+
+// NewRegistry returns a Registry populated with the given Importers in
+// the order supplied; that order is the Dispatch walk order. Returns an
+// error if any Importer is nil, if two Importers share the same Name(),
+// or if any Name() is the empty string.
+func NewRegistry(imps []Importer) (*MapRegistry, error)
+```
+
+There is no `GlobalRegistry()` accessor. An instance registry is
+constructed per run; tests construct their own.
+
+##### `Dispatch` and `Apply`
+
+```go
+// Dispatch walks reg.Names() in the registry's declared order and
+// returns the first Importer whose Identify returns true. Checks
+// ctx.Err() between calls; on cancellation returns (nil, false, nil).
+// When no instance matches, returns (nil, false, diags) where diags
+// carries a single Error diagnostic with Code DiagImporterNone.
+func Dispatch(ctx context.Context, reg Registry, in Input) (Importer, bool, []ast.Diagnostic)
+
+// Apply dispatches in against reg and runs Extract on the chosen
+// instance. Diagnostics from Dispatch and Extract are concatenated.
+// Returns (Output{Diagnostics: dispatchDiags}, nil) when no instance
+// matches. On ctx cancellation returns (Output{}, ctx.Err()).
+func Apply(ctx context.Context, reg Registry, in Input) (Output, error)
+```
+
+`Configurable` is deleted. `Streaming` and `StreamDiagnoser` are
+unchanged.
+
+##### Concurrency contract
+
+| Symbol | Concurrency contract |
+| --- | --- |
+| `RegisterFactory` | Safe for concurrent use; intended init-time. Panics on duplicate kind. |
+| `LookupFactory`, `KindNames` | Safe for concurrent read; may race with `RegisterFactory` cleanly. |
+| `Factory.New` | Caller invokes at most once per instance. Distinct New calls for different instances MAY run concurrently. |
+| `Registry.Lookup`, `Registry.Names` | Safe for concurrent read; contents immutable post-construction. |
+| `Importer.Identify`, `Importer.Extract` | Safe for concurrent invocation on the same value. State frozen at factory return. |
+
+---
+
+### 8b-redesign — Hook factory + instance Registry + Chain signature change (PR-α)
+
+#### Context
+
+The hook side receives the same factory + instance-registry redesign as
+8a, with two principled divergences justified by hook-specific
+semantics:
+
+1. `Chain` drops the `names []string` parameter. The instance `Registry`
+   IS the ordered list of hooks to run (by declaration order in TOML),
+   so a parallel caller-maintained name list is a redundant source of
+   truth and was removed.
+2. `Registry.Names()` returns declaration order rather than sorted
+   order. In PR #83, sorted order was chosen because Chain's execution
+   order came from a separate `names []string` parameter. Now that Chain
+   derives walk order from the Registry itself, sorted order would break
+   the contract that hook declaration order in TOML governs execution
+   order. (`KindNames()` retains ascending sort — kinds have no
+   declaration order.)
+
+The 8b Detailed Design above remains as historical record of the
+pre-redesign API.
+
+#### Contract
+
+All symbols below are exported from `pkg/importer/hook`.
+
+##### `Hook`
+
+```go
+// Hook transforms a directive list produced by an importer or a prior
+// rung of Chain. A Hook is produced by a Factory; its internal state
+// is frozen at that point and Apply is safe for concurrent invocation
+// on the same value.
+type Hook interface {
+    // Name returns the instance name supplied to the Factory that
+    // produced this Hook. Stable for the lifetime of the instance.
+    Name() string
+
+    // Apply transforms in.Directives and returns the new list plus any
+    // per-directive Diagnostics. A non-nil error is reserved for
+    // system-level failures (ctx cancellation, I/O, programmer error).
+    // Apply MUST NOT mutate in.Directives, in.Hints, or in.Options.
+    // Context cancellation MUST surface as a non-nil error.
+    Apply(ctx context.Context, in HookInput) (HookResult, error)
+}
+```
+
+`HookInput` and `HookResult` are unchanged from PR #83.
+
+##### `Factory` and `FactoryFunc`
+
+```go
+// Factory produces a single fully-configured Hook instance. The New
+// call IS the Configure step; there is no separately exposed Configure
+// method on Hook. A non-nil error aborts creation; on error the first
+// return MUST be nil.
+//
+// The decode callback decodes the caller's per-instance configuration
+// (the TOML table body, with reserved keys "kind" and "name" stripped)
+// into a destination the factory supplies. It MUST NOT be nil.
+//
+// Multiple New calls for distinct instances of the same kind MAY run
+// concurrently; a Factory holding shared state is responsible for its
+// own synchronisation.
+type Factory interface {
+    New(name string, decode func(dest any) error) (Hook, error)
+}
+
+// FactoryFunc adapts a function to the Factory interface, analogous to
+// http.HandlerFunc.
+type FactoryFunc func(name string, decode func(dest any) error) (Hook, error)
+
+func (f FactoryFunc) New(name string, decode func(dest any) error) (Hook, error) {
+    return f(name, decode)
+}
+```
+
+Contractual invariants:
+
+- A `Factory` MUST NOT return `(nil, nil)`. `MapRegistry` enforces this.
+- The factory MUST set the returned `Hook`'s `Name()` to the `name`
+  argument verbatim.
+
+##### Kind registry
+
+```go
+// RegisterFactory installs f under the given kind in the package-global
+// kind registry. Panics on duplicate kind. Intended to be called from
+// init() or a goplug InitPlugin callback. Safe for concurrent use.
+func RegisterFactory(kind string, f Factory)
+
+// LookupFactory returns the Factory registered for kind, or false if none.
+func LookupFactory(kind string) (Factory, bool)
+
+// KindNames returns the registered kinds sorted in ascending order.
+func KindNames() []string
+```
+
+These symbols **replace** `Register` / `Lookup` / `Names` /
+`GlobalRegistry` from PR #83. The old names are deleted with no
+compatibility shim.
+
+##### Instance registry
+
+```go
+// Registry is the per-run lookup of fully-configured Hook instances.
+// The CLI builds one Registry per beanimport invocation from the
+// [[hook]] entries in TOML and hands it to Chain.
+//
+// Names returns instance names in the order Chain walks them
+// (declaration order in TOML). All Registry methods are safe for
+// concurrent use. A Registry's contents are immutable after
+// construction.
+type Registry interface {
+    Lookup(name string) (Hook, bool)
+    Names() []string
+}
+
+// MapRegistry is the default in-memory Registry implementation.
+// Build one with NewRegistry; the zero value must not be used.
+type MapRegistry struct { /* unexported fields */ }
+
+func (r *MapRegistry) Lookup(name string) (Hook, bool)
+func (r *MapRegistry) Names() []string
+
+// NewRegistry returns a Registry populated with the given Hooks in the
+// order supplied; that order is the Chain walk order. Returns an error
+// if any Hook is nil, if two Hooks share the same Name(), or if any
+// Name() is the empty string.
+func NewRegistry(hooks []Hook) (*MapRegistry, error)
+```
+
+**Divergence from PR #83:** `Registry.Names()` returns declaration
+order, not sorted order. Chain now derives walk order from the Registry
+itself rather than a caller-supplied `names []string`.
+
+##### `Chain`
+
+```go
+// Chain runs every Hook in reg.Names() order against in and returns
+// the composed HookResult.
+//
+// Empty registry returns HookResult{Directives: in.Directives,
+// Diagnostics: nil} with zero allocations (returned Directives shares
+// the same backing array as in.Directives).
+//
+// Before each rung, Chain checks ctx.Err(). On cancellation it returns
+// the composed-so-far HookResult together with ctx.Err().
+//
+// If a name returned by reg.Names() is not resolved by reg.Lookup,
+// Chain halts and returns the composed-so-far HookResult augmented
+// with a [DiagHookNotRegistered] Error diagnostic and a nil error.
+//
+// If a hook's Apply returns a non-nil error, Chain halts: it returns
+// the previous rung's Directives (the failing hook's Directives are
+// discarded), the composed Diagnostics, and the error.
+//
+// Diagnostics from successive rungs concatenate in chain order. When
+// no rung emits any diagnostic, the returned Diagnostics is nil.
+// Chain MUST NOT defensively copy Directives between rungs.
+func Chain(ctx context.Context, reg Registry, in HookInput) (HookResult, error)
+```
+
+**Signature change vs PR #83:** the `names []string` parameter is
+removed. The instance Registry encodes both membership and walk order.
+
+`hook.Configurable` is deleted. `DiagHookNotRegistered` is kept; its
+description is updated to refer to a Registry that yields a name its
+own `Lookup` does not resolve.
+
+##### Concurrency contract
+
+| Symbol | Concurrency contract |
+| --- | --- |
+| `RegisterFactory` | Safe for concurrent use; intended init-time. Panics on duplicate kind. |
+| `LookupFactory`, `KindNames` | Safe for concurrent read; may race with `RegisterFactory` cleanly. |
+| `Factory.New` | Caller invokes at most once per instance. Distinct New calls for different instances MAY run concurrently. |
+| `Registry.Lookup`, `Registry.Names` | Safe for concurrent read; contents immutable post-construction. |
+| `Hook.Apply` | Safe for concurrent invocation on the same value. State frozen at factory return. |
+| `Chain` | Safe for concurrent invocation on the same Registry. |
