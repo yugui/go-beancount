@@ -1,13 +1,12 @@
 // Package classify is the reference classifier hook. It registers a
-// process-global [*Hook] under the canonical short name "classify" and
-// under its Go fully-qualified package path; either lookup returns the
-// same instance.
+// [hook.Factory] under the kind "classify"; each factory call produces one
+// fully-configured [*Hook] for a declared instance.
 //
 // # Configuration
 //
-// The hook is encoding-agnostic: its [*Hook.Configure] method takes a
-// decoder closure supplied by the caller (typically the CLI's TOML loader).
-// The configuration schema is a top-level array of rule tables:
+// Each instance is configured at construction time via the decode callback
+// supplied to the factory. The configuration schema is a top-level array of
+// rule tables:
 //
 //	[[rule]]
 //	payee_regex = "(?i)acme"
@@ -38,16 +37,12 @@
 //
 // # Concurrency
 //
-// Configure and Apply on the same instance must be serialised by the caller;
-// the hook.Chain runner provides that serialisation by construction.
-// Configure may be called multiple times in sequence; a failed Configure
-// leaves any previously-installed rule list intact.
+// A Hook's internal state is frozen at construction. Apply is safe for
+// concurrent invocation on the same value with no external synchronisation.
 package classify
 
 import "github.com/yugui/go-beancount/pkg/importer/hook"
 
 func init() {
-	h := &Hook{}
-	hook.Register("classify", h)
-	hook.Register("github.com/yugui/go-beancount/pkg/importer/hook/std/classify", h)
+	hook.RegisterFactory("classify", hook.FactoryFunc(newHook))
 }

@@ -3,6 +3,8 @@ package classify
 import (
 	"fmt"
 	"regexp"
+
+	"github.com/yugui/go-beancount/pkg/importer/hook"
 )
 
 type config struct {
@@ -25,25 +27,21 @@ type rule struct {
 	account        string
 }
 
-// Configure decodes the hook's configuration through the caller-supplied
-// closure, validates it, and replaces any previously-installed rule list.
-// If decode is nil, Configure returns an error with prefix "classify: configure: ".
-// On any failure the previous configuration is left untouched and a non-nil
-// error prefixed "classify: configure: " is returned.
-func (h *Hook) Configure(decode func(dest any) error) error {
+// newHook is the factory function registered under kind "classify". On failure
+// it returns (nil, err) with the error prefixed "classify: configure: ".
+func newHook(name string, decode func(dest any) error) (hook.Hook, error) {
 	if decode == nil {
-		return fmt.Errorf("classify: configure: nil decoder")
+		return nil, fmt.Errorf("classify: configure: nil decoder")
 	}
 	var cfg config
 	if err := decode(&cfg); err != nil {
-		return fmt.Errorf("classify: configure: %w", err)
+		return nil, fmt.Errorf("classify: configure: %w", err)
 	}
 	rules, err := buildRules(cfg)
 	if err != nil {
-		return fmt.Errorf("classify: configure: %w", err)
+		return nil, fmt.Errorf("classify: configure: %w", err)
 	}
-	h.rules = rules
-	return nil
+	return &Hook{name: name, rules: rules}, nil
 }
 
 func buildRules(cfg config) ([]rule, error) {

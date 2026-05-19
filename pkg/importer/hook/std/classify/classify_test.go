@@ -38,11 +38,25 @@ func permissiveDecode(src string) func(dest any) error {
 
 func newHook(t *testing.T, tomlSrc string) *classify.Hook {
 	t.Helper()
-	h := &classify.Hook{}
-	if err := h.Configure(permissiveDecode(tomlSrc)); err != nil {
-		t.Fatalf("Configure: %v", err)
+	f, ok := hook.LookupFactory("classify")
+	if !ok {
+		t.Fatal("classify factory not registered")
 	}
-	return h
+	h, err := f.New("test", permissiveDecode(tomlSrc))
+	if err != nil {
+		t.Fatalf("factory.New: %v", err)
+	}
+	hook, ok := h.(*classify.Hook)
+	if !ok {
+		t.Fatalf("factory.New returned %T, want *classify.Hook", h)
+	}
+	return hook
+}
+
+// emptyHook returns a factory-built Hook with no rules.
+func emptyHook(t *testing.T) *classify.Hook {
+	t.Helper()
+	return newHook(t, "")
 }
 
 func singleLegTxn(payee, narration, amount, currency string) *ast.Transaction {
@@ -269,7 +283,7 @@ account     = "Expenses:Office"
 // TestApply_NoRuleDiagSpan verifies DiagNoRule span is copied from the
 // transaction's Span.
 func TestApply_NoRuleDiagSpan(t *testing.T) {
-	h := &classify.Hook{}
+	h := emptyHook(t)
 	tx := &ast.Transaction{
 		Date:      time.Now(),
 		Narration: "test",
@@ -287,10 +301,10 @@ func TestApply_NoRuleDiagSpan(t *testing.T) {
 	}
 }
 
-// TestApply_NoConfigurePath verifies Apply is well-defined when Configure was
-// never called: every single-leg txn produces DiagNoRule.
-func TestApply_NoConfigurePath(t *testing.T) {
-	h := &classify.Hook{}
+// TestApply_EmptyRules verifies Apply is well-defined when the hook was built
+// with no rules: every single-leg txn produces DiagNoRule.
+func TestApply_EmptyRules(t *testing.T) {
+	h := emptyHook(t)
 	tx := singleLegTxn("Payee", "narration", "100.00", "USD")
 	_, diags := applyOne(t, h, tx)
 	if len(diags) != 1 || diags[0].Code != classify.DiagNoRule {
@@ -301,7 +315,7 @@ func TestApply_NoConfigurePath(t *testing.T) {
 // TestApply_NonTransactionPassThrough verifies non-Transaction directives
 // pass through unchanged (aliased).
 func TestApply_NonTransactionPassThrough(t *testing.T) {
-	h := &classify.Hook{}
+	h := emptyHook(t)
 	note := &ast.Note{Date: time.Now(), Account: "Assets:Cash", Comment: "hi"}
 	res, err := h.Apply(context.Background(), hook.HookInput{Directives: []ast.Directive{note}})
 	if err != nil {
@@ -315,7 +329,7 @@ func TestApply_NonTransactionPassThrough(t *testing.T) {
 // TestApply_BalancedTxnPassThrough verifies transactions with != 1 posting pass
 // through unchanged.
 func TestApply_BalancedTxnPassThrough(t *testing.T) {
-	h := &classify.Hook{}
+	h := emptyHook(t)
 
 	t.Run("two postings", func(t *testing.T) {
 		tx := balancedTxn()
@@ -376,7 +390,7 @@ account     = "Expenses:Misc"
 // TestApply_AliasOnNoSingleLeg verifies the output Directives aliases the input
 // slice when no single-leg transaction is present.
 func TestApply_AliasOnNoSingleLeg(t *testing.T) {
-	h := &classify.Hook{}
+	h := emptyHook(t)
 	note := &ast.Note{Date: time.Now(), Account: "Assets:Cash", Comment: "n"}
 	balanced := balancedTxn()
 
@@ -446,7 +460,7 @@ account     = "Expenses:Rule"
 
 // TestApply_CancelledContext verifies Apply respects ctx.Err() at the top.
 func TestApply_CancelledContext(t *testing.T) {
-	h := &classify.Hook{}
+	h := emptyHook(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
