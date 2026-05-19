@@ -846,7 +846,7 @@ func TestReducerRun_ClonesErrorsSlice(t *testing.T) {
 	}
 	// Mutate the returned slice with a sentinel Code value no real
 	// error ever uses, so a leak would be obvious.
-	const tampered Code = -999
+	const tampered Code = "tampered-sentinel"
 	errs[0] = Error{Code: tampered, Message: "tampered"}
 
 	fresh := r.Errors()
