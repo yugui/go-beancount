@@ -229,6 +229,328 @@ PR-β is a separate orchestration run that follows after PR-α merges.
 `CLAUDE.md` (contract-style godoc); concurrency guarantees stated on
 `Factory`, `Registry`, `Importer`.
 
+### Detailed Design
+
+#### Contract
+
+All symbols below are exported from `pkg/importer` unless marked unexported.
+Godoc shown is the binding external contract; generators must reproduce its
+substance.
+
+##### `Importer`
+
+```go
+// Importer is a fully-configured import driver for one declared instance
+// (e.g. "boa_checking"). An Importer is produced by a Factory; its
+// internal state is frozen at that point and Identify/Extract are safe
+// for concurrent invocation on the same value.
+type Importer interface {
+    // Name returns the instance name supplied to the Factory that
+    // produced this Importer. The value is stable for the lifetime of
+    // the instance and is the key under which a Registry holds it.
+    Name() string
+
+    // Identify is a cheap, side-effect-free check. It MUST NOT consume
+    // in.Opener unless Path/MIME/Sniff are insufficient; if it does, it
+    // MUST close the returned io.ReadCloser before returning. A true
+    // result is a non-binding preference; Dispatch picks the first
+    // match in Registry.Names() order. Identify reports no error: a
+    // failure to identify is simply false.
+    Identify(ctx context.Context, in Input) bool
+
+    // Extract returns directives in source-encounter order plus
+    // per-record diagnostics. A non-nil error is reserved for
+    // system-level failures (I/O, ctx cancellation, structural format
+    // corruption); ledger-content problems are Diagnostics, not errors.
+    // Context cancellation MUST surface as a non-nil error.
+    Extract(ctx context.Context, in Input) (Output, error)
+}
+```
+
+`Identify` keeps its existing `bool`-only signature (the baseline does not
+return error and there is no reason to add one).
+
+`Input` and `Output` are unchanged from PR #83 (`Input` keeps Path, Opener,
+Sniff, MIME, Hints; `Output` keeps Directives, Diagnostics).
+
+##### `Factory` and `FactoryFunc`
+
+```go
+// Factory produces a single fully-configured Importer instance. The
+// New call IS the Configure step: there is no separately exposed
+// Configure method on Importer. A non-nil error aborts creation and
+// MUST be returned without a partially-constructed Importer leaking
+// out; on error the first return MUST be nil.
+//
+// The decode callback decodes the caller's per-instance configuration
+// (the TOML table body, with the reserved keys "kind" and "name"
+// stripped) into a destination the factory supplies. It MUST NOT be
+// nil; factories that take no configuration may simply ignore it.
+//
+// Factory.New is called at most once per (name, decode) pair by the
+// caller building a Registry. Multiple New calls for distinct
+// instances of the same kind MAY run concurrently; a Factory that
+// holds shared state across calls is responsible for its own
+// synchronisation.
+type Factory interface {
+    New(name string, decode func(dest any) error) (Importer, error)
+}
+
+// FactoryFunc adapts a plain function to Factory, mirroring
+// http.Handler / http.HandlerFunc. Stateless factory functions
+// register via FactoryFunc(myFactoryFn).
+type FactoryFunc func(name string, decode func(dest any) error) (Importer, error)
+
+func (f FactoryFunc) New(name string, decode func(dest any) error) (Importer, error) {
+    return f(name, decode)
+}
+```
+
+Contractual notes the generator MUST honour:
+
+- A `Factory` MUST NOT return `(nil, nil)`. Callers building a Registry
+  MUST treat such a return as a programming error and refuse to insert
+  the entry (the recommended `MapRegistry` constructor enforces this).
+- The `name` parameter is the instance name supplied by the caller
+  (typically the `name = "..."` TOML key). The factory MUST set its
+  returned Importer's `Name()` to this exact string.
+
+##### Kind registry
+
+```go
+// RegisterFactory installs f under the given kind in the package-global
+// kind registry. It panics if a Factory has already been registered
+// under the same kind, mirroring the pattern in pkg/quote.Register.
+// Intended to be called from an init() function (in-tree kinds) or
+// from a goplug InitPlugin callback (plugin kinds). Safe for
+// concurrent use; reads (LookupFactory, KindNames) MAY run
+// concurrently with RegisterFactory, though in practice all
+// registrations land before reads begin.
+func RegisterFactory(kind string, f Factory)
+
+// LookupFactory returns the Factory registered for kind. The second
+// return value is false if no such kind is registered.
+func LookupFactory(kind string) (Factory, bool)
+
+// KindNames returns the registered kinds sorted in ascending order so
+// that diagnostics and tests have deterministic output.
+func KindNames() []string
+```
+
+These three symbols **replace** the previous `Register` / `Lookup` /
+`Names` / `GlobalRegistry` from `pkg/importer/registry.go`. The old names
+are deleted; there is no compatibility shim.
+
+##### Instance registry
+
+```go
+// Registry is the per-run lookup of fully-configured Importer
+// instances. The CLI builds one Registry per beanimport invocation
+// from the [[importer]] entries in TOML and hands it to Dispatch/Apply.
+//
+// Names returns instance names in the order Dispatch must walk them.
+// In ABI v1 this is declaration order (the order the CLI handed the
+// instances to the constructor); implementations MUST preserve a
+// stable, deterministic order across repeated calls on the same
+// Registry value.
+//
+// All Registry methods are safe for concurrent use. A Registry's
+// contents are immutable after construction.
+type Registry interface {
+    Lookup(name string) (Importer, bool)
+    Names() []string
+}
+
+// MapRegistry is the default in-memory Registry implementation. Build
+// one with NewRegistry; the zero value is not usable.
+type MapRegistry struct { /* unexported fields */ }
+
+func (r *MapRegistry) Lookup(name string) (Importer, bool)
+func (r *MapRegistry) Names() []string
+
+// NewRegistry returns a Registry populated with the given Importers in
+// the order supplied; that order is the Dispatch walk order. NewRegistry
+// returns an error if any Importer is nil, if two Importers share the
+// same Name(), or if any Name() is the empty string.
+func NewRegistry(imps []Importer) (*MapRegistry, error)
+```
+
+There is no `GlobalRegistry()` accessor any more. An instance registry
+is constructed per run; tests construct their own.
+
+##### `Dispatch` and `Apply`
+
+```go
+// Dispatch walks reg.Names() in the registry's declared order and
+// returns the first Importer whose Identify returns true. Between
+// calls it checks ctx.Err(); on cancellation it returns
+// (nil, false, nil) and the caller converts ctx.Err() into an error.
+//
+// When no instance matches, Dispatch returns (nil, false, diags) where
+// diags carries a single Error diagnostic with Code DiagImporterNone
+// and Span.Start.Filename = in.Path.
+func Dispatch(ctx context.Context, reg Registry, in Input) (Importer, bool, []ast.Diagnostic)
+
+// Apply dispatches in against reg and runs Extract on the chosen
+// instance. Diagnostics from Dispatch and Extract are concatenated in
+// that order; if both sides produce none, Output.Diagnostics is nil.
+// Apply returns (Output{Diagnostics: dispatchDiags}, nil) when no
+// instance matches — the absence of a matching importer is a
+// ledger-content problem, not a framework error. On ctx cancellation
+// Apply returns (Output{}, ctx.Err()).
+func Apply(ctx context.Context, reg Registry, in Input) (Output, error)
+```
+
+The semantics are byte-identical to the PR #83 implementations except
+that the `Registry` they walk now holds `Importer` instances keyed by
+instance name. No behaviour change is required in the bodies; only the
+type that satisfies `Registry` differs.
+
+##### Diagnostic codes
+
+`DiagImporterNone` and `DiagImporterAmbiguous` remain.
+`DiagImporterNotRegistered` is **kept** as an exported constant — it is
+part of the published surface even though `Apply` itself does not emit
+it in ABI v1 (the CLI may emit it when the user `--force`s an unknown
+instance name). The godoc updates its description to refer to instance
+names rather than registered importers.
+
+##### `Configurable` removal
+
+`Configurable` is deleted. The generator MUST:
+
+- Remove the interface declaration from `importer.go`.
+- Remove all `configurableImporter` fixtures and the
+  `TestApply_DoesNotCallConfigure` /
+  `TestOptionalInterface_ConfigurableAssertion` tests from `apply_test.go`
+  and `fake_test.go`. (These two tests vanish; there is no replacement,
+  because the property they checked — "no Configure call leaks" — is
+  now true by construction.)
+
+`Streaming` and `StreamDiagnoser` are unchanged.
+
+##### Concurrency contract (per symbol)
+
+| Symbol                 | Concurrency contract                                                          |
+| ---------------------- | ----------------------------------------------------------------------------- |
+| `RegisterFactory`      | Safe for concurrent use; intended init-time. Panics on duplicate kind.        |
+| `LookupFactory`, `KindNames` | Safe for concurrent read; may race with RegisterFactory cleanly.        |
+| `Factory.New`          | Caller calls once per instance. Distinct New calls (different instances) MAY run concurrently. A Factory implementation that shares state across calls owns its synchronisation. |
+| `Registry.Lookup`, `Registry.Names` | Safe for concurrent read; contents immutable post-construction.    |
+| `Importer.Identify`, `Importer.Extract` | Safe for concurrent invocation on the same value. State is frozen at factory return. |
+
+##### Test adaptation (binding)
+
+The generator MUST update the existing tests as follows:
+
+- `registry_test.go` → `kind_registry_test.go` (rename). Tests cover
+  `RegisterFactory` / `LookupFactory` / `KindNames`:
+  round-trip, duplicate panic, missing lookup, sorted-order. The
+  `GlobalRegistry` test is deleted (no such symbol any more).
+- `dispatch_test.go` keeps every test; `fakeRegistry` continues to
+  satisfy the new `Registry` interface unchanged.
+- `apply_test.go` keeps every test except `TestApply_DoesNotCallConfigure`
+  and `TestOptionalInterface_ConfigurableAssertion`, which are deleted.
+- `fake_test.go`: the `configurableImporter` fixture and the
+  `withCleanRegistry` helper are deleted. `withCleanRegistry` is no
+  longer needed because tests now build local `MapRegistry` values.
+- `concurrency_test.go` → splits into two:
+  - One concurrent test on the **kind registry** (parallel
+    `RegisterFactory` / `LookupFactory` / `KindNames`), mirroring the
+    existing structure.
+  - One new test that builds a single `Importer` via a factory and
+    invokes `Identify` / `Extract` from N goroutines under `-race` to
+    pin the frozen-state contract.
+- Two new factory-focused tests (new file, e.g. `factory_test.go`):
+  - Parallel factory calls with different `name`s produce independent
+    `Importer` instances.
+  - Factory error propagation: a factory whose `decode` callback errors,
+    and a factory whose own validation errors, both surface to the
+    caller of `NewRegistry`.
+
+#### Suggested Internals
+
+These are recommendations. The implementer may adopt, modify, or
+replace them based on what they discover while coding.
+
+**Kind registry storage.** Recommend mirroring `pkg/quote/registry.go`
+verbatim: package-level `var kindMu sync.RWMutex; var kinds = map[string]Factory{}`
+guarded by `kindMu`. Same lock discipline (write lock for register,
+read lock for lookup/names). Alternative (unguarded map relying on
+init-time-only writes) rejected for consistency with `pkg/quote` and
+to accommodate goplug `InitPlugin` callbacks that may fire after
+`init()`.
+
+**Default instance registry shape.** Recommend a concrete exported
+`*MapRegistry` returned by `NewRegistry([]Importer) (*MapRegistry, error)`,
+holding a `map[string]Importer` and a `[]string` of names in
+declaration order. Both fields filled once at construction and never
+mutated, so no mutex is needed.
+
+  Alternative A: a builder pattern (`r.Add(imp)`). Rejected — it
+  re-introduces a mutable phase and tempts a "register after Dispatch
+  starts" race. The slice-in constructor makes the
+  immutable-after-construction contract structural.
+
+  Alternative B: have `NewRegistry` return a `Registry` interface
+  instead of `*MapRegistry`. Acceptable; pick whichever reads cleaner.
+
+  Alternative C: closure-based implementation of `Registry`. Rejected
+  on debuggability.
+
+**Dispatch / Apply sharing.** Keep the current shape: `Apply` calls
+`Dispatch` then `Extract`, concatenating diagnostics. PR #83's body
+is already minimal; do not extract a helper.
+
+**Where the no-match Diagnostic is built.** Keep inline in `Dispatch`.
+
+**Empty-slice vs nil for `Diagnostics`.** Preserve the PR #83
+invariant: `Apply` returns `nil` when both Dispatch and Extract
+diagnostics are empty. `TestApply_EmptyOutputHasNilDiagnostics` is
+kept and continues to pin this.
+
+**Where `FactoryFunc` lives.** Same file as `Factory` (importer.go is
+fine; or a new `factory.go` if the file is getting large).
+
+#### Alternatives
+
+- **Duplicate-kind registration: panic vs return error.** Recommend
+  **panic**, matching `pkg/quote/registry.go`. Registration is
+  init-time and cannot meaningfully recover; an error return would be
+  silently ignored at every realistic call site.
+
+- **Registry constructor name: `NewRegistry` vs `NewMapRegistry`.**
+  Recommend `NewRegistry` returning `*MapRegistry`. `NewMapRegistry`
+  reads as if there were other registry constructors to disambiguate
+  from; there aren't.
+
+- **`MapRegistry` exported vs unexported.** Recommend exported.
+  Exporting the concrete type lets tests assert on it and lets
+  advanced callers reach for it directly. The interface is still the
+  recommended consumer contract.
+
+- **Keep `DiagImporterNotRegistered` or delete it.** Recommend keep.
+  PR-β's CLI emits it when `--force <name>` references a missing
+  instance; deleting and re-adding across PRs churns the ABI for no
+  reason.
+
+- **Should `Identify` gain an `error` return?** No — the plan and the
+  existing code both keep `bool` only.
+
+#### Recommendation
+
+Adopt the contract above verbatim: `Factory` interface +
+`FactoryFunc` adapter; kind registry (`RegisterFactory`,
+`LookupFactory`, `KindNames`) with `sync.RWMutex` mirroring
+`pkg/quote`; per-run instance `Registry` interface plus a concrete
+`*MapRegistry` built by `NewRegistry([]Importer)`; `Dispatch` and
+`Apply` unchanged in body, only retyped over the new `Registry`.
+Delete `Configurable` and the two tests that exercised it; rename
+`registry_test.go` to `kind_registry_test.go`; split
+`concurrency_test.go` into a kind-registry concurrency test and a
+new frozen-instance concurrent-Apply test; add a factory-focused
+test file covering parallel construction and error propagation.
+
 ### Step α-2 — Mirror redesign in `pkg/importer/hook`
 
 **Functional requirements:**
