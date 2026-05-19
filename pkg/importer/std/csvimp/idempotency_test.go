@@ -50,12 +50,13 @@ func printDirectives(t *testing.T, dirs []ast.Directive) string {
 	return buf.String()
 }
 
-func runOnce(t *testing.T, src string, in importer.Input) []ast.Directive {
+func runOnce(t *testing.T, instanceName, src string, in importer.Input) []ast.Directive {
 	t.Helper()
-	imp := &Importer{}
-	if err := imp.Configure(permissiveDecoder(src)); err != nil {
-		t.Fatalf("Configure: %v", err)
+	raw, err := newImporter(instanceName, permissiveDecoder(src))
+	if err != nil {
+		t.Fatalf("newImporter: %v", err)
 	}
+	imp := raw.(*Importer)
 	if !imp.Identify(context.Background(), in) {
 		t.Fatal("Identify returned false")
 	}
@@ -80,19 +81,22 @@ func TestIdempotency_DebitCreditShape(t *testing.T) {
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)
+	in := fixtureInput(t, shape)
 
-	first := printDirectives(t, runOnce(t, src, fixtureInput(t, shape)))
-	second := printDirectives(t, runOnce(t, src, fixtureInput(t, shape)))
+	// Instance name equals the shape directory name to preserve golden-file rowhash bytes.
+	first := printDirectives(t, runOnce(t, shape, src, in))
+	second := printDirectives(t, runOnce(t, shape, src, in))
 	if first != second {
 		t.Errorf("two-run mismatch:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
 
-	// Re-run on the same importer instance: cache must not pollute output.
-	imp := &Importer{}
-	if err := imp.Configure(permissiveDecoder(src)); err != nil {
-		t.Fatalf("Configure: %v", err)
+	// Re-run on the same Importer instance: immutability means repeated
+	// Extract calls on the same value must produce identical output.
+	raw, err := newImporter(shape, permissiveDecoder(src))
+	if err != nil {
+		t.Fatalf("newImporter: %v", err)
 	}
-	in := fixtureInput(t, shape)
+	imp := raw.(*Importer)
 	if !imp.Identify(context.Background(), in) {
 		t.Fatal("Identify false")
 	}
@@ -107,7 +111,7 @@ func checkIdempotency(t *testing.T, shape string) {
 	p1 := printDirectives(t, out1.Directives)
 	p2 := printDirectives(t, out2.Directives)
 	if p1 != p2 {
-		t.Errorf("cache-reuse mismatch:\nfirst:\n%s\nsecond:\n%s", p1, p2)
+		t.Errorf("repeated-extract mismatch:\nfirst:\n%s\nsecond:\n%s", p1, p2)
 	}
 
 	// Golden file: matches if present, skipped only when absent.

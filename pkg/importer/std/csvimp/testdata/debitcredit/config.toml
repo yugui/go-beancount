@@ -1,4 +1,3 @@
-[shape.debitcredit]
 date_col         = "Date"
 date_format      = "2006-01-02"
 payee_col        = "Payee"
@@ -7,10 +6,10 @@ narration_cols      = ["Description", "Memo"]
 narration_separator = " / "
 account          = "Assets:JapaneseBank"
 
-[[shape.debitcredit.amount]]
+[[amount]]
 col    = "Withdrawal"
 negate = true
 
-[[shape.debitcredit.amount]]
+[[amount]]
 col    = "Deposit"
 negate = false

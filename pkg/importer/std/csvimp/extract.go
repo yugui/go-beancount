@@ -18,10 +18,7 @@ import (
 
 const rowhashKey = "csvimp-rowhash"
 
-func extractRows(ctx context.Context, in importer.Input, s *shape) (importer.Output, error) {
-	if in.Opener == nil {
-		return importer.Output{}, fmt.Errorf("csvimp: input opener is nil")
-	}
+func extractRows(ctx context.Context, in importer.Input, name string, s *shape) (importer.Output, error) {
 	rc, err := in.Opener()
 	if err != nil {
 		return importer.Output{}, fmt.Errorf("csvimp: opening %q: %w", in.Path, err)
@@ -34,7 +31,7 @@ func extractRows(ctx context.Context, in importer.Input, s *shape) (importer.Out
 	}
 	idx := buildColumnIndex(hdr)
 
-	if diags, ok := checkMissingColumns(in.Path, s, idx); !ok {
+	if diags, ok := checkMissingColumns(in.Path, name, s, idx); !ok {
 		return importer.Output{Diagnostics: diags}, nil
 	}
 
@@ -60,7 +57,7 @@ func extractRows(ctx context.Context, in importer.Input, s *shape) (importer.Out
 		}
 		csvLine, _ := rdr.FieldPos(0)
 		line := csvLine + s.skipLines
-		dir, diag := processRow(in.Path, line, s, idx, row, in.Hints)
+		dir, diag := processRow(in.Path, line, name, s, idx, row, in.Hints)
 		if diag != nil {
 			diags = append(diags, *diag)
 			continue
@@ -72,12 +69,12 @@ func extractRows(ctx context.Context, in importer.Input, s *shape) (importer.Out
 	return importer.Output{Directives: directives, Diagnostics: diags}, nil
 }
 
-func checkMissingColumns(path string, s *shape, idx map[string]int) ([]ast.Diagnostic, bool) {
+func checkMissingColumns(path, name string, s *shape, idx map[string]int) ([]ast.Diagnostic, bool) {
 	var diags []ast.Diagnostic
-	for _, name := range requiredColumns(s) {
-		if _, ok := idx[name]; !ok {
+	for _, col := range requiredColumns(s) {
+		if _, ok := idx[col]; !ok {
 			diags = append(diags, rowDiag(DiagMissingColumn, path, 0,
-				fmt.Sprintf("required column %q not present in header (shape %q)", name, s.name)))
+				fmt.Sprintf("required column %q not present in header (shape %q)", col, name)))
 		}
 	}
 	return diags, len(diags) == 0
@@ -110,8 +107,8 @@ func allBlank(row []string) bool {
 	return true
 }
 
-func processRow(path string, line int, s *shape, idx map[string]int, row []string, hints map[string]string) (ast.Directive, *ast.Diagnostic) {
-	hash := rowHash(s.name, row)
+func processRow(path string, line int, name string, s *shape, idx map[string]int, row []string, hints map[string]string) (ast.Directive, *ast.Diagnostic) {
+	hash := rowHash(name, row)
 
 	dateRaw := fieldAt(row, idx, s.dateCol)
 	parsedDate, err := time.Parse(s.dateFormat, strings.TrimSpace(dateRaw))
