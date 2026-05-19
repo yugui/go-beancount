@@ -216,14 +216,25 @@ PR-β is a separate orchestration run that follows after PR-α merges.
 **Verification:**
 
 - `bazel run //:gazelle`
-- `bazel build //pkg/importer/...`
-- `bazel test //pkg/importer/... --test_output=errors`
+- `bazel build //pkg/importer:importer`
+- `bazel test //pkg/importer:importer_test --test_output=errors`
 - New unit tests:
   - Parallel factory calls produce independent instances (no shared
     state contamination).
   - Concurrent `Apply` on the same `Importer` from `Dispatch` is
     race-clean (`-race`).
   - Factory error propagation: decode error and validation error.
+
+> **Step-level scope.** This step's verification is intentionally
+> narrowed to the `pkg/importer` package itself. Removing the legacy
+> `Register` / `Lookup` / `GlobalRegistry` symbols breaks
+> `pkg/importer/std/csvimp` and `pkg/importer/hook/...` at compile
+> time; those packages are migrated to the new API in Steps α-2
+> through α-4. The PR-α-level invariant — `bazel build //...` and
+> `bazel test //...` are both green — converges only after Step α-4.
+> Intermediate per-step states between α-1 and α-4 are expected to
+> leave one or both downstream packages non-buildable; this is
+> tracked at the PR-α level, not the step level.
 
 **Quality requirements:** exported symbols documented per project
 `CLAUDE.md` (contract-style godoc); concurrency guarantees stated on
