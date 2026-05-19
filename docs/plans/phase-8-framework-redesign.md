@@ -923,11 +923,268 @@ listing).
 
 **Verification:**
 
-- `bazel test //pkg/importer/std/csvimp/... --test_output=errors`
+- `bazel build //pkg/importer/std/csvimp:csvimp`
+- `bazel test //pkg/importer/std/csvimp:csvimp_test --test_output=errors`
 - New concurrent-Apply test with `-race`.
+
+> **Step-level scope.** After α-3, `pkg/importer/...` builds for
+> the importer subtree (α-1 + α-3); only `pkg/importer/hook/std/classify`
+> still references the old hook API. The PR-α-level wildcard build
+> converges after α-4.
 
 **Quality requirements:** exported godoc; the contract that
 post-factory state is immutable is documented on the struct.
+
+### Detailed Design
+
+#### Contract
+
+##### Package surface after migration
+
+The package exports exactly one symbol after this step:
+
+```go
+// Importer extracts beancount Transactions from one CSV/TSV shape.
+// It is produced by the package's [importer.Factory] (registered under
+// kind "csv"); its internal state is frozen at construction and all
+// methods are safe for concurrent invocation.
+type Importer struct { /* unexported fields only */ }
+
+func (i *Importer) Name() string
+func (i *Importer) Identify(ctx context.Context, in importer.Input) bool
+func (i *Importer) Extract(ctx context.Context, in importer.Input) (importer.Output, error)
+```
+
+Required fields (unexported); the implementer MUST NOT add
+`sync.Mutex`, caches, or any field that mutates post-construction:
+
+- instance name (returned by `Name()`)
+- one `*shape` value (or its inlined fields) carrying compiled match
+  regex, delimiter rune, skip count, column names, default currency,
+  default account, amount column descriptors, narration columns and
+  separator.
+
+**Deleted:**
+
+- the `Configure` method,
+- the `mu sync.Mutex` field,
+- the `identifyCache` type and field,
+- the `shapes []*shape` slice (or whatever the multi-shape container
+  was called),
+- the dual-name `importer.Register(...)` calls from `doc.go` (the
+  Go-import-path alias is gone).
+
+No compatibility shim is left behind.
+
+The `*shape` type and its internal helpers (`buildColumnIndex`,
+`requiredColumns`, `openCSVAtBody`, `processRow`, `sumAmounts`,
+`resolveCurrency`, `resolveAccount`, `buildNarration`, `rowHash`,
+`rowDiag`) and the diagnostic-code constants (`DiagBadDate`,
+`DiagBadAmount`, `DiagAllBlankAmount`, `DiagMissingCurrency`,
+`DiagMissingAccount`, `DiagMissingColumn`) keep their PR #83
+semantics byte-for-byte. The diagnostic-code constants remain
+exported.
+
+##### Factory registration
+
+At init time:
+
+```go
+importer.RegisterFactory("csv", importer.FactoryFunc(newImporter))
+```
+
+The factory function:
+
+```go
+func newImporter(name string, decode func(dest any) error) (importer.Importer, error)
+```
+
+Binding requirements:
+
+1. `decode` MUST NOT be nil. A nil `decode` yields
+   `fmt.Errorf("csvimp: configure: nil decoder")`.
+2. The decode target is a single `shapeConfig` struct (the type
+   already used as the value side of PR #83's `config.Shapes`).
+   The factory calls `decode(&sc)` where `sc` is a fresh
+   `shapeConfig`.
+3. Validation reuses PR #83's per-shape validation
+   (`validateShape`), producing a `*shape`. The `name` parameter
+   from the factory call becomes the shape's `name` field — the
+   TOML body no longer carries the shape name (callers wrap the
+   body so the factory sees the body only).
+4. On any error the factory returns `(nil, err)` and the error
+   message is prefixed `"csvimp: configure: "` (preserves PR #83
+   error-text shape — config_test.go relied on this prefix).
+5. On success the factory returns a fully-initialised `*Importer`
+   whose `Name()` is the `name` argument verbatim (NOT `"csv"`).
+6. The factory MUST NOT register the resulting `*Importer` in any
+   global state.
+
+Only one kind is registered — `"csv"`. The Go-import-path alias is
+dropped.
+
+##### Name() returns the instance name
+
+`Name()` returns the string supplied to the factory. PR #83's
+`return "csv"` becomes `return i.name`. The kind name `"csv"` is
+visible only at the `RegisterFactory` call site.
+
+##### Identify and Extract semantics
+
+The `importer.Importer` interface contract from α-1 is binding.
+Behavioural deltas vs PR #83:
+
+- `Identify` consults the single configured shape only —
+  extension/MIME gate, optional match-regex against `in.Path`, then
+  header read + required-columns check. It MUST NOT mutate any
+  field of `*Importer` (the `identifyCache` write disappears).
+- `Extract` likewise dispatches against the single shape. On match
+  failure it returns
+  `fmt.Errorf("csvimp: no shape matched for %q", in.Path)`
+  preserving PR #83's surface text.
+- The "not configured" framework error path disappears: an
+  unconfigured `*Importer` is unrepresentable.
+
+##### Behaviour preservation (binding)
+
+For any input that PR #83's `csvimp` accepted with a single
+`[shape.<name>]` configuration, the migrated package MUST emit:
+
+- the same directives in the same order;
+- identical `csvimp-rowhash` bytes on each directive. The rowhash
+  canonical form is unchanged: the shape-name passed to `rowHash`
+  is `i.name`, which equals the PR #83 shape-table key under the
+  fixtures' instance-name choices (`"simple"`, `"debitcredit"`);
+  the project's golden files remain valid;
+- the same diagnostic codes, severities, messages, and span
+  filenames / line numbers (skip_lines offset preserved).
+
+PR-β changes the canonical rowhash form per the plan's PR-β
+section; PR-α does not.
+
+##### Multi-shape semantics live in the Registry
+
+PR #83's lex-sorted, single-importer-walks-many-shapes selection is
+gone. Multi-shape scenarios are realised by constructing one
+`*Importer` per shape via the factory and walking them with
+`importer.Dispatch` / `importer.Apply` against an
+`*importer.MapRegistry`. Walk order is the registry's declaration
+order (α-1 contract). Tests that asserted lex-first shape
+selection must declare instances in the equivalent order
+explicitly; lex sorting no longer happens inside csvimp.
+
+##### Concurrency contract per symbol
+
+| Symbol               | Contract |
+| -------------------- | -------- |
+| `Importer.Name`      | Safe for concurrent use; pure read of immutable field. |
+| `Importer.Identify`  | Safe for concurrent invocation on the same value; no state mutation. |
+| `Importer.Extract`   | Safe for concurrent invocation on the same value; no state mutation. `in.Opener` MAY be called more than once across goroutines, so the caller's Opener must return a fresh reader per call (already the documented `importer.Input` contract). |
+| `newImporter` factory | Caller invokes at most once per instance; distinct instances MAY be constructed concurrently. |
+
+#### Suggested Internals
+
+**File layout.** Recommend:
+
+- `csvimp.go` keeps `type Importer struct`, `Name`, `Identify`,
+  `Extract`, and the small matcher/header helpers (with `Identify`
+  non-mutating).
+- `config.go` keeps `shapeConfig`, `amountColumn`, `shape`, and
+  `validateShape`. `buildShapes` and the multi-shape `config`
+  struct are deleted. The factory function (`newImporter`) lives
+  here next to the validation logic it drives.
+- `extract.go`, `rowhash.go`, `diag.go` unchanged in body.
+- `doc.go` rewritten: package overview reflects single-shape model;
+  `init()` calls
+  `importer.RegisterFactory("csv", importer.FactoryFunc(newImporter))`.
+
+  Alternative: keep `init()` in `factory.go` or `csvimp.go` — equivalent.
+
+**rowHash shape-name argument.** Recommend `i.name` (instance
+name). Removes the vestigial `shape.name` field; bytes identical to
+PR #83 under the fixtures' instance-name choices. Alternative
+(keep `s.name` seeded from factory `name`) is functionally
+identical; recommended choice is cleaner.
+
+**Shape struct retention.** Keep `*shape` to minimise diff and reuse
+the extract helpers verbatim. The `*Importer` then has `name
+string` and `s *shape`. Alternative (inline) is a fine internals
+refactor for later.
+
+**`selectShape` collapse.** With one shape, the old loop becomes a
+straight-line check. Inline into `Identify` or keep as a small
+helper — either is acceptable.
+
+**Extract's match path.** No cache to consult. Extract simply runs
+the same matcher Identify uses. Match-failure error path collapses
+to one `fmt.Errorf`.
+
+**Test file layout.**
+
+- `csvimp_test.go`: drop `TestImporterRegisteredUnderBothNames`.
+  Replace `TestName_Constant` with `TestName_ReturnsInstanceName`.
+  Rewrite `newConfigured` helper to call
+  `newImporter("test", permissiveDecoder(src))`.
+  `TestIdentify_MatchRegexGatesShapeSelection` and
+  `TestConfigure_LexicographicShapeOrder` rewritten as
+  multi-instance scenarios via `MapRegistry` + `Dispatch`.
+  `TestExtract_NotConfigured` deleted.
+- `config_test.go`: TOML fixtures changed from `[shape.<name>]`
+  form to bare body form. `Configure` calls replaced by
+  `newImporter`. `TestConfigure_Reconfigure` deleted (each factory
+  call yields a fresh instance — property is now structural).
+  Other tests renamed `TestConfigure_*` → `TestFactory_*` and
+  drop the rollback assertions.
+- `rowhash_test.go`: unchanged (still reaches `rowHash` directly
+  under the CLAUDE.md test-exception clause).
+- `idempotency_test.go`: rewrite `runOnce` to use `newImporter`
+  with a permissive decoder built from
+  `loadFixtureConfig(t, shape)`. Fixture TOML files
+  (`testdata/{simple,debitcredit}/config.toml`) reshape from
+  `[shape.<name>]` form to bare body form (drop the table header
+  line, dedent fields, change `[[shape.<name>.amount]]` to
+  `[[amount]]`). Instance name passed to `newImporter` is the
+  shape directory name (`"simple"` / `"debitcredit"`) — keeps the
+  rowhash bytes identical to the golden files.
+
+  Alternative: keep fixture TOMLs unchanged and have `runOnce`
+  decode `cfg.Shapes[shape]` before passing to user dest.
+  Rejected — bakes the old schema into the test driver and
+  obscures the migration's intent.
+
+- New `concurrency_test.go`: a test that builds one `*Importer`
+  via the factory and runs `Identify` + `Extract` from N
+  goroutines against the same `Input` whose `Opener` is
+  re-entrant; runs under `-race`.
+
+#### Alternatives
+
+- **Inline `shape` fields into `*Importer` vs keep `*shape`.**
+  Recommend keeping `*shape` for minimum surgery.
+- **Where to put `newImporter`.** `config.go` next to validation.
+- **Decode target shape (bare body vs preserved table).** Bare body
+  — the plan's mechanical framing. Multi-shape callers build
+  per-shape decoders.
+- **`rowHash` argument source.** `i.name` over a retained
+  `s.name`. Identical bytes under fixture instance-name choices.
+- **Dual-name registration retention.** Drop. The Go-import-path
+  alias served no concrete user; α-1's `KindNames` would otherwise
+  list a misleading duplicate.
+- **Replacement for `TestExtract_NotConfigured`.** None — the state
+  is structurally unreachable.
+
+#### Recommendation
+
+Adopt the contract above: `*Importer` with `name string` and
+`*shape`, no mutex / cache / shapes slice; `newImporter(name,
+decode)` factory in `config.go`; `init()` in `doc.go` registering
+the factory under kind `"csv"` only; `Identify` and `Extract`
+consult the single shape without state mutation; rowhash bytes
+preserved under fixture instance-name choices. Tests migrate
+multi-shape scenarios into multi-instance scenarios via
+`importer.NewRegistry` + `importer.Dispatch`; testdata TOML
+fixtures flatten to bare bodies. A concurrent-Apply test under
+`-race` pins the frozen-state contract.
 
 ### Step α-4 — Migrate `pkg/importer/hook/std/classify` to factory (mechanical)
 
