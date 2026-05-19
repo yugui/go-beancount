@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "hook",
+    srcs = [
+        "chain.go",
+        "hook.go",
+        "registry.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/importer/hook",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/ast"],
+)
+
+go_test(
+    name = "hook_test",
+    srcs = [
+        "chain_test.go",
+        "concurrency_test.go",
+        "fake_test.go",
+        "hook_test.go",
+        "registry_test.go",
+    ],
+    embed = [":hook"],
+    race = "on",
+    deps = [
+        "//pkg/ast",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)
