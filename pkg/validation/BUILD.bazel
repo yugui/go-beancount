@@ -5,14 +5,9 @@ go_library(
     srcs = [
         "doc.go",
         "errors.go",
-        "from_inventory.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/validation",
     visibility = ["//visibility:public"],
-    deps = [
-        "//pkg/ast",
-        "//pkg/inventory",
-    ],
 )
 
 go_test(

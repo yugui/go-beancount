@@ -57,11 +57,10 @@ const (
 // Error is an inventory error produced while booking postings against
 // account state.
 //
-// The shape mirrors validation.Error so the two can be surfaced through a
-// common diagnostics channel, plus an Account field that records which
-// account's inventory was being mutated when the error was detected. See
-// validation.FromInventoryError for the bridge that maps an Error to a
-// validation.Error.
+// Code/Span/Message carry the same role they do on [ast.Diagnostic]; the
+// Account field records which account's inventory was being mutated
+// when the error was detected so the surrounding posting context is not
+// lost before the diagnostic reaches the user.
 type Error struct {
 	Code    Code
 	Span    ast.Span
@@ -70,8 +69,7 @@ type Error struct {
 }
 
 // Error returns a human-readable description of the inventory error,
-// including source location and account when available. The format
-// follows validation.Error for consistency:
+// including source location and account when available:
 //
 //	file:line:col: account: message
 //	file:line:col: message
