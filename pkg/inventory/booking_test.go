@@ -178,9 +178,12 @@ func TestClassify_EmptyCostSpecWithPriceHint(t *testing.T) {
 		t.Fatalf("classify(empty spec + USD price) = %v, want kindReduce", got)
 	}
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("Reductions len = %d, want 1", len(steps))
@@ -215,9 +218,12 @@ func TestBookOne_AugmentPerUnitCost(t *testing.T) {
 	spec := &ast.CostSpec{PerUnit: decimalPtr(t, "100"), Currency: "USD"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne returned errors: %v", errs)
+	lot, _, finding, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err != nil {
+		t.Fatalf("bookOne returned errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot == nil {
 		t.Fatal("bookOne lot should be set for augmentation with cost")
@@ -249,9 +255,12 @@ func TestBookOne_AugmentCombinedCost(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne returned errors: %v", errs)
+	lot, _, finding, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err != nil {
+		t.Fatalf("bookOne returned errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot == nil {
 		t.Fatal("bookOne: Lot should be set")
@@ -268,9 +277,12 @@ func TestBookOne_AugmentTotalCost(t *testing.T) {
 	spec := &ast.CostSpec{Total: decimalPtr(t, "500"), Currency: "USD"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne returned errors: %v", errs)
+	lot, _, finding, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err != nil {
+		t.Fatalf("bookOne returned errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot == nil {
 		t.Fatal("bookOne: Lot should be set")
@@ -286,9 +298,12 @@ func TestBookOne_AugmentCash(t *testing.T) {
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	p := mkPosting(t, "Assets:Cash", mkAmount(t, "100", "USD"), nil, nil)
 
-	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne returned errors: %v", errs)
+	lot, _, finding, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err != nil {
+		t.Fatalf("bookOne returned errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot != nil {
 		t.Errorf("Lot should be nil for cash augmentation, got %+v", lot)
@@ -307,12 +322,21 @@ func TestBookOne_AugmentEmptyCostSpecErrors(t *testing.T) {
 	spec := &ast.CostSpec{} // empty "{}"
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	_, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	_, _, d, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	if errs[0].Code != CodeAugmentationRequiresCost {
-		t.Errorf("error code = %v, want CodeAugmentationRequiresCost", errs[0].Code)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
+	}
+
+	if d.Code != CodeAugmentationRequiresCost {
+		t.Errorf("error code = %v, want CodeAugmentationRequiresCost", d.Code)
 	}
 }
 
@@ -322,9 +346,12 @@ func TestBookOne_AugmentDateDefaultsToTxnDate(t *testing.T) {
 	spec := &ast.CostSpec{PerUnit: decimalPtr(t, "100"), Currency: "USD"} // no Date
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) > 0 {
-		t.Fatalf("unexpected errors: %v", errs)
+	lot, _, finding, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err != nil {
+		t.Fatalf("unexpected errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if !lot.Date.Equal(txnDate) {
 		t.Errorf("Lot.Date = %v, want %v (txn date default)", lot.Date, txnDate)
@@ -341,9 +368,12 @@ func TestBookOne_AugmentLabelCopied(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), spec, nil)
 
-	lot, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) > 0 {
-		t.Fatalf("unexpected errors: %v", errs)
+	lot, _, finding, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err != nil {
+		t.Fatalf("unexpected errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot.Label != "lot-A" {
 		t.Errorf("Lot.Label = %q, want lot-A", lot.Label)
@@ -371,9 +401,12 @@ func TestBookOne_ReduceFIFO(t *testing.T) {
 	spec := &ast.CostSpec{} // empty matcher
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), spec, nil)
 
-	_, steps, errs := bookOne(inv, p, ast.BookingFIFO, newDate)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingFIFO, newDate)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("Reductions len = %d, want 1", len(steps))
@@ -402,9 +435,12 @@ func TestBookOne_ReduceStrictWithLabel(t *testing.T) {
 	spec := &ast.CostSpec{Label: "lot-a"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), spec, nil)
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("Reductions len = %d, want 1", len(steps))
@@ -442,9 +478,12 @@ func TestBookOne_ReduceWithPerUnitPrice_RealizedGain(t *testing.T) {
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{},
 		&ast.PriceAnnotation{Amount: mkAmount(t, "110", "USD"), IsTotal: false})
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("Reductions len = %d, want 1", len(steps))
@@ -480,9 +519,12 @@ func TestBookOne_ReduceWithTotalPrice_RealizedGain(t *testing.T) {
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{},
 		&ast.PriceAnnotation{Amount: mkAmount(t, "550", "USD"), IsTotal: true})
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("Reductions len = %d, want 1", len(steps))
@@ -508,9 +550,12 @@ func TestBookOne_ReduceWithPerUnitPrice_RealizedLoss(t *testing.T) {
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{},
 		&ast.PriceAnnotation{Amount: mkAmount(t, "90", "USD"), IsTotal: false})
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("Reductions len = %d, want 1", len(steps))
@@ -555,9 +600,12 @@ func TestBookOne_ReduceTotalMatchPerStepRealizedGain(t *testing.T) {
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-20", "ACME"), &ast.CostSpec{},
 		&ast.PriceAnnotation{Amount: mkAmount(t, "2500", "USD"), IsTotal: true})
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, d2)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, d2)
+	if err != nil {
+		t.Fatalf("bookOne: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 2 {
 		t.Fatalf("bookOne Reductions len = %d, want 2", len(steps))
@@ -591,9 +639,12 @@ func TestBookOne_ReduceWithoutPriceLeavesGainZero(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("Reductions len = %d, want 1", len(steps))
@@ -620,12 +671,21 @@ func TestBookOne_ReduceExceedsInventory(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
 
-	_, _, errs := bookOne(inv, p, ast.BookingFIFO, date)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
+	_, _, d, err := bookOne(inv, p, ast.BookingFIFO, date)
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	if errs[0].Code != CodeReductionExceedsInventory {
-		t.Errorf("code = %v, want CodeReductionExceedsInventory", errs[0].Code)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
+	}
+
+	if d.Code != CodeReductionExceedsInventory {
+		t.Errorf("code = %v, want CodeReductionExceedsInventory", d.Code)
 	}
 }
 
@@ -638,12 +698,21 @@ func TestBookOne_ReduceNoMatchingLot(t *testing.T) {
 	spec := &ast.CostSpec{Label: "missing"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), spec, nil)
 
-	_, _, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	_, _, d, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	if errs[0].Code != CodeNoMatchingLot {
-		t.Errorf("code = %v, want CodeNoMatchingLot", errs[0].Code)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
+	}
+
+	if d.Code != CodeNoMatchingLot {
+		t.Errorf("code = %v, want CodeNoMatchingLot", d.Code)
 	}
 }
 
@@ -658,12 +727,21 @@ func TestBookOne_ReduceStrictAmbiguous(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
 
-	_, _, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d: %v", len(errs), errs)
+	_, _, d, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	if errs[0].Code != CodeAmbiguousLotMatch {
-		t.Errorf("code = %v, want CodeAmbiguousLotMatch", errs[0].Code)
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
+	}
+
+	if d.Code != CodeAmbiguousLotMatch {
+		t.Errorf("code = %v, want CodeAmbiguousLotMatch", d.Code)
 	}
 }
 
@@ -689,9 +767,12 @@ func TestBookOne_ReduceStrictTotalCostDisambiguates(t *testing.T) {
 	spec := &ast.CostSpec{Total: decimalPtr(t, "10"), Currency: "JPY"}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-10", "STOCK"), spec, nil)
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("steps len = %d, want 1", len(steps))
@@ -741,9 +822,12 @@ func TestBookOne_ReduceStrictCombinedCostDisambiguates(t *testing.T) {
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-10", "STOCK"), spec, nil)
 
-	_, steps, errs := bookOne(inv, p, ast.BookingStrict, date)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	_, steps, finding, err := bookOne(inv, p, ast.BookingStrict, date)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if len(steps) != 1 {
 		t.Fatalf("steps len = %d, want 1", len(steps))
@@ -754,19 +838,22 @@ func TestBookOne_ReduceStrictCombinedCostDisambiguates(t *testing.T) {
 	}
 }
 
-func TestBookOne_NilAmountReturnsInternalError(t *testing.T) {
+// TestBookOne_NilAmountReturnsSystemError pins that bookOne treats an
+// auto-posting reaching it as an invariant violation. The reducer
+// resolves auto-postings upstream, so bookOne should never see one;
+// the defensive return is a plain `error` (not an [ast.Diagnostic])
+// because this is an implementation bug, not a user finding.
+func TestBookOne_NilAmountReturnsSystemError(t *testing.T) {
 	inv := NewInventory()
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
-	// bookOne must never see an auto-posting, but if it does the
-	// defensive path returns CodeInternalError rather than panicking.
 	p := mkAutoPosting("Assets:A")
 
-	_, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
+	_, _, finding, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err == nil {
+		t.Fatalf("expected system error, got nil")
 	}
-	if errs[0].Code != CodeInternalError {
-		t.Errorf("code = %v, want CodeInternalError", errs[0].Code)
+	if finding != nil {
+		t.Errorf("bookOne returned a Diagnostic for an invariant violation; want non-Diagnostic system error, got %v", finding)
 	}
 }
 
@@ -782,9 +869,12 @@ func TestBookOne_BookingNoneShortPosition(t *testing.T) {
 	// -5 ACME with no cost spec under BookingNone.
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), nil, nil)
 
-	lot, _, errs := bookOne(inv, p, ast.BookingNone, txnDate)
-	if len(errs) > 0 {
-		t.Fatalf("bookOne errors: %v", errs)
+	lot, _, finding, err := bookOne(inv, p, ast.BookingNone, txnDate)
+	if err != nil {
+		t.Fatalf("bookOne errors: %v", err)
+	}
+	if finding != nil {
+		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot != nil {
 		t.Errorf("Lot = %+v, want nil (no cost spec)", lot)
@@ -805,19 +895,91 @@ func TestBookOne_BookingNoneShortPosition(t *testing.T) {
 	}
 }
 
-// errors.As smoke test: verify that bookOne's returned errors match
-// via inventory.Error.
-func TestBookOne_ErrorAsInventoryError(t *testing.T) {
+// errors.As smoke test: verify that bookOne's returned errors can be
+// recovered as inventory's internal ast.Diagnostic so the enrichment path that
+// patches Span/Account on errors from lower-level helpers continues to
+// work.
+func TestBookOne_ErrorAsDiagnostic(t *testing.T) {
 	inv := NewInventory()
 	txnDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), &ast.CostSpec{}, nil)
 
-	_, _, errs := bookOne(inv, p, ast.BookingStrict, txnDate)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
+	_, _, d, err := bookOne(inv, p, ast.BookingStrict, txnDate)
+	if err != nil {
+
+		t.Fatalf("system error: %v", err)
+
 	}
-	var invErr Error
-	if !errors.As(errs[0], &invErr) {
-		t.Fatal("errors.As failed to convert to inventory.Error")
+
+	if d == nil {
+
+		t.Fatal("expected finding, got nil")
+
+	}
+}
+
+// TestWrapSystemErr_StampsLocation pins the developer-repro contract:
+// a system error gets the triggering posting's source location
+// stamped on its message via fmt.Errorf %w, preserving the chain so
+// errors.Is/As still see the underlying cause.
+func TestWrapSystemErr_StampsLocation(t *testing.T) {
+	root := errors.New("apd: invalid operation")
+	p := &ast.Posting{
+		Account: "Assets:Test",
+		Span: ast.Span{Start: ast.Position{
+			Filename: "f.beancount",
+			Line:     42,
+			Column:   5,
+		}},
+	}
+	err := wrapSystemErr(root, p)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !errors.Is(err, root) {
+		t.Errorf("errors.Is lost the underlying chain: %v", err)
+	}
+	if want := "at f.beancount:42:5: apd: invalid operation"; err.Error() != want {
+		t.Errorf("err.Error() = %q, want %q", err.Error(), want)
+	}
+}
+
+// TestWrapSystemErr_NoLocationPassesThrough pins that an err produced
+// without a source location (Span.Start.Filename == "") flows through
+// unwrapped so we do not stamp a misleading "at ::0" prefix.
+func TestWrapSystemErr_NoLocationPassesThrough(t *testing.T) {
+	root := errors.New("boom")
+	p := &ast.Posting{Account: "Assets:Test"}
+	err := wrapSystemErr(root, p)
+	if err != root {
+		t.Errorf("wrapSystemErr wrapped err without a source location: %v", err)
+	}
+}
+
+// TestEnrichDiagnostic_FillsContext pins the user-finding path: a
+// finding the lower helper produced with empty Span/Account gets the
+// posting's Span filled in and the account folded into the Message.
+func TestEnrichDiagnostic_FillsContext(t *testing.T) {
+	d := &ast.Diagnostic{Code: CodeNoMatchingLot, Message: "no lot"}
+	p := &ast.Posting{
+		Account: "Assets:Test",
+		Span: ast.Span{Start: ast.Position{
+			Filename: "f.beancount",
+			Line:     10,
+			Column:   1,
+		}},
+	}
+	got := enrichDiagnostic(d, p)
+	if got != d {
+		t.Errorf("enrichDiagnostic returned a different pointer; want in-place mutation")
+	}
+	if got.Code != CodeNoMatchingLot {
+		t.Errorf("Code = %q, want %q", got.Code, CodeNoMatchingLot)
+	}
+	if got.Span != p.Span {
+		t.Errorf("Span = %v, want %v", got.Span, p.Span)
+	}
+	if want := "Assets:Test: no lot"; got.Message != want {
+		t.Errorf("Message = %q, want %q", got.Message, want)
 	}
 }

@@ -1,7 +1,7 @@
 package inventory
 
 import (
-	"errors"
+	"fmt"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
@@ -144,9 +144,12 @@ func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 // cost spec omits one. method is the booking method for the
 // posting's account.
 //
-// Preconditions: p.Amount must be non-nil (a nil amount returns
-// [CodeInternalError] rather than panicking, so the reducer can
-// surface it). The reducer rejects auto+cost/price combinations
+// At most one of the third (user finding) and fourth (system error)
+// returns is non-nil. The error slot is reserved for booking-pass
+// implementation bugs and invariant violations (nil posting, nil
+// Amount, unknown classify kind, apd arithmetic from inputs the
+// grammar cannot produce) — the caller must halt the booking pass on
+// non-nil err. The reducer rejects auto+cost/price combinations
 // upstream with [CodeInvalidAutoPosting]; bookOne does not enforce
 // it.
 func bookOne(
@@ -154,67 +157,38 @@ func bookOne(
 	p *ast.Posting,
 	method ast.BookingMethod,
 	txnDate time.Time,
-) (lot *Lot, steps []ReductionStep, errs []Error) {
+) (*Lot, []ReductionStep, *ast.Diagnostic, error) {
 	if p == nil {
-		return nil, nil, []Error{{
-			Code:    CodeInternalError,
-			Message: "bookOne called with a nil posting",
-		}}
+		return nil, nil, nil, fmt.Errorf("inventory.bookOne: nil posting")
 	}
 	if p.Amount == nil {
-		return nil, nil, []Error{{
-			Code:    CodeInternalError,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: "bookOne called with a nil Amount; auto-postings must be resolved before booking",
-		}}
+		return nil, nil, nil, fmt.Errorf("inventory.bookOne: nil Amount; auto-postings must be resolved before booking")
 	}
 
 	switch classify(inv, p, method) {
 	case kindAugment:
-		lot, errs = bookAugment(inv, p, txnDate)
-		return lot, nil, errs
+		lot, finding, err := bookAugment(inv, p, txnDate)
+		return lot, nil, finding, err
 	case kindReduce:
-		steps, errs = bookReduce(inv, p, method)
-		return nil, steps, errs
+		steps, finding, err := bookReduce(inv, p, method)
+		return nil, steps, finding, err
 	default:
-		return nil, nil, []Error{{
-			Code:    CodeInternalError,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: "bookOne: classify returned an unknown kind",
-		}}
+		return nil, nil, nil, fmt.Errorf("inventory.bookOne: classify returned an unknown kind")
 	}
 }
 
 // bookAugment handles the augmentation path of bookOne: resolve the
 // cost spec, build a Position, and Add it to the inventory. Returns
 // the resolved lot (nil iff p carried no cost spec — a cash
-// augmentation).
-func bookAugment(
-	inv *Inventory,
-	p *ast.Posting,
-	txnDate time.Time,
-) (*Lot, []Error) {
-	lot, err := ResolveCost(p.Cost, *p.Amount, txnDate)
+// augmentation). See [bookOne] for the user-finding / system-error
+// split.
+func bookAugment(inv *Inventory, p *ast.Posting, txnDate time.Time) (*Lot, *ast.Diagnostic, error) {
+	lot, finding, err := ResolveCost(p.Cost, *p.Amount, txnDate)
 	if err != nil {
-		// enrich with span/account.
-		var invErr Error
-		if errors.As(err, &invErr) {
-			if invErr.Span == (ast.Span{}) {
-				invErr.Span = p.Span
-			}
-			if invErr.Account == "" {
-				invErr.Account = p.Account
-			}
-			return nil, []Error{invErr}
-		}
-		return nil, []Error{{
-			Code:    CodeInternalError,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: "resolve cost: " + err.Error(),
-		}}
+		return nil, nil, wrapSystemErr(err, p)
+	}
+	if finding != nil {
+		return nil, enrichDiagnostic(finding, p), nil
 	}
 
 	pos := Position{
@@ -224,69 +198,44 @@ func bookAugment(
 
 	if inv != nil {
 		if err := inv.Add(pos); err != nil {
-			var invErr Error
-			if errors.As(err, &invErr) {
-				if invErr.Span == (ast.Span{}) {
-					invErr.Span = p.Span
-				}
-				if invErr.Account == "" {
-					invErr.Account = p.Account
-				}
-				return nil, []Error{invErr}
-			}
-			return nil, []Error{{
-				Code:    CodeInternalError,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "inventory add: " + err.Error(),
-			}}
+			// Inventory.Add only returns system errors.
+			return nil, nil, wrapSystemErr(err, p)
 		}
 	}
 
-	return lot, nil
+	return lot, nil, nil
 }
 
 // bookReduce is the reduction path of bookOne: build a matcher, call
 // [Inventory.Reduce], then enrich each step with sale price and
-// realized gain from p.Price.
+// realized gain from p.Price. See [bookOne] for the user-finding /
+// system-error split.
 func bookReduce(
 	inv *Inventory,
 	p *ast.Posting,
 	method ast.BookingMethod,
-) ([]ReductionStep, []Error) {
+) ([]ReductionStep, *ast.Diagnostic, error) {
 	priceCcy := ""
 	if specIsEmpty(p.Cost) && p.Price != nil {
 		priceCcy = p.Price.Amount.Currency
 	}
 	matcher := NewCostMatcher(p.Cost, priceCcy, p.Amount)
 
-	steps, err := inv.Reduce(*p.Amount, matcher, method)
+	steps, finding, err := inv.Reduce(*p.Amount, matcher, method)
 	if err != nil {
-		var invErr Error
-		if errors.As(err, &invErr) {
-			if invErr.Span == (ast.Span{}) {
-				invErr.Span = p.Span
-			}
-			if invErr.Account == "" {
-				invErr.Account = p.Account
-			}
-			return nil, []Error{invErr}
-		}
-		return nil, []Error{{
-			Code:    CodeInternalError,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: "inventory reduce: " + err.Error(),
-		}}
+		return nil, nil, wrapSystemErr(err, p)
+	}
+	if finding != nil {
+		return nil, enrichDiagnostic(finding, p), nil
 	}
 
 	if p.Price != nil && p.Price.Amount.Currency != "" {
-		if errs := fillRealizedGain(steps, p); len(errs) > 0 {
-			return nil, errs
+		if err := fillRealizedGain(steps, p); err != nil {
+			return nil, nil, err
 		}
 	}
 
-	return steps, nil
+	return steps, nil, nil
 }
 
 // fillRealizedGain populates SalePricePer, RealizedGain, and
@@ -294,18 +243,17 @@ func bookReduce(
 // p.Price.Amount.Number for `@` (per-unit) and p.Price.Amount.Number /
 // |p.Amount.Number| (via [quoContext]) for `@@` (total). RealizedGain
 // is (salePricePer - step.Lot.Number) * step.Units.
-func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
+//
+// All apd.BaseContext failures here are unreachable from valid grammar
+// inputs, so the error return is always a system error rather than a
+// Diagnostic.
+func fillRealizedGain(steps []ReductionStep, p *ast.Posting) error {
 	var salePricePer *apd.Decimal
 	if p.Price.IsTotal {
 		absUnits := new(apd.Decimal)
 		unitsNum := p.Amount.Number
 		if _, err := apd.BaseContext.Abs(absUnits, &unitsNum); err != nil {
-			return []Error{{
-				Code:    CodeInternalError,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "fill realized gain: abs units: " + err.Error(),
-			}}
+			return fmt.Errorf("inventory.fillRealizedGain: abs units: %w", err)
 		}
 		if absUnits.Sign() == 0 {
 			// avoid div-by-zero
@@ -314,12 +262,7 @@ func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
 		salePricePer = new(apd.Decimal)
 		total := p.Price.Amount.Number
 		if _, err := quoContext.Quo(salePricePer, &total, absUnits); err != nil {
-			return []Error{{
-				Code:    CodeInternalError,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "fill realized gain: divide total price: " + err.Error(),
-			}}
+			return fmt.Errorf("inventory.fillRealizedGain: divide total price: %w", err)
 		}
 	} else {
 		salePricePer = ast.CloneDecimal(&p.Price.Amount.Number)
@@ -335,22 +278,12 @@ func fillRealizedGain(steps []ReductionStep, p *ast.Posting) []Error {
 		diff := new(apd.Decimal)
 		lotNum := step.Lot.Number
 		if _, err := apd.BaseContext.Sub(diff, salePricePer, &lotNum); err != nil {
-			return []Error{{
-				Code:    CodeInternalError,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "fill realized gain: sub lot cost: " + err.Error(),
-			}}
+			return fmt.Errorf("inventory.fillRealizedGain: sub lot cost: %w", err)
 		}
 		gain := new(apd.Decimal)
 		units := step.Units
 		if _, err := apd.BaseContext.Mul(gain, diff, &units); err != nil {
-			return []Error{{
-				Code:    CodeInternalError,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "fill realized gain: mul units: " + err.Error(),
-			}}
+			return fmt.Errorf("inventory.fillRealizedGain: mul units: %w", err)
 		}
 		step.RealizedGain = gain
 		step.GainCurrency = currency

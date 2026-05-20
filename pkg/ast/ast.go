@@ -2,6 +2,8 @@
 package ast
 
 import (
+	"fmt"
+
 	"github.com/cockroachdb/apd/v3"
 )
 
@@ -46,11 +48,52 @@ const (
 // whether the diagnostic is fatal (Error) or advisory (Warning); the
 // zero value is Error so freshly constructed diagnostics default to
 // error severity.
+//
+// Diagnostic is a pure data type: it deliberately does NOT implement
+// the [error] interface. The two channels are kept structurally
+// distinct throughout the pipeline:
+//
+//   - Input-data findings — every problem attributable to the ledger
+//     under analysis — flow as [Diagnostic] values (typically through
+//     a [`[]Diagnostic`] slot or a `*Diagnostic` "optional finding"
+//     return).
+//   - System failures unrelated to ledger contents (I/O, context
+//     cancellation, implementation bugs) flow through a separate
+//     `error` return.
+//
+// Functions that may produce either return both in separate slots
+// (e.g. `(result, *Diagnostic, error)`) so callers cannot confuse a
+// finding for a bug and vice versa. CLI rendering goes through the
+// [fmt.Stringer] implementation below; the canonical greppable shape
+// is the contract.
 type Diagnostic struct {
 	Code     string
 	Span     Span
 	Message  string
 	Severity Severity
+}
+
+// String renders the diagnostic in the canonical greppable form
+//
+//	<path>:<line>:<col>: <severity>: <message> [<code>]
+//
+// omitting the location prefix when [Span.Start.Filename] is empty and
+// the trailing `[<code>]` when [Code] is empty. The format is part of
+// the diagnostic contract: tools that grep CLI output rely on it.
+func (d Diagnostic) String() string {
+	sev := "error"
+	if d.Severity == Warning {
+		sev = "warning"
+	}
+	msg := d.Message
+	if d.Code != "" {
+		msg = fmt.Sprintf("%s [%s]", msg, d.Code)
+	}
+	pos := d.Span.Start
+	if pos.Filename == "" {
+		return fmt.Sprintf("%s: %s", sev, msg)
+	}
+	return fmt.Sprintf("%s:%d:%d: %s: %s", pos.Filename, pos.Line, pos.Column, sev, msg)
 }
 
 // File is the result of lowering a single CST file into an AST.

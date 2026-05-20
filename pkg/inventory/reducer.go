@@ -28,7 +28,7 @@ type Reducer struct {
 	opts       *ast.OptionValues
 	booking    map[ast.Account]ast.BookingMethod
 	state      map[ast.Account]*Inventory
-	errs       []Error
+	diags      []ast.Diagnostic
 }
 
 // NewReducer returns a Reducer that iterates directives on each
@@ -83,16 +83,29 @@ type VisitFunc func(
 // transaction the reducer needed to mutate appears as a clone with
 // the mutations applied (inferred Amount, resolved deferred cost,
 // expanded multi-lot reduction); other transactions and non-
-// Transaction directives are returned by reference. The errors slice
-// is a fresh copy the caller may retain; collected errors do not
-// stop iteration unless the visitor returns false.
+// Transaction directives are returned by reference.
+//
+// The diagnostics slice carries every input-data finding (e.g.
+// [CodeAmbiguousLotMatch], [CodeUnresolvableInterpolation]) and is a
+// fresh copy the caller may retain; findings do not stop iteration
+// unless the visitor returns false.
+//
+// The error return is reserved for implementation bugs in the
+// booking pass — invariant violations and apd arithmetic failures
+// from inputs the grammar cannot produce. When non-nil it halts
+// further iteration; the directives slice contains the prefix
+// processed so far and diagnostics carries every finding collected
+// before the halt. The booking adapter in pkg/loader/booking
+// translates this error into a [ast.Diagnostic] with
+// [CodeInternalError] so the rest of the load pipeline can surface
+// it alongside other findings.
 //
 // Walk is reusable: each call resets state at entry and pays O(N) to
 // re-iterate and re-clone.
-func (r *Reducer) Walk(visit VisitFunc) ([]ast.Directive, []Error) {
+func (r *Reducer) Walk(visit VisitFunc) ([]ast.Directive, []ast.Diagnostic, error) {
 	r.state = map[ast.Account]*Inventory{}
 	r.booking = map[ast.Account]ast.BookingMethod{}
-	r.errs = nil
+	r.diags = nil
 
 	var out []ast.Directive
 	for _, d := range r.directives {
@@ -108,7 +121,11 @@ func (r *Reducer) Walk(visit VisitFunc) ([]ast.Directive, []Error) {
 			if needsBookingClone(d) {
 				booked = d.Clone()
 			}
-			before, after, bookedPostings, stop := r.visitTxn(booked)
+			before, after, bookedPostings, stop, err := r.visitTxn(booked)
+			if err != nil {
+				out = append(out, booked)
+				return out, append([]ast.Diagnostic(nil), r.diags...), err
+			}
 			out = append(out, booked)
 			if len(bookedPostings) == 0 && len(before) == 0 {
 				// no bookable postings; skip visitor.
@@ -120,14 +137,14 @@ func (r *Reducer) Walk(visit VisitFunc) ([]ast.Directive, []Error) {
 				}
 			}
 			if stop {
-				return out, append([]Error(nil), r.errs...)
+				return out, append([]ast.Diagnostic(nil), r.diags...), nil
 			}
 		default:
 			out = append(out, d)
 		}
 	}
 
-	return out, append([]Error(nil), r.errs...)
+	return out, append([]ast.Diagnostic(nil), r.diags...), nil
 }
 
 // needsBookingClone reports whether txn carries a posting the
@@ -354,14 +371,9 @@ func (pr *postingResolution) groupForResidual() (
 	var sumOrder []string
 	for _, ref := range pr.bookedDesc {
 		p := &pr.postings[ref.postingAt]
-		w, werr := PostingWeight(p)
-		if werr != nil {
-			return nil, nil, Error{
-				Code:    CodeInternalError,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "interpolate: posting weight: " + werr.Error(),
-			}
+		w, err := PostingWeight(p)
+		if err != nil {
+			return nil, nil, fmt.Errorf("inventory.groupForResidual: posting weight (account %s): %w", p.Account, err)
 		}
 		if w == nil {
 			continue
@@ -372,13 +384,8 @@ func (pr *postingResolution) groupForResidual() (
 			sumOrder = append(sumOrder, w.Currency)
 			continue
 		}
-		if _, aerr := apd.BaseContext.Add(existing, existing, &w.Number); aerr != nil {
-			return nil, nil, Error{
-				Code:    CodeInternalError,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "interpolate: accumulate weight: " + aerr.Error(),
-			}
+		if _, err := apd.BaseContext.Add(existing, existing, &w.Number); err != nil {
+			return nil, nil, fmt.Errorf("inventory.groupForResidual: accumulate weight (account %s): %w", p.Account, err)
 		}
 	}
 
@@ -402,13 +409,12 @@ func (pr *postingResolution) groupForResidual() (
 
 	negate := func(span ast.Span, account ast.Account, s *apd.Decimal) (apd.Decimal, error) {
 		var neg apd.Decimal
-		if _, nerr := apd.BaseContext.Neg(&neg, s); nerr != nil {
-			return apd.Decimal{}, Error{
-				Code:    CodeInternalError,
-				Span:    span,
-				Account: account,
-				Message: "interpolate: negate residual: " + nerr.Error(),
-			}
+		if _, err := apd.BaseContext.Neg(&neg, s); err != nil {
+			pos := span.Start
+			return apd.Decimal{}, fmt.Errorf(
+				"inventory.groupForResidual: negate residual at %s:%d:%d (account %s): %w",
+				pos.Filename, pos.Line, pos.Column, account, err,
+			)
 		}
 		return neg, nil
 	}
@@ -416,9 +422,9 @@ func (pr *postingResolution) groupForResidual() (
 	for _, cur := range bidOrder {
 		residual := ast.Amount{Currency: cur}
 		if s, ok := sums[cur]; ok {
-			neg, nerr := negate(bid[cur][0].Span, bid[cur][0].Account, s)
-			if nerr != nil {
-				return nil, nil, nerr
+			neg, err := negate(bid[cur][0].Span, bid[cur][0].Account, s)
+			if err != nil {
+				return nil, nil, err
 			}
 			residual.Number = neg
 		}
@@ -436,9 +442,9 @@ func (pr *postingResolution) groupForResidual() (
 		if s.IsZero() {
 			continue
 		}
-		neg, nerr := negate(ast.Span{}, "", s)
-		if nerr != nil {
-			return nil, nil, nerr
+		neg, err := negate(ast.Span{}, "", s)
+		if err != nil {
+			return nil, nil, err
 		}
 		groups = append(groups, residualGroup{
 			currency: cur,
@@ -539,13 +545,18 @@ func unknownCandidateCurrency(p *ast.Posting) string {
 // applies inverse bookings (via trace.prepareForRollback) for
 // dropped entries. After it returns, the caller assigns
 // txn.Postings = pr.postings; pr is not used further.
-func (pr *postingResolution) finalize(trace *stateTrace, r *Reducer) []BookedPosting {
+//
+// reverseBooking on a dropped entry can only fail with a system
+// error (apd arithmetic is unreachable from valid input); finalize
+// returns the first such error so the booking pass can halt rather
+// than report a misleading user diagnostic.
+func (pr *postingResolution) finalize(trace *stateTrace) ([]BookedPosting, error) {
 	if len(pr.dropped) == 0 {
 		booked := pr.booked
 		for i, ref := range pr.bookedDesc {
 			booked[i].Source = &pr.postings[ref.postingAt]
 		}
-		return booked
+		return booked, nil
 	}
 
 	survives := make([]bool, len(pr.postings))
@@ -578,7 +589,7 @@ func (pr *postingResolution) finalize(trace *stateTrace, r *Reducer) []BookedPos
 		if pr.dropped[ref.currency] {
 			inv := trace.prepareForRollback(pr.booked[j].Account)
 			if err := reverseBooking(inv, pr.booked[j]); err != nil {
-				r.errs = append(r.errs, asError(err, pr.booked[j].Account))
+				return nil, err
 			}
 			continue
 		}
@@ -586,16 +597,7 @@ func (pr *postingResolution) finalize(trace *stateTrace, r *Reducer) []BookedPos
 		bp.Source = &pr.postings[newIdx[ref.postingAt]]
 		out = append(out, bp)
 	}
-	return out
-}
-
-// asError returns err as an inventory [Error]; non-Error values
-// become [CodeInternalError] on account.
-func asError(err error, account ast.Account) Error {
-	if typed, ok := err.(Error); ok {
-		return typed
-	}
-	return Error{Code: CodeInternalError, Account: account, Message: err.Error()}
+	return out, nil
 }
 
 // reverseBooking undoes bp's effect on inv via an inverse
@@ -608,11 +610,7 @@ func reverseBooking(inv *Inventory, bp BookedPosting) error {
 	if bp.Reduction == nil {
 		var neg apd.Decimal
 		if _, err := apd.BaseContext.Neg(&neg, &bp.Units.Number); err != nil {
-			return Error{
-				Code:    CodeInternalError,
-				Account: bp.Account,
-				Message: "reverseBooking: negate augmentation units: " + err.Error(),
-			}
+			return fmt.Errorf("inventory.reverseBooking: negate augmentation units (account %s): %w", bp.Account, err)
 		}
 		return inv.Add(Position{
 			Units: ast.Amount{Number: neg, Currency: bp.Units.Currency},
@@ -654,9 +652,10 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	after map[ast.Account]*Inventory,
 	booked []BookedPosting,
 	stop bool,
+	err error,
 ) {
 	if !r.validateStructure(txn) {
-		return map[ast.Account]*Inventory{}, nil, nil, false
+		return map[ast.Account]*Inventory{}, nil, nil, false, nil
 	}
 
 	trace := newStateTrace(r.state)
@@ -672,14 +671,17 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 
 		inv := trace.prepareForEdit(p.Account)
 		method := r.booking[p.Account]
-		lot, steps, errs := bookOne(inv, p, method, txn.Date)
-		if len(errs) == 1 && errs[0].Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
-			// deferred: retry in Pass 2.
-			pr.addUnknown(p)
-			continue
+		lot, steps, finding, err := bookOne(inv, p, method, txn.Date)
+		if err != nil {
+			return nil, nil, nil, false, err
 		}
-		if len(errs) > 0 {
-			r.errs = append(r.errs, errs...)
+		if finding != nil {
+			if finding.Code == CodeAugmentationRequiresCost && costNumberMissing(p.Cost) {
+				// deferred: retry in Pass 2.
+				pr.addUnknown(p)
+				continue
+			}
+			r.diags = append(r.diags, *finding)
 			pr.markForDrop(weightCurrencyFallback(p))
 			trace.prepareForRollback(p.Account)
 			continue
@@ -689,15 +691,11 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 			key := weightCurrencyFallback(p)
 			if len(steps) > 1 {
 				// invariant: tight matcher → ≤1 step.
-				r.errs = append(r.errs, Error{
-					Code:    CodeInternalError,
-					Span:    p.Span,
-					Account: p.Account,
-					Message: "already-booked posting produced a multi-lot reduction; tight-matcher invariant violated",
-				})
-				pr.markForDrop(key)
-				trace.prepareForRollback(p.Account)
-				continue
+				pos := p.Span.Start
+				return nil, nil, nil, false, fmt.Errorf(
+					"inventory.visitTxn: already-booked posting at %s:%d:%d (account %s) produced a multi-lot reduction; tight-matcher invariant violated",
+					pos.Filename, pos.Line, pos.Column, p.Account,
+				)
 			}
 			pr.addAlreadyBooked(p, lot, firstStepOrNil(steps), key)
 		case lot != nil:
@@ -712,56 +710,70 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 	}
 
 	// pass 2
-	groups, free, gerr := pr.groupForResidual()
-	if gerr != nil {
-		r.errs = append(r.errs, asError(gerr, ""))
-	} else {
-		book := func(orig, candidate *ast.Posting, currency string) []Error {
-			inv := trace.prepareForEdit(orig.Account)
-			lot, steps, errs := bookOne(inv, candidate, r.booking[orig.Account], txn.Date)
-			if len(errs) > 0 {
-				trace.prepareForRollback(orig.Account)
-				pr.recordUnknownFailed(orig, currency)
-				return errs
-			}
-			switch {
-			case lot != nil:
-				pr.promoteLotAugmentation(orig, lot, currency)
-			case len(steps) == 0:
-				pr.promoteCashAugmentation(orig, *candidate.Amount, currency)
-			case len(steps) == 1:
-				pr.promoteSingleLotReduction(orig, steps[0], *candidate.Amount, currency)
-			default:
-				trace.prepareForRollback(orig.Account)
-				pr.recordUnknownFailed(orig, currency)
-				return []Error{{
-					Code:    CodeInternalError,
-					Span:    orig.Span,
-					Account: orig.Account,
-					Message: "residual booking produced a multi-lot reduction",
-				}}
-			}
-			return nil
-		}
+	groups, free, err := pr.groupForResidual()
+	if err != nil {
+		// groupForResidual only returns system errors (apd weight
+		// arithmetic that cannot fail from valid input); propagate.
+		return nil, nil, nil, false, err
+	}
 
-		freeResiduals, failures := resolveResidualGroups(groups, txn.Date, book)
-		for _, f := range failures {
-			r.errs = append(r.errs, f.err)
-			pr.recordUnknownFailed(f.posting, f.currency)
+	book := func(orig, candidate *ast.Posting, currency string) (*ast.Diagnostic, error) {
+		inv := trace.prepareForEdit(orig.Account)
+		lot, steps, finding, err := bookOne(inv, candidate, r.booking[orig.Account], txn.Date)
+		if err != nil {
+			return nil, err
 		}
+		if finding != nil {
+			trace.prepareForRollback(orig.Account)
+			pr.recordUnknownFailed(orig, currency)
+			return finding, nil
+		}
+		switch {
+		case lot != nil:
+			pr.promoteLotAugmentation(orig, lot, currency)
+		case len(steps) == 0:
+			pr.promoteCashAugmentation(orig, *candidate.Amount, currency)
+		case len(steps) == 1:
+			pr.promoteSingleLotReduction(orig, steps[0], *candidate.Amount, currency)
+		default:
+			trace.prepareForRollback(orig.Account)
+			pr.recordUnknownFailed(orig, currency)
+			pos := orig.Span.Start
+			return nil, fmt.Errorf(
+				"inventory.visitTxn: residual booking at %s:%d:%d (account %s) produced a multi-lot reduction",
+				pos.Filename, pos.Line, pos.Column, orig.Account,
+			)
+		}
+		return nil, nil
+	}
 
-		if errs := resolveFreeResiduals(free, freeResiduals, txn.Date, book); len(errs) > 0 {
-			r.errs = append(r.errs, errs...)
-			for _, p := range free {
-				pr.recordUnknownFailed(p, "")
-			}
+	freeResiduals, failures, err := resolveResidualGroups(groups, txn.Date, book)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	for _, f := range failures {
+		r.diags = append(r.diags, f.diag)
+		pr.recordUnknownFailed(f.posting, f.currency)
+	}
+
+	freeDiags, err := resolveFreeResiduals(free, freeResiduals, txn.Date, book)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	if len(freeDiags) > 0 {
+		r.diags = append(r.diags, freeDiags...)
+		for _, p := range free {
+			pr.recordUnknownFailed(p, "")
 		}
 	}
 
-	booked = pr.finalize(trace, r)
+	booked, err = pr.finalize(trace)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
 	txn.Postings = pr.postings
 	before, after = trace.diff()
-	return before, after, booked, false
+	return before, after, booked, false, nil
 }
 
 // signedMagnitude returns a clone of magnitude with its Negative
@@ -828,21 +840,21 @@ func (r *Reducer) validateStructure(txn *ast.Transaction) bool {
 			continue
 		}
 		if p.Cost != nil || p.Price != nil {
-			r.errs = append(r.errs, Error{
-				Code:    CodeInvalidAutoPosting,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "auto-balanced posting must not carry cost or price",
-			})
+			r.diags = append(r.diags, newDiag(
+				CodeInvalidAutoPosting,
+				p.Span,
+				p.Account,
+				"auto-balanced posting must not carry cost or price",
+			))
 			return false
 		}
 		if seenAuto {
-			r.errs = append(r.errs, Error{
-				Code:    CodeMultipleAutoPostings,
-				Span:    p.Span,
-				Account: p.Account,
-				Message: "transaction has more than one auto-balanced posting",
-			})
+			r.diags = append(r.diags, newDiag(
+				CodeMultipleAutoPostings,
+				p.Span,
+				p.Account,
+				"transaction has more than one auto-balanced posting",
+			))
 			return false
 		}
 		seenAuto = true
@@ -915,24 +927,19 @@ func (st *stateTrace) diff() (before, after map[ast.Account]*Inventory) {
 	return st.before, after
 }
 
-// ambiguousUnknownErrors returns one [CodeUnresolvableInterpolation]
+// ambiguousUnknownDiags returns one [CodeUnresolvableInterpolation]
 // per unknown, with wording that distinguishes auto-postings (amount
 // unresolved) from deferred cost specs (cost unresolved).
-func ambiguousUnknownErrors(unknowns []*ast.Posting) []Error {
-	errs := make([]Error, 0, len(unknowns))
+func ambiguousUnknownDiags(unknowns []*ast.Posting) []ast.Diagnostic {
+	diags := make([]ast.Diagnostic, 0, len(unknowns))
 	for _, p := range unknowns {
 		msg := "cannot interpolate cost: transaction has multiple unknown posting values"
 		if p.Amount == nil {
 			msg = "cannot interpolate amount: transaction has multiple unknown posting values"
 		}
-		errs = append(errs, Error{
-			Code:    CodeUnresolvableInterpolation,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: msg,
-		})
+		diags = append(diags, newDiag(CodeUnresolvableInterpolation, p.Span, p.Account, msg))
 	}
-	return errs
+	return diags
 }
 
 // unknownFailure pairs a Pass 2 unknown with its diagnostic and the
@@ -940,20 +947,20 @@ func ambiguousUnknownErrors(unknowns []*ast.Posting) []Error {
 type unknownFailure struct {
 	posting  *ast.Posting
 	currency string
-	err      Error
+	diag     ast.Diagnostic
 }
 
 // resolveResidualGroups walks per-currency residual groups and
 // returns the residuals to forward to the free pass plus one
 // failure per unresolvable bidder. The caller appends each
-// failure.err to r.errs and calls [recordUnknownFailed] with
+// failure.diag to r.diags and calls [recordUnknownFailed] with
 // failure.currency. book is the visitTxn-scoped closure that runs
 // bookOne and dispatches to pr.promote* on success.
 func resolveResidualGroups(
 	groups []residualGroup,
 	txnDate time.Time,
-	book func(orig, candidate *ast.Posting, currency string) []Error,
-) (free []ast.Amount, failures []unknownFailure) {
+	book func(orig, candidate *ast.Posting, currency string) (*ast.Diagnostic, error),
+) (free []ast.Amount, failures []unknownFailure, err error) {
 	for _, g := range groups {
 		switch {
 		case len(g.unknown) == 0:
@@ -962,12 +969,12 @@ func resolveResidualGroups(
 			}
 			continue
 		case len(g.unknown) > 1:
-			ambErrs := ambiguousUnknownErrors(g.unknown)
+			ambDiags := ambiguousUnknownDiags(g.unknown)
 			for i, p := range g.unknown {
 				failures = append(failures, unknownFailure{
 					posting:  p,
 					currency: g.residual.Currency,
-					err:      ambErrs[i],
+					diag:     ambDiags[i],
 				})
 			}
 			continue
@@ -978,26 +985,30 @@ func resolveResidualGroups(
 			failures = append(failures, unknownFailure{
 				posting:  p,
 				currency: g.residual.Currency,
-				err: Error{
-					Code:    CodeUnresolvableInterpolation,
-					Span:    p.Span,
-					Account: p.Account,
-					Message: "deferred cost cannot be interpolated: posting has zero units",
-				},
+				diag: newDiag(
+					CodeUnresolvableInterpolation,
+					p.Span,
+					p.Account,
+					"deferred cost cannot be interpolated: posting has zero units",
+				),
 			})
 			continue
 		}
 		candidate := *p
 		candidate.Cost = synthesizeCostSpec(p.Cost, g.residual, txnDate)
-		for _, e := range book(p, &candidate, g.residual.Currency) {
+		finding, err := book(p, &candidate, g.residual.Currency)
+		if err != nil {
+			return nil, nil, err
+		}
+		if finding != nil {
 			failures = append(failures, unknownFailure{
 				posting:  p,
 				currency: g.residual.Currency,
-				err:      e,
+				diag:     *finding,
 			})
 		}
 	}
-	return free, failures
+	return free, failures, nil
 }
 
 // resolveFreeResiduals handles Pass 2's free bucket: zero free
@@ -1009,13 +1020,13 @@ func resolveFreeResiduals(
 	free []*ast.Posting,
 	freeResiduals []ast.Amount,
 	txnDate time.Time,
-	book func(orig, candidate *ast.Posting, currency string) []Error,
-) []Error {
+	book func(orig, candidate *ast.Posting, currency string) (*ast.Diagnostic, error),
+) ([]ast.Diagnostic, error) {
 	switch {
 	case len(free) == 0:
-		return nil
+		return nil, nil
 	case len(free) > 1:
-		return ambiguousUnknownErrors(free)
+		return ambiguousUnknownDiags(free), nil
 	}
 
 	p := free[0]
@@ -1025,42 +1036,50 @@ func resolveFreeResiduals(
 		if p.Amount == nil {
 			msg = "auto-balanced posting has no residual to absorb; every currency already balances"
 		}
-		return []Error{{
-			Code:    CodeUnresolvableInterpolation,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: msg,
-		}}
+		return []ast.Diagnostic{newDiag(CodeUnresolvableInterpolation, p.Span, p.Account, msg)}, nil
 	case len(freeResiduals) > 1:
 		currencies := make([]string, len(freeResiduals))
 		for i, a := range freeResiduals {
 			currencies[i] = a.Currency
 		}
-		return []Error{{
-			Code:    CodeUnresolvableInterpolation,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(currencies), currencies),
-		}}
+		return []ast.Diagnostic{newDiag(
+			CodeUnresolvableInterpolation,
+			p.Span,
+			p.Account,
+			fmt.Sprintf("residual spans %d currencies %v but a single unknown can only absorb one", len(currencies), currencies))}, nil
 	}
 
 	res := freeResiduals[0]
 	if p.Amount == nil {
 		candidate := *p
 		candidate.Amount = &res
-		return book(p, &candidate, res.Currency)
+		finding, err := book(p, &candidate, res.Currency)
+		if err != nil {
+			return nil, err
+		}
+		if finding != nil {
+			return []ast.Diagnostic{*finding}, nil
+		}
+		return nil, nil
 	}
 	if p.Amount.Number.Sign() == 0 {
-		return []Error{{
-			Code:    CodeUnresolvableInterpolation,
-			Span:    p.Span,
-			Account: p.Account,
-			Message: "deferred cost cannot be interpolated: posting has zero units",
-		}}
+		return []ast.Diagnostic{newDiag(
+			CodeUnresolvableInterpolation,
+			p.Span,
+			p.Account,
+			"deferred cost cannot be interpolated: posting has zero units",
+		)}, nil
 	}
 	candidate := *p
 	candidate.Cost = synthesizeCostSpec(p.Cost, res, txnDate)
-	return book(p, &candidate, res.Currency)
+	finding, err := book(p, &candidate, res.Currency)
+	if err != nil {
+		return nil, err
+	}
+	if finding != nil {
+		return []ast.Diagnostic{*finding}, nil
+	}
+	return nil, nil
 }
 
 // synthesizeCostSpec builds a {{T CUR}} CostSpec from a Pass 2
@@ -1096,9 +1115,10 @@ func (pr *postingResolution) unknownDescIndex(p *ast.Posting) int {
 }
 
 // Run walks the directives without a visitor, returning the booked
-// directive output and any collected errors. It is equivalent to
-// calling [Reducer.Walk] with a nil visitor.
-func (r *Reducer) Run() ([]ast.Directive, []Error) {
+// directive output and any collected diagnostics. It is equivalent to
+// calling [Reducer.Walk] with a nil visitor; see Walk for the
+// system-error contract on the third return value.
+func (r *Reducer) Run() ([]ast.Directive, []ast.Diagnostic, error) {
 	return r.Walk(nil)
 }
 
@@ -1111,11 +1131,11 @@ func (r *Reducer) Final(account ast.Account) *Inventory {
 	return r.state[account]
 }
 
-// Errors returns the errors collected by the most recent [Reducer.Run]
-// or [Reducer.Walk]. The returned slice is a fresh copy; callers may
-// retain it and mutate it without affecting the reducer.
-func (r *Reducer) Errors() []Error {
-	return append([]Error(nil), r.errs...)
+// Errors returns the diagnostics collected by the most recent
+// [Reducer.Run] or [Reducer.Walk]. The returned slice is a fresh copy;
+// callers may retain it and mutate it without affecting the reducer.
+func (r *Reducer) Errors() []ast.Diagnostic {
+	return append([]ast.Diagnostic(nil), r.diags...)
 }
 
 // Inspection holds a single transaction's before/after/booked view as
@@ -1136,19 +1156,20 @@ type Inspection struct {
 //
 // Each call costs O(N) and is intended for bean-doctor-style
 // trouble-shooting; for repeated inspections prefer [Reducer.Walk]
-// with a visitor. The returned errors slice covers everything up to
-// (and including) the stopping point.
+// with a visitor. The returned diagnostics slice covers everything
+// up to (and including) the stopping point. The error return is
+// reserved for booking-pass implementation bugs (see [Reducer.Walk]).
 //
-// Returns (nil, errors) when txn is not found. The reducer's
+// Returns (nil, diags, err) when txn is not found. The reducer's
 // internal state is reset on every subsequent [Reducer.Walk] or
 // [Reducer.Run], so the mid-walk state Inspect leaves behind does
 // not affect later calls.
-func (r *Reducer) Inspect(txn *ast.Transaction) (*Inspection, []Error) {
+func (r *Reducer) Inspect(txn *ast.Transaction) (*Inspection, []ast.Diagnostic, error) {
 	if txn == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	var hit *Inspection
-	_, errs := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
+	_, diags, err := r.Walk(func(got *ast.Transaction, before, after map[ast.Account]*Inventory, booked []BookedPosting) bool {
 		if got != txn {
 			return true
 		}
@@ -1160,9 +1181,9 @@ func (r *Reducer) Inspect(txn *ast.Transaction) (*Inspection, []Error) {
 		return false
 	})
 	if hit == nil {
-		return nil, errs
+		return nil, diags, err
 	}
-	return hit, errs
+	return hit, diags, err
 }
 
 // cloneInventoryMap duplicates the map spine; values are already

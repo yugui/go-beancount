@@ -1,12 +1,16 @@
+// Package validation declares the diagnostic codes emitted by the
+// validation plugins. Each code is a stable, machine-readable
+// classifier that callers (CLI, IDE plugins, test fixtures) can grep on
+// to find the kind of failure that produced a given [ast.Diagnostic].
+//
+// The codes live on [ast.Diagnostic.Code] as plain strings; the [Code]
+// named type is purely a documentation handle on the validation
+// namespace's vocabulary.
 package validation
 
-import (
-	"fmt"
-
-	"github.com/yugui/go-beancount/pkg/ast"
-)
-
-// Code identifies a kind of validation error.
+// Code identifies a kind of validation diagnostic. Values are surfaced
+// on [ast.Diagnostic.Code] as their underlying string; the named type
+// exists only to group the constants.
 type Code string
 
 const (
@@ -46,30 +50,4 @@ const (
 	CodeInternalError Code = "internal-error"
 	// CodeInvalidOption indicates a malformed value for a known option key.
 	CodeInvalidOption Code = "invalid-option"
-	// CodeInvalidBookingMethod indicates an Open directive's Booking keyword
-	// could not be parsed into a known ast.BookingMethod value.
-	//
-	// Deprecated: ast.Open.Booking is now typed, and invalid keywords are
-	// reported as parse diagnostics by the lowerer. The validation package
-	// no longer produces this code while walking the AST; it is emitted
-	// only by [FromInventoryError] when adapting an inventory.Error from
-	// the booking layer, which still distinguishes the case for legacy
-	// inventory inputs.
-	CodeInvalidBookingMethod Code = "invalid-booking-method"
 )
-
-// Error is a validation error found in a ledger.
-type Error struct {
-	Code    Code
-	Span    ast.Span
-	Message string
-}
-
-// Error returns a human-readable description of the validation error, including source location when available.
-func (e Error) Error() string {
-	pos := e.Span.Start
-	if pos.Filename != "" {
-		return fmt.Sprintf("%s:%d:%d: %s", pos.Filename, pos.Line, pos.Column, e.Message)
-	}
-	return e.Message
-}

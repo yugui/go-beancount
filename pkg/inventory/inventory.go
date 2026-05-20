@@ -2,6 +2,7 @@ package inventory
 
 import (
 	"cmp"
+	"fmt"
 	"iter"
 	"slices"
 	"time"
@@ -70,10 +71,7 @@ func (i *Inventory) Add(p Position) error {
 		}
 		var sum apd.Decimal
 		if _, err := apd.BaseContext.Add(&sum, &existing.Units.Number, &p.Units.Number); err != nil {
-			return Error{
-				Code:    CodeInternalError,
-				Message: "inventory add: " + err.Error(),
-			}
+			return fmt.Errorf("inventory.Add: %w", err)
 		}
 		existing.Units.Number.Set(&sum)
 		if existing.Units.Number.Sign() == 0 {
@@ -113,7 +111,7 @@ func costsEqualForMerge(a, b *Cost) bool {
 // GainCurrency on each step are left zero for the booking layer to
 // fill (see booking.go).
 //
-// Errors:
+// User findings (the [*ast.Diagnostic] return slot, nil when none):
 //
 //   - [CodeNoMatchingLot] — zero candidates remain after filtering by
 //     commodity and matcher.
@@ -126,33 +124,29 @@ func costsEqualForMerge(a, b *Cost) bool {
 //   - [CodeReductionExceedsInventory] — magnitude exceeds the total
 //     available across non-cash candidates.
 //   - [CodeInvalidBookingMethod] — BookingAverage (unsupported).
-//   - [CodeInternalError] — BookingNone reached here (classify should
-//     have routed elsewhere) or an arithmetic error from the decimal
-//     context.
+//
+// The `error` slot is reserved for implementation bugs (BookingNone
+// reaching Reduce, apd.BaseContext arithmetic failures from inputs
+// the grammar cannot produce). At most one of the second and third
+// returns is non-nil.
 func (i *Inventory) Reduce(
 	units ast.Amount,
 	matcher CostMatcher,
 	m ast.BookingMethod,
-) ([]ReductionStep, error) {
+) ([]ReductionStep, *ast.Diagnostic, error) {
 	if m == ast.BookingAverage {
-		return nil, Error{
-			Code:    CodeInvalidBookingMethod,
-			Message: "booking method AVERAGE is not supported",
-		}
+		return nil, &ast.Diagnostic{Code: CodeInvalidBookingMethod, Message: "booking method AVERAGE is not supported"}, nil
 	}
 	if m == ast.BookingNone {
-		return nil, Error{
-			Code:    CodeInternalError,
-			Message: "booking method NONE reached Reduce; classify should have routed this posting elsewhere",
-		}
+		return nil, nil, fmt.Errorf("inventory.Reduce: BookingNone reached; classify should have routed this posting elsewhere")
 	}
 
 	var remaining apd.Decimal
-	if err := absDecimal(&remaining, &units.Number, "inventory reduce: abs units"); err != nil {
-		return nil, err
+	if err := absDecimal(&remaining, &units.Number, "inventory.Reduce: abs units"); err != nil {
+		return nil, nil, err
 	}
 	if remaining.Sign() == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 
 	commodity := units.Currency
@@ -181,36 +175,33 @@ func (i *Inventory) Reduce(
 			allCash = false
 		}
 		var mag apd.Decimal
-		if err := absDecimal(&mag, &p.Units.Number, "inventory reduce: abs lot units"); err != nil {
-			return nil, err
+		if err := absDecimal(&mag, &p.Units.Number, "inventory.Reduce: abs lot units"); err != nil {
+			return nil, nil, err
 		}
-		if err := addDecimal(&totalAvailable, &totalAvailable, &mag, "inventory reduce: accumulate available"); err != nil {
-			return nil, err
+		if err := addDecimal(&totalAvailable, &totalAvailable, &mag, "inventory.Reduce: accumulate available"); err != nil {
+			return nil, nil, err
 		}
 	}
 
 	if len(candidates) == 0 {
-		return nil, Error{
-			Code:    CodeNoMatchingLot,
-			Message: "no lot in inventory matches the reducing posting",
-		}
+		return nil, &ast.Diagnostic{Code: CodeNoMatchingLot, Message: "no lot in inventory matches the reducing posting"}, nil
 	}
 
 	// cash overdraft → balance assertion's concern.
 	if !allCash && remaining.Cmp(&totalAvailable) > 0 {
-		return nil, Error{
+		return nil, &ast.Diagnostic{
 			Code:    CodeReductionExceedsInventory,
 			Message: "reducing posting requests more units than the matched lots contain",
-		}
+		}, nil
 	}
 
 	// strict/default: ambiguous iff strictly less than total available.
 	if (m == ast.BookingStrict || m == ast.BookingDefault) && len(candidates) > 1 {
 		if remaining.Cmp(&totalAvailable) < 0 {
-			return nil, Error{
+			return nil, &ast.Diagnostic{
 				Code:    CodeAmbiguousLotMatch,
 				Message: "reducing posting matches more than one lot under STRICT booking and does not consume them all",
-			}
+			}, nil
 		}
 	}
 
@@ -239,8 +230,8 @@ func (i *Inventory) Reduce(
 		p := c.pos
 
 		var available apd.Decimal
-		if err := absDecimal(&available, &p.Units.Number, "inventory reduce: abs lot units"); err != nil {
-			return nil, err
+		if err := absDecimal(&available, &p.Units.Number, "inventory.Reduce: abs lot units"); err != nil {
+			return nil, nil, err
 		}
 		var take apd.Decimal
 		if remaining.Cmp(&available) >= 0 {
@@ -252,17 +243,17 @@ func (i *Inventory) Reduce(
 		// |p.Units| -= take, sign-aware.
 		if p.Units.Number.Sign() >= 0 {
 			// long lot
-			if err := subDecimal(&p.Units.Number, &p.Units.Number, &take, "inventory reduce: sub lot units"); err != nil {
-				return nil, err
+			if err := subDecimal(&p.Units.Number, &p.Units.Number, &take, "inventory.Reduce: sub lot units"); err != nil {
+				return nil, nil, err
 			}
 		} else {
 			// short lot
-			if err := addDecimal(&p.Units.Number, &p.Units.Number, &take, "inventory reduce: add lot units"); err != nil {
-				return nil, err
+			if err := addDecimal(&p.Units.Number, &p.Units.Number, &take, "inventory.Reduce: add lot units"); err != nil {
+				return nil, nil, err
 			}
 		}
-		if err := subDecimal(&remaining, &remaining, &take, "inventory reduce: sub remaining"); err != nil {
-			return nil, err
+		if err := subDecimal(&remaining, &remaining, &take, "inventory.Reduce: sub remaining"); err != nil {
+			return nil, nil, err
 		}
 
 		var step ReductionStep
@@ -281,7 +272,7 @@ func (i *Inventory) Reduce(
 		}
 	}
 
-	return steps, nil
+	return steps, nil, nil
 }
 
 // lotDate returns the Cost.Date of p, or the zero time for a cash

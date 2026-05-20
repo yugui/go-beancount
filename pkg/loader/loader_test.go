@@ -281,9 +281,9 @@ func TestLoad_UnresolvableAutoPostingDoesNotCascade(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loader.Load: %v", err)
 	}
-	// Diagnostic codes are stable strings produced by inventory.Error
-	// (mapped in pkg/loader/booking) and pkg/validation; ast.Diagnostic
-	// carries them as plain strings rather than typed constants.
+	// Diagnostic codes are stable strings the inventory and validation
+	// packages set on ast.Diagnostic.Code directly; this test relies on
+	// that vocabulary staying stable.
 	var unresolvable, autoUnresolved int
 	for _, d := range ledger.Diagnostics {
 		if d.Severity != ast.Error {
