@@ -36,32 +36,53 @@ mutexes in favour of "constructor-then-frozen" immutability.
 
 ## Scope
 
-**In scope:**
+**In scope (shipped across PR-α and PR-β):**
 
-- `pkg/importer`: API redesign (factory registration, instance
-  registry, fused Configure).
-- `pkg/importer/hook`: same redesign mirrored.
-- `pkg/importer/std/csvimp`: rewrite to factory; 1 instance = 1 shape;
-  TOML schema reshape per B2.
-- `pkg/importer/hook/std/classify`: rewrite to factory; drop mutex;
-  per-instance rule list.
-- `pkg/importer/importerutil`: untouched (pure helpers; no registry
-  coupling).
-- `cmd/beanimport`: new CLI on the redesigned framework.
-- Test coverage: concurrent Apply on same instance (race-tested);
-  parallel Configure on different instances; multi-instance TOML
-  examples.
-- Plan documentation in `docs/plans/phase-8-importer-framework.md`
-  (updated to record the new Contracts).
+- `pkg/importer`: factory + instance registry API
+  (`RegisterFactory` / `LookupFactory` / `New` / `NewRegistry` /
+  `Apply`).
+- `pkg/importer/hook`: same redesign mirrored
+  (`RegisterFactory` / `New` / `NewRegistry` / `Chain`).
+- `pkg/importer/std/csvimp`: rewritten to factory; one instance
+  per shape; flat TOML schema (`[[importer]] kind="csv"` with
+  body keys decoded directly into shape config); `--account`
+  Hint plumbed via `Input.Hints["account"]` overriding shape
+  account; rowhash godoc speaks of "instance name".
+- `pkg/importer/hook/std/classify`: rewritten to factory; mutex
+  dropped; per-instance rule list.
+- `pkg/importer/importerutil`: untouched (pure helpers; no
+  registry coupling).
+- `cmd/beanimport`: new CLI on the redesigned framework with the
+  six-flag table (`-config`/`-hook`/`-importer`/`-account`/
+  `-plugin`/`-strict`), 0/1/2 exit-code mapping, flat
+  `[[importer]]` / `[[hook]]` TOML schema with `toml.Primitive`
+  deferred per-entry decode, and diagnostics rendered via
+  `ast.Diagnostic.String`.
+- `cmd/beanimport/testdata/`: end-to-end fixtures
+  (`multi_instance/` proving declaration-order Dispatch over
+  overlapping `match` regexes; `plugin/` proving the
+  `-plugin PATH.so` goplug load path against a real `.so`).
+- `cmd/beanimport/testdata/staticimporter/`: buildable goplug
+  plugin package (`go_binary` with `linkmode = "plugin"`) that
+  registers a fixture importer kind.
+- Test coverage: concurrent Apply on same instance
+  (race-tested); parallel Configure on different instances;
+  multi-instance overlapping-regex Dispatch.
+- Plan documentation: this document (`phase-8-framework-redesign.md`)
+  plus the redesign subsections appended to
+  `docs/plans/phase-8-importer-framework.md`.
 
 **Out of scope:**
 
-- `Configurable` sub-interface remains removed (configuration fused
-  into factory).
+- `Configurable` sub-interface remains removed (configuration is
+  fused into the factory call).
 - `Streaming` sub-interface: unchanged.
-- 8g (goplug fixtures + PLAN.md rewrite).
+- `PLAN.md` deep historical rewrite. β-3 ships only a brief
+  pointer paragraph from the project-root `PLAN.md` to this
+  document; the multi-page user-narrative Phase 8 rewrite is
+  deferred.
 - Phase 8.1 (ML hooks), Phase 8.2 (XML/OFX/QIF importers).
-- Cross-source dedup (still `pkg/distribute`'s concern).
+- Cross-source dedup (remains `pkg/distribute`'s concern).
 
 ## Architecture
 
@@ -1582,16 +1603,19 @@ the surrounding docs.
 
 **In scope:**
 
-- β-1: doc-only adjustments to csvimp's `rowhash` godoc; addition of
-  `in.Hints["account"]` override plumbing in csvimp's `Extract`;
-  confirmation of the flat `[[importer]]` / `[[hook]]` TOML schema
-  PR-α already implies; the new `cmd/beanimport` binary (flags,
-  TOML loader, pipeline, unit tests).
-- β-2: end-to-end integration fixtures under `cmd/beanimport/testdata/`
-  plus a goplug fixture importer modelled on beanprice's staticquoter.
+- β-1: the new `cmd/beanimport` binary (flags, TOML loader,
+  pipeline, unit tests). The Phase 4 design survey discovered
+  that the csvimp `--account` Hint plumbing and the `rowhash`
+  godoc rewording — both originally planned for β-1 — already
+  shipped in PR-α; β-1 therefore narrowed to CLI-only.
+- β-2: end-to-end integration fixtures under
+  `cmd/beanimport/testdata/`, narrowed (per scope decision) to
+  `multi_instance/` (the headline declaration-order Dispatch
+  property) and `plugin/` (the goplug `-plugin` load path).
+  Includes the buildable `staticimporter/` goplug plugin
+  package, modelled on beanprice's `staticquoter`.
 - β-3: update `PLAN.md` (project root) and the `## Out of scope`
-  section of this document to reflect the new in-scope/completed
-  list.
+  section of this document to reflect the shipped state.
 
 **Out of scope (explicitly deferred):**
 
@@ -2710,13 +2734,13 @@ narration).
 
 Adopt the path above: `Primitive`-based single-pass TOML loader
 (precedent: `routeconfig`); bare `"account"` Hint key read only in
-csvimp's Extract; `--importer NAME` overrides Dispatch with a Warning
-when Identify says false; `--strict` translates at exit-code mapping
-only; two CLI fixtures (single + multi), with the multi-instance
-fixture exercising both overlapping and disjoint `match` regexes in
-non-lex declaration order; goplug fixture importer mirroring
-beanprice's staticquoter layout. β-1 keeps the CLI structurally
-close to `cmd/beanprice` so the two binaries share idiom and
-diagnostic format; β-2 pins the behaviours that justify PR-α's
-existence; β-3 finalises the paper trail without rewriting history.
-No PR-α API is touched.
+csvimp's Extract; `-importer NAME` overrides Dispatch with a Warning
+when Identify says false; `-strict` translates at exit-code mapping
+only; two end-to-end CLI fixtures (`multi_instance/` exercising
+overlapping `match` regexes in non-lex declaration order, `plugin/`
+exercising the `-plugin` goplug load path); goplug fixture importer
+mirroring beanprice's staticquoter layout. β-1 keeps the CLI
+structurally close to `cmd/beanprice` so the two binaries share
+idiom and diagnostic format; β-2 pins the behaviours that justify
+PR-α's existence with the minimal fixture set; β-3 finalises the
+paper trail without rewriting history. No PR-α API is touched.
