@@ -1,7 +1,9 @@
 // Package main is a goplug plugin fixture used by cmd/beanimport's
 // integration tests to verify the --plugin loader path
 // (goplug.Load -> InitPlugin -> importer.RegisterFactory) end-to-end.
-// It registers an importer kind "static" that returns a single canned
+// It registers an importer kind named by this plugin's fully-qualified
+// Go import path (matching pkg/ext/postproc/std/*'s convention for
+// uniqueness across third-party plugins) that returns a single canned
 // Transaction for every input, regardless of file content.
 //
 // The fixture is hosted under cmd/beanimport/testdata rather than

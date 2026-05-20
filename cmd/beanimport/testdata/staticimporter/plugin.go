@@ -14,9 +14,14 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer"
 )
 
-// pluginName is the Manifest-facing name. The registered kind is "static"
-// (a separate string); changing either also requires updating fixture_test.go.
+// pluginName is the Manifest-facing name. The registered kind is the
+// fully-qualified Go import path (matches pkg/ext/postproc/std/*'s
+// convention — plugins come from third parties, so kind names must be
+// globally unique). Changing either also requires updating
+// fixture_test.go and testdata/plugin/config.toml.
 const pluginName = "staticimporter"
+
+const importerKind = "github.com/yugui/go-beancount/cmd/beanimport/testdata/staticimporter"
 
 // Manifest is exported so goplug.Load can read it via plugin.Lookup.
 var Manifest = goplug.Manifest{
@@ -28,11 +33,11 @@ var Manifest = goplug.Manifest{
 // InitPlugin is the goplug entry point. Called once after the
 // Manifest checks pass; a non-nil return aborts the load.
 func InitPlugin() error {
-	importer.RegisterFactory("static", importer.FactoryFunc(newStatic))
+	importer.RegisterFactory(importerKind, importer.FactoryFunc(newStatic))
 	return nil
 }
 
-// newStatic is the factory for the "static" kind.
+// newStatic is the factory for the importerKind kind.
 func newStatic(name string, decode func(dest any) error) (importer.Importer, error) {
 	if err := decode(&struct{}{}); err != nil {
 		return nil, err
