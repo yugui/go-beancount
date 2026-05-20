@@ -25,14 +25,14 @@ func TestConcurrency_KindRegistry(t *testing.T) {
 		}()
 	}
 
-	// LookupFactory readers also start before registrations complete.
+	// New readers also start before registrations complete.
 	for i := 0; i < numReaders; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < numKinds; j++ {
 				kind := fmt.Sprintf("kind-%02d", j)
-				_, _ = LookupFactory(kind)
+				_, _ = New(kind, "test", func(dest any) error { return nil })
 			}
 		}()
 	}

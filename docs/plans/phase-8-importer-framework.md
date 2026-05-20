@@ -3471,3 +3471,17 @@ own `Lookup` does not resolve.
 | `Registry.Lookup`, `Registry.Names` | Safe for concurrent read; contents immutable post-construction. |
 | `Hook.Apply` | Safe for concurrent invocation on the same value. State frozen at factory return. |
 | `Chain` | Safe for concurrent invocation on the same Registry. |
+
+### Post-PR-α API refinement
+
+Applied after PR-α review: `LookupFactory` demoted to `lookupFactory`
+(unexported) in both `pkg/importer` and `pkg/importer/hook`. A new
+package-level `New(kind, name, decode)` function added to each package
+as the one-shot form of lookup + factory call, and is now the
+recommended path for CLIs and tests to build an Importer or Hook
+instance.
+
+Rationale: the lookup-then-call pattern was the only real use of
+`LookupFactory` across the codebase. Collapsing it into `New` removes a
+public API path that had no use beyond test setup and simplifies every
+call site.

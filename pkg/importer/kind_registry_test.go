@@ -6,6 +6,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 )
 
+func emptyDecode(dest any) error { return nil }
+
 func TestRegisterFactory_RoundTrip(t *testing.T) {
 	withCleanKindRegistry(t)
 
@@ -18,23 +20,29 @@ func TestRegisterFactory_RoundTrip(t *testing.T) {
 	RegisterFactory("alpha", fa)
 	RegisterFactory("beta", fb)
 
-	t.Run("LookupAlpha", func(t *testing.T) {
-		got, ok := LookupFactory("alpha")
-		if !ok {
-			t.Fatal("LookupFactory(\"alpha\") ok=false")
+	t.Run("NewAlpha", func(t *testing.T) {
+		imp, err := New("alpha", "test_instance", emptyDecode)
+		if err != nil {
+			t.Fatalf("New(\"alpha\") error: %v", err)
 		}
-		if got == nil {
-			t.Error("LookupFactory returned nil factory")
+		if imp == nil {
+			t.Fatal("New(\"alpha\") returned nil Importer")
+		}
+		if got := imp.Name(); got != "test_instance" {
+			t.Errorf("imp.Name() = %q, want %q", got, "test_instance")
 		}
 	})
 
-	t.Run("LookupBeta", func(t *testing.T) {
-		got, ok := LookupFactory("beta")
-		if !ok {
-			t.Fatal("LookupFactory(\"beta\") ok=false")
+	t.Run("NewBeta", func(t *testing.T) {
+		imp, err := New("beta", "test_instance", emptyDecode)
+		if err != nil {
+			t.Fatalf("New(\"beta\") error: %v", err)
 		}
-		if got == nil {
-			t.Error("LookupFactory returned nil factory")
+		if imp == nil {
+			t.Fatal("New(\"beta\") returned nil Importer")
+		}
+		if got := imp.Name(); got != "test_instance" {
+			t.Errorf("imp.Name() = %q, want %q", got, "test_instance")
 		}
 	})
 
@@ -62,15 +70,15 @@ func TestRegisterFactory_DuplicatePanics(t *testing.T) {
 	RegisterFactory("csv", f)
 }
 
-func TestLookupFactory_Missing(t *testing.T) {
+func TestNew_UnknownKindReturnsError(t *testing.T) {
 	withCleanKindRegistry(t)
 
-	got, ok := LookupFactory("nonexistent")
-	if ok {
-		t.Errorf("LookupFactory(\"nonexistent\") returned ok=true with %v", got)
+	imp, err := New("nonexistent", "test", emptyDecode)
+	if err == nil {
+		t.Error("New(\"nonexistent\") should return an error")
 	}
-	if got != nil {
-		t.Errorf("LookupFactory(\"nonexistent\") = %v, want nil", got)
+	if imp != nil {
+		t.Errorf("New(\"nonexistent\") = %v, want nil", imp)
 	}
 }
 

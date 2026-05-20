@@ -17,8 +17,8 @@ var (
 // RegisterFactory installs f under the given kind in the package-global kind
 // registry. Panics if a Factory has already been registered under the same
 // kind. Intended to be called from an init() function or a goplug InitPlugin
-// callback. Safe for concurrent use alongside [LookupFactory] and [KindNames];
-// in practice all registrations land before reads begin.
+// callback. Safe for concurrent use alongside [New] and [KindNames]; in
+// practice all registrations land before reads begin.
 func RegisterFactory(kind string, f Factory) {
 	kindMu.Lock()
 	defer kindMu.Unlock()
@@ -28,9 +28,17 @@ func RegisterFactory(kind string, f Factory) {
 	kinds[kind] = f
 }
 
-// LookupFactory returns the Factory registered for kind. The second return
-// value is false if no such kind is registered.
-func LookupFactory(kind string) (Factory, bool) {
+// New constructs a configured Hook of the given kind. One-shot form of
+// lookupFactory + Factory.New. Returns an error if kind is not registered.
+func New(kind, name string, decode func(dest any) error) (Hook, error) {
+	f, ok := lookupFactory(kind)
+	if !ok {
+		return nil, fmt.Errorf("hook: unknown kind %q", kind)
+	}
+	return f.New(name, decode)
+}
+
+func lookupFactory(kind string) (Factory, bool) {
 	kindMu.RLock()
 	defer kindMu.RUnlock()
 	f, ok := kinds[kind]

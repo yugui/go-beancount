@@ -38,19 +38,15 @@ func permissiveDecode(src string) func(dest any) error {
 
 func newHook(t *testing.T, tomlSrc string) *classify.Hook {
 	t.Helper()
-	f, ok := hook.LookupFactory("classify")
-	if !ok {
-		t.Fatal("classify factory not registered")
-	}
-	h, err := f.New("test", permissiveDecode(tomlSrc))
+	h, err := hook.New("classify", "test", permissiveDecode(tomlSrc))
 	if err != nil {
-		t.Fatalf("factory.New: %v", err)
+		t.Fatalf("hook.New: %v", err)
 	}
-	hook, ok := h.(*classify.Hook)
+	ch, ok := h.(*classify.Hook)
 	if !ok {
-		t.Fatalf("factory.New returned %T, want *classify.Hook", h)
+		t.Fatalf("hook.New returned %T, want *classify.Hook", h)
 	}
-	return hook
+	return ch
 }
 
 // emptyHook returns a factory-built Hook with no rules.

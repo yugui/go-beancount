@@ -1,6 +1,7 @@
 package classify_test
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -8,9 +9,9 @@ import (
 )
 
 func TestFactory_NameReturnsInstanceName(t *testing.T) {
-	h, err := factory(t).New("my-instance", permissiveDecode(""))
+	h, err := hook.New("classify", "my-instance", permissiveDecode(""))
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("hook.New: %v", err)
 	}
 	if got := h.Name(); got != "my-instance" {
 		t.Errorf("Name() = %q, want %q", got, "my-instance")
@@ -18,31 +19,29 @@ func TestFactory_NameReturnsInstanceName(t *testing.T) {
 }
 
 func TestFactory_RegisteredUnderKindClassify(t *testing.T) {
-	_, ok := hook.LookupFactory("classify")
-	if !ok {
-		t.Error("LookupFactory(\"classify\"): not registered")
+	if !slices.Contains(hook.KindNames(), "classify") {
+		t.Error("KindNames() does not contain \"classify\"")
 	}
 }
 
 // TestFactory_NoGoPathAlias pins the deletion of the dual-name registration.
 func TestFactory_NoGoPathAlias(t *testing.T) {
 	const goPath = "github.com/yugui/go-beancount/pkg/importer/hook/std/classify"
-	_, ok := hook.LookupFactory(goPath)
-	if ok {
-		t.Errorf("LookupFactory(%q): Go-path alias should not exist", goPath)
+	if slices.Contains(hook.KindNames(), goPath) {
+		t.Errorf("KindNames() contains Go-path alias %q; should not exist", goPath)
 	}
 }
 
 func TestFactory_ValidationError(t *testing.T) {
-	h, err := factory(t).New("test", permissiveDecode(`
+	h, err := hook.New("classify", "test", permissiveDecode(`
 [[rule]]
 account = "Expenses:Misc"
 `))
 	if err == nil {
-		t.Fatal("New: expected validation error")
+		t.Fatal("hook.New: expected validation error")
 	}
 	if h != nil {
-		t.Error("New: non-nil Hook on validation error")
+		t.Error("hook.New: non-nil Hook on validation error")
 	}
 	if !strings.HasPrefix(err.Error(), "classify: configure:") {
 		t.Errorf("error prefix wrong: %q", err.Error())
@@ -50,12 +49,12 @@ account = "Expenses:Misc"
 }
 
 func TestFactory_NilDecoder(t *testing.T) {
-	h, err := factory(t).New("test", nil)
+	h, err := hook.New("classify", "test", nil)
 	if err == nil {
-		t.Fatal("New(nil decoder): expected error")
+		t.Fatal("hook.New(nil decoder): expected error")
 	}
 	if h != nil {
-		t.Error("New(nil decoder): non-nil Hook on error")
+		t.Error("hook.New(nil decoder): non-nil Hook on error")
 	}
 	const want = "classify: configure: nil decoder"
 	if err.Error() != want {

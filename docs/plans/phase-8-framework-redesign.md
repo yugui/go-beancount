@@ -1518,3 +1518,43 @@ This eliminates `csvimp.identifyCache` (write-write race risk) and
 - PR-α opens after all α-N steps converge and commit.
 - PR-β (schema reshape + `cmd/beanimport`) is a separate
   orchestration run started after PR-α merges.
+
+## Post-PR-α API refinement
+
+The following changes were applied on top of the merged PR-α commits in
+response to a post-review API tweak request. They are recorded here as a
+supplement to the α-1 and α-2 Detailed Design sections, which remain
+unchanged as historical record of what shipped at those steps.
+
+### Step α-1 (pkg/importer): LookupFactory demoted; New added
+
+- `LookupFactory` renamed to `lookupFactory` (unexported). The only
+  callers were in test code; the two-step lookup-then-call pattern had
+  no production use.
+- `New(kind, name string, decode func(dest any) error) (Importer, error)`
+  added as a package-level function. It is the one-shot form of
+  `lookupFactory + Factory.New` and is documented as the recommended
+  path for CLIs and tests to build an Importer instance. On unknown
+  kind it returns `(nil, fmt.Errorf("importer: unknown kind %q", kind))`.
+  On factory error it returns the factory's error verbatim.
+- `RegisterFactory`'s godoc updated to reference `New` (replacing the
+  old reference to `LookupFactory`).
+
+### Step α-2 (pkg/importer/hook): LookupFactory demoted; New added
+
+- Mirrors the α-1 change: `LookupFactory` → `lookupFactory`.
+- `New(kind, name string, decode func(dest any) error) (Hook, error)`
+  added. On unknown kind returns `(nil, fmt.Errorf("hook: unknown kind %q", kind))`.
+- `pkg/importer/hook/std/classify` tests updated: `factory_test.go`
+  replaces the two `hook.LookupFactory` call sites with
+  `slices.Contains(hook.KindNames(), ...)` checks; all `factory(t).New(...)`
+  call sites replaced with `hook.New("classify", ...)` directly;
+  `config_test.go` likewise inlines `hook.New` at each call site.
+
+### Rationale
+
+The lookup-then-call pattern was the dominant — and only — use of
+`LookupFactory` in the entire codebase. Collapsing it into a single
+`New` operation is a strict simplification: it removes a public API
+path that provided no value beyond test setup, reduces boilerplate at
+every call site, and makes the recommended usage unambiguous.

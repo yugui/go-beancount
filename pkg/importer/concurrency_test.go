@@ -41,14 +41,14 @@ func TestConcurrency_KindRegistryRegisterAndLookup(t *testing.T) {
 
 	regWg.Wait()
 
-	// Lookup readers that interleave with the tail of registrations.
+	// New readers that interleave with the tail of registrations.
 	for i := 0; i < numReaders; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for j := 0; j < numKinds; j++ {
 				kind := fmt.Sprintf("kind-%02d", j)
-				_, _ = LookupFactory(kind)
+				_, _ = New(kind, "test", func(dest any) error { return nil })
 			}
 		}()
 	}

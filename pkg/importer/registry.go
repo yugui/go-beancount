@@ -19,9 +19,9 @@ var (
 // under the same kind, mirroring the pattern in pkg/quote.Register.
 // Intended to be called from an init() function (in-tree kinds) or
 // from a goplug InitPlugin callback (plugin kinds). Safe for
-// concurrent use; reads (LookupFactory, KindNames) MAY run
-// concurrently with RegisterFactory, though in practice all
-// registrations land before reads begin.
+// concurrent use; reads (New, KindNames) MAY run concurrently with
+// RegisterFactory, though in practice all registrations land before
+// reads begin.
 func RegisterFactory(kind string, f Factory) {
 	kindMu.Lock()
 	defer kindMu.Unlock()
@@ -31,9 +31,19 @@ func RegisterFactory(kind string, f Factory) {
 	kinds[kind] = f
 }
 
-// LookupFactory returns the Factory registered for kind. The second
-// return value is false if no such kind is registered.
-func LookupFactory(kind string) (Factory, bool) {
+// New constructs a configured Importer of the given kind. It is the
+// one-shot form of lookupFactory + Factory.New, and is the recommended
+// way for CLIs and tests to build an Importer instance. Returns an error
+// if kind is not registered or the factory returns an error.
+func New(kind, name string, decode func(dest any) error) (Importer, error) {
+	f, ok := lookupFactory(kind)
+	if !ok {
+		return nil, fmt.Errorf("importer: unknown kind %q", kind)
+	}
+	return f.New(name, decode)
+}
+
+func lookupFactory(kind string) (Factory, bool) {
 	kindMu.RLock()
 	defer kindMu.RUnlock()
 	f, ok := kinds[kind]

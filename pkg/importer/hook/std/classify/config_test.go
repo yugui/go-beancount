@@ -8,19 +8,8 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer/hook"
 )
 
-// factory returns the "classify" factory, failing the test if not registered.
-func factory(t *testing.T) hook.Factory {
-	t.Helper()
-	f, ok := hook.LookupFactory("classify")
-	if !ok {
-		t.Fatal("classify factory not registered")
-	}
-	return f
-}
-
 func TestFactory_EmptyRules(t *testing.T) {
-	f := factory(t)
-	h, err := f.New("test", permissiveDecode(``))
+	h, err := hook.New("classify", "test", permissiveDecode(``))
 	if err != nil {
 		t.Errorf("New(empty): %v", err)
 	}
@@ -30,8 +19,7 @@ func TestFactory_EmptyRules(t *testing.T) {
 }
 
 func TestFactory_ValidRule(t *testing.T) {
-	f := factory(t)
-	h, err := f.New("test", permissiveDecode(`
+	h, err := hook.New("classify", "test", permissiveDecode(`
 [[rule]]
 payee_regex = "ACME"
 account     = "Expenses:Office"
@@ -45,8 +33,7 @@ account     = "Expenses:Office"
 }
 
 func TestFactory_SelectorlessRuleRejected(t *testing.T) {
-	f := factory(t)
-	h, err := f.New("test", permissiveDecode(`
+	h, err := hook.New("classify", "test", permissiveDecode(`
 [[rule]]
 account = "Expenses:Misc"
 `))
@@ -62,8 +49,7 @@ account = "Expenses:Misc"
 }
 
 func TestFactory_MissingAccountRejected(t *testing.T) {
-	f := factory(t)
-	h, err := f.New("test", permissiveDecode(`
+	h, err := hook.New("classify", "test", permissiveDecode(`
 [[rule]]
 payee_regex = "ACME"
 `))
@@ -79,8 +65,7 @@ payee_regex = "ACME"
 }
 
 func TestFactory_BadPayeeRegexRejected(t *testing.T) {
-	f := factory(t)
-	h, err := f.New("test", permissiveDecode(`
+	h, err := hook.New("classify", "test", permissiveDecode(`
 [[rule]]
 payee_regex = "["
 account     = "Expenses:Misc"
@@ -97,8 +82,7 @@ account     = "Expenses:Misc"
 }
 
 func TestFactory_BadNarrationRegexRejected(t *testing.T) {
-	f := factory(t)
-	h, err := f.New("test", permissiveDecode(`
+	h, err := hook.New("classify", "test", permissiveDecode(`
 [[rule]]
 narration_regex = "["
 account         = "Expenses:Misc"
@@ -115,9 +99,8 @@ account         = "Expenses:Misc"
 }
 
 func TestFactory_DecoderErrorWrapped(t *testing.T) {
-	f := factory(t)
 	sentinel := errors.New("decode failure")
-	h, err := f.New("test", func(dest any) error { return sentinel })
+	h, err := hook.New("classify", "test", func(dest any) error { return sentinel })
 	if err == nil {
 		t.Fatal("expected error")
 	}
