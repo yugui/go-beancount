@@ -2216,6 +2216,398 @@ godoc are out of scope per the survey.
   paragraph) stating what property it pins, so a future reader can
   prune duplicates safely.
 
+#### Detailed Design
+
+##### Scope decision (binding — narrower than high-level β-2 plan)
+
+After β-1 shipped, the in-memory `cmd/beanimport/main_test.go`
+already pins these via fakes:
+TestRun_SingleInstanceSmoke, TestRun_AccountHintPlumbed,
+TestRun_StrictPromotesWarningToExit1,
+TestRun_ImporterIdentifyFalseWithFlag,
+TestRun_HookFlag_CommaAndRepeatCompose, TestRun_FailFast (6
+exit-2 paths), and TestRun_CancelledContext.
+
+β-2 drops the redundant 4 fixtures from the high-level plan
+(`single_instance/`, `account_hint/`, `with_classify/`,
+`strict_warning/`) and ships ONLY:
+
+1. `cmd/beanimport/testdata/multi_instance/` — the headline PR-β
+   behavioural assertion. Two `[[importer]] kind="csv"` shapes
+   with overlapping `match` regexes and non-lex declared names,
+   pins that Dispatch picks the first-declared instance.
+2. `cmd/beanimport/testdata/plugin/` — proves
+   `goplug.Load → InitPlugin → importer.RegisterFactory`
+   end-to-end against a real `.so`. Cannot be tested in-memory.
+3. `cmd/beanimport/testdata/staticimporter/` — the buildable
+   goplug plugin package backing fixture #2, mirroring
+   `cmd/beanprice/testdata/staticquoter/` shape.
+
+**Assertion mechanism**: `strings.Contains` on stdout/stderr +
+exit-code checks. NO golden files (matches `cmd/beanprice`
+precedent; avoids `-update` mechanism + printer-output churn).
+
+**β-1 in-memory tests**: ALL stay. β-2 only adds tests.
+
+##### Files added
+
+```
+cmd/beanimport/testdata/multi_instance/config.toml
+cmd/beanimport/testdata/multi_instance/statement.csv
+cmd/beanimport/testdata/multi_instance/README.md
+cmd/beanimport/testdata/plugin/config.toml
+cmd/beanimport/testdata/plugin/statement.csv
+cmd/beanimport/testdata/plugin/README.md
+cmd/beanimport/testdata/staticimporter/doc.go
+cmd/beanimport/testdata/staticimporter/plugin.go
+cmd/beanimport/testdata/staticimporter/BUILD.bazel
+cmd/beanimport/fixture_test.go
+```
+
+`cmd/beanimport/BUILD.bazel` is amended (see §BUILD wiring). No
+β-1 file is modified or deleted.
+
+##### Fixture #1 — `testdata/multi_instance/`
+
+`config.toml` declares exactly two `[[importer]]` entries, both
+`kind = "csv"`, in this order (the non-lex ordering is part of
+the Contract):
+
+- entry #1: `name = "zzz_first"`, `match = ".*\\.csv$"`,
+  `account = "Assets:First"`
+- entry #2: `name = "aaa_second"`, `match = ".*statement.*"`,
+  `account = "Assets:Second"`
+
+Lexicographic sort would put `aaa_second` first; declaration
+order MUST place `zzz_first` first. Both regexes fire against
+the input `statement.csv` so both shapes' `Identify` returns
+true; Dispatch picks the first by declaration order.
+
+Both entries set the minimum csvimp keys:
+`kind = "csv"`, `date_col = "Date"`,
+`date_format = "2006-01-02"`, `default_currency = "USD"`, and
+one `[[importer.amount]]` sub-table with `col = "Amount"`.
+
+`statement.csv` is a single clean row producing zero csvimp
+diagnostics:
+
+```
+Date,Amount
+2024-01-15,-4.50
+```
+
+`README.md` is one paragraph: "Pins that `importer.Apply`
+(Dispatch) picks the first-declared `[[importer]]` instance when
+multiple shapes' `match` regexes all fire, regardless of name
+lexicographic order. The instance names are deliberately non-lex
+(`zzz_first` before `aaa_second`) so that any future regression
+toward lexicographic sort fails this test."
+
+##### Fixture #2 — `testdata/plugin/`
+
+`config.toml`:
+
+```toml
+[[importer]]
+kind = "static"
+name = "fixture"
+```
+
+No body keys. The plugin factory consumes the body via
+`decode(&struct{}{})` so loadConfig's strict-key check does not
+fire on an unused entry body.
+
+`statement.csv`: one-row placeholder (static importer ignores
+it):
+
+```
+Date,Amount
+2024-01-15,0.00
+```
+
+`README.md` is one paragraph: "Pins that `-plugin PATH.so` loads
+a goplug plugin whose `InitPlugin()` registers a new importer
+kind, which is then usable in the same run via the normal
+`[[importer]]` declaration path."
+
+##### `cmd/beanimport/testdata/staticimporter/` — plugin package
+
+Layout: `doc.go`, `plugin.go`, `BUILD.bazel` (3 files).
+
+`doc.go` carries the package doc and nothing else, modelled
+verbatim on `cmd/beanprice/testdata/staticquoter/doc.go` (goplug
+fixture for `cmd/beanimport`'s integration test; registers
+importer kind `"static"`; not a production importer).
+
+`plugin.go` is `package main` and exports:
+
+- `const pluginName = "staticimporter"` — Manifest-facing name;
+  the registered kind is `"static"` (separate string).
+- `var Manifest = goplug.Manifest{
+      APIVersion: goplug.APIVersion,
+      Name:       pluginName,
+      Version:    "v0.0.0-fixture",
+  }`
+- `func InitPlugin() error` — calls
+  `importer.RegisterFactory("static", importer.FactoryFunc(newStatic))`,
+  returns nil. Registration happens here (not in `init()`) so
+  goplug's APIVersion check can veto an incompatible plugin
+  before any side effect.
+- `func main() {}` — required by `-buildmode=plugin`, never
+  called.
+- `func newStatic(name string, decode func(dest any) error)
+  (importer.Importer, error)` — decodes the empty body
+  (`decode(&struct{}{})`), returns `&staticImp{name: name}, nil`.
+- `type staticImp struct { name string }` implementing
+  `importer.Importer`:
+  - `Name() string` → `s.name`
+  - `Identify(ctx, in) bool` → `true` unconditionally (sole
+    importer in the fixture; Dispatch picks it regardless)
+  - `Extract(ctx, in) (importer.Output, error)` returns Output
+    with exactly one `*ast.Transaction`:
+    - `Date`: `time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)`
+    - `Flag`: `'*'`
+    - `Payee`: `"static-fixture"`
+    - `Postings`: two `Posting`:
+      - `Account = "Assets:Static"`, Amount with
+        `Number = apd.New(1, 0)`, `Currency = "USD"`
+      - `Account = "Equity:Other"`, `Amount = nil`
+        (auto-balanced)
+    - Empty `Diagnostics`.
+
+**Pinned sentinel strings** the test asserts on:
+`"Assets:Static"` and `"static-fixture"`. Implementers MUST NOT
+rename these without updating `fixture_test.go` in the same
+change.
+
+##### `testdata/staticimporter/BUILD.bazel`
+
+Mirrors staticquoter file-for-file with name substitutions:
+
+```python
+load("@rules_go//go:def.bzl", "go_binary")
+load("//pkg/ext/goplug:fixture_constraints.bzl", "PLUGIN_COMPATIBLE_PLATFORMS")
+
+# gazelle:ignore
+
+go_binary(
+    name = "staticimporter",
+    srcs = [
+        "doc.go",
+        "plugin.go",
+    ],
+    cgo = True,
+    gotags = ["testhelpers"],
+    linkmode = "plugin",
+    out = "staticimporter.so",
+    target_compatible_with = PLUGIN_COMPATIBLE_PLATFORMS,
+    testonly = True,
+    visibility = ["//cmd/beanimport:__pkg__"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/goplug",
+        "//pkg/importer",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+```
+
+The `load(...)` line and the `gazelle:ignore` directive are
+load-bearing. Implementer MUST verify staticquoter's
+`PLUGIN_COMPATIBLE_PLATFORMS` load path; if it differs in the
+repo, use the same path staticquoter uses.
+
+##### `cmd/beanimport/BUILD.bazel` amendment
+
+`go_test` gains a `data` attribute that bundles the testdata
+tree, with a platform `select` that adds the built `.so` only on
+plugin-capable platforms:
+
+```python
+go_test(
+    name = "beanimport_test",
+    srcs = [
+        "fixture_test.go",
+        "main_test.go",
+    ],
+    data = glob(
+        ["testdata/**"],
+        exclude = ["testdata/staticimporter/**"],
+    ) + select({
+        "@platforms//os:linux":   ["//cmd/beanimport/testdata/staticimporter"],
+        "@platforms//os:macos":   ["//cmd/beanimport/testdata/staticimporter"],
+        "@platforms//os:freebsd": ["//cmd/beanimport/testdata/staticimporter"],
+        "//conditions:default":   [],
+    }),
+    embed = [":beanimport_lib"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/importer",
+        "//pkg/importer/hook",
+    ],
+)
+```
+
+The `exclude` excises the plugin's source files from the
+runfiles glob; the `select(...)` adds the built `.so` as a data
+dep on platforms that can produce it. Implementer MUST verify
+cmd/beanprice's BUILD.bazel uses an equivalent pattern; if it
+uses a different platform-constraint idiom, prefer that for
+consistency.
+
+##### Test surface — `cmd/beanimport/fixture_test.go`
+
+`package main`. Two test functions pinned by name and behaviour:
+
+```go
+func TestFixture_MultiInstance(t *testing.T)
+func TestFixture_Plugin(t *testing.T)
+```
+
+Both invoke `run(ctx, args, &stdout, &stderr)` (the β-1 entry
+point; unchanged). Both use `context.Background()`.
+
+`TestFixture_MultiInstance` MUST:
+
+1. Resolve the fixture dir via runfiles env
+   (`TEST_SRCDIR`, `TEST_WORKSPACE`); skip with message naming
+   `bazel test //cmd/beanimport:beanimport_test` when either
+   unset.
+2. Build args `["-config", <dir>/config.toml,
+   <dir>/statement.csv]`.
+3. Assert `run() == 0`. On failure, log both stdout and stderr.
+4. Assert `strings.Contains(stdout, "Assets:First")`.
+5. Assert `!strings.Contains(stdout, "Assets:Second")` — second
+   shape MUST never run because Dispatch picked the first.
+
+`TestFixture_Plugin` MUST:
+
+1. Skip when `runtime.GOOS` not in {linux, freebsd, darwin}.
+2. Skip when `TEST_SRCDIR`/`TEST_WORKSPACE` unset.
+3. Skip when `staticimporter.so` does not exist at the resolved
+   path (defensive — covers `bazel test` on an unsupported
+   platform that slipped past the GOOS guard).
+4. Build args `["-config", <dir>/config.toml, "-plugin",
+   <soPath>, <dir>/statement.csv]`.
+5. Assert `run() == 0`.
+6. Assert `strings.Contains(stdout, "Assets:Static")` AND
+   `strings.Contains(stdout, "static-fixture")`.
+
+Skip messages MUST name `bazel test
+//cmd/beanimport:beanimport_test` verbatim so a developer running
+`go test` immediately knows the invocation that satisfies the
+test.
+
+Plugin runfiles path:
+`filepath.Join(srcDir, workspace, "cmd", "beanimport",
+"testdata", "staticimporter", "staticimporter.so")` — identical
+pattern to `cmd/beanprice/main_test.go:339`.
+
+##### Verification
+
+- `bazel build
+  //cmd/beanimport/testdata/staticimporter:staticimporter`
+  produces `staticimporter.so` on linux/macos/freebsd.
+- `bazel test //cmd/beanimport:beanimport_test
+  --test_output=errors` passes;
+  `TestFixture_MultiInstance` and `TestFixture_Plugin` both
+  green (the latter skipped on unsupported GOOS is fine).
+- `bazel test //... --test_output=errors` remains green; no β-1
+  test is touched.
+- Each fixture directory contains a `README.md`.
+
+#### Suggested Internals
+
+- **Test file split.** `fixture_test.go` separate from
+  `main_test.go`. Different cognitive loads (testdata-driven vs
+  in-memory fakes); separation enables
+  `grep -r TestFixture_ cmd/beanimport` to find runfiles-based
+  tests.
+- **Two helpers vs one.** `fixtureDir(t, name)` and
+  `staticImporterPath(t)`. Plugin path also needs GOOS guard +
+  file-exists check; one polymorphic helper would take a boolean
+  flag, uglier than duplication.
+- **Sentinel string choice.** `"Assets:Static"` + payee
+  `"static-fixture"` are obviously synthetic; `git blame` reader
+  will not confuse them with a real importer artefact.
+- **Canned-directive content.** Minimum that `printer.Fprint`
+  renders to non-empty stdout: one `Transaction` with payee + two
+  postings (one with amount, one auto-balanced).
+- **Regex form in `multi_instance/`.**
+  `match = ".*\\.csv$"` on entry #1 and
+  `match = ".*statement.*"` on entry #2. Both fire for
+  `statement.csv`; both regexes are realistic config shapes.
+- **Static importer's Identify body.** Return `true`
+  unconditionally. Sole importer in the fixture; hardcoded `true`
+  keeps the plugin trivially small.
+- **`InitPlugin` factory wiring.** Register inside `InitPlugin`
+  (not in `init()`). goplug ABI guarantees `InitPlugin` is called
+  exactly once after Manifest validation; using `init()` would
+  register before goplug's version check could veto an
+  incompatible plugin.
+- **TOML body shape in `plugin/config.toml`.** Empty body, factory
+  decodes into `&struct{}{}`. Alternative noop key would be
+  pointless surface.
+
+#### Alternatives
+
+- **Golden-file assertions vs `strings.Contains`.** Contains-style
+  (per user scope decision; matches `cmd/beanprice` precedent;
+  avoids `-update` mechanism and printer-whitespace churn).
+- **Real-csv `multi_instance/` vs in-memory fakes.** Real csv.
+  In-memory `TestRun_SingleInstanceSmoke` proves "one csv importer
+  works" but NOT the overlap-selection rule. Fakes-only test of
+  overlap would not exercise real csvimp Identify path.
+- **Standalone `staticimporter` vs reuse `staticquoter`.**
+  Standalone. A quoter `api.Source` cannot satisfy
+  `importer.Importer` (different methods/return types). Reuse
+  structurally impossible.
+- **Skip vs fail when runfiles env unset.** Skip with message
+  naming the bazel command. `go test` users do not have
+  `TEST_SRCDIR`/`TEST_WORKSPACE`; failing would force everyone
+  onto `bazel test`.
+- **Manifest field values.** Pin
+  `APIVersion: goplug.APIVersion`, `Name: "staticimporter"`,
+  `Version: "v0.0.0-fixture"` — same convention staticquoter
+  uses.
+- **Both `multi_instance/` shapes have non-empty `match`.**
+  Without `match`, csvimp's `Identify` returns true after the
+  column-presence check; both shapes pass identically and the
+  test would still pass but would not document the regex-overlap
+  property the README claims.
+- **Static importer's Identify returning true unconditionally.**
+  In a single-importer config, Dispatch picks the sole instance
+  regardless. Returning `false` would mask future bugs where
+  someone adds a second importer to the plugin fixture and forgets
+  to update Identify.
+- **Empty TOML body for plugin fixture + `decode(&struct{}{})`.**
+  Defensive against someone adding a body key later without
+  updating the factory; `meta.Undecoded()` would catch the new
+  key as `"unknown body key"`.
+- **Whether to retire any β-1 in-memory test.** Keep all (per
+  user scope decision). β-1 tests cover failure paths fixtures
+  cannot reach (cancelled context, forced Identify, fake-hook
+  composition order).
+- **Test file naming: `fixture_test.go` vs `golden_test.go`.** No
+  golden files; `golden_test.go` would mislead future readers.
+
+#### Recommendation
+
+Ship exactly two fixtures (`multi_instance/`, `plugin/`) plus the
+`staticimporter` plugin package. `multi_instance/` is the only
+end-to-end demonstration of Phase 8's headline behavioural
+property (declaration-order Dispatch over overlapping regex
+matches); `plugin/` is the only path that can exercise
+`goplug.Load` against a real `.so`. Both omit golden files in
+favour of small `strings.Contains` checks, matching
+`cmd/beanprice` precedent. β-1 in-memory tests stay because they
+cover failure modes — cancelled context, forced Identify,
+fake-hook composition order — that no fixture can reach. The
+static importer is deliberately single-purpose (one canned
+Transaction, two pinned sentinel strings) so the assertion
+surface is small and the fixture cannot silently become a
+parallel test framework over time.
+
 ### Step β-3 — Docs polish
 
 **Functional requirements:**
