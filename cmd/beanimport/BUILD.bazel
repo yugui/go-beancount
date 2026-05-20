@@ -1,0 +1,40 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "beanimport_lib",
+    srcs = [
+        "config.go",
+        "diag.go",
+        "main.go",
+        "pipeline.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/cmd/beanimport",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/goplug",
+        "//pkg/importer",
+        "//pkg/importer/hook",
+        "//pkg/importer/hook/std/classify",
+        "//pkg/importer/std/csvimp",
+        "//pkg/printer",
+        "@com_github_burntsushi_toml//:toml",
+    ],
+)
+
+go_binary(
+    name = "beanimport",
+    embed = [":beanimport_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "beanimport_test",
+    srcs = ["main_test.go"],
+    embed = [":beanimport_lib"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/importer",
+        "//pkg/importer/hook",
+    ],
+)
