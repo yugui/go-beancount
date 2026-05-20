@@ -1681,6 +1681,488 @@ the surrounding docs.
   exit-code table, and a minimal worked TOML example — same layout
   as `cmd/beanprice`.
 
+#### Detailed Design
+
+##### Scope note
+
+The code-survey conducted during Phase 4 design discovered that two
+items the high-level β-1 plan listed are **already shipped** in PR-α:
+
+1. **csvimp `--account` Hint plumbing.** `resolveAccount` at
+   `pkg/importer/std/csvimp/extract.go:226` already reads
+   `hints["account"]` and overrides `s.account` when non-empty;
+   `TestExtract_HintsAccountOverridesShape` (extract_test.go:184)
+   and `TestExtract_DiagMissingAccount` (extract_test.go:211)
+   already cover the behaviour. `Input.Hints` godoc at
+   `pkg/importer/importer.go:111-116` already documents `"account"`
+   as a framework-reserved key set by `cmd/beanimport --account`.
+2. **rowhash godoc terminology.** `pkg/importer/std/csvimp/rowhash.go:14-20`
+   already says "instance name", not "shape-name". The only
+   residual "shape-name" usage is in `rowhash_test.go` comments —
+   intentionally not polished.
+
+Per user decision, β-1's scope narrows to **`cmd/beanimport`
+implementation only**. The high-level β-1 functional-requirements
+list above is preserved as historical record; the Contract below
+binds what β-1 actually delivers.
+
+A secondary survey finding: `pkg/distribute/route/routeconfig/routeconfig.go`
+does **not** use `toml.Primitive` — it does single-pass `Decode`
+plus `meta.Undecoded()` rejection of unknown keys. The Contract
+below introduces `toml.Primitive` afresh for the per-entry deferred
+decode that the factory call requires, and cites `routeconfig` only
+as precedent for the `meta.Undecoded()` strict-key pattern.
+
+##### Package shape
+
+`cmd/beanimport` is `package main`. It exports no library API. The
+"test surface" — the set of internally-bound symbols `main_test.go`
+pins — is fixed below and MUST remain reachable from same-package
+tests at the listed names and signatures.
+
+```go
+// run is the testable entry point. args is os.Args[1:]. stdout and
+// stderr receive the binary's two output streams. The return value
+// is the process exit code (see the exit-code table). run does not
+// call os.Exit; main does.
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int
+
+// loadConfig reads one flat-schema TOML document from r and returns
+// the [[importer]] and [[hook]] entries in declaration order, each
+// already constructed via importer.New / hook.New. path is the
+// display name used in error messages.
+//
+// Errors are wrapped as: "beanimport: config %s: %v" (path, cause).
+// Specific cause prefixes (which tests grep for):
+//   - "decode: <toml error>"        — toml syntax / type mismatch
+//   - "unknown top-level key %q"    — anything other than importer/hook
+//   - "[[importer]] #%d: missing %q"  — kind or name absent
+//   - "[[hook]] #%d: missing %q"      — kind or name absent
+//   - "[[importer]] #%d (%q): %v"   — factory error verbatim
+//   - "[[hook]] #%d (%q): %v"
+//   - "unknown body key %q"         — Undecoded() leftovers per entry
+//   - "no [[importer]] entries"     — empty config
+func loadConfig(r io.Reader, path string) (
+    importers []importer.Importer,
+    hooks []hook.Hook,
+    err error,
+)
+
+// selectHooks returns the subset of all whose Name() appears in
+// names, in the order names lists them. When names is nil or empty
+// it returns all unchanged (declaration order). It returns an error
+// of the form "unknown hook %q" naming the first unknown entry.
+func selectHooks(all []hook.Hook, names []string) ([]hook.Hook, error)
+
+// printDiagnostics writes one line per diagnostic to w using
+// ast.Diagnostic.String(). It is a no-op when diags is empty.
+func printDiagnostics(w io.Writer, diags []ast.Diagnostic)
+```
+
+The runtime flag bundle is the package-private `runOptions` struct
+(name not pinned; tests reach it only via `run`). Field set is
+fixed by the flag table below.
+
+##### Flag table (binding)
+
+stdlib `flag.FlagSet` with `ContinueOnError`; single-dash form
+matching `cmd/beanprice` (`-strict`, not `--strict`). Stdlib `flag`
+also accepts `--name` for any registered flag, so the documentation
+shows the single-dash form but both work.
+
+| Flag         | Type                  | Default | Multiplicity        |
+|--------------|-----------------------|---------|---------------------|
+| `-config`    | string (path)         | `""`    | at-most-once; required |
+| `-hook`      | stringSlice           | nil     | repeatable AND comma-separated inside each value |
+| `-importer`  | string                | `""`    | at-most-once (stdlib "last wins" is accepted; doc says at-most-once) |
+| `-account`   | string                | `""`    | at-most-once         |
+| `-plugin`    | stringSlice (path.so) | nil     | repeatable (comma NOT split — paths may contain commas in pathological filesystems) |
+| `-strict`    | bool                  | `false` | at-most-once         |
+
+Positional: **exactly one** input file path. Zero or 2+ → exit 2
+with message `"beanimport: exactly one input file required"`.
+
+`-hook` canonical form: both repeat AND comma are accepted, and
+the two compose. Pinned by `TestRun_HookFlag_CommaAndRepeatCompose`.
+Empty segments produced by a leading/trailing/double comma are
+silently discarded (rejecting them would be a footgun in shell
+quoting). `-plugin` is repeat-only because `.so` paths legitimately
+may contain commas; pinned by `TestRun_PluginFlag_CommaInPathIsLiteral`.
+
+`-config ""` (flag absent or explicitly empty) → exit 2 with
+`"beanimport: -config is required"`.
+
+##### Exit code mapping (binding)
+
+| Condition | Exit |
+|---|---|
+| Pipeline completed; no Error diagnostic; (no Warning OR `-strict` false) | 0 |
+| ≥1 Error diagnostic in the composed stream OR (`-strict` AND ≥1 Warning) OR Extract/Chain returned a non-nil error promoted to an Error diagnostic | 1 |
+| Flag parse failure, missing `-config`, config load failure (any `loadConfig` error), plugin load failure, unknown `-hook` name, unknown `-importer` name, positional-argument-count mismatch, input-file open failure, instance-registry construction failure (`importer.NewRegistry` / `hook.NewRegistry` error) | 2 |
+
+Context cancellation (`ctx.Err() != nil` propagated up by Apply or
+Chain) is reported as a single Error diagnostic with Code
+`"beanimport-cancelled"`, Message `ctx.Err().Error()`, empty Span,
+and produces exit 1. Pinned by `TestRun_CancelledContext`.
+
+##### TOML schema (binding)
+
+The wire format `loadConfig` accepts:
+
+```toml
+[[importer]]
+kind = "csv"
+name = "boa_checking"
+# ... arbitrary csvimp body keys ...
+
+[[hook]]
+kind = "classify"
+name = "default"
+# ... arbitrary classify body keys ...
+```
+
+Rules:
+
+1. The only permitted top-level keys are `importer` and `hook`,
+   both as TOML array-of-tables. Any other top-level key (including
+   misspellings like `importers`) is rejected via
+   `meta.Undecoded()` with `"unknown top-level key %q"`.
+2. Each entry MUST carry string-valued `kind` and `name`. Missing
+   or wrong-typed → error per the prefix table above.
+3. Every remaining key in the entry's table forms the **body**.
+   The body is handed to the factory through a `decode` closure
+   that invokes `meta.PrimitiveDecode(prim, dest)` exactly once.
+4. After the factory returns, `loadConfig` re-checks
+   `meta.Undecoded()` restricted to that entry's body and rejects
+   any keys neither the loader nor the factory consumed
+   (`"unknown body key %q"`). This gives each factory
+   `routeconfig`-style strict-key behaviour without per-factory
+   boilerplate.
+5. Factories MUST NOT define TOML-tagged struct fields named `kind`
+   or `name`; those keys are consumed at the top-level decode and
+   are not present in the body the factory sees. (csvimp and
+   classify already satisfy this.)
+6. A config with **zero** `[[importer]]` entries is an error
+   (`"no [[importer]] entries"`, exit 2). Zero `[[hook]]` is fine.
+7. Instance order is TOML declaration order. `NewRegistry` walks
+   that order; `Dispatch` walks `NewRegistry`'s `Names()`.
+
+##### Pipeline (binding)
+
+`run`'s sequence and per-step failure mapping:
+
+1. **Parse flags.** Flag parse error → write usage via the
+   `FlagSet`'s own handler (already printed); return 2.
+   `flag.ErrHelp` → return 0. `-config` empty after parse → write
+   `"beanimport: -config is required"` to stderr; return 2.
+   Positional count ≠ 1 → return 2.
+2. **Load plugins.** For each `-plugin` in order, call
+   `goplug.Load(path)`. First error → `"beanimport: plugin %q: %v"`;
+   return 2. (Abort on first failure; do not attempt the remainder.)
+3. **Load config.** `os.Open(-config)` + `loadConfig(f, -config)`.
+   Any error → write to stderr verbatim; return 2.
+4. **Build registries.** `importer.NewRegistry(importers)` and
+   `hook.NewRegistry(hooks)`. Either error → return 2.
+5. **Filter hooks.** `selected, err := selectHooks(hooks, -hook)`;
+   on error return 2. Then
+   `filteredReg, _ := hook.NewRegistry(selected)` (cannot fail
+   because the entries came from a valid registry).
+6. **Open input.** `os.Open(positional)`; on error return 2.
+   Build `importer.Input` with:
+   - `Path` = positional argument verbatim.
+   - `Opener` = a closure that calls `os.Open(positional)` and
+     returns the result (a **fresh** `*os.File` per call so
+     concurrent Extract is safe; the once-opened handle from this
+     step is closed immediately after constructing the Input).
+   - `Hints` = `map[string]string{"account": -account}` only when
+     `-account` is non-empty; otherwise `nil`.
+   - `Sniff` / `MIME` left zero-valued in β-1.
+7. **Dispatch.**
+   - If `-importer` set: `imp, ok := impReg.Lookup(-importer)`.
+     `!ok` → `"beanimport: unknown importer %q"`; return 2.
+     If `imp.Identify(ctx, in)` is false: append a Warning
+     diagnostic — Code `"beanimport-identify-forced"`, Severity
+     `ast.Warning`, Message
+     `fmt.Sprintf("importer %q: Identify returned false; extracting anyway because -importer was set", name)`,
+     Span filename = `in.Path` — then call `imp.Extract(ctx, in)`.
+   - Otherwise: `out, err := importer.Apply(ctx, impReg, in)`.
+
+   In either branch, capture `out.Directives`, `out.Diagnostics`,
+   and `err`. On `err != nil` and `ctx.Err() == nil`, promote to a
+   single Error diagnostic Code `"beanimport-extract"` Message
+   `err.Error()` Span filename = `in.Path`.
+8. **Chain hooks.**
+   `result, herr := hook.Chain(ctx, filteredReg, hook.HookInput{Directives: out.Directives, Hints: in.Hints})`.
+   On `herr != nil` and `ctx.Err() == nil`, promote to a single
+   Error diagnostic Code `"beanimport-hook"` Message `herr.Error()`
+   Span filename = `in.Path`.
+9. **Print directives.** `printer.Fprint(stdout, result.Directives)`.
+   On error → `"beanimport: writing stdout: %v"` to stderr,
+   return 1.
+10. **Print diagnostics.** Concatenate in this order: dispatch
+    diagnostics already inside `out.Diagnostics`, the
+    Identify-forced Warning from step 7 (if any), Chain
+    diagnostics in `result.Diagnostics`, any promoted Error from
+    step 7 or 8, and the cancellation diagnostic if
+    `ctx.Err() != nil`. Call `printDiagnostics(stderr, composed)`.
+11. **Exit code.** Apply the table above against the composed
+    diagnostic stream and `-strict`.
+
+##### Package doc (binding)
+
+`main.go` opens with two paragraphs:
+
+1. One-sentence overview: "Command beanimport drives the
+   `pkg/importer` + `pkg/importer/hook` pipeline against a single
+   input file using a flat `[[importer]]` / `[[hook]]` TOML
+   config." Second sentence asserts diagnostic-format conformance:
+   "Diagnostics are written to stderr in the canonical
+   `<path>:<line>:<col>: <severity>: <message>` form that
+   `cmd/beanprice` and `cmd/beancheck` emit, via
+   `ast.Diagnostic.String`."
+2. Worked TOML example, 10-15 lines, mirroring the Architecture
+   section of this document: one `[[importer]]` kind=csv with a
+   half-dozen csvimp body keys plus nested `[[importer.amount]]`,
+   one `[[hook]]` kind=classify with a `[[hook.rule]]` block.
+   Followed by the canonical invocation
+   `beanimport -config config.toml statement.csv`.
+
+The `-h` output additionally enumerates the flag table, the
+exit-code table, and a one-line "EXAMPLES" block — mirroring
+`cmd/beanprice/main.go`'s `printUsage` shape.
+
+##### Test set (binding)
+
+All tests live in `cmd/beanimport/main_test.go` (or sibling
+`_test.go` files in the same package, at the implementer's
+discretion). Each MUST exist with the listed name and pin the
+listed property.
+
+End-to-end tests using the in-tree `csv` kind (no fake
+registration needed because csvimp's `init()` registers it):
+
+- `TestRun_SingleInstanceSmoke` — minimal config + tiny CSV
+  fixture written into `t.TempDir()`; assert exit 0 and non-empty
+  stdout.
+- `TestRun_MissingConfig` — no `-config`; exit 2; stderr contains
+  `"-config is required"`.
+- `TestRun_ZeroPositional` / `TestRun_TwoPositionals` — exit 2.
+- `TestRun_UnknownImporter` — `-importer foo` with a config that
+  declares only `bar`; exit 2; stderr contains
+  `"unknown importer"`.
+- `TestRun_UnknownHook` — `-hook foo` with a config that declares
+  only `bar`; exit 2; stderr contains `"unknown hook"`.
+- `TestRun_ImporterIdentifyFalseWithFlag` — config with one csv
+  shape whose `match` regex does NOT match the input file's name;
+  `-importer NAME` forces it. Assert exit 0 (Extract still
+  succeeds), and stderr contains both the Warning code
+  `beanimport-identify-forced` and the substring "extracting
+  anyway".
+- `TestRun_StrictPromotesWarningToExit1` — same fixture run
+  twice: without `-strict` → exit 0; with `-strict` → exit 1.
+  Stderr text is identical between the two runs (only the exit
+  code differs).
+- `TestRun_AccountHintPlumbed` — csv shape with `account =
+  "Assets:FromShape"`; invocation passes `-account Assets:FromCLI`;
+  parse stdout and assert at least one Posting carries
+  `Assets:FromCLI`. (Pins the end-to-end Hint > shape precedence
+  PR-α landed in csvimp.)
+- `TestRun_HookFlag_CommaAndRepeatCompose` — config declares
+  hooks A, B, C; invocation passes `-hook B,A -hook C`; assert
+  Chain ran them in the order B, A, C (verified by reading the
+  emitted directives or a sentinel diagnostic; the implementer
+  picks the cheapest observable).
+- `TestRun_PluginFlag_CommaInPathIsLiteral` — pass `-plugin
+  no,such.so`; assert exit 2 with stderr naming `"no,such.so"`
+  literally (proves comma is not split).
+- `TestRun_CancelledContext` — pass an already-cancelled `ctx`;
+  exit 1; stderr contains code `beanimport-cancelled`.
+
+Loader-focused tests (drive `loadConfig` directly because the
+exhaustive error-message grid would otherwise require dozens of
+end-to-end fixtures — falls under the CLAUDE.md test exception
+for package-internal building blocks with independent contract
+value):
+
+- `TestLoadConfig_HappyPath` — two `[[importer]]` + one
+  `[[hook]]` (using the real `csv` and `classify` kinds) →
+  expected counts and declaration-order `Name()` sequence.
+- `TestLoadConfig_UnknownTopLevelKey` — toplevel `importers = []`
+  → error containing `"unknown top-level key"` and the key name.
+- `TestLoadConfig_UnknownBodyKey` — csvimp entry with a key
+  csvimp does not consume (e.g. `bogus = "x"`) → error containing
+  `"unknown body key"` and the key name.
+- `TestLoadConfig_MissingKind` / `TestLoadConfig_MissingName` —
+  each entry-shape error reported with the offending entry index.
+- `TestLoadConfig_FactoryError` — register a same-package fake
+  factory whose decode callback returns an error; assert the
+  error is wrapped with the `[[importer]] #<idx> (<name>): `
+  prefix.
+- `TestLoadConfig_NoImporterEntries` — `[[hook]]`-only config →
+  error `"no [[importer]] entries"`.
+
+Helper tests:
+
+- `TestSelectHooks_Subset` — declaration order is preserved when
+  `names` is a contiguous prefix.
+- `TestSelectHooks_ReorderFromArgs` — passing names in reverse
+  order returns them in reverse order (pins user controls
+  execution order, not declaration order).
+- `TestSelectHooks_Unknown` — returns error of form
+  `"unknown hook %q"`.
+- `TestSelectHooks_NilAndEmpty` — both nil and `[]string{}`
+  return the input slice unchanged.
+- `TestPrintDiagnostics_Format` — one diagnostic of each severity;
+  assert the emitted bytes equal `diag.String() + "\n"` per line.
+  (Pins the contract that we delegate to `ast.Diagnostic.String`
+  and add nothing.)
+
+In-process fake factories used by `TestLoadConfig_FactoryError`
+and by `TestRun_HookFlag_CommaAndRepeatCompose` are registered
+in `init()` of an `_test.go` file under fresh kind names (e.g.
+`"_beanimport_fake_imp"`, `"_beanimport_fake_hook"`) to avoid
+colliding with later test runs.
+
+#### Suggested Internals
+
+These are recommendations. The implementer may adopt, modify, or
+replace them based on what they discover while coding; nothing in
+this section is binding because none of it leaks across the
+binary's externally observable surface.
+
+**File layout.** Recommend four files: `main.go` (package doc,
+`main`, `run`, `runOptions`, flag parsing, `printUsage`),
+`config.go` (`loadConfig` and TOML-typed helper structs),
+`pipeline.go` (`selectHooks`, dispatch/extract/chain sequence
+factored out of `run` if `run` gets long), `diag.go`
+(`printDiagnostics` and shared diagnostic-code constants
+`codeIdentifyForced`, `codeCancelled`, `codeExtract`,
+`codeHook`).
+
+**stringSlice helper.** Copy `cmd/beanprice/main.go:51-54`'s
+`stringSlice` verbatim for `-plugin` (no comma split). For
+`-hook`, a second type `commaSlice` whose `Set` splits on `,`
+and appends non-empty segments. Alternative: one type with a
+boolean flag — uglier, no real saving.
+
+**Input.Opener.** Construct the closure as
+`func() (io.ReadCloser, error) { return os.Open(path) }`. The
+pre-opened handle from pipeline step 6 is closed immediately
+because csvimp calls Opener itself; keeping it around would
+leak.
+
+**`loadConfig` shape with `toml.Primitive`.** The
+`BurntSushi/toml` library makes per-entry deferred decode
+awkward because `Primitive` is opaque. The recommended path:
+decode the entire document into a struct whose `Importer` /
+`Hook` fields are `[]toml.Primitive`, then for each entry call
+`PrimitiveDecode` twice — once into a `{Kind,Name string}`
+shim, once into the factory's dest via a closure. **Either
+internal shape satisfies the Contract above** — the Contract
+specifies what `loadConfig` returns and the errors it produces,
+not how it walks the TOML tree.
+
+**Hook subset realisation.** Construct a fresh
+`*hook.MapRegistry` via `hook.NewRegistry(selected)` rather
+than a filtering wrapper that proxies a parent registry.
+`NewRegistry` already enforces the no-duplicates, no-empty-name
+invariants and already returns names in the supplied order.
+
+**Cancellation diagnostic placement.** Construct the
+cancellation diagnostic at the single end-of-pipeline point
+that checks `ctx.Err()`, not at each pipeline step.
+
+**Identify-forced Warning span.** `Span{Start:
+ast.Position{Filename: in.Path}}` — no line/column because the
+diagnostic refers to the file as a whole. Pins the
+`<path>: warning: ...` form rather than `<path>:0:0:`.
+
+#### Alternatives
+
+- **Flag library: stdlib `flag` vs `spf13/cobra` vs `pflag`.**
+  stdlib, for consistency with `cmd/beanprice`, `cmd/beancheck`,
+  and `cmd/beanfile`. Cobra would import a large dependency for
+  a six-flag CLI; pflag would introduce a second flag idiom in
+  the repo. Rejected both.
+
+- **TOML strategy: `toml.Primitive` vs two-pass `map[string]any`
+  vs per-entry text slice.** Primitive. Preserves numeric type
+  fidelity, carries `Undecoded()` through to per-entry
+  strict-key checks, and gives each factory the structured-decode
+  shape PR-α already defined. `map[string]any` forces every
+  factory to re-implement type coercion; text-slice needs raw
+  byte ranges that `BurntSushi/toml` does not expose. Cite
+  `pkg/distribute/route/routeconfig/routeconfig.go:38-56` for
+  `meta.Undecoded()` precedent only — `routeconfig` does a
+  single-pass full decode and does not use Primitive itself; the
+  per-entry deferred-decode pattern is a fresh introduction
+  justified by the factory-dest opacity.
+
+- **`-hook` parsing: comma-only vs repeat-only vs both.** Both.
+  Comma-only loses on shell quoting; repeat-only is awkward when
+  users have a hook list in an env var. Accepting both costs one
+  extra unit test and matches the `kubectl --selector` pattern.
+
+- **`-plugin` parsing: same or different.** Different.
+  `.so` paths legitimately may contain commas. Comma-splitting
+  paths would be a silent footgun. Repeat-only matches beanprice's
+  `-plugin` exactly.
+
+- **Hook subset realisation: filtered Registry wrapper vs fresh
+  NewRegistry.** Fresh NewRegistry. The wrapper would duplicate
+  the validation NewRegistry already does.
+
+- **`-importer NAME` + Identify=false: Warning+continue vs
+  Error+halt vs CLI-error.** Warning+continue. Passing
+  `-importer` is itself the override; treating Identify-false as
+  fatal contradicts the user's stated intent. Silently extracting
+  without any signal would hide the mismatch; the Warning leaves
+  an audit trail. Unknown-name stays exit 2 (CLI failure).
+
+- **`-strict` semantics: rewrite-at-emission vs
+  exit-code-mapping.** Exit-code mapping, copying
+  `cmd/beanprice/main.go:362-382`'s `report()` shape. Preserves
+  the Diagnostic record verbatim for downstream tooling.
+
+- **Diagnostic formatter: copy beanprice's `formatDiagnostic` or
+  call `ast.Diagnostic.String()`.** Call `String()`.
+  `ast.Diagnostic.String()` (`pkg/ast/ast.go:83-96`) already
+  produces the identical greppable shape; the doc comment marks
+  the format as part of the diagnostic contract.
+
+- **Empty config (zero importers, zero hooks): error or proceed.**
+  Error at config-load (`"no [[importer]] entries"`, exit 2). A
+  config with no importers cannot produce any directive; running
+  the pipeline would print nothing and exit 0 — indistinguishable
+  from success on real work.
+
+- **Plugin load failures: continue with remaining or abort on
+  first.** Abort on first failure, exit 2. Matches beanprice's
+  posture; a partially-loaded plugin set produces a fragile
+  registry whose downstream errors would be confusing.
+
+- **Positional input must exist: open-then-error vs
+  stat-then-error.** Open. One syscall; the OS error message
+  already names the path. Stat-then-open introduces a TOCTOU race
+  for no benefit.
+
+#### Recommendation
+
+Adopt the contract above: a `package main` binary structured
+after `cmd/beanprice` with `run(ctx, args, stdout, stderr) int`
+as the testable entry; stdlib `flag` with the six-flag table; a
+`toml.Primitive`-based `loadConfig` that hands each entry's body
+to `importer.New` / `hook.New` via a `meta.PrimitiveDecode`
+closure and enforces strict per-entry keys via the post-decode
+`meta.Undecoded()` re-check; a fresh `*hook.MapRegistry`
+constructed from `selectHooks` output for `-hook` subsetting;
+the `-importer NAME` override emits a Warning when Identify
+fails and proceeds to Extract; `-strict` translates only at
+exit-code mapping; diagnostics are rendered via
+`ast.Diagnostic.String()`; exit codes follow the 0/1/2 table
+verbatim. csvimp's `-account` Hint plumbing and the rowhash
+godoc are out of scope per the survey.
+
 ### Step β-2 — Integration fixtures and goplug fixture importer
 
 **Functional requirements:**
