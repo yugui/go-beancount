@@ -20,8 +20,9 @@ go_test(
     name = "classify_test",
     srcs = [
         "classify_test.go",
+        "concurrency_test.go",
         "config_test.go",
-        "register_test.go",
+        "factory_test.go",
     ],
     race = "on",
     deps = [

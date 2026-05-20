@@ -18,32 +18,23 @@ func (f *fakeHook) Apply(ctx context.Context, in HookInput) (HookResult, error) 
 	return f.applyFn(ctx, in)
 }
 
-type fakeConfigurableHook struct {
-	fakeHook
-	configureCalled bool
-}
-
-func (c *fakeConfigurableHook) Configure(decode func(dest any) error) error {
-	c.configureCalled = true
-	return decode(new(any))
-}
-
-// withCleanRegistry swaps the global registry for an empty one for the
-// duration of a single test and restores it in t.Cleanup. Direct access to
-// the unexported global is justified here: the package has no exported reset
-// API and the concurrent-stress test requires atomic swap.
-func withCleanRegistry(t interface {
+// withCleanKindRegistry swaps the global kind registry for an empty one for
+// the duration of a single test and restores it in t.Cleanup. Direct access
+// to the unexported global is justified here because the package has no
+// exported reset API and the concurrent-stress test requires atomic swap.
+// Must not be used with t.Parallel(); the global swap is process-wide.
+func withCleanKindRegistry(t interface {
 	Helper()
 	Cleanup(func())
 }) {
 	t.Helper()
-	registryMu.Lock()
-	old := registry
-	registry = map[string]Hook{}
-	registryMu.Unlock()
+	kindMu.Lock()
+	old := kinds
+	kinds = map[string]Factory{}
+	kindMu.Unlock()
 	t.Cleanup(func() {
-		registryMu.Lock()
-		registry = old
-		registryMu.Unlock()
+		kindMu.Lock()
+		kinds = old
+		kindMu.Unlock()
 	})
 }

@@ -2,7 +2,6 @@ package importer
 
 import (
 	"context"
-	"sort"
 	"testing"
 
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -27,7 +26,6 @@ func (r *fakeRegistry) Names() []string {
 	for i, imp := range r.imps {
 		names[i] = imp.Name()
 	}
-	sort.Strings(names)
 	return names
 }
 
@@ -52,8 +50,8 @@ func TestDispatch_FirstMatchWins(t *testing.T) {
 	}
 }
 
-func TestDispatch_SortedOrderMatters(t *testing.T) {
-	// Inserted in reverse alphabetical order; sorted Names() must still pick "bbb".
+func TestDispatch_DeclarationOrderMatters(t *testing.T) {
+	// Declaration order: "zzz" first, then "bbb". Both identify; "zzz" must win.
 	reg := &fakeRegistry{
 		imps: []Importer{
 			&fakeImporter{name: "zzz", identifyFn: func(Input) bool { return true }},
@@ -67,8 +65,30 @@ func TestDispatch_SortedOrderMatters(t *testing.T) {
 	if !ok {
 		t.Fatal("Dispatch returned ok=false")
 	}
-	if got.Name() != "bbb" {
-		t.Errorf("Dispatch returned %q, want %q", got.Name(), "bbb")
+	if got.Name() != "zzz" {
+		t.Errorf("Dispatch returned %q, want %q (declaration order)", got.Name(), "zzz")
+	}
+}
+
+func TestDispatch_MapRegistryDeclarationOrder(t *testing.T) {
+	// Declared as zzz/bbb/aaa; lex order would be aaa/bbb/zzz.
+	// zzz and aaa both identify; Dispatch must pick zzz (declaration order).
+	reg, err := NewRegistry([]Importer{
+		&fakeImporter{name: "zzz", identifyFn: func(Input) bool { return true }},
+		&fakeImporter{name: "bbb", identifyFn: func(Input) bool { return false }},
+		&fakeImporter{name: "aaa", identifyFn: func(Input) bool { return true }},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := newTestInput("data.csv", "")
+
+	got, ok, _ := Dispatch(context.Background(), reg, in)
+	if !ok {
+		t.Fatal("Dispatch returned ok=false")
+	}
+	if got.Name() != "zzz" {
+		t.Errorf("Dispatch returned %q, want %q (declaration order)", got.Name(), "zzz")
 	}
 }
 

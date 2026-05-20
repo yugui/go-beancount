@@ -1,5 +1,5 @@
 // Package importer defines the Beancount import framework: the Importer
-// interface, supporting types, optional sub-interfaces, and the
+// interface, the Factory pattern for creating configured instances, and the
 // registry-driven dispatch pipeline. All exported types are part of the
 // plugin ABI; breaking changes require a
 // [github.com/yugui/go-beancount/pkg/ext/goplug.APIVersion] bump.
@@ -18,43 +18,71 @@ import (
 // [ast.Diagnostic] is a free-form string; these constants give callers a
 // stable handle to match against.
 const (
-	// DiagImporterNotRegistered is emitted by Apply when the caller
-	// forced an importer name that is not in the registry. Severity: Error.
+	// DiagImporterNotRegistered is emitted when the caller forced an instance
+	// name that is not in the per-run Registry. Severity: Error.
 	DiagImporterNotRegistered = "importer-not-registered"
 
-	// DiagImporterNone is emitted by Dispatch when every registered
-	// importer's Identify returned false. Severity: Error.
+	// DiagImporterNone is emitted by Dispatch when every instance's Identify
+	// returned false. Severity: Error.
 	DiagImporterNone = "importer-none"
 
-	// DiagImporterAmbiguous is reserved for a future strict-mode that
-	// probes all importers and reports collisions. Dispatch does NOT emit
-	// it in ABI v1.
+	// DiagImporterAmbiguous is reserved for a future strict-mode that probes
+	// all importers and reports collisions. Dispatch does NOT emit it in ABI v1.
 	DiagImporterAmbiguous = "importer-ambiguous"
 )
 
-// Importer converts an input file into beancount directives. Implementations
-// are registered with [Register] and selected by [Dispatch] via [Identify].
-//
-// Name returns the registry key. By convention, use the upstream tool's own
-// name (e.g. "csv", "ofx") for canonical reference importers, and the Go
-// fully-qualified package path otherwise — the same convention pkg/quote uses.
-//
-// Identify is a pure, side-effect-free, cheap check: it MUST NOT consume
-// in.Opener unless Path, MIME, and Sniff are insufficient. If it does call
-// Opener it MUST close the returned io.ReadCloser before returning. A true
-// result is a non-binding preference; Dispatch picks the first match in
-// sorted-by-name order.
-//
-// Extract does the actual work. It returns directives in source-encounter
-// order, per-record diagnostics for problems the importer recovered from, and
-// a non-nil error ONLY for system-level failures (I/O, ctx cancellation,
-// structural format corruption). Context cancellation MUST surface as a
-// non-nil error. Ledger-content problems (bad date, malformed amount) are
-// Diagnostics, not errors.
+// Importer is a fully-configured import driver for one declared instance
+// (e.g. "boa_checking"). Implementations must be safe for concurrent
+// calls to Identify and Extract after construction.
 type Importer interface {
+	// Name returns the instance name supplied to the Factory that
+	// produced this Importer. The value is stable for the lifetime of
+	// the instance and is the key under which a Registry holds it.
 	Name() string
+
+	// Identify is a cheap, side-effect-free check. It MUST NOT consume
+	// in.Opener unless Path/MIME/Sniff are insufficient; if it does, it
+	// MUST close the returned io.ReadCloser before returning. A true
+	// result is a non-binding preference; Dispatch picks the first
+	// match in Registry.Names() order. Identify reports no error: a
+	// failure to identify is simply false.
 	Identify(ctx context.Context, in Input) bool
+
+	// Extract returns directives in source-encounter order plus
+	// per-record diagnostics. A non-nil error is reserved for
+	// system-level failures (I/O, ctx cancellation, structural format
+	// corruption); ledger-content problems are Diagnostics, not errors.
+	// Context cancellation MUST surface as a non-nil error.
 	Extract(ctx context.Context, in Input) (Output, error)
+}
+
+// Factory produces a single fully-configured Importer instance. The
+// New call IS the Configure step: there is no separately exposed
+// Configure method on Importer. A non-nil error aborts creation and
+// MUST be returned without a partially-constructed Importer leaking
+// out; on error the first return MUST be nil.
+//
+// The decode callback decodes the caller's per-instance configuration
+// (the TOML table body, with the reserved keys "kind" and "name"
+// stripped) into a destination the factory supplies. It MUST NOT be
+// nil; factories that take no configuration may simply ignore it.
+//
+// Factory.New is called at most once per (name, decode) pair by the
+// caller building a Registry. Multiple New calls for distinct
+// instances of the same kind MAY run concurrently; a Factory that
+// holds shared state across calls is responsible for its own
+// synchronisation.
+type Factory interface {
+	New(name string, decode func(dest any) error) (Importer, error)
+}
+
+// FactoryFunc adapts a plain function to the Factory interface,
+// analogous to http.HandlerFunc.
+type FactoryFunc func(name string, decode func(dest any) error) (Importer, error)
+
+// New implements [Factory].
+func (f FactoryFunc) New(name string, decode func(dest any) error) (Importer, error) {
+	return f(name, decode)
 }
 
 // Input carries everything an Importer needs to identify and extract
@@ -98,28 +126,6 @@ type Output struct {
 	// recovered from. Severity is chosen by the importer; --strict
 	// promotion (warning → error) is the CLI's responsibility.
 	Diagnostics []ast.Diagnostic
-}
-
-// Configurable is an optional sub-interface for importers that accept
-// structured configuration. Detected via type assertion; importers that do
-// not implement it receive no Configure call.
-//
-// decode is a caller-supplied callback that decodes whatever the caller holds
-// (TOML, JSON, an in-memory map) into the destination the importer provides.
-// The importer writes the fixed pattern:
-//
-//	var c MyConfig
-//	if err := decode(&c); err != nil { return err }
-//	i.cfg = c
-//
-// decode MUST NOT be nil. Callers that have no configuration to supply do not
-// call Configure at all. Configure MUST be called at most once per Importer
-// instance, before any Identify or Extract call; calling it twice has
-// undefined behaviour. A non-nil error fails the dispatch pipeline early:
-// Apply propagates it as a framework error, not a Diagnostic.
-type Configurable interface {
-	Importer
-	Configure(decode func(dest any) error) error
 }
 
 // Streaming is an optional sub-interface for importers that can produce

@@ -70,7 +70,6 @@ func TestExtract_Happy_SingleSignedAmount(t *testing.T) {
 }
 
 const debitCreditTOML = `
-[shape.bc]
 date_col         = "Date"
 date_format      = "2006-01-02"
 default_currency = "JPY"
@@ -79,11 +78,11 @@ payee_col        = "Payee"
 narration_cols      = ["Description", "Memo"]
 narration_separator = " / "
 
-[[shape.bc.amount]]
+[[amount]]
 col    = "Withdrawal"
 negate = true
 
-[[shape.bc.amount]]
+[[amount]]
 col    = "Deposit"
 negate = false
 `
@@ -140,20 +139,19 @@ func TestExtract_NarrationConcatSkipsEmpty(t *testing.T) {
 		}
 		got := tx.Narration
 		if got != want[i] {
-			t.Errorf("row %d narration = %q, want %q", i, got, want[i])
+			t.Errorf("Extract row %d: narration = %q, want %q", i, got, want[i])
 		}
 	}
 }
 
 const currencyColTOML = `
-[shape.cc]
 date_col         = "Date"
 date_format      = "2006-01-02"
 currency_col     = "Cur"
 default_currency = "USD"
 account          = "Assets:Bank"
 
-[[shape.cc.amount]]
+[[amount]]
 col = "Amount"
 `
 
@@ -202,12 +200,11 @@ func TestExtract_HintsAccountOverridesShape(t *testing.T) {
 
 // shape has no account; Hints empty → DiagMissingAccount.
 const noAccountTOML = `
-[shape.s]
 date_col         = "Date"
 date_format      = "2006-01-02"
 default_currency = "USD"
 
-[[shape.s.amount]]
+[[amount]]
 col = "Amount"
 `
 
@@ -222,12 +219,11 @@ func TestExtract_DiagMissingAccount(t *testing.T) {
 
 // shape has no default_currency and no currency_col → DiagMissingCurrency.
 const noCurrencyTOML = `
-[shape.s]
 date_col    = "Date"
 date_format = "2006-01-02"
 account     = "Assets:X"
 
-[[shape.s.amount]]
+[[amount]]
 col = "Amount"
 `
 
@@ -308,8 +304,8 @@ func TestExtract_ContextCancellation(t *testing.T) {
 // TestExtract_DiagMissingColumn_StatefulOpener verifies that DiagMissingColumn
 // is emitted when a required column present at Identify time is absent when
 // Extract re-opens the file. The stateful Opener returns a complete header on
-// the first call (Identify succeeds, caches the shape) and a header missing
-// "Amount" on the second call (Extract re-opens and finds the column absent).
+// the first call (Identify succeeds) and a header missing "Amount" on the
+// second call (Extract re-opens and finds the column absent).
 func TestExtract_DiagMissingColumn_StatefulOpener(t *testing.T) {
 	imp := newConfigured(t, simpleTOML)
 
@@ -346,14 +342,13 @@ func TestExtract_DiagLineNumberAccountsForSkipLines(t *testing.T) {
 	// skip_lines = 2 means the header is physical line 3, body starts at line 4.
 	// A bad-date row in the first body line should report line 4, not line 2.
 	const src = `
-[shape.s]
 skip_lines       = 2
 date_col         = "Date"
 date_format      = "2006-01-02"
 default_currency = "USD"
 account          = "Assets:X"
 
-[[shape.s.amount]]
+[[amount]]
 col = "Amount"
 `
 	imp := newConfigured(t, src)

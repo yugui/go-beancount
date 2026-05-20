@@ -13,14 +13,17 @@ import (
 // Transaction matches no configured rule. Severity: ast.Warning.
 const DiagNoRule = "classify-no-rule"
 
-// Hook is the classify hook. Registered as a process-global singleton; see
-// the package documentation for the concurrency contract.
+// Hook is the classify hook for one declared instance. It is produced by the
+// package's [hook.Factory] (registered under kind "classify"); its internal
+// state is frozen at construction and Apply is safe for concurrent invocation
+// on the same value.
 type Hook struct {
+	name  string
 	rules []rule
 }
 
-// Name returns "classify".
-func (h *Hook) Name() string { return "classify" }
+// Name returns the instance name supplied to the Factory that produced this Hook.
+func (h *Hook) Name() string { return h.name }
 
 // Apply replaces each single-posting *ast.Transaction with its two-leg form
 // using the first matching rule's account and currency. Single-posting
@@ -84,10 +87,7 @@ func isSingleLeg(d ast.Directive) bool {
 	return ok && len(tx.Postings) == 1
 }
 
-// applyRules walks rules in declaration order. When a rule's selectors all
-// match tx (AND semantics when both payeeRegex and narrationRegex are set),
-// result is the BalanceWith clone with the counterpart posting and matched
-// is true. When no rule matches, result is nil and matched is false.
+// applyRules returns the result of the first matching rule, or (nil, false) if none match.
 func applyRules(tx *ast.Transaction, rules []rule) (result ast.Directive, matched bool) {
 	for _, r := range rules {
 		if r.payeeRegex != nil && !r.payeeRegex.MatchString(tx.Payee) {

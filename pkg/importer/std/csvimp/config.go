@@ -3,14 +3,11 @@ package csvimp
 import (
 	"fmt"
 	"regexp"
-	"sort"
 	"time"
 	"unicode/utf8"
-)
 
-type config struct {
-	Shapes map[string]shapeConfig `toml:"shape"`
-}
+	"github.com/yugui/go-beancount/pkg/importer"
+)
 
 type shapeConfig struct {
 	Match              string         `toml:"match"`
@@ -33,7 +30,6 @@ type amountColumn struct {
 }
 
 type shape struct {
-	name          string
 	compiledMatch *regexp.Regexp // nil when Match was unset
 	delimiter     rune           // default ','
 	skipLines     int
@@ -51,57 +47,26 @@ type shape struct {
 	amounts []amountColumn
 }
 
-// Configure decodes the importer's configuration through the caller-
-// supplied closure, validates it, and replaces any previously-
-// installed shape table. The closure MUST NOT be nil. On any failure
-// (nil decoder, decode error, validation error) the previous
-// configuration is left untouched and a non-nil error prefixed
-// "csvimp: configure: " is returned.
-func (i *Importer) Configure(decode func(dest any) error) error {
+// newImporter is the factory function registered under kind "csv". It returns
+// one [*Importer] bound to name, or (nil, err) with the error prefixed
+// "csvimp: configure: " on any failure.
+func newImporter(name string, decode func(dest any) error) (importer.Importer, error) {
 	if decode == nil {
-		return fmt.Errorf("csvimp: configure: nil decoder")
+		return nil, fmt.Errorf("csvimp: configure: nil decoder")
 	}
-	var cfg config
-	if err := decode(&cfg); err != nil {
-		return fmt.Errorf("csvimp: configure: %w", err)
+	var sc shapeConfig
+	if err := decode(&sc); err != nil {
+		return nil, fmt.Errorf("csvimp: configure: %w", err)
 	}
-	shapes, err := buildShapes(cfg)
+	s, err := validateShape(name, sc)
 	if err != nil {
-		return fmt.Errorf("csvimp: configure: %w", err)
+		return nil, fmt.Errorf("csvimp: configure: %w", err)
 	}
-	i.mu.Lock()
-	i.shapes = shapes
-	i.cache = identifyCache{}
-	i.mu.Unlock()
-	return nil
+	return &Importer{name: name, s: s}, nil
 }
 
-// buildShapes returns shapes in lexicographic name order; date_format is
-// validated to include a year component.
-func buildShapes(cfg config) ([]*shape, error) {
-	if len(cfg.Shapes) == 0 {
-		return nil, fmt.Errorf("no shapes defined")
-	}
-	names := make([]string, 0, len(cfg.Shapes))
-	for n := range cfg.Shapes {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-
-	out := make([]*shape, 0, len(names))
-	for _, name := range names {
-		sc := cfg.Shapes[name]
-		s, err := validateShape(name, sc)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, s)
-	}
-	return out, nil
-}
-
-// validateShape validates sc and returns a compiled shape. The date_format
-// must include a year component (year-less layouts produce ambiguous dates).
+// validateShape validates sc and returns a compiled shape. date_format must
+// contain a year component.
 func validateShape(name string, sc shapeConfig) (*shape, error) {
 	if sc.DateCol == "" {
 		return nil, fmt.Errorf("shape %q: date_col is required", name)
@@ -123,7 +88,6 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 	}
 
 	s := &shape{
-		name:          name,
 		delimiter:     ',',
 		skipLines:     sc.SkipLines,
 		dateCol:       sc.DateCol,

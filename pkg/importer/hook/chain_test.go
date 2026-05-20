@@ -25,8 +25,11 @@ func sameSliceData(a, b []ast.Directive) bool {
 }
 
 // fakeRegistry implements Registry without touching global state.
+// names controls Names() return order; if nil, Names() returns hook names in
+// declaration order.
 type fakeRegistry struct {
 	hooks []Hook
+	names []string // if nil, derived from hooks in declaration order
 }
 
 func (r *fakeRegistry) Lookup(name string) (Hook, bool) {
@@ -39,13 +42,16 @@ func (r *fakeRegistry) Lookup(name string) (Hook, bool) {
 }
 
 func (r *fakeRegistry) Names() []string {
-	// reverse of registration order — ensures tests cannot pass by accident
-	// if Chain were to sort or use registry order instead of caller-supplied order.
-	names := make([]string, len(r.hooks))
-	for i, h := range r.hooks {
-		names[len(r.hooks)-1-i] = h.Name()
+	if r.names != nil {
+		out := make([]string, len(r.names))
+		copy(out, r.names)
+		return out
 	}
-	return names
+	out := make([]string, len(r.hooks))
+	for i, h := range r.hooks {
+		out[i] = h.Name()
+	}
+	return out
 }
 
 func TestChain_EmptyNames(t *testing.T) {
@@ -54,30 +60,28 @@ func TestChain_EmptyNames(t *testing.T) {
 
 	cases := []struct {
 		name       string
-		names      []string
 		directives []ast.Directive
 		wantNil    bool
 	}{
-		{"nil names, non-empty directives", nil, directives, false},
-		{"empty names, non-empty directives", []string{}, directives, false},
-		{"nil names, nil directives", nil, nil, true},
+		{"non-empty directives", directives, false},
+		{"nil directives", nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := Chain(context.Background(), reg, tc.names, HookInput{Directives: tc.directives})
+			result, err := Chain(context.Background(), reg, HookInput{Directives: tc.directives})
 			if err != nil {
 				t.Fatalf("Chain returned error: %v", err)
 			}
 			if result.Diagnostics != nil {
-				t.Errorf("Diagnostics = %v, want nil", result.Diagnostics)
+				t.Errorf("Chain(...) Diagnostics = %v, want nil", result.Diagnostics)
 			}
 			if tc.wantNil {
 				if result.Directives != nil {
-					t.Errorf("Directives = %v, want nil", result.Directives)
+					t.Errorf("Chain(...) Directives = %v, want nil", result.Directives)
 				}
 			} else {
 				if !sameSliceData(result.Directives, tc.directives) {
-					t.Error("Chain with empty names did not return the same backing array")
+					t.Error("Chain(...) with empty registry did not return the same backing array")
 				}
 			}
 		})
@@ -98,7 +102,7 @@ func TestChain_NilDirectivesNormalisedForNonEmptyNames(t *testing.T) {
 		},
 	}
 
-	_, err := Chain(context.Background(), reg, []string{"a"}, HookInput{Directives: nil})
+	_, err := Chain(context.Background(), reg, HookInput{Directives: nil})
 	if err != nil {
 		t.Fatalf("Chain returned error: %v", err)
 	}
@@ -125,7 +129,7 @@ func TestChain_SingleHook(t *testing.T) {
 		},
 	}
 
-	result, err := Chain(context.Background(), reg, []string{"a"}, HookInput{Directives: input})
+	result, err := Chain(context.Background(), reg, HookInput{Directives: input})
 	if err != nil {
 		t.Fatalf("Chain returned error: %v", err)
 	}
@@ -134,34 +138,117 @@ func TestChain_SingleHook(t *testing.T) {
 	}
 }
 
-func TestChain_MultipleHooksOrderPreserved(t *testing.T) {
-	// "b" runs first, "a" runs second — caller-supplied order, not sorted.
-	var callOrder []string
+func TestChain_NoCopyBetweenRungs(t *testing.T) {
+	// no defensive copy between rungs
+	first := []ast.Directive{&ast.Transaction{}}
+	var secondSaw uintptr
 
 	reg := &fakeRegistry{
 		hooks: []Hook{
 			&fakeHook{
-				name: "a",
+				name: "first",
 				applyFn: func(_ context.Context, in HookInput) (HookResult, error) {
-					callOrder = append(callOrder, "a")
-					return HookResult{Directives: in.Directives}, nil
+					return HookResult{Directives: first}, nil
 				},
 			},
 			&fakeHook{
-				name: "b",
+				name: "second",
 				applyFn: func(_ context.Context, in HookInput) (HookResult, error) {
-					callOrder = append(callOrder, "b")
+					secondSaw = uintptr(unsafe.Pointer(unsafe.SliceData(in.Directives)))
 					return HookResult{Directives: in.Directives}, nil
 				},
 			},
 		},
 	}
 
-	_, err := Chain(context.Background(), reg, []string{"b", "a"}, HookInput{Directives: []ast.Directive{}})
+	_, err := Chain(context.Background(), reg, HookInput{Directives: []ast.Directive{&ast.Transaction{}}})
 	if err != nil {
 		t.Fatalf("Chain returned error: %v", err)
 	}
-	want := []string{"b", "a"}
+	want := uintptr(unsafe.Pointer(unsafe.SliceData(first)))
+	if secondSaw != want {
+		t.Error("Chain made a defensive copy of Directives between rungs; second hook saw a different backing array")
+	}
+}
+
+func TestChain_WithMapRegistry_DeclarationOrder(t *testing.T) {
+	// declaration order disagrees with lex order
+	var callOrder []string
+
+	hooks := []Hook{
+		&fakeHook{
+			name: "zzz",
+			applyFn: func(_ context.Context, in HookInput) (HookResult, error) {
+				callOrder = append(callOrder, "zzz")
+				return HookResult{Directives: in.Directives}, nil
+			},
+		},
+		&fakeHook{
+			name: "bbb",
+			applyFn: func(_ context.Context, in HookInput) (HookResult, error) {
+				callOrder = append(callOrder, "bbb")
+				return HookResult{Directives: in.Directives}, nil
+			},
+		},
+		&fakeHook{
+			name: "aaa",
+			applyFn: func(_ context.Context, in HookInput) (HookResult, error) {
+				callOrder = append(callOrder, "aaa")
+				return HookResult{Directives: in.Directives}, nil
+			},
+		},
+	}
+	reg, err := NewRegistry(hooks)
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+
+	_, err = Chain(context.Background(), reg, HookInput{Directives: []ast.Directive{}})
+	if err != nil {
+		t.Fatalf("Chain returned error: %v", err)
+	}
+	want := []string{"zzz", "bbb", "aaa"}
+	if diff := cmp.Diff(want, callOrder); diff != "" {
+		t.Errorf("Chain(*MapRegistry) call order mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestChain_MultipleHooksOrderPreserved(t *testing.T) {
+	// "zzz", "bbb", "aaa" declared in that order — lex order differs to pin
+	// that Chain walks declaration order, not sorted order.
+	var callOrder []string
+
+	reg := &fakeRegistry{
+		hooks: []Hook{
+			&fakeHook{
+				name: "zzz",
+				applyFn: func(_ context.Context, in HookInput) (HookResult, error) {
+					callOrder = append(callOrder, "zzz")
+					return HookResult{Directives: in.Directives}, nil
+				},
+			},
+			&fakeHook{
+				name: "bbb",
+				applyFn: func(_ context.Context, in HookInput) (HookResult, error) {
+					callOrder = append(callOrder, "bbb")
+					return HookResult{Directives: in.Directives}, nil
+				},
+			},
+			&fakeHook{
+				name: "aaa",
+				applyFn: func(_ context.Context, in HookInput) (HookResult, error) {
+					callOrder = append(callOrder, "aaa")
+					return HookResult{Directives: in.Directives}, nil
+				},
+			},
+		},
+	}
+
+	_, err := Chain(context.Background(), reg, HookInput{Directives: []ast.Directive{}})
+	if err != nil {
+		t.Fatalf("Chain returned error: %v", err)
+	}
+	want := []string{"zzz", "bbb", "aaa"}
 	if diff := cmp.Diff(want, callOrder); diff != "" {
 		t.Errorf("call order mismatch (-want +got):\n%s", diff)
 	}
@@ -170,14 +257,16 @@ func TestChain_MultipleHooksOrderPreserved(t *testing.T) {
 func TestChain_MissingRungHaltsWithDiag(t *testing.T) {
 	directives := []ast.Directive{&ast.Transaction{}}
 
+	// fakeRegistry with names that include a name Lookup cannot resolve.
 	reg := &fakeRegistry{
 		hooks: []Hook{
 			&fakeHook{name: "ok"},
 		},
+		names: []string{"ok", "missing"},
 	}
 
 	t.Run("MissingLast", func(t *testing.T) {
-		result, err := Chain(context.Background(), reg, []string{"ok", "missing"}, HookInput{Directives: directives})
+		result, err := Chain(context.Background(), reg, HookInput{Directives: directives})
 		if err != nil {
 			t.Fatalf("Chain returned error on missing rung: %v", err)
 		}
@@ -207,8 +296,9 @@ func TestChain_MissingRungHaltsWithDiag(t *testing.T) {
 					},
 				},
 			},
+			names: []string{"missing", "after"},
 		}
-		result, err := Chain(context.Background(), regWithAfter, []string{"missing", "after"}, HookInput{Directives: directives})
+		result, err := Chain(context.Background(), regWithAfter, HookInput{Directives: directives})
 		if err != nil {
 			t.Fatalf("Chain returned error on missing rung: %v", err)
 		}
@@ -256,7 +346,7 @@ func TestChain_ApplyErrorHaltsAndPreservesDiagnostics(t *testing.T) {
 		},
 	}
 
-	result, err := Chain(context.Background(), reg, []string{"first", "failing"}, HookInput{Directives: before})
+	result, err := Chain(context.Background(), reg, HookInput{Directives: before})
 	if !errors.Is(err, applyErr) {
 		t.Errorf("Chain error = %v, want %v", err, applyErr)
 	}
@@ -297,7 +387,7 @@ func TestChain_CtxCancellation(t *testing.T) {
 		},
 	}
 
-	result, err := Chain(ctx, reg, []string{"first", "second"}, HookInput{Directives: directives})
+	result, err := Chain(ctx, reg, HookInput{Directives: directives})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("Chain error = %v, want context.Canceled", err)
 	}
@@ -331,7 +421,7 @@ func TestChain_DiagnosticsOrderFromSuccessiveRungs(t *testing.T) {
 		},
 	}
 
-	result, err := Chain(context.Background(), reg, []string{"a", "b"}, HookInput{Directives: []ast.Directive{}})
+	result, err := Chain(context.Background(), reg, HookInput{Directives: []ast.Directive{}})
 	if err != nil {
 		t.Fatalf("Chain returned error: %v", err)
 	}
@@ -349,7 +439,7 @@ func TestChain_NilDiagnosticsWhenNoneEmitted(t *testing.T) {
 		},
 	}
 
-	result, err := Chain(context.Background(), reg, []string{"a", "b"}, HookInput{Directives: []ast.Directive{}})
+	result, err := Chain(context.Background(), reg, HookInput{Directives: []ast.Directive{}})
 	if err != nil {
 		t.Fatalf("Chain returned error: %v", err)
 	}
@@ -386,7 +476,7 @@ func TestChain_HintsAndOptionsPassedThroughUnchanged(t *testing.T) {
 		},
 	}
 
-	_, err := Chain(context.Background(), reg, []string{"a", "b"}, HookInput{
+	_, err := Chain(context.Background(), reg, HookInput{
 		Directives: []ast.Directive{},
 		Hints:      hints,
 		Options:    opts,

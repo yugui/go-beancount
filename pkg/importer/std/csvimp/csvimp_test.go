@@ -22,55 +22,32 @@ func inputFromString(path, mime, body string) importer.Input {
 	}
 }
 
-func TestImporterRegisteredUnderBothNames(t *testing.T) {
-	a, ok := importer.Lookup("csv")
-	if !ok {
-		t.Fatal(`Lookup("csv"): not registered`)
-	}
-	b, ok := importer.Lookup("github.com/yugui/go-beancount/pkg/importer/std/csvimp")
-	if !ok {
-		t.Fatal("Lookup(go-path): not registered")
-	}
-	if a != b {
-		t.Errorf("csv and go-path lookups returned different instances (%p vs %p)", a, b)
-	}
-	if a.Name() != "csv" {
-		t.Errorf("Name() = %q, want %q", a.Name(), "csv")
-	}
-}
-
-func TestName_Constant(t *testing.T) {
-	imp := &Importer{}
-	if imp.Name() != "csv" {
-		t.Errorf("Name() = %q, want %q", imp.Name(), "csv")
-	}
-}
-
 const simpleTOML = `
-[shape.simple]
 date_col         = "Date"
 date_format      = "2006-01-02"
 default_currency = "USD"
 account          = "Assets:Checking"
 
-[[shape.simple.amount]]
+[[amount]]
 col = "Amount"
 `
 
 func newConfigured(t *testing.T, src string) *Importer {
 	t.Helper()
-	imp := &Importer{}
-	if err := imp.Configure(permissiveDecoder(src)); err != nil {
-		t.Fatalf("Configure: %v", err)
+	imp, err := newImporter("test", permissiveDecoder(src))
+	if err != nil {
+		t.Fatalf("newImporter: %v", err)
 	}
-	return imp
+	return imp.(*Importer)
 }
 
-func TestIdentify_NoShapesConfigured(t *testing.T) {
-	imp := &Importer{}
-	in := inputFromString("/tmp/file.csv", "", "Date,Amount\n2024-01-01,1\n")
-	if imp.Identify(context.Background(), in) {
-		t.Error("Identify true with no shapes configured")
+func TestName_ReturnsInstanceName(t *testing.T) {
+	imp, err := newImporter("my-instance", permissiveDecoder(simpleTOML))
+	if err != nil {
+		t.Fatalf("newImporter: %v", err)
+	}
+	if got := imp.Name(); got != "my-instance" {
+		t.Errorf("Name() = %q, want %q", got, "my-instance")
 	}
 }
 
@@ -107,40 +84,56 @@ func TestIdentify_MissingColumnRejected(t *testing.T) {
 	}
 }
 
-// TestIdentify_MatchRegexGatesShapeSelection verifies that the match regex
-// gates shape selection: shape a_specific matches only paths beginning with
-// "specific"; shape b_other matches only paths beginning with "other". Both
-// shapes share the same columns, so selection is driven by regex alone. We
-// confirm correct selection by observing the account on the emitted posting.
+// TestIdentify_MatchRegexGatesShapeSelection verifies that match regex gates
+// shape selection via multi-instance dispatch: instance "a_specific" matches
+// only paths beginning with "specific"; instance "b_other" matches only paths
+// beginning with "other". Both instances share the same columns, so selection
+// is driven by regex alone. The correct instance is confirmed by observing
+// the account on the emitted posting.
 func TestIdentify_MatchRegexGatesShapeSelection(t *testing.T) {
-	const src = `
-[shape.b_other]
-match            = "other.*"
-date_col         = "Date"
-date_format      = "2006-01-02"
-default_currency = "USD"
-account          = "Assets:B"
-[[shape.b_other.amount]]
-col = "Amount"
-
-[shape.a_specific]
+	const srcSpecific = `
 match            = "specific.*"
 date_col         = "Date"
 date_format      = "2006-01-02"
 default_currency = "USD"
 account          = "Assets:A"
-[[shape.a_specific.amount]]
+[[amount]]
 col = "Amount"
 `
-	imp := newConfigured(t, src)
+	const srcOther = `
+match            = "other.*"
+date_col         = "Date"
+date_format      = "2006-01-02"
+default_currency = "USD"
+account          = "Assets:B"
+[[amount]]
+col = "Amount"
+`
+	impA, err := newImporter("a_specific", permissiveDecoder(srcSpecific))
+	if err != nil {
+		t.Fatalf("newImporter a_specific: %v", err)
+	}
+	impB, err := newImporter("b_other", permissiveDecoder(srcOther))
+	if err != nil {
+		t.Fatalf("newImporter b_other: %v", err)
+	}
+	reg, err := importer.NewRegistry([]importer.Importer{impA, impB})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+
 	body := "Date,Amount\n2024-01-01,1\n"
 
 	// "specific.csv" must select a_specific (account "Assets:A").
 	inSpecific := inputFromString("specific.csv", "", body)
-	if !imp.Identify(context.Background(), inSpecific) {
-		t.Fatal("Identify(specific.csv) = false; want true")
+	matched, ok, diags := importer.Dispatch(context.Background(), reg, inSpecific)
+	if !ok || len(diags) != 0 {
+		t.Fatalf("Dispatch(specific.csv): ok=%v diags=%v", ok, diags)
 	}
-	outSpec, err := imp.Extract(context.Background(), inSpecific)
+	if matched.Name() != "a_specific" {
+		t.Errorf("Dispatch(specific.csv) matched %q, want a_specific", matched.Name())
+	}
+	outSpec, err := matched.Extract(context.Background(), inSpecific)
 	if err != nil {
 		t.Fatalf("Extract(specific.csv): %v", err)
 	}
@@ -152,15 +145,19 @@ col = "Amount"
 		t.Fatalf("directive type %T, want *ast.Transaction", outSpec.Directives[0])
 	}
 	if got := string(txSpec.Postings[0].Account); got != "Assets:A" {
-		t.Errorf("specific.csv account = %q, want Assets:A (shape a_specific)", got)
+		t.Errorf("specific.csv account = %q, want Assets:A (instance a_specific)", got)
 	}
 
 	// "other.csv" must select b_other (account "Assets:B").
 	inOther := inputFromString("other.csv", "", body)
-	if !imp.Identify(context.Background(), inOther) {
-		t.Fatal("Identify(other.csv) = false; want true")
+	matched, ok, diags = importer.Dispatch(context.Background(), reg, inOther)
+	if !ok || len(diags) != 0 {
+		t.Fatalf("Dispatch(other.csv): ok=%v diags=%v", ok, diags)
 	}
-	outOther, err := imp.Extract(context.Background(), inOther)
+	if matched.Name() != "b_other" {
+		t.Errorf("Dispatch(other.csv) matched %q, want b_other", matched.Name())
+	}
+	outOther, err := matched.Extract(context.Background(), inOther)
 	if err != nil {
 		t.Fatalf("Extract(other.csv): %v", err)
 	}
@@ -172,7 +169,29 @@ col = "Amount"
 		t.Fatalf("directive type %T, want *ast.Transaction", outOther.Directives[0])
 	}
 	if got := string(txOther.Postings[0].Account); got != "Assets:B" {
-		t.Errorf("other.csv account = %q, want Assets:B (shape b_other)", got)
+		t.Errorf("other.csv account = %q, want Assets:B (instance b_other)", got)
+	}
+}
+
+// TestExtract_HeaderColumnMismatchEmitsDiagnostic pins the new contract: when
+// ext/MIME passes and the match regex passes (or is unset), but the header is
+// missing a required column, Extract returns DiagMissingColumn with err == nil.
+func TestExtract_HeaderColumnMismatchEmitsDiagnostic(t *testing.T) {
+	imp := newConfigured(t, simpleTOML)
+	// Header lacks "Amount" — Identify would return false, but Extract is called directly.
+	in := inputFromString("/tmp/x.csv", "", "Date,Other\n2024-01-01,1\n")
+	out, err := imp.Extract(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Extract: unexpected error %v", err)
+	}
+	if len(out.Directives) != 0 {
+		t.Errorf("got %d directives, want 0", len(out.Directives))
+	}
+	if len(out.Diagnostics) == 0 {
+		t.Fatal("got no diagnostics, want DiagMissingColumn")
+	}
+	if out.Diagnostics[0].Code != DiagMissingColumn {
+		t.Errorf("diagnostic code = %q, want %q", out.Diagnostics[0].Code, DiagMissingColumn)
 	}
 }
 
@@ -186,13 +205,12 @@ func TestIdentify_HeaderColumnTrim(t *testing.T) {
 
 func TestIdentify_SkipLinesBanner(t *testing.T) {
 	const src = `
-[shape.banner]
 skip_lines  = 2
 date_col    = "Date"
 date_format = "2006-01-02"
 default_currency = "USD"
 account     = "Assets:Checking"
-[[shape.banner.amount]]
+[[amount]]
 col = "Amount"
 `
 	imp := newConfigured(t, src)
@@ -203,9 +221,19 @@ col = "Amount"
 }
 
 func TestExtract_NoShapeMatched(t *testing.T) {
-	imp := newConfigured(t, simpleTOML)
-	// Mismatching header so Extract's selector finds nothing.
-	in := inputFromString("/tmp/x.csv", "", "Foo,Bar\n1,2\n")
+	// A shape with a match regex that only accepts "mybank.*" paths.
+	// Extracting from a path that fails the regex must return a framework error.
+	const src = `
+match            = "mybank.*"
+date_col         = "Date"
+date_format      = "2006-01-02"
+default_currency = "USD"
+account          = "Assets:Checking"
+[[amount]]
+col = "Amount"
+`
+	imp := newConfigured(t, src)
+	in := inputFromString("/tmp/other.csv", "", "Date,Amount\n2024-01-01,1\n")
 	out, err := imp.Extract(context.Background(), in)
 	if err == nil {
 		t.Fatal("Extract: nil error, want framework error")
@@ -215,10 +243,60 @@ func TestExtract_NoShapeMatched(t *testing.T) {
 	}
 }
 
-func TestExtract_NotConfigured(t *testing.T) {
-	imp := &Importer{}
-	in := inputFromString("/tmp/x.csv", "", "Date,Amount\n2024-01-01,1\n")
-	if _, err := imp.Extract(context.Background(), in); err == nil {
-		t.Fatal("Extract: nil error, want not-configured error")
+// TestDispatch_DeclarationOrderWins verifies that when three instances
+// with overlapping matches are added to a registry in declaration order
+// alpha, bravo, charlie, Dispatch selects the first declared instance
+// (alpha) regardless of lexicographic ordering.
+func TestDispatch_DeclarationOrderWins(t *testing.T) {
+	makeSrc := func(account string) string {
+		return `date_col         = "Date"
+date_format      = "2006-01-02"
+default_currency = "USD"
+account          = "` + account + `"
+[[amount]]
+col = "A"
+`
+	}
+	impAlpha, err := newImporter("alpha", permissiveDecoder(makeSrc("Assets:Alpha")))
+	if err != nil {
+		t.Fatalf("newImporter alpha: %v", err)
+	}
+	impBravo, err := newImporter("bravo", permissiveDecoder(makeSrc("Assets:Bravo")))
+	if err != nil {
+		t.Fatalf("newImporter bravo: %v", err)
+	}
+	impCharlie, err := newImporter("charlie", permissiveDecoder(makeSrc("Assets:Charlie")))
+	if err != nil {
+		t.Fatalf("newImporter charlie: %v", err)
+	}
+	// Declared in order alpha, bravo, charlie — Dispatch must pick alpha.
+	reg, err := importer.NewRegistry([]importer.Importer{impAlpha, impBravo, impCharlie})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+
+	body := "Date,A\n2024-01-01,1\n"
+	in := inputFromString("/tmp/x.csv", "", body)
+
+	matched, ok, diags := importer.Dispatch(context.Background(), reg, in)
+	if !ok || len(diags) != 0 {
+		t.Fatalf("Dispatch: ok=%v diags=%v", ok, diags)
+	}
+	if matched.Name() != "alpha" {
+		t.Errorf("Dispatch selected %q, want alpha (declaration order)", matched.Name())
+	}
+	out, err := matched.Extract(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(out.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(out.Directives))
+	}
+	tx, ok := out.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive type %T, want *ast.Transaction", out.Directives[0])
+	}
+	if got := string(tx.Postings[0].Account); got != "Assets:Alpha" {
+		t.Errorf("account = %q, want Assets:Alpha (declaration-first instance wins)", got)
 	}
 }
