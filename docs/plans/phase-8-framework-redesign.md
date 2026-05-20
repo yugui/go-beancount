@@ -1558,3 +1558,291 @@ The lookup-then-call pattern was the dominant — and only — use of
 `New` operation is a strict simplification: it removes a public API
 path that provided no value beyond test setup, reduces boilerplate at
 every call site, and makes the recommended usage unambiguous.
+
+## PR-β: `cmd/beanimport` CLI, end-to-end fixtures, and docs polish
+
+PR-α landed the factory + instance-registry framework and migrated
+the two in-tree implementations (`csvimp`, `classify`). PR-β ships
+the user-visible piece of the redesign: a `cmd/beanimport` binary
+that consumes the flat `[[importer]]` / `[[hook]]` TOML schema PR-α
+already implies, exercises the multi-instance dispatch the redesign
+exists to enable, and surfaces goplug-loaded importers through
+`--plugin`.
+
+### Goal
+
+Ship `cmd/beanimport` on the PR-α framework: a CLI that loads a flat
+TOML config of `[[importer]]` / `[[hook]]` entries, optionally loads
+goplug `.so`s, dispatches a single input through the right instance,
+runs the hook chain, and prints directives + diagnostics. Prove the
+multi-instance model end-to-end with integration tests, and polish
+the surrounding docs.
+
+### Scope
+
+**In scope:**
+
+- β-1: doc-only adjustments to csvimp's `rowhash` godoc; addition of
+  `in.Hints["account"]` override plumbing in csvimp's `Extract`;
+  confirmation of the flat `[[importer]]` / `[[hook]]` TOML schema
+  PR-α already implies; the new `cmd/beanimport` binary (flags,
+  TOML loader, pipeline, unit tests).
+- β-2: end-to-end integration fixtures under `cmd/beanimport/testdata/`
+  plus a goplug fixture importer modelled on beanprice's staticquoter.
+- β-3: update `PLAN.md` (project root) and the `## Out of scope`
+  section of this document to reflect the new in-scope/completed
+  list.
+
+**Out of scope (explicitly deferred):**
+
+- The larger PLAN.md historical rewrite (PR-β.1).
+- Phase 8.1 (ML hooks) and Phase 8.2 (XML/OFX/QIF importers).
+- Cross-source dedup (remains `pkg/distribute`'s concern).
+- Any change to the PR-α framework APIs (`pkg/importer`,
+  `pkg/importer/hook`); β never touches their exported surface.
+- Multi-file batch import on a single invocation — single positional
+  input is the only β-1 mode.
+
+### Step β-1 — Schema confirmation, `--account` Hint, and `cmd/beanimport` CLI core
+
+**Functional requirements:**
+
+- The user-facing TOML is confirmed as the flat `[[importer]]` /
+  `[[hook]]` arrays already implied by PR-α; no parser change.
+- csvimp's `rowhash`-related godoc (and any design-doc fragment)
+  refers to `Name()` (instance name), not "shape-name". The
+  implementation already passes `i.name`; this is purely doc cleanup.
+- csvimp reads `in.Hints["account"]` during **Extract** (not
+  Identify). When the Hint is set and non-empty, it overrides the
+  shape's `account` field for that single Extract call. Shape
+  `account` remains mandatory at factory time.
+- New binary `cmd/beanimport` exposes flags: `--config PATH`
+  (required), `--hook NAME[,NAME...]` (comma- or repeat-list;
+  selects which configured hooks form the chain, in order),
+  `--importer NAME` (at-most-once; opt out of Dispatch),
+  `--account NAME` (at-most-once; written to `in.Hints["account"]`),
+  `--plugin PATH.so` (repeatable), `--strict`. Exactly one positional
+  input file argument.
+- TOML loader extracts top-level `[[importer]]` and `[[hook]]` arrays;
+  the body of each entry minus the reserved `kind` / `name` keys
+  becomes the `decode func(dest any) error` closure passed to
+  `importer.New` / `hook.New`. Unknown top-level keys are an error.
+- Pipeline in `run()`: load plugins → decode TOML → build instance
+  registries → open and sniff input → dispatch (or use `--importer`)
+  → `Extract` → `hook.Chain` over the `--hook`-selected subset (or
+  all declared hooks, in declaration order, if `--hook` is absent)
+  → `printer.Fprint` to stdout → diagnostics to stderr formatted via
+  the same `<file>:<line>:<col>: <sev>: <msg>` shape `cmd/beanprice`
+  uses.
+- Exit codes: 0 clean; 1 if any Error diagnostic OR (Warning present
+  AND `--strict`); 2 for CLI/config/plugin failures.
+- `--importer NAME` referencing an unknown instance is exit 2. A
+  known instance whose `Identify` returns false is a Warning
+  diagnostic, then `Extract` runs anyway (user is explicitly
+  overriding Dispatch).
+
+**Modules:**
+
+- `pkg/importer/std/csvimp/extract.go` (or wherever `resolveAccount`
+  lives) — read `in.Hints["account"]`.
+- `pkg/importer/std/csvimp/csvimp.go` / `rowhash.go` godoc — wording
+  fixes.
+- `cmd/beanimport/main.go` (new) — flag set, `run` entry point,
+  plugin loading.
+- `cmd/beanimport/config.go` (new) — TOML loader producing
+  `[]importer.Importer` + `[]hook.Hook`.
+- `cmd/beanimport/pipeline.go` (new) — sniff + dispatch + extract +
+  chain + print.
+- `cmd/beanimport/diag.go` (new) — diagnostic formatter.
+- `cmd/beanimport/BUILD.bazel` (Gazelle-generated).
+
+**Verification:**
+
+- `bazel run //:gazelle`.
+- `bazel build //...` and `bazel test //... --test_output=errors`.
+- New unit tests in `cmd/beanimport/`: flag parser; TOML loader
+  (happy path, unknown reserved-key collision, missing
+  `kind`/`name`, factory error propagation); `run()` smoke
+  (single-instance config against a tiny in-memory fixture);
+  `--account` Hint round-trip into csvimp output.
+- New unit test in `pkg/importer/std/csvimp/`: extract with
+  `in.Hints["account"]` set overrides shape's account; Hint
+  empty/missing falls back to shape value; verified against existing
+  extract fixture.
+
+**Quality requirements:**
+
+- All new exported symbols documented per project `CLAUDE.md`
+  (contract-style godoc, no implementation narration).
+- Tests target the package's exported surface only (`run()` is the
+  CLI's externally observable entry); per-helper tests only where
+  they reduce total test surface.
+- `cmd/beanimport`'s `package` doc carries the flag table,
+  exit-code table, and a minimal worked TOML example — same layout
+  as `cmd/beanprice`.
+
+### Step β-2 — Integration fixtures and goplug fixture importer
+
+**Functional requirements:**
+
+- `cmd/beanimport/testdata/` gains directories, each holding a
+  `config.toml`, an input CSV (or fixture), and a golden
+  stdout/stderr pair, covering:
+  - `multi_instance/`: two `[[importer]]` kind=csv entries with
+    overlapping `match` regexes — declaration-first selection
+    asserted on stdout, and a disjoint-regex variant asserted
+    separately. This is THE PR-β behavioural test.
+  - `single_instance/`: minimal smoke fixture; one importer, no
+    hooks.
+  - `with_classify/`: one importer + one `[[hook]]` kind=classify
+    carrying a `[[rule]]` list.
+  - `account_hint/`: single shape whose `account` is overridden by
+    `--account` on the CLI.
+  - `strict_warning/`: a fixture whose Extract produces a Warning;
+    verifies bare run is exit 0 and `--strict` flips to exit 1, with
+    identical stderr.
+  - `plugin/`: invokes a fixture importer registered by a goplug
+    `.so`.
+- `cmd/beanimport/testdata/staticimporter/` (new package, modelled on
+  `cmd/beanprice/testdata/staticquoter/`): a buildable goplug plugin
+  that registers a new importer kind, used by the `plugin/` fixture.
+- Diagnostic stderr lines exactly match the `ast.Diagnostic.String()`
+  / beanprice format (one grep matches both tools' output).
+- Multi-instance fixture's `[[importer]]` ordering exercises non-lex
+  order (e.g. declare `zzz` before `aaa`) to pin declaration-order
+  semantics, not lexicographic accident.
+
+**Modules:**
+
+- `cmd/beanimport/main_test.go` (new) — table-driven over
+  `testdata/` subdirectories, modelled on
+  `cmd/beanprice/main_test.go`.
+- `cmd/beanimport/testdata/...` (golden files + configs + inputs).
+- `cmd/beanimport/testdata/staticimporter/{doc.go,plugin.go,BUILD.bazel}`
+  (new).
+
+**Verification:**
+
+- `bazel test //cmd/beanimport:beanimport_test --test_output=errors`.
+- `bazel test //... --test_output=errors` must remain green.
+- Plugin fixture compiled and loaded via `go_binary` with
+  `linkmode = "plugin"` (mirror staticquoter's BUILD layout).
+
+**Quality requirements:**
+
+- Each fixture directory contains a short `README.md` (one
+  paragraph) stating what property it pins, so a future reader can
+  prune duplicates safely.
+
+### Step β-3 — Docs polish
+
+**Functional requirements:**
+
+- `PLAN.md` (project root): replace the PR #83-era Phase 8 sketch
+  with a brief pointer to this document (final state) and a short
+  paragraph documenting the new `cmd/beanimport` CLI surface (flags,
+  exit codes, one-line example).
+- This document's `## Out of scope` rewritten: move "PR-β CLI",
+  "schema reshape", "goplug plugin fixture", "--account Hint",
+  "rowhash godoc fix" from out-of-scope/PR-β-deferred into the
+  in-scope/completed list, leaving Phase 8.1, Phase 8.2, the
+  PLAN.md historical rewrite, and cross-source dedup as
+  out-of-scope.
+
+**Modules:**
+
+- `PLAN.md`.
+- `docs/plans/phase-8-framework-redesign.md` (`## Out of scope` and
+  any directly contradictory wording near the PR-β section).
+
+**Verification:** plan diff reviewed for completeness; no
+compile/test surface.
+
+**Quality requirements:** matches the style of the existing plan
+documents (heading nesting, factual tone, no implementation
+narration).
+
+### PR-β alternatives discussed
+
+- **TOML decode strategy.** Three options were considered:
+  - (a) single-pass with `toml.Primitive` so each `[[importer]]` body
+    becomes a deferred-decode handle that the CLI wraps in a
+    `func(dest any) error` closure;
+  - (b) two-pass — decode to `map[string]any` then re-marshal each
+    entry body for the factory's structured decode;
+  - (c) per-entry text-slice + `toml.Unmarshal`.
+
+  (a) preserves `meta.Undecoded()` semantics for unknown-key
+  rejection and lets each factory enforce its own strict-key policy
+  via the same decode call PR-α already accepts; it is the pattern
+  `pkg/distribute/route/routeconfig` already establishes. (b) loses
+  type fidelity (numbers become `int64`/`float64` ambiguously) and
+  forces every factory to tolerate `any`. (c) needs the raw byte
+  range of each entry, which `BurntSushi/toml` does not expose
+  cleanly. **Choose (a)**, with the codebase precedent as a
+  load-bearing argument.
+
+- **`--account` Hint key naming.** Options: a bare `"account"`
+  string key, `"default_account"`, or a typed enum constant in
+  `pkg/importer`. The Hints map is `map[string]any` and PR-α did not
+  introduce a typed-key API; introducing one for a single key would
+  be over-design. `"default_account"` overstates the semantics — the
+  Hint is an override, not a default. **Choose `"account"`**,
+  documented as a reserved key on `importer.Input.Hints` so future
+  hint keys are namespaced deliberately rather than ad hoc.
+
+- **`--importer NAME` semantics when the named instance fails
+  Identify.** Options: (i) force-extract regardless and emit a
+  Warning diagnostic; (ii) refuse with an Error diagnostic, exit 1;
+  (iii) refuse with a CLI-level error, exit 2. By passing
+  `--importer`, the user is explicitly overriding Dispatch;
+  treating Identify-false as fatal contradicts that intent. But
+  silently extracting when the importer self-reports "I cannot
+  handle this" hides a real problem. **Choose (i)**: emit a Warning
+  diagnostic ("Identify returned false; extracting anyway because
+  --importer was set"), run Extract, and let Extract's own
+  structural errors surface naturally. An Identify-false plus a
+  successful Extract is then auditable in stderr. The unknown-name
+  case stays exit 2 (CLI failure).
+
+- **`--strict` semantics.** Options: rewrite each Warning to Error
+  at the moment of emission, or keep severities intact and translate
+  at exit-code mapping. The latter preserves the Diagnostic record
+  for downstream tooling and matches the pattern already in
+  `cmd/beanprice` and `cmd/beancheck`. **Choose the latter**, copy
+  beanprice's `report()` shape.
+
+- **Where csvimp reads `in.Hints["account"]`.** Options: Identify,
+  Extract, or both. Identify's job is shape-recognition (extension +
+  match regex + required columns); whether the user named an account
+  doesn't change recognition. Extract is where the account is
+  written into directives. Reading the Hint in Identify would couple
+  a recognition signal to a substitution value for no benefit.
+  **Choose Extract only.** Document the precedence: Hint > shape
+  `account`; empty Hint falls through to shape.
+
+- **Single-instance vs multi-instance CLI fixture.** Multi-instance
+  is THE behaviour PR-β exists to prove; without an integration test
+  for it, the framework redesign's value isn't demonstrated
+  end-to-end. A single-instance smoke test documents the simpler
+  usage pattern most users actually hit. **Keep both**:
+  `single_instance/` as the smoke / documentation fixture,
+  `multi_instance/` as the property-pinning fixture with both
+  overlapping and disjoint `match` variants. Cost is negligible;
+  coverage is asymmetric — losing either weakens a distinct
+  guarantee.
+
+### PR-β recommendation
+
+Adopt the path above: `Primitive`-based single-pass TOML loader
+(precedent: `routeconfig`); bare `"account"` Hint key read only in
+csvimp's Extract; `--importer NAME` overrides Dispatch with a Warning
+when Identify says false; `--strict` translates at exit-code mapping
+only; two CLI fixtures (single + multi), with the multi-instance
+fixture exercising both overlapping and disjoint `match` regexes in
+non-lex declaration order; goplug fixture importer mirroring
+beanprice's staticquoter layout. β-1 keeps the CLI structurally
+close to `cmd/beanprice` so the two binaries share idiom and
+diagnostic format; β-2 pins the behaviours that justify PR-α's
+existence; β-3 finalises the paper trail without rewriting history.
+No PR-α API is touched.
