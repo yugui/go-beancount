@@ -1,0 +1,23 @@
+[[importer]]
+kind          = "csv"
+name          = "zzz_first"
+match         = ".*\\.csv$"
+date_col      = "Date"
+date_format   = "2006-01-02"
+default_currency = "USD"
+account       = "Assets:First"
+
+  [[importer.amount]]
+  col = "Amount"
+
+[[importer]]
+kind          = "csv"
+name          = "aaa_second"
+match         = ".*statement.*"
+date_col      = "Date"
+date_format   = "2006-01-02"
+default_currency = "USD"
+account       = "Assets:Second"
+
+  [[importer.amount]]
+  col = "Amount"

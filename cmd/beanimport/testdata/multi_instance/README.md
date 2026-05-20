@@ -1,0 +1,1 @@
+Pins that `importer.Apply` (Dispatch) picks the first-declared `[[importer]]` instance when multiple shapes' `match` regexes all fire, regardless of name lexicographic order. The instance names are deliberately non-lex (`zzz_first` before `aaa_second`) so that any future regression toward lexicographic sort fails this test.

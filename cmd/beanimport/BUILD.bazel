@@ -28,9 +28,26 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
+# The staticimporter .so fixture is added on platforms that support
+# Go plugins; on others the data dep is dropped and the plugin
+# integration test self-skips at runtime via the same GOOS check
+# pkg/ext/goplug uses.
 go_test(
     name = "beanimport_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "fixture_test.go",
+        "main_test.go",
+    ],
+    data = glob(
+        ["testdata/**"],
+        exclude = ["testdata/staticimporter/**"],
+    ) + select({
+        # keep
+        "@platforms//os:linux": ["//cmd/beanimport/testdata/staticimporter"],
+        "@platforms//os:macos": ["//cmd/beanimport/testdata/staticimporter"],
+        "@platforms//os:freebsd": ["//cmd/beanimport/testdata/staticimporter"],
+        "//conditions:default": [],
+    }),
     embed = [":beanimport_lib"],
     deps = [
         "//pkg/ast",
