@@ -1,23 +1,35 @@
 [[importer]]
-kind          = "csv"
-name          = "zzz_first"
-match         = ".*\\.csv$"
-date_col      = "Date"
-date_format   = "2006-01-02"
-default_currency = "USD"
-account       = "Assets:First"
+kind  = "csv"
+name  = "zzz_first"
+match = ".*\\.csv$"
+
+  [importer.date]
+  col    = "Date"
+  format = "2006-01-02"
+
+  [importer.account]
+  default = "Assets:First"
+
+  [importer.currency]
+  default = "USD"
 
   [[importer.amount]]
   col = "Amount"
 
 [[importer]]
-kind          = "csv"
-name          = "aaa_second"
-match         = ".*statement.*"
-date_col      = "Date"
-date_format   = "2006-01-02"
-default_currency = "USD"
-account       = "Assets:Second"
+kind  = "csv"
+name  = "aaa_second"
+match = ".*statement.*"
+
+  [importer.date]
+  col    = "Date"
+  format = "2006-01-02"
+
+  [importer.account]
+  default = "Assets:Second"
+
+  [importer.currency]
+  default = "USD"
 
   [[importer.amount]]
   col = "Amount"

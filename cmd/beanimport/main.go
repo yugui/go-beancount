@@ -281,12 +281,18 @@ EXIT CODES
 
 EXAMPLE CONFIG (config.toml)
   [[importer]]
-  kind             = "csv"
-  name             = "boa_checking"
-  date_col         = "Date"
-  date_format      = "2006-01-02"
-  account          = "Assets:BOA:Checking"
-  default_currency = "USD"
+  kind = "csv"
+  name = "boa_checking"
+
+    [importer.date]
+    col    = "Date"
+    format = "2006-01-02"
+
+    [importer.account]
+    default = "Assets:BOA:Checking"
+
+    [importer.currency]
+    default = "USD"
 
     [[importer.amount]]
     col    = "Withdrawal"

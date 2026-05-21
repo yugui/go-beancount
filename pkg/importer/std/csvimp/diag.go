@@ -8,7 +8,7 @@ import "github.com/yugui/go-beancount/pkg/ast"
 // problem.
 const (
 	// DiagBadDate signals that the date column failed to parse under
-	// the shape's date_format.
+	// the shape's [date].format.
 	DiagBadDate = "csvimp-bad-date"
 
 	// DiagBadAmount signals that one of the amount columns held a
@@ -20,12 +20,20 @@ const (
 	DiagAllBlankAmount = "csvimp-all-blank-amount"
 
 	// DiagMissingCurrency signals that the row's currency could be
-	// resolved from neither currency_col nor default_currency.
+	// resolved from neither [currency].col nor [currency].default.
 	DiagMissingCurrency = "csvimp-missing-currency"
 
-	// DiagMissingAccount signals that the row's account could be
-	// resolved from neither Hints["account"] nor the shape's account.
+	// DiagMissingAccount signals that the row's account could not be
+	// resolved from any of Hints["account"], the [account].col cell, or
+	// [account].default.
 	DiagMissingAccount = "csvimp-missing-account"
+
+	// DiagUnmappedAccount signals that the [account].col cell held a
+	// non-blank value that was absent from [account.map]. The row is
+	// skipped. This code is only emitted when [account.map] is set
+	// (strict mode); when no map is configured the cell value is used
+	// verbatim instead.
+	DiagUnmappedAccount = "csvimp-unmapped-account"
 
 	// DiagMissingColumn signals that a required column declared in the
 	// shape was absent from the file's header at Extract time.

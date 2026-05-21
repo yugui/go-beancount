@@ -8,13 +8,23 @@ default = "Assets:Checking"
 [payee]
 col = "Payee"
 
+[payee.map]
+"AMZN MKTPL" = "Amazon"
+
 [currency]
+col     = "Cur"
 default = "USD"
 
+[currency.map]
+"¥" = "JPY"
+"$" = "USD"
+
 [narration]
-cols      = ["Description", "Memo"]
+cols      = ["Desc"]
 separator = " / "
 
+[narration.map]
+"ATM W/D" = "ATM withdrawal"
+
 [[amount]]
-col    = "Amount"
-negate = false
+col = "Amount"

@@ -133,21 +133,16 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 	currency := resolveCurrency(s, idx, row)
 	if currency == "" {
 		d := rowDiag(DiagMissingCurrency, path, line,
-			fmt.Sprintf("no currency: currency_col=%q default_currency=%q", s.currencyCol, s.defaultCur))
+			fmt.Sprintf("no currency: [currency].col=%q [currency].default=%q", s.currencyCol, s.currencyDefault))
 		return nil, &d
 	}
 
-	account := resolveAccount(s, hints)
-	if account == "" {
-		d := rowDiag(DiagMissingAccount, path, line,
-			"no account: Hints[\"account\"] empty and shape.account empty")
-		return nil, &d
+	account, diag := resolveAccount(s, idx, row, hints, path, line)
+	if diag != nil {
+		return nil, diag
 	}
 
-	payee := ""
-	if s.payeeCol != "" {
-		payee = strings.TrimSpace(fieldAt(row, idx, s.payeeCol))
-	}
+	payee := resolvePayee(s, idx, row)
 	narration := buildNarration(s, idx, row)
 
 	tx := &ast.Transaction{
@@ -214,22 +209,99 @@ func sumAmounts(s *shape, idx map[string]int, row []string) (*apd.Decimal, amoun
 	return sum, amountStatusOK, ""
 }
 
-func resolveCurrency(s *shape, idx map[string]int, row []string) string {
-	if s.currencyCol != "" {
-		if v := strings.TrimSpace(fieldAt(row, idx, s.currencyCol)); v != "" {
-			return v
-		}
-	}
-	return s.defaultCur
-}
-
-func resolveAccount(s *shape, hints map[string]string) string {
+// resolveAccount resolves a row's beancount account. Priority:
+//
+//  1. Hints["account"] when non-empty (CLI/caller override).
+//  2. [account].col cell when non-blank: with [account.map] set, a strict
+//     lookup returns the mapped value or DiagUnmappedAccount on miss; with
+//     no map, the trimmed cell value is used verbatim.
+//  3. [account].default when non-empty.
+//  4. Otherwise: DiagMissingAccount.
+func resolveAccount(s *shape, idx map[string]int, row []string, hints map[string]string, path string, line int) (string, *ast.Diagnostic) {
 	if v, ok := hints["account"]; ok && v != "" {
-		return v
+		return v, nil
 	}
-	return s.account
+	if s.accountCol == "" {
+		return resolveAccountDefault(s, path, line)
+	}
+	cell := strings.TrimSpace(fieldAt(row, idx, s.accountCol))
+	if cell == "" {
+		return resolveAccountDefault(s, path, line)
+	}
+	return resolveAccountFromCell(s, cell, path, line)
 }
 
+// resolveAccountDefault returns [account].default or DiagMissingAccount when
+// no default is configured.
+func resolveAccountDefault(s *shape, path string, line int) (string, *ast.Diagnostic) {
+	if s.accountDefault == "" {
+		d := rowDiag(DiagMissingAccount, path, line,
+			`no account: Hints["account"] empty, [account].col blank/absent, and [account].default unset`)
+		return "", &d
+	}
+	return s.accountDefault, nil
+}
+
+// resolveAccountFromCell resolves a non-blank [account].col cell through
+// [account.map]. With no map configured the cell value is returned verbatim;
+// with a map configured a miss returns DiagUnmappedAccount.
+func resolveAccountFromCell(s *shape, cell, path string, line int) (string, *ast.Diagnostic) {
+	if s.accountMap == nil {
+		return cell, nil
+	}
+	if mapped, ok := s.accountMap[cell]; ok {
+		return mapped, nil
+	}
+	d := rowDiag(DiagUnmappedAccount, path, line,
+		fmt.Sprintf("account cell %q in column %q has no entry in [account.map]", cell, s.accountCol))
+	return "", &d
+}
+
+// resolveCurrency resolves a row's currency. Priority:
+//
+//  1. [currency].col cell when non-blank: when [currency.map] holds the
+//     value, the mapped currency is returned; otherwise the trimmed cell
+//     value is used verbatim (pass-through).
+//  2. [currency].default.
+//
+// Returns "" when neither the col cell nor the default produces a value;
+// the caller treats that as DiagMissingCurrency.
+func resolveCurrency(s *shape, idx map[string]int, row []string) string {
+	if s.currencyCol == "" {
+		return s.currencyDefault
+	}
+	v := strings.TrimSpace(fieldAt(row, idx, s.currencyCol))
+	if v == "" {
+		return s.currencyDefault
+	}
+	if mapped, ok := s.currencyMap[v]; ok {
+		return mapped
+	}
+	return v
+}
+
+// resolvePayee resolves a row's payee. Returns "" when [payee].col is
+// unset or the cell is blank. Otherwise applies [payee.map] when present
+// (pass-through on miss) and returns the trimmed value.
+func resolvePayee(s *shape, idx map[string]int, row []string) string {
+	if s.payeeCol == "" {
+		return ""
+	}
+	v := strings.TrimSpace(fieldAt(row, idx, s.payeeCol))
+	if v == "" {
+		return ""
+	}
+	if mapped, ok := s.payeeMap[v]; ok {
+		return mapped
+	}
+	return v
+}
+
+// buildNarration concatenates the trimmed values of [narration].cols with
+// [narration].separator. When [narration.map] is set it is applied per
+// cell BEFORE concatenation: a hit replaces the cell, a miss passes the
+// value through unchanged. A mapped value of "" drops that cell from the
+// concatenation (useful for masking noisy columns).
 func buildNarration(s *shape, idx map[string]int, row []string) string {
 	if len(s.narrationCols) == 0 {
 		return ""
@@ -237,6 +309,12 @@ func buildNarration(s *shape, idx map[string]int, row []string) string {
 	parts := make([]string, 0, len(s.narrationCols))
 	for _, col := range s.narrationCols {
 		v := strings.TrimSpace(fieldAt(row, idx, col))
+		if v == "" {
+			continue
+		}
+		if mapped, ok := s.narrationMap[v]; ok {
+			v = mapped
+		}
 		if v == "" {
 			continue
 		}
