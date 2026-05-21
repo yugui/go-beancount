@@ -1,37 +1,5 @@
-// Command beanimport drives the pkg/importer + pkg/importer/hook pipeline
-// against a single input file using a flat [[importer]] / [[hook]] TOML
-// config. Diagnostics are written to stderr in the canonical
-// <path>:<line>:<col>: <severity>: <message> form that cmd/beanprice and
-// cmd/beancheck emit, via ast.Diagnostic.String.
-//
-// Example config (config.toml):
-//
-//	[[importer]]
-//	kind             = "csv"
-//	name             = "boa_checking"
-//	date_col         = "Date"
-//	date_format      = "2006-01-02"
-//	account          = "Assets:BOA:Checking"
-//	default_currency = "USD"
-//
-//	  [[importer.amount]]
-//	  col    = "Withdrawal"
-//	  negate = true
-//
-//	  [[importer.amount]]
-//	  col    = "Deposit"
-//
-//	[[hook]]
-//	kind = "classify"
-//	name = "default"
-//
-//	  [[hook.rule]]
-//	  payee_regex = "(?i)acme"
-//	  account     = "Expenses:Office"
-//
-// Invoke:
-//
-//	beanimport -config config.toml statement.csv
+// Command beanimport drives the pkg/importer + pkg/importer/hook
+// pipeline against a single input file. See -help for usage.
 package main
 
 import (
@@ -290,32 +258,59 @@ func parseFlags(args []string, stderr io.Writer) (*runOptions, error) {
 }
 
 func printUsage(w io.Writer, cmd *flag.FlagSet) {
-	fmt.Fprintln(w, "Usage: beanimport [flags] <input-file>")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Drive the pkg/importer + pkg/importer/hook pipeline against a single input")
-	fmt.Fprintln(w, "file. Load importers and hooks from a flat [[importer]] / [[hook]] TOML")
-	fmt.Fprintln(w, "config. Print beancount directives to stdout; diagnostics to stderr.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Flags:")
+	fmt.Fprint(w, `Usage: beanimport [flags] <input-file>
+
+Drive the pkg/importer + pkg/importer/hook pipeline against a single input
+file. Load importers and hooks from a flat [[importer]] / [[hook]] TOML
+config. Print beancount directives to stdout; diagnostics to stderr in the
+canonical <path>:<line>:<col>: <severity>: <message> form.
+
+Flags:
+`)
 	cmd.PrintDefaults()
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "EXIT CODES")
-	fmt.Fprintln(w, "  0  pipeline completed; no Error diagnostics")
-	fmt.Fprintln(w, "     (Warnings are allowed unless -strict.)")
-	fmt.Fprintln(w, "  1  at least one Error diagnostic, OR (-strict AND at least one Warning)")
-	fmt.Fprintln(w, "     Extract/Chain system errors are also promoted to Error diagnostics.")
-	fmt.Fprintln(w, "  2  CLI failure: missing -config, bad flags, config load failure,")
-	fmt.Fprintln(w, "     plugin load failure, unknown -hook or -importer name,")
-	fmt.Fprintln(w, "     positional-argument-count mismatch, input-file open failure,")
-	fmt.Fprintln(w, "     instance-registry construction failure.")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "EXAMPLES")
-	fmt.Fprintln(w, "  beanimport -config config.toml statement.csv")
-	fmt.Fprintln(w, "      import statement.csv using all importers/hooks in config.toml")
-	fmt.Fprintln(w, "  beanimport -config config.toml -hook classify statement.csv")
-	fmt.Fprintln(w, "      run only the 'classify' hook")
-	fmt.Fprintln(w, "  beanimport -config config.toml -importer boa_checking statement.csv")
-	fmt.Fprintln(w, "      force the 'boa_checking' importer (bypass Dispatch)")
-	fmt.Fprintln(w, "  beanimport -config config.toml -account Assets:Checking statement.csv")
-	fmt.Fprintln(w, "      override the account hint")
+	fmt.Fprint(w, `
+EXIT CODES
+  0  pipeline completed; no Error diagnostics
+     (Warnings are allowed unless -strict.)
+  1  at least one Error diagnostic, OR (-strict AND at least one Warning)
+     Extract/Chain system errors are also promoted to Error diagnostics.
+  2  CLI failure: missing -config, bad flags, config load failure,
+     plugin load failure, unknown -hook or -importer name,
+     positional-argument-count mismatch, input-file open failure,
+     instance-registry construction failure.
+
+EXAMPLE CONFIG (config.toml)
+  [[importer]]
+  kind             = "csv"
+  name             = "boa_checking"
+  date_col         = "Date"
+  date_format      = "2006-01-02"
+  account          = "Assets:BOA:Checking"
+  default_currency = "USD"
+
+    [[importer.amount]]
+    col    = "Withdrawal"
+    negate = true
+
+    [[importer.amount]]
+    col    = "Deposit"
+
+  [[hook]]
+  kind = "classify"
+  name = "default"
+
+    [[hook.rule]]
+    payee_regex = "(?i)acme"
+    account     = "Expenses:Office"
+
+EXAMPLES
+  beanimport -config config.toml statement.csv
+      import statement.csv using all importers/hooks in config.toml
+  beanimport -config config.toml -hook classify statement.csv
+      run only the 'classify' hook
+  beanimport -config config.toml -importer boa_checking statement.csv
+      force the 'boa_checking' importer (bypass Dispatch)
+  beanimport -config config.toml -account Assets:Checking statement.csv
+      override the account hint
+`)
 }

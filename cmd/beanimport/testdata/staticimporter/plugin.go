@@ -1,7 +1,3 @@
-// This file is the .so entry point. It must be compiled with
-// -buildmode=plugin and is loaded by cmd/beanimport's --plugin flag
-// in the integration tests. See doc.go for the fixture's role.
-
 package main
 
 import (
@@ -14,30 +10,21 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer"
 )
 
-// pluginName is the Manifest-facing name. The registered kind is the
-// fully-qualified Go import path (matches pkg/ext/postproc/std/*'s
-// convention — plugins come from third parties, so kind names must be
-// globally unique). Changing either also requires updating
-// fixture_test.go and testdata/plugin/config.toml.
 const pluginName = "staticimporter"
 
 const importerKind = "github.com/yugui/go-beancount/cmd/beanimport/testdata/staticimporter"
 
-// Manifest is exported so goplug.Load can read it via plugin.Lookup.
 var Manifest = goplug.Manifest{
 	APIVersion: goplug.APIVersion,
 	Name:       pluginName,
 	Version:    "v0.0.0-fixture",
 }
 
-// InitPlugin is the goplug entry point. Called once after the
-// Manifest checks pass; a non-nil return aborts the load.
 func InitPlugin() error {
 	importer.RegisterFactory(importerKind, importer.FactoryFunc(newStatic))
 	return nil
 }
 
-// newStatic is the factory for the importerKind kind.
 func newStatic(name string, decode func(dest any) error) (importer.Importer, error) {
 	if err := decode(&struct{}{}); err != nil {
 		return nil, err
@@ -45,7 +32,6 @@ func newStatic(name string, decode func(dest any) error) (importer.Importer, err
 	return &staticImp{name: name}, nil
 }
 
-// staticImp is a minimal importer that returns a single canned Transaction.
 type staticImp struct {
 	name string
 }
@@ -76,5 +62,4 @@ func (s *staticImp) Extract(_ context.Context, _ importer.Input) (importer.Outpu
 	return importer.Output{Directives: []ast.Directive{tx}}, nil
 }
 
-// main is required for buildmode=plugin but is never invoked.
 func main() {}
