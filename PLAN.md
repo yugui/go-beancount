@@ -311,22 +311,18 @@ package godocs under `pkg/distribute/`.
 
 **Dependencies:** Phase 2 (AST), Phase 6 (plugin system)
 
-Transaction importing is open-ended: sources range from bank CSV exports to OFX files to API-based feeds, and classification rules vary per user. `pkg/importer` defines the extensible framework that all importers plug into; it does not implement any specific source format itself.
+Final design and shipped state: `docs/plans/phase-8-framework-redesign.md`.
 
-### Deliverables
+`pkg/importer` defines a factory-based framework for plugging transaction importers into the library. Each importer kind registers a factory; a TOML config declares one or more instances of those kinds; the framework drives `Identify` + `Extract` over a single input file with declaration-order selection. `pkg/importer/hook` provides post-extract transformation hooks (e.g. classify postings against rules) following the same factory pattern. Both surfaces accept Go-plugin (`.so`) extensions via `pkg/ext/goplug`.
 
-- **`Source` interface:** a plugin-implementable interface that reads raw transaction records from an external source:
-  ```go
-  type Source interface {
-      Fetch(ctx context.Context, params SourceParams) ([]RawTransaction, error)
-  }
-  ```
-- **`RawTransaction` type:** a normalized intermediate representation — date, description, amount, currency, and source-specific metadata — independent of any ledger concept.
-- **`Classifier` interface:** maps a `RawTransaction` to a candidate `ast.Transaction` (assigning accounts, payee, narration, tags, links). The framework tries classifiers in priority order, applying the first match.
-- **Deduplication:** hashes `RawTransaction` identity against already-imported transactions in the ledger; skips duplicates.
-- **`Importer` orchestrator:** wires together a `Source`, a set of `Classifiers`, and deduplication; returns a slice of new `ast.Transaction` values ready to be written.
-- **Plugin-backed sources and classifiers:** both `Source` and `Classifier` can be provided via Go plugin or external process.
-- **Built-in classifiers:** simple rule-based classifier (regexp on description → account mapping) as a reference implementation.
+### Shipped surface
+
+- **`cmd/beanimport`**: CLI that drives the importer + hook pipeline against a single input file. Reads a flat `[[importer]]` / `[[hook]]` TOML config; emits beancount directives to stdout and diagnostics to stderr in the canonical `<path>:<line>:<col>: <severity>: <message>` form.
+  - Flags: `-config PATH` (required), `-hook NAME[,...]` (repeatable; user-controlled chain order), `-importer NAME` (bypass Dispatch), `-account NAME` (overrides shape `account` via `Hints["account"]`), `-plugin PATH.so` (repeatable), `-strict` (treat warnings as errors).
+  - Exit codes: `0` clean / `1` any Error diagnostic, or `-strict` + any Warning / `2` CLI failure (bad flags, missing config, plugin load failure, unknown name, etc.).
+  - Example: `beanimport -config config.toml statement.csv`.
+- **`pkg/importer/std/csvimp`**: in-tree CSV importer kind (`kind = "csv"`). One instance per declared shape; optional `match` regex filters files; `[[importer.amount]]` sub-tables describe amount columns.
+- **`pkg/importer/hook/std/classify`**: in-tree classification hook kind (`kind = "classify"`). Per-instance rule list; matches `payee_regex` / `narration_regex` against postings to assign a target `account`.
 
 ---
 

@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_binary")
+load("//pkg/ext/goplug:fixture_constraints.bzl", "PLUGIN_COMPATIBLE_PLATFORMS")
+
+# Plugin fixtures are hand-authored: they need linkmode=plugin, cgo=True,
+# and a .so out name that gazelle's generator doesn't produce. Ignore
+# keeps gazelle from rewriting the target into its standard shape.
+# gazelle:ignore
+
+go_binary(
+    name = "staticimporter",
+    srcs = [
+        "doc.go",
+        "plugin.go",
+    ],
+    cgo = True,
+    gotags = ["testhelpers"],
+    linkmode = "plugin",
+    out = "staticimporter.so",
+    target_compatible_with = PLUGIN_COMPATIBLE_PLATFORMS,
+    testonly = True,
+    visibility = ["//cmd/beanimport:__pkg__"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/goplug",
+        "//pkg/importer",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

@@ -1,0 +1,3 @@
+[[importer]]
+kind = "github.com/yugui/go-beancount/cmd/beanimport/testdata/staticimporter"
+name = "fixture"
