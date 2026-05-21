@@ -1,0 +1,20 @@
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+col     = "Acct"
+default = "Assets:Unknown"
+
+[account.map]
+"chk-1234" = "Assets:Checking"
+"sav-5678" = "Assets:Savings"
+
+[currency]
+default = "USD"
+
+[narration]
+cols = ["Memo"]
+
+[[amount]]
+col = "Amount"

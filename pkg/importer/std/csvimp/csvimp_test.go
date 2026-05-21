@@ -23,10 +23,15 @@ func inputFromString(path, mime, body string) importer.Input {
 }
 
 const simpleTOML = `
-date_col         = "Date"
-date_format      = "2006-01-02"
-default_currency = "USD"
-account          = "Assets:Checking"
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[currency]
+default = "USD"
 
 [[amount]]
 col = "Amount"
@@ -92,20 +97,34 @@ func TestIdentify_MissingColumnRejected(t *testing.T) {
 // the account on the emitted posting.
 func TestIdentify_MatchRegexGatesShapeSelection(t *testing.T) {
 	const srcSpecific = `
-match            = "specific.*"
-date_col         = "Date"
-date_format      = "2006-01-02"
-default_currency = "USD"
-account          = "Assets:A"
+match = "specific.*"
+
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:A"
+
+[currency]
+default = "USD"
+
 [[amount]]
 col = "Amount"
 `
 	const srcOther = `
-match            = "other.*"
-date_col         = "Date"
-date_format      = "2006-01-02"
-default_currency = "USD"
-account          = "Assets:B"
+match = "other.*"
+
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:B"
+
+[currency]
+default = "USD"
+
 [[amount]]
 col = "Amount"
 `
@@ -205,11 +224,18 @@ func TestIdentify_HeaderColumnTrim(t *testing.T) {
 
 func TestIdentify_SkipLinesBanner(t *testing.T) {
 	const src = `
-skip_lines  = 2
-date_col    = "Date"
-date_format = "2006-01-02"
-default_currency = "USD"
-account     = "Assets:Checking"
+skip_lines = 2
+
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[currency]
+default = "USD"
+
 [[amount]]
 col = "Amount"
 `
@@ -224,11 +250,18 @@ func TestExtract_NoShapeMatched(t *testing.T) {
 	// A shape with a match regex that only accepts "mybank.*" paths.
 	// Extracting from a path that fails the regex must return a framework error.
 	const src = `
-match            = "mybank.*"
-date_col         = "Date"
-date_format      = "2006-01-02"
-default_currency = "USD"
-account          = "Assets:Checking"
+match = "mybank.*"
+
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[currency]
+default = "USD"
+
 [[amount]]
 col = "Amount"
 `
@@ -249,10 +282,17 @@ col = "Amount"
 // (alpha) regardless of lexicographic ordering.
 func TestDispatch_DeclarationOrderWins(t *testing.T) {
 	makeSrc := func(account string) string {
-		return `date_col         = "Date"
-date_format      = "2006-01-02"
-default_currency = "USD"
-account          = "` + account + `"
+		return `
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "` + account + `"
+
+[currency]
+default = "USD"
+
 [[amount]]
 col = "A"
 `

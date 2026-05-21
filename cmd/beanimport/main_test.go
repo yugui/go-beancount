@@ -84,12 +84,18 @@ func writeConfig(t *testing.T, dir, account string) string {
 	t.Helper()
 	content := fmt.Sprintf(`
 [[importer]]
-kind             = "csv"
-name             = "test"
-date_col         = "Date"
-date_format      = "2006-01-02"
-account          = %q
-default_currency = "USD"
+kind = "csv"
+name = "test"
+
+[importer.date]
+col    = "Date"
+format = "2006-01-02"
+
+[importer.account]
+default = %q
+
+[importer.currency]
+default = "USD"
 
 [[importer.amount]]
 col    = "Amount"
@@ -312,22 +318,28 @@ func TestRun_CancelledContext(t *testing.T) {
 func TestLoadConfig_HappyPath(t *testing.T) {
 	toml := `
 [[importer]]
-kind             = "csv"
-name             = "first"
-date_col         = "Date"
-date_format      = "2006-01-02"
-account          = "Assets:A"
-default_currency = "USD"
+kind = "csv"
+name = "first"
+[importer.date]
+col    = "Date"
+format = "2006-01-02"
+[importer.account]
+default = "Assets:A"
+[importer.currency]
+default = "USD"
 [[importer.amount]]
 col = "Amount"
 
 [[importer]]
-kind             = "csv"
-name             = "second"
-date_col         = "Date"
-date_format      = "2006-01-02"
-account          = "Assets:B"
-default_currency = "USD"
+kind = "csv"
+name = "second"
+[importer.date]
+col    = "Date"
+format = "2006-01-02"
+[importer.account]
+default = "Assets:B"
+[importer.currency]
+default = "USD"
 [[importer.amount]]
 col = "Amount"
 
@@ -379,13 +391,16 @@ name = "x"
 func TestLoadConfig_UnknownBodyKey(t *testing.T) {
 	toml := `
 [[importer]]
-kind             = "csv"
-name             = "x"
-bogus            = "bad"
-date_col         = "Date"
-date_format      = "2006-01-02"
-account          = "Assets:A"
-default_currency = "USD"
+kind  = "csv"
+name  = "x"
+bogus = "bad"
+[importer.date]
+col    = "Date"
+format = "2006-01-02"
+[importer.account]
+default = "Assets:A"
+[importer.currency]
+default = "USD"
 [[importer.amount]]
 col = "Amount"
 `

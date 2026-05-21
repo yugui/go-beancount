@@ -1,0 +1,4 @@
+Date,Acct,Memo,Amount
+2024-03-01,chk-1234,Coffee,-4.50
+2024-03-02,sav-5678,Transfer in,200.00
+2024-03-03,,Fallback row,10.00

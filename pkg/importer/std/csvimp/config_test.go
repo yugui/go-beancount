@@ -65,64 +65,209 @@ func TestFactory_HappyPath(t *testing.T) {
 }
 
 func TestFactory_Errors(t *testing.T) {
+	// minimal* helpers build TOML bodies that are otherwise valid so each
+	// test case can target a single error class.
+	const minimalDate = `
+[date]
+col    = "Date"
+format = "2006-01-02"
+`
+	const minimalAccount = `
+[account]
+default = "Assets:X"
+`
+	const minimalCurrency = `
+[currency]
+default = "USD"
+`
+	const minimalAmount = `
+[[amount]]
+col = "Amount"
+`
 	cases := []struct {
 		name   string
 		src    string
 		wantIn string
 	}{
 		{
-			name: "missing date_col",
-			src: `date_format = "2006-01-02"
-[[amount]]
-col = "Amount"`,
-			wantIn: "date_col is required",
+			name: "missing date.col",
+			src: `
+[date]
+format = "2006-01-02"
+` + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "[date].col is required",
 		},
 		{
-			name: "missing date_format",
-			src: `date_col = "Date"
-[[amount]]
-col = "Amount"`,
-			wantIn: "date_format is required",
+			name: "missing date.format",
+			src: `
+[date]
+col = "Date"
+` + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "[date].format is required",
 		},
 		{
-			name: "bad date_format",
-			src: `date_col = "Date"
-date_format = "garbage"
-[[amount]]
-col = "Amount"`,
-			wantIn: "date_format",
+			name: "bad date.format",
+			src: `
+[date]
+col = "Date"
+format = "garbage"
+` + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "[date].format",
 		},
 		{
-			name: "no amount entries",
-			src: `date_col = "Date"
-date_format = "2006-01-02"`,
+			name: "date.format year only",
+			src: `
+[date]
+col = "Date"
+format = "2006"
+` + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "must include year, month and day",
+		},
+		{
+			name: "date.format missing day",
+			src: `
+[date]
+col = "Date"
+format = "2006-01"
+` + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "must include year, month and day",
+		},
+		{
+			name: "date.format missing year",
+			src: `
+[date]
+col = "Date"
+format = "01-02"
+` + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "must include year, month and day",
+		},
+		{
+			name:   "no amount entries",
+			src:    minimalDate + minimalAccount + minimalCurrency,
 			wantIn: "at least one [[amount]] entry",
 		},
 		{
 			name: "amount missing col",
-			src: `date_col = "Date"
-date_format = "2006-01-02"
+			src: minimalDate + minimalAccount + minimalCurrency + `
 [[amount]]
 negate = true`,
 			wantIn: "amount[0].col is required",
 		},
 		{
 			name: "bad match regex",
-			src: `date_col = "Date"
-date_format = "2006-01-02"
-match = "(broken"
-[[amount]]
-col = "Amount"`,
+			src: `match = "(broken"
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
 			wantIn: "match",
 		},
 		{
 			name: "multi-rune delimiter",
-			src: `date_col = "Date"
-date_format = "2006-01-02"
-delimiter = ",;"
-[[amount]]
-col = "Amount"`,
+			src: `delimiter = ",;"
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
 			wantIn: "delimiter",
+		},
+		{
+			name:   "account requires col or default",
+			src:    minimalDate + minimalCurrency + minimalAmount,
+			wantIn: "[account] requires col or default",
+		},
+		{
+			name: "account col without map or default",
+			src: minimalDate + `
+[account]
+col = "Acct"
+` + minimalCurrency + minimalAmount,
+			wantIn: "[account].col without map or default",
+		},
+		{
+			name: "account col with explicit empty map and no default",
+			src: minimalDate + `
+[account]
+col = "Acct"
+
+[account.map]
+` + minimalCurrency + minimalAmount,
+			wantIn: "[account].col without map or default",
+		},
+		{
+			name: "account default invalid",
+			src: minimalDate + `
+[account]
+default = "not a valid path"
+` + minimalCurrency + minimalAmount,
+			wantIn: "[account].default",
+		},
+		{
+			name: "account map value invalid",
+			src: minimalDate + `
+[account]
+col = "Acct"
+
+[account.map]
+"x" = "bogus root"
+` + minimalCurrency + minimalAmount,
+			wantIn: "[account.map][\"x\"]",
+		},
+		{
+			name:   "currency requires col or default",
+			src:    minimalDate + minimalAccount + minimalAmount,
+			wantIn: "[currency] requires col or default",
+		},
+		{
+			name: "currency map blank value",
+			src: minimalDate + minimalAccount + `
+[currency]
+col = "Cur"
+
+[currency.map]
+"foo" = "  "
+` + minimalAmount,
+			wantIn: "[currency.map][\"foo\"]",
+		},
+		{
+			name: "currency default blank",
+			src: minimalDate + minimalAccount + `
+[currency]
+default = "   "
+` + minimalAmount,
+			wantIn: "[currency].default is blank",
+		},
+		{
+			name: "account map without account.col",
+			src: minimalDate + `
+[account]
+default = "Assets:X"
+
+[account.map]
+"x" = "Assets:X"
+` + minimalCurrency + minimalAmount,
+			wantIn: "[account.map] is set but [account].col is not",
+		},
+		{
+			name: "payee map without payee.col",
+			src: minimalDate + minimalAccount + minimalCurrency + `
+[payee.map]
+"x" = "y"
+` + minimalAmount,
+			wantIn: "[payee.map] is set but [payee].col is not",
+		},
+		{
+			name: "currency map without currency.col",
+			src: minimalDate + minimalAccount + `
+[currency]
+default = "USD"
+
+[currency.map]
+"x" = "y"
+` + minimalAmount,
+			wantIn: "[currency.map] is set but [currency].col is not",
+		},
+		{
+			name: "narration map without narration.cols",
+			src: minimalDate + minimalAccount + minimalCurrency + `
+[narration.map]
+"x" = "y"
+` + minimalAmount,
+			wantIn: "[narration.map] is set but [narration].cols is empty",
 		},
 	}
 
@@ -147,9 +292,17 @@ col = "Amount"`,
 
 func TestFactory_UnknownKeyRejectedByCLIDecoder(t *testing.T) {
 	const src = `
-date_col      = "Date"
-date_format   = "2006-01-02"
 unknown_field = "bogus"
+
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:X"
+
+[currency]
+default = "USD"
 
 [[amount]]
 col = "Amount"

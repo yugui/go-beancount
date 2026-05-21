@@ -1,10 +1,19 @@
-date_col         = "Date"
-date_format      = "2006-01-02"
-payee_col        = "Payee"
-default_currency = "JPY"
-narration_cols      = ["Description", "Memo"]
-narration_separator = " / "
-account          = "Assets:JapaneseBank"
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:JapaneseBank"
+
+[payee]
+col = "Payee"
+
+[currency]
+default = "JPY"
+
+[narration]
+cols      = ["Description", "Memo"]
+separator = " / "
 
 [[amount]]
 col    = "Withdrawal"

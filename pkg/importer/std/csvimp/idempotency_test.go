@@ -78,6 +78,14 @@ func TestIdempotency_DebitCreditShape(t *testing.T) {
 	checkIdempotency(t, "debitcredit")
 }
 
+func TestIdempotency_MultiAccount(t *testing.T) {
+	checkIdempotency(t, "multiaccount")
+}
+
+func TestIdempotency_Translations(t *testing.T) {
+	checkIdempotency(t, "translations")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)
