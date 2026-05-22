@@ -11,6 +11,7 @@
 //	match       = "mybank.*\\.csv$"   # optional path regex
 //	delimiter   = ","                  # default ","; one rune only
 //	skip_lines  = 1                    # banner lines before the header; default 0
+//	encoding    = "Shift_JIS"          # optional IANA charset; default UTF-8/pass-through
 //
 //	[date]
 //	col    = "Date"
@@ -114,6 +115,14 @@
 // constructing separate [*Importer] instances via the factory and
 // registering them in an [importer.Registry]; [importer.Dispatch]
 // walks instances in declaration order.
+//
+// # Input encoding
+//
+// When encoding is set, the file's bytes are decoded to UTF-8 before CSV
+// parsing. Any name resolvable by [ianaindex.IANA] is accepted, including
+// registry aliases (e.g. "MS_Kanji" for Shift_JIS). Unset is equivalent
+// to passing the bytes through unchanged, which works for UTF-8 and any
+// ASCII-compatible single-byte encoding.
 //
 // # Resolution priorities
 //

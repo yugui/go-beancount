@@ -82,6 +82,9 @@ func checkMissingColumns(path, name string, s *shape, idx map[string]int) ([]ast
 // openCSVAtBody returns a csv.Reader positioned past the header and the
 // parsed header row. On success the reader is ready to yield body rows.
 func openCSVAtBody(rc io.Reader, s *shape) (*csv.Reader, []string, error) {
+	if s.inputEncoding != nil {
+		rc = s.inputEncoding.NewDecoder().Reader(rc)
+	}
 	br := bufio.NewReader(rc)
 	if err := skipRawLines(br, s.skipLines); err != nil {
 		return nil, nil, err
