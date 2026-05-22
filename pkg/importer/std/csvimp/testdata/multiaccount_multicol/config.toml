@@ -1,0 +1,17 @@
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+col       = ["AcctType", "AcctID"]
+separator = "-"
+
+[account.map]
+"chk-001" = "Assets:Checking"
+"sav-002" = "Assets:Savings"
+
+[currency]
+default = "USD"
+
+[[amount]]
+col = "Amount"

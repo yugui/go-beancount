@@ -262,12 +262,12 @@ default = "USD"
 			wantIn: "[currency.map] is set but [currency].col is not",
 		},
 		{
-			name: "narration map without narration.cols",
+			name: "narration map without narration.col",
 			src: minimalDate + minimalAccount + minimalCurrency + `
 [narration.map]
 "x" = "y"
 ` + minimalAmount,
-			wantIn: "[narration.map] is set but [narration].cols is empty",
+			wantIn: "[narration.map] is set but [narration].col is empty",
 		},
 	}
 
@@ -287,6 +287,242 @@ default = "USD"
 				t.Errorf("error %q does not contain %q", err, tc.wantIn)
 			}
 		})
+	}
+}
+
+// TestStringList_AcceptsScalarAndArray verifies that account.col,
+// payee.col, and narration.col all accept either a TOML string or a
+// TOML array of strings, decoding to []string in both cases. The
+// validator-accepted forms below are the ones the rest of the package
+// relies on for the unified col schema.
+func TestStringList_AcceptsScalarAndArray(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		// post-condition predicates checked against the compiled shape
+		check func(t *testing.T, s *shape)
+	}{
+		{
+			name: "account.col scalar",
+			src: `
+[date]
+col = "Date"
+format = "2006-01-02"
+[account]
+col = "Acct"
+default = "Assets:X"
+[currency]
+default = "USD"
+[[amount]]
+col = "Amount"
+`,
+			check: func(t *testing.T, s *shape) {
+				if got, want := s.accountCols, []string{"Acct"}; len(got) != 1 || got[0] != want[0] {
+					t.Errorf("accountCols = %v, want %v", got, want)
+				}
+			},
+		},
+		{
+			name: "account.col array",
+			src: `
+[date]
+col = "Date"
+format = "2006-01-02"
+[account]
+col = ["AcctType", "AcctID"]
+separator = "-"
+[account.map]
+"chk-1" = "Assets:Checking"
+[currency]
+default = "USD"
+[[amount]]
+col = "Amount"
+`,
+			check: func(t *testing.T, s *shape) {
+				want := []string{"AcctType", "AcctID"}
+				if len(s.accountCols) != 2 || s.accountCols[0] != want[0] || s.accountCols[1] != want[1] {
+					t.Errorf("accountCols = %v, want %v", s.accountCols, want)
+				}
+				if s.accountSep != "-" {
+					t.Errorf("accountSep = %q, want %q", s.accountSep, "-")
+				}
+			},
+		},
+		{
+			name: "narration.col scalar",
+			src: `
+[date]
+col = "Date"
+format = "2006-01-02"
+[account]
+default = "Assets:X"
+[currency]
+default = "USD"
+[narration]
+col = "Memo"
+[[amount]]
+col = "Amount"
+`,
+			check: func(t *testing.T, s *shape) {
+				if len(s.narrationCols) != 1 || s.narrationCols[0] != "Memo" {
+					t.Errorf("narrationCols = %v, want [Memo]", s.narrationCols)
+				}
+			},
+		},
+		{
+			name: "payee.col array joined by separator",
+			src: `
+[date]
+col = "Date"
+format = "2006-01-02"
+[account]
+default = "Assets:X"
+[currency]
+default = "USD"
+[payee]
+col = ["Name", "Branch"]
+separator = " - "
+[[amount]]
+col = "Amount"
+`,
+			check: func(t *testing.T, s *shape) {
+				want := []string{"Name", "Branch"}
+				if len(s.payeeCols) != 2 || s.payeeCols[0] != want[0] || s.payeeCols[1] != want[1] {
+					t.Errorf("payeeCols = %v, want %v", s.payeeCols, want)
+				}
+				if s.payeeSep != " - " {
+					t.Errorf("payeeSep = %q, want %q", s.payeeSep, " - ")
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			imp, err := newImporter("test", tomlDecoder(tc.src))
+			if err != nil {
+				t.Fatalf("newImporter: %v", err)
+			}
+			tc.check(t, imp.(*Importer).s)
+		})
+	}
+}
+
+func TestStringList_RejectsNonStringElement(t *testing.T) {
+	const src = `
+[date]
+col = "Date"
+format = "2006-01-02"
+[account]
+col = [1, 2]
+default = "Assets:X"
+[currency]
+default = "USD"
+[[amount]]
+col = "Amount"
+`
+	if _, err := newImporter("test", permissiveDecoder(src)); err == nil {
+		t.Fatal("newImporter: nil error, want one citing element type")
+	}
+}
+
+// TestFactory_CounterAccountValidation covers validation rules for the
+// optional [counter_account] block. The block mirrors [account] but is
+// fully optional: a config with no counter_account fields is accepted
+// and produces a shape that emits single-posting transactions.
+func TestFactory_CounterAccountValidation(t *testing.T) {
+	const minimalDate = `
+[date]
+col    = "Date"
+format = "2006-01-02"
+`
+	const minimalAccount = `
+[account]
+default = "Assets:X"
+`
+	const minimalCurrency = `
+[currency]
+default = "USD"
+`
+	const minimalAmount = `
+[[amount]]
+col = "Amount"
+`
+	cases := []struct {
+		name   string
+		src    string
+		wantIn string
+	}{
+		{
+			name: "counter_account col without map or default",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[counter_account]
+col = "Cat"
+`,
+			wantIn: "[counter_account].col without map or default",
+		},
+		{
+			name: "counter_account map without col",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[counter_account.map]
+"x" = "Expenses:Food"
+`,
+			wantIn: "[counter_account.map] is set but [counter_account].col is not",
+		},
+		{
+			name: "counter_account default invalid",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[counter_account]
+default = "not valid"
+`,
+			wantIn: "[counter_account].default",
+		},
+		{
+			name: "counter_account map value invalid",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[counter_account]
+col = "Cat"
+[counter_account.map]
+"x" = "lower"
+`,
+			wantIn: "[counter_account.map][\"x\"]",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			imp, err := newImporter("test", permissiveDecoder(tc.src))
+			if err == nil {
+				t.Fatalf("newImporter: nil error, want one containing %q", tc.wantIn)
+			}
+			if imp != nil {
+				t.Error("newImporter: non-nil Importer on error")
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Errorf("error %q does not contain %q", err, tc.wantIn)
+			}
+		})
+	}
+}
+
+func TestFactory_CounterAccountUnconfiguredIsValid(t *testing.T) {
+	const src = `
+[date]
+col    = "Date"
+format = "2006-01-02"
+[account]
+default = "Assets:X"
+[currency]
+default = "USD"
+[[amount]]
+col = "Amount"
+`
+	imp, err := newImporter("test", tomlDecoder(src))
+	if err != nil {
+		t.Fatalf("newImporter: %v", err)
+	}
+	s := imp.(*Importer).s
+	if len(s.counterAccountCols) != 0 || s.counterAccountDefault != "" {
+		t.Errorf("expected counter_account unconfigured, got cols=%v default=%q",
+			s.counterAccountCols, s.counterAccountDefault)
 	}
 }
 

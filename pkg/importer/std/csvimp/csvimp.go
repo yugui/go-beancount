@@ -122,20 +122,22 @@ func columnsPresent(s *shape, idx map[string]int) bool {
 }
 
 func requiredColumns(s *shape) []string {
-	out := make([]string, 0, 5+len(s.amounts)+len(s.narrationCols))
+	n := 1 + len(s.amounts) + len(s.narrationCols) + len(s.payeeCols) +
+		len(s.accountCols) + len(s.counterAccountCols)
+	if s.currencyCol != "" {
+		n++
+	}
+	out := make([]string, 0, n)
 	out = append(out, s.dateCol)
 	for _, a := range s.amounts {
 		out = append(out, a.Col)
 	}
 	out = append(out, s.narrationCols...)
-	if s.payeeCol != "" {
-		out = append(out, s.payeeCol)
-	}
+	out = append(out, s.payeeCols...)
 	if s.currencyCol != "" {
 		out = append(out, s.currencyCol)
 	}
-	if s.accountCol != "" {
-		out = append(out, s.accountCol)
-	}
+	out = append(out, s.accountCols...)
+	out = append(out, s.counterAccountCols...)
 	return out
 }

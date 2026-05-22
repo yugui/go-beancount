@@ -1,0 +1,23 @@
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[currency]
+default = "USD"
+
+[counter_account]
+col     = "Category"
+default = "Expenses:Misc"
+
+[counter_account.map]
+"Food" = "Expenses:Food"
+"Rent" = "Expenses:Housing:Rent"
+
+[narration]
+col = "Memo"
+
+[[amount]]
+col = "Amount"
