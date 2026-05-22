@@ -7,6 +7,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/ianaindex"
+
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer"
 )
@@ -45,6 +48,7 @@ type shapeConfig struct {
 	Match          string          `toml:"match"`
 	Delimiter      string          `toml:"delimiter"`
 	SkipLines      int             `toml:"skip_lines"`
+	Encoding       string          `toml:"encoding"`
 	Date           dateConfig      `toml:"date"`
 	Account        accountConfig   `toml:"account"`
 	CounterAccount accountConfig   `toml:"counter_account"`
@@ -99,6 +103,11 @@ type shape struct {
 	compiledMatch *regexp.Regexp // nil when Match was unset
 	delimiter     rune           // default ','
 	skipLines     int
+
+	// inputEncoding decodes file bytes to UTF-8 before CSV parsing.
+	// nil means "no transformation"; bytes flow through verbatim
+	// (the legacy UTF-8 / ASCII-compatible path).
+	inputEncoding encoding.Encoding
 
 	dateCol    string
 	dateFormat string
@@ -248,6 +257,16 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 			return nil, fmt.Errorf("shape %q: delimiter %q must be exactly one rune", name, sc.Delimiter)
 		}
 		s.delimiter = r
+	}
+	if sc.Encoding != "" {
+		enc, err := ianaindex.IANA.Encoding(sc.Encoding)
+		if err != nil {
+			return nil, fmt.Errorf("shape %q: encoding %q is not a recognised IANA charset name: %w", name, sc.Encoding, err)
+		}
+		if enc == nil {
+			return nil, fmt.Errorf("shape %q: encoding %q is not a recognised IANA charset name", name, sc.Encoding)
+		}
+		s.inputEncoding = enc
 	}
 	return s, nil
 }
