@@ -1,0 +1,21 @@
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[currency]
+default = "USD"
+
+[counter_account]
+col       = ["Category", "Subcategory"]
+separator = ":"
+
+[counter_account.map]
+"Food:Restaurants" = "Expenses:Food:Restaurants"
+"Food:Groceries"   = "Expenses:Food:Groceries"
+"Travel:Flights"   = "Expenses:Travel:Flights"
+
+[[amount]]
+col = "Amount"

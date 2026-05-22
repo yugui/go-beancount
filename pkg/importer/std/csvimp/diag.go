@@ -2,10 +2,11 @@ package csvimp
 
 import "github.com/yugui/go-beancount/pkg/ast"
 
-// Diagnostic codes emitted by [*Importer.Extract]. All carry
-// [ast.Error] severity. csvimp emits one diagnostic per failing row
-// and skips that row; it never aborts the whole Extract on a per-row
-// problem.
+// Diagnostic codes emitted by [*Importer.Extract]. Most carry
+// [ast.Error] severity and cause csvimp to skip the offending row;
+// DiagUnmappedCounterAccount is the sole exception and surfaces as a
+// warning while the row is still emitted with a single posting.
+// csvimp never aborts the whole Extract on a per-row problem.
 const (
 	// DiagBadDate signals that the date column failed to parse under
 	// the shape's [date].format.
@@ -35,6 +36,16 @@ const (
 	// verbatim instead.
 	DiagUnmappedAccount = "csvimp-unmapped-account"
 
+	// DiagUnmappedCounterAccount signals that the joined
+	// [counter_account].col cells produced a non-empty key that was
+	// absent from [counter_account.map] in strict mode. The row is
+	// kept as a single (unbalanced) posting; the diagnostic carries
+	// [ast.Warning] severity, surfacing the configuration gap without
+	// dropping the transaction. A blank counter key (every cell
+	// empty) with no default silently falls back to a single posting
+	// and does NOT emit this code.
+	DiagUnmappedCounterAccount = "csvimp-unmapped-counter-account"
+
 	// DiagMissingColumn signals that a required column declared in the
 	// shape was absent from the file's header at Extract time.
 	DiagMissingColumn = "csvimp-missing-column"
@@ -46,5 +57,14 @@ func rowDiag(code, path string, line int, msg string) ast.Diagnostic {
 		Span:     ast.Span{Start: ast.Position{Filename: path, Line: line}},
 		Message:  msg,
 		Severity: ast.Error,
+	}
+}
+
+func rowWarn(code, path string, line int, msg string) ast.Diagnostic {
+	return ast.Diagnostic{
+		Code:     code,
+		Span:     ast.Span{Start: ast.Position{Filename: path, Line: line}},
+		Message:  msg,
+		Severity: ast.Warning,
 	}
 }

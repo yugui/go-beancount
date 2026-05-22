@@ -26,6 +26,7 @@ type txSummary struct {
 	Flag     byte
 	Account  ast.Account
 	Currency string
+	Postings int
 }
 
 func summariseTx(t *testing.T, d ast.Directive, i int) txSummary {
@@ -34,13 +35,14 @@ func summariseTx(t *testing.T, d ast.Directive, i int) txSummary {
 	if !ok {
 		t.Fatalf("directive %d: type %T, want *ast.Transaction", i, d)
 	}
-	if len(tx.Postings) != 1 {
-		t.Fatalf("directive %d: %d postings, want 1", i, len(tx.Postings))
+	if len(tx.Postings) < 1 {
+		t.Fatalf("directive %d: %d postings, want >= 1", i, len(tx.Postings))
 	}
 	return txSummary{
 		Flag:     tx.Flag,
 		Account:  tx.Postings[0].Account,
 		Currency: tx.Postings[0].Amount.Currency,
+		Postings: len(tx.Postings),
 	}
 }
 
@@ -56,7 +58,7 @@ func TestExtract_Happy_SingleSignedAmount(t *testing.T) {
 		t.Fatalf("got %d directives, want 2", len(out.Directives))
 	}
 
-	want := txSummary{Flag: '*', Account: "Assets:Checking", Currency: "USD"}
+	want := txSummary{Flag: '*', Account: "Assets:Checking", Currency: "USD", Postings: 1}
 	for i, d := range out.Directives {
 		got := summariseTx(t, d, i)
 		if diff := cmp.Diff(want, got); diff != "" {
@@ -84,7 +86,7 @@ col = "Payee"
 default = "JPY"
 
 [narration]
-cols      = ["Description", "Memo"]
+col       = ["Description", "Memo"]
 separator = " / "
 
 [[amount]]
@@ -489,12 +491,12 @@ func TestResolveAccount(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := &shape{
-				accountCol:     tc.accountCol,
 				accountDefault: tc.accountDefault,
 				accountMap:     tc.accountMap,
 			}
 			idx := map[string]int{}
 			if tc.accountCol != "" {
+				s.accountCols = []string{tc.accountCol}
 				idx[tc.accountCol] = 0
 			}
 			got, diag := resolveAccount(s, idx, tc.row, tc.hints, "/tmp/x.csv", 1)
@@ -633,9 +635,10 @@ func TestResolvePayee(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &shape{payeeCol: tc.payeeCol, payeeMap: tc.payeeMap}
+			s := &shape{payeeMap: tc.payeeMap}
 			idx := map[string]int{}
 			if tc.payeeCol != "" {
+				s.payeeCols = []string{tc.payeeCol}
 				idx[tc.payeeCol] = 0
 			}
 			if got := resolvePayee(s, idx, tc.row); got != tc.want {
@@ -847,7 +850,7 @@ default = "Assets:X"
 default = "USD"
 
 [narration]
-cols      = ["A", "B"]
+col       = ["A", "B"]
 separator = " / "
 
 [narration.map]
@@ -856,6 +859,288 @@ separator = " / "
 [[amount]]
 col = "Amount"
 `
+
+// counterAccountTOML configures [counter_account] with a single col +
+// map + default. Used to exercise both the map-hit path and the
+// blank-cell-with-default soft fallback.
+const counterAccountTOML = `
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[currency]
+default = "USD"
+
+[counter_account]
+col     = "Category"
+default = "Expenses:Misc"
+
+[counter_account.map]
+"Food" = "Expenses:Food"
+
+[[amount]]
+col = "Amount"
+`
+
+func TestExtract_CounterAccountEmitsSecondPosting(t *testing.T) {
+	imp := newConfigured(t, counterAccountTOML)
+	body := "Date,Category,Amount\n2024-03-01,Food,-12.50\n"
+	out := extract(t, imp, inputFromString("/tmp/x.csv", "", body))
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	if len(out.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(out.Directives))
+	}
+	tx := out.Directives[0].(*ast.Transaction)
+	if len(tx.Postings) != 2 {
+		t.Fatalf("got %d postings, want 2", len(tx.Postings))
+	}
+	if got, want := tx.Postings[0].Account, ast.Account("Assets:Checking"); got != want {
+		t.Errorf("primary account = %q, want %q", got, want)
+	}
+	if got, want := tx.Postings[1].Account, ast.Account("Expenses:Food"); got != want {
+		t.Errorf("counter account = %q, want %q", got, want)
+	}
+	if got, want := tx.Postings[0].Amount.Number.Text('f'), "-12.50"; got != want {
+		t.Errorf("primary amount = %q, want %q", got, want)
+	}
+	if got, want := tx.Postings[1].Amount.Number.Text('f'), "12.50"; got != want {
+		t.Errorf("counter amount = %q, want %q (negated)", got, want)
+	}
+	if got, want := tx.Postings[1].Amount.Currency, "USD"; got != want {
+		t.Errorf("counter currency = %q, want %q", got, want)
+	}
+}
+
+func TestExtract_CounterAccountBlankCellUsesDefault(t *testing.T) {
+	imp := newConfigured(t, counterAccountTOML)
+	body := "Date,Category,Amount\n2024-03-02,,-5.00\n"
+	out := extract(t, imp, inputFromString("/tmp/x.csv", "", body))
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	tx := out.Directives[0].(*ast.Transaction)
+	if len(tx.Postings) != 2 {
+		t.Fatalf("got %d postings, want 2", len(tx.Postings))
+	}
+	if got, want := tx.Postings[1].Account, ast.Account("Expenses:Misc"); got != want {
+		t.Errorf("counter account = %q, want %q (fallback to default)", got, want)
+	}
+}
+
+// counterAccountNoDefaultTOML omits [counter_account].default. A blank
+// Category cell must fall back to a single posting (soft fallback), not
+// emit a diagnostic.
+const counterAccountNoDefaultTOML = `
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[currency]
+default = "USD"
+
+[counter_account]
+col = "Category"
+
+[counter_account.map]
+"Food" = "Expenses:Food"
+
+[[amount]]
+col = "Amount"
+`
+
+func TestExtract_CounterAccountBlankCellNoDefaultEmitsSinglePosting(t *testing.T) {
+	imp := newConfigured(t, counterAccountNoDefaultTOML)
+	body := "Date,Category,Amount\n2024-03-02,,-5.00\n"
+	out := extract(t, imp, inputFromString("/tmp/x.csv", "", body))
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	if len(out.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(out.Directives))
+	}
+	tx := out.Directives[0].(*ast.Transaction)
+	if len(tx.Postings) != 1 {
+		t.Errorf("got %d postings, want 1 (soft fallback)", len(tx.Postings))
+	}
+}
+
+// TestExtract_DiagUnmappedCounterAccountIsWarning pins the contract
+// that an unmapped strict-mode counter_account key does NOT drop the
+// row: a single-posting transaction is still emitted, and a warning
+// diagnostic surfaces the configuration gap.
+func TestExtract_DiagUnmappedCounterAccountIsWarning(t *testing.T) {
+	imp := newConfigured(t, counterAccountNoDefaultTOML)
+	body := "Date,Category,Amount\n2024-03-02,Travel,-5.00\n"
+	out := extract(t, imp, inputFromString("/tmp/x.csv", "", body))
+	if len(out.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1 (row kept on counter warning)", len(out.Directives))
+	}
+	tx := out.Directives[0].(*ast.Transaction)
+	if len(tx.Postings) != 1 {
+		t.Errorf("got %d postings, want 1 (counter posting suppressed)", len(tx.Postings))
+	}
+	if len(out.Diagnostics) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(out.Diagnostics), out.Diagnostics)
+	}
+	d := out.Diagnostics[0]
+	if d.Code != DiagUnmappedCounterAccount {
+		t.Errorf("diag code = %q, want %q", d.Code, DiagUnmappedCounterAccount)
+	}
+	if d.Severity != ast.Warning {
+		t.Errorf("diag severity = %v, want Warning", d.Severity)
+	}
+}
+
+// counterAccountMultiColTOML joins two columns with separator before
+// map lookup.
+const counterAccountMultiColTOML = `
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[currency]
+default = "USD"
+
+[counter_account]
+col       = ["Category", "Subcategory"]
+separator = ":"
+
+[counter_account.map]
+"Food:Restaurants" = "Expenses:Food:Restaurants"
+
+[[amount]]
+col = "Amount"
+`
+
+func TestExtract_CounterAccountMultiColJoinedKey(t *testing.T) {
+	imp := newConfigured(t, counterAccountMultiColTOML)
+	body := "Date,Category,Subcategory,Amount\n2024-04-01,Food,Restaurants,-25.00\n"
+	out := extract(t, imp, inputFromString("/tmp/x.csv", "", body))
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	tx := out.Directives[0].(*ast.Transaction)
+	if len(tx.Postings) != 2 {
+		t.Fatalf("got %d postings, want 2", len(tx.Postings))
+	}
+	if got, want := tx.Postings[1].Account, ast.Account("Expenses:Food:Restaurants"); got != want {
+		t.Errorf("counter account = %q, want %q", got, want)
+	}
+}
+
+// TestExtract_HintsDoesNotOverrideCounterAccount pins the contract that
+// Hints["account"] affects only the primary account, never the counter
+// account. The counter account is still resolved from its own col/map.
+func TestExtract_HintsDoesNotOverrideCounterAccount(t *testing.T) {
+	imp := newConfigured(t, counterAccountTOML)
+	in := inputFromString("/tmp/x.csv", "", "Date,Category,Amount\n2024-03-01,Food,-12.50\n")
+	in.Hints = map[string]string{"account": "Assets:Hinted"}
+	out := extract(t, imp, in)
+	if len(out.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(out.Directives))
+	}
+	tx := out.Directives[0].(*ast.Transaction)
+	if len(tx.Postings) != 2 {
+		t.Fatalf("got %d postings, want 2", len(tx.Postings))
+	}
+	if got, want := tx.Postings[0].Account, ast.Account("Assets:Hinted"); got != want {
+		t.Errorf("primary account = %q, want %q (Hints wins)", got, want)
+	}
+	if got, want := tx.Postings[1].Account, ast.Account("Expenses:Food"); got != want {
+		t.Errorf("counter account = %q, want %q (Hints does not apply)", got, want)
+	}
+}
+
+// accountMultiColTOML configures primary [account].col as a two-column
+// list joined by separator before [account.map] lookup.
+const accountMultiColTOML = `
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+col       = ["AcctType", "AcctID"]
+separator = "-"
+
+[account.map]
+"chk-001" = "Assets:Checking"
+"sav-002" = "Assets:Savings"
+
+[currency]
+default = "USD"
+
+[[amount]]
+col = "Amount"
+`
+
+func TestExtract_PrimaryAccountMultiCol(t *testing.T) {
+	imp := newConfigured(t, accountMultiColTOML)
+	body := "Date,AcctType,AcctID,Amount\n2024-05-01,chk,001,100\n2024-05-02,sav,002,200\n"
+	out := extract(t, imp, inputFromString("/tmp/x.csv", "", body))
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	if len(out.Directives) != 2 {
+		t.Fatalf("got %d directives, want 2", len(out.Directives))
+	}
+	want := []ast.Account{"Assets:Checking", "Assets:Savings"}
+	for i, d := range out.Directives {
+		tx := d.(*ast.Transaction)
+		if got := tx.Postings[0].Account; got != want[i] {
+			t.Errorf("row %d account = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
+// payeeMultiColTOML demonstrates payee resolution from joined columns.
+const payeeMultiColTOML = `
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:X"
+
+[currency]
+default = "USD"
+
+[payee]
+col       = ["PayeeName", "PayeeBranch"]
+separator = " - "
+
+[payee.map]
+"Acme - HQ" = "Acme Headquarters"
+
+[[amount]]
+col = "Amount"
+`
+
+func TestExtract_PayeeMultiCol(t *testing.T) {
+	imp := newConfigured(t, payeeMultiColTOML)
+	body := "Date,PayeeName,PayeeBranch,Amount\n2024-06-01,Acme,HQ,1\n2024-06-02,Other,Branch,1\n"
+	out := extract(t, imp, inputFromString("/tmp/x.csv", "", body))
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	want := []string{"Acme Headquarters", "Other - Branch"}
+	for i, d := range out.Directives {
+		tx := d.(*ast.Transaction)
+		if tx.Payee != want[i] {
+			t.Errorf("row %d payee = %q, want %q", i, tx.Payee, want[i])
+		}
+	}
+}
 
 func TestExtract_MultiColNarrationMap(t *testing.T) {
 	imp := newConfigured(t, multiNarrationMapTOML)

@@ -17,8 +17,13 @@
 //	format = "2006-01-02"              # must include year
 //
 //	[account]
-//	col     = "AccountName"            # optional; per-row source column
-//	default = "Assets:Checking"        # optional fallback
+//	# col accepts a single column name or a list of columns. When a
+//	# list is given, the trimmed cells are joined with separator (blank
+//	# cells dropped) to form the key consulted against [account.map] or
+//	# used verbatim.
+//	col       = "AccountName"          # or ["AcctType", "AcctID"]
+//	separator = "-"                    # used only when col is a list
+//	default   = "Assets:Checking"      # optional fallback
 //
 //	# Configuring [account.map] switches account resolution into strict
 //	# mode: an [account].col cell whose value is absent from this map
@@ -28,14 +33,29 @@
 //	"chk-1234" = "Assets:Checking"
 //	"sav-5678" = "Assets:Savings"
 //
+//	# Optional balancing posting. When [counter_account] is configured,
+//	# each emitted Transaction carries a second posting whose Amount is
+//	# the primary posting's amount negated. Same schema as [account],
+//	# minus the Hints["account"] override.
+//	[counter_account]
+//	col = "Category"                   # or ["Category", "Subcategory"]
+//	separator = ":"
+//	default   = "Equity:Unknown"       # optional fallback
+//
+//	[counter_account.map]
+//	"Food" = "Expenses:Food"
+//	"Rent" = "Expenses:Housing:Rent"
+//
 //	[payee]
+//	# col accepts a single column or a list joined by separator before
+//	# [payee.map] lookup.
 //	col = "Payee"                      # optional
 //
 //	[payee.map]                        # optional translation
 //	"AMZN MKTPL" = "Amazon"
 //
 //	[currency]
-//	col     = "Currency"               # optional
+//	col     = "Currency"               # optional; scalar only
 //	default = "JPY"                    # optional
 //
 //	[currency.map]                     # optional translation
@@ -43,7 +63,7 @@
 //	"$" = "USD"
 //
 //	[narration]
-//	cols      = ["Description", "Memo"]
+//	col       = ["Description", "Memo"] # scalar or list
 //	separator = " / "
 //
 //	[narration.map]                    # optional per-cell translation
@@ -67,24 +87,27 @@
 //	negate = false
 //
 // At least one of [account].col / [account].default must be set;
-// similarly for [currency]. When [account].col is configured without an
-// [account.map], cell values are used verbatim; configuring an
-// [account.map] switches account resolution into strict mode (see
-// "Resolution priorities" below). [account].default and every value in
-// [account.map] are validated against the beancount account grammar at
-// configure time.
+// similarly for [currency]. [counter_account] is entirely optional —
+// omitting it preserves the historical single-posting behavior. When
+// [account].col is configured without an [account.map], cell values are
+// used verbatim; configuring an [account.map] switches account
+// resolution into strict mode (see "Resolution priorities" below).
+// [account].default and every value in [account.map] are validated
+// against the beancount account grammar at configure time. The same
+// rules apply to [counter_account].
 //
-// When any of [account].col, [payee].col, [currency].col, or every
-// column in [narration].cols is configured, the column is required for
-// Identify to return true and for Extract to succeed without
-// DiagMissingColumn. Files whose header lacks one of these columns are
-// skipped by Dispatch even when [account].default (etc.) could in
-// principle process every row.
+// When any of [account].col, [counter_account].col, [payee].col,
+// [currency].col, or every column in [narration].col is configured, the
+// column is required for Identify to return true and for Extract to
+// succeed without DiagMissingColumn. Files whose header lacks one of
+// these columns are skipped by Dispatch even when [account].default
+// (etc.) could in principle process every row.
 //
 // A translation map cannot be configured without its corresponding
 // source column: [account.map] requires [account].col, [payee.map]
-// requires [payee].col, [currency.map] requires [currency].col, and
-// [narration.map] requires a non-empty [narration].cols. The factory
+// requires [payee].col, [currency.map] requires [currency].col,
+// [narration.map] requires a non-empty [narration].col, and
+// [counter_account.map] requires [counter_account].col. The factory
 // rejects such configurations at configure time.
 //
 // Multiple CSV shapes (e.g. one per bank account) are handled by
@@ -99,12 +122,25 @@
 //
 // Account:
 //  1. Hints["account"] (CLI/caller override).
-//  2. [account].col cell when non-blank:
+//  2. joined [account].col cells when non-empty:
 //     - with [account.map] set: strict lookup; a miss emits
 //     DiagUnmappedAccount and skips the row.
-//     - without [account.map]: cell value is used verbatim.
+//     - without [account.map]: joined value is used verbatim.
 //  3. [account].default.
 //  4. Otherwise: DiagMissingAccount.
+//
+// Counter account (only when [counter_account] is configured):
+//  1. joined [counter_account].col cells when non-empty:
+//     - with [counter_account.map] set: strict lookup; a miss emits
+//     DiagUnmappedCounterAccount as a warning and falls back to a
+//     single posting (the row is still emitted).
+//     - without [counter_account.map]: joined value is used verbatim.
+//  2. [counter_account].default.
+//  3. Otherwise: no second posting is emitted (soft fallback — the
+//     row produces a single posting, mirroring the original
+//     unbalanced behavior).
+//
+// Hints["account"] is never consulted for the counter account.
 //
 // Currency:
 //  1. [currency].col cell when non-blank: [currency.map] lookup; on
@@ -114,14 +150,15 @@
 //  3. Otherwise: DiagMissingCurrency.
 //
 // Payee:
-//  1. [payee].col cell when non-blank: [payee.map] lookup or pass-through.
-//     A [payee.map] entry mapped to "" suppresses the payee for that
-//     value (the transaction's payee field is left blank).
+//  1. joined [payee].col cells when non-empty: [payee.map] lookup or
+//     pass-through. A [payee.map] entry mapped to "" suppresses the
+//     payee for that value (the transaction's payee field is left
+//     blank).
 //  2. Otherwise "".
 //
 // Narration:
 //
-// For each [narration].cols entry: trim the cell, apply [narration.map]
+// For each [narration].col entry: trim the cell, apply [narration.map]
 // (lookup or pass-through) when set, and skip blanks. A [narration.map]
 // entry mapped to "" drops the cell from the concatenation (useful for
 // masking noisy columns). The surviving values are joined with
@@ -129,17 +166,19 @@
 //
 // # Diagnostics
 //
-// All diagnostics carry [ast.Error] severity. csvimp emits one diagnostic
-// per failing row and skips that row; it never aborts the whole Extract
-// on a per-row problem.
+// Most diagnostics carry [ast.Error] severity and cause csvimp to skip
+// the offending row; DiagUnmappedCounterAccount carries [ast.Warning]
+// and the row is still emitted (with a single posting). csvimp never
+// aborts the whole Extract on a per-row problem.
 //
-//   - DiagBadDate           — date cell did not parse under [date].format.
-//   - DiagBadAmount         — an amount cell held a non-blank, unparseable value.
-//   - DiagAllBlankAmount    — every amount cell on the row was blank.
-//   - DiagMissingCurrency   — neither [currency].col cell nor [currency].default yielded a value.
-//   - DiagMissingAccount    — no account source produced a value.
-//   - DiagUnmappedAccount   — [account].col cell missing from [account.map] in strict mode.
-//   - DiagMissingColumn     — a required column was absent from the header at Extract time.
+//   - DiagBadDate                 — date cell did not parse under [date].format.
+//   - DiagBadAmount               — an amount cell held a non-blank, unparseable value.
+//   - DiagAllBlankAmount          — every amount cell on the row was blank.
+//   - DiagMissingCurrency         — neither [currency].col cell nor [currency].default yielded a value.
+//   - DiagMissingAccount          — no account source produced a value.
+//   - DiagUnmappedAccount         — [account].col cell missing from [account.map] in strict mode.
+//   - DiagUnmappedCounterAccount  — [counter_account].col cell missing from [counter_account.map] in strict mode (warning; row kept).
+//   - DiagMissingColumn           — a required column was absent from the header at Extract time.
 //
 // # Identity metadata
 //
@@ -155,7 +194,8 @@
 // # Hints
 //
 // "account" — primary account override. When non-empty it takes
-// precedence over every shape-side account resolution path.
+// precedence over every shape-side account resolution path. The
+// counter account is unaffected.
 //
 // # Concurrency
 //

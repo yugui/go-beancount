@@ -86,6 +86,18 @@ func TestIdempotency_Translations(t *testing.T) {
 	checkIdempotency(t, "translations")
 }
 
+func TestIdempotency_CounterAccount(t *testing.T) {
+	checkIdempotency(t, "counteraccount")
+}
+
+func TestIdempotency_CounterAccountMultiCol(t *testing.T) {
+	checkIdempotency(t, "counteraccount_multicol")
+}
+
+func TestIdempotency_MultiAccountMultiCol(t *testing.T) {
+	checkIdempotency(t, "multiaccount_multicol")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)

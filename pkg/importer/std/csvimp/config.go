@@ -11,18 +11,47 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer"
 )
 
+// stringList is a TOML field that accepts either a single string or an
+// array of strings; it always decodes as []string. Empty input yields a
+// nil slice.
+type stringList []string
+
+// UnmarshalTOML implements the BurntSushi/toml Unmarshaler contract.
+// It accepts a TOML string (decoded to []string{value}) or a TOML array
+// whose elements are all strings (decoded element-wise).
+func (s *stringList) UnmarshalTOML(data any) error {
+	switch v := data.(type) {
+	case string:
+		*s = stringList{v}
+	case []any:
+		out := make(stringList, 0, len(v))
+		for i, item := range v {
+			str, ok := item.(string)
+			if !ok {
+				return fmt.Errorf("element %d: expected string, got %T", i, item)
+			}
+			out = append(out, str)
+		}
+		*s = out
+	default:
+		return fmt.Errorf("expected string or array of strings, got %T", data)
+	}
+	return nil
+}
+
 // shapeConfig is the on-disk shape of a csvimp TOML configuration. It is
 // decoded by the factory and immediately compiled into a [shape].
 type shapeConfig struct {
-	Match     string          `toml:"match"`
-	Delimiter string          `toml:"delimiter"`
-	SkipLines int             `toml:"skip_lines"`
-	Date      dateConfig      `toml:"date"`
-	Account   accountConfig   `toml:"account"`
-	Payee     payeeConfig     `toml:"payee"`
-	Currency  currencyConfig  `toml:"currency"`
-	Narration narrationConfig `toml:"narration"`
-	Amount    []amountColumn  `toml:"amount"`
+	Match          string          `toml:"match"`
+	Delimiter      string          `toml:"delimiter"`
+	SkipLines      int             `toml:"skip_lines"`
+	Date           dateConfig      `toml:"date"`
+	Account        accountConfig   `toml:"account"`
+	CounterAccount accountConfig   `toml:"counter_account"`
+	Payee          payeeConfig     `toml:"payee"`
+	Currency       currencyConfig  `toml:"currency"`
+	Narration      narrationConfig `toml:"narration"`
+	Amount         []amountColumn  `toml:"amount"`
 }
 
 type dateConfig struct {
@@ -30,15 +59,21 @@ type dateConfig struct {
 	Format string `toml:"format"`
 }
 
+// accountConfig is the on-disk shape of an account-selecting block
+// (used by both [account] and [counter_account]). Col accepts either a
+// single column name or a list; Separator joins multi-column values
+// before map lookup and is ignored otherwise.
 type accountConfig struct {
-	Col     string            `toml:"col"`
-	Default string            `toml:"default"`
-	Map     map[string]string `toml:"map"`
+	Col       stringList        `toml:"col"`
+	Separator string            `toml:"separator"`
+	Default   string            `toml:"default"`
+	Map       map[string]string `toml:"map"`
 }
 
 type payeeConfig struct {
-	Col string            `toml:"col"`
-	Map map[string]string `toml:"map"`
+	Col       stringList        `toml:"col"`
+	Separator string            `toml:"separator"`
+	Map       map[string]string `toml:"map"`
 }
 
 type currencyConfig struct {
@@ -48,7 +83,7 @@ type currencyConfig struct {
 }
 
 type narrationConfig struct {
-	Cols      []string          `toml:"cols"`
+	Col       stringList        `toml:"col"`
 	Separator string            `toml:"separator"`
 	Map       map[string]string `toml:"map"`
 }
@@ -72,12 +107,24 @@ type shape struct {
 	// configured"; the column cell (when present and non-blank) is then
 	// used verbatim. A non-nil accountMap enables strict mode: a cell
 	// value absent from the map yields DiagUnmappedAccount.
-	accountCol     string
+	accountCols    []string
+	accountSep     string
 	accountDefault string
 	accountMap     map[string]string
 
-	payeeCol string
-	payeeMap map[string]string
+	// counter_account resolution. Same semantics as account, but
+	// Hints["account"] is not consulted and an empty result with no
+	// default silently suppresses the second posting (rather than
+	// emitting a diagnostic). counterAccountCols == nil && counterAccountDefault
+	// == "" means counter_account is unconfigured.
+	counterAccountCols    []string
+	counterAccountSep     string
+	counterAccountDefault string
+	counterAccountMap     map[string]string
+
+	payeeCols []string
+	payeeSep  string
+	payeeMap  map[string]string
 
 	currencyCol     string
 	currencyDefault string
@@ -123,25 +170,14 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		return nil, fmt.Errorf(`shape %q: [date].format %q must include year, month and day expressed against the layout reference date Jan 2, 2006 (for example "2006-01-02" or "02/01/2006")`, name, sc.Date.Format)
 	}
 
-	if sc.Account.Col == "" && sc.Account.Default == "" {
-		return nil, fmt.Errorf("shape %q: [account] requires col or default", name)
+	if err := validateAccountSection(name, "account", sc.Account, false); err != nil {
+		return nil, err
 	}
-	if sc.Account.Col != "" && len(sc.Account.Map) == 0 && sc.Account.Default == "" {
-		return nil, fmt.Errorf("shape %q: [account].col without map or default would leave every row unresolved", name)
-	}
-	if sc.Account.Col == "" && len(sc.Account.Map) != 0 {
-		return nil, fmt.Errorf("shape %q: [account.map] is set but [account].col is not; the map would never be consulted", name)
-	}
-	if sc.Account.Default != "" && !ast.Account(sc.Account.Default).IsValid() {
-		return nil, fmt.Errorf("shape %q: [account].default %q is not a valid beancount account", name, sc.Account.Default)
-	}
-	for k, v := range sc.Account.Map {
-		if !ast.Account(v).IsValid() {
-			return nil, fmt.Errorf("shape %q: [account.map][%q] = %q is not a valid beancount account", name, k, v)
-		}
+	if err := validateAccountSection(name, "counter_account", sc.CounterAccount, true); err != nil {
+		return nil, err
 	}
 
-	if sc.Payee.Col == "" && len(sc.Payee.Map) != 0 {
+	if len(sc.Payee.Col) == 0 && len(sc.Payee.Map) != 0 {
 		return nil, fmt.Errorf("shape %q: [payee.map] is set but [payee].col is not; the map would never be consulted", name)
 	}
 
@@ -160,8 +196,8 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		}
 	}
 
-	if len(sc.Narration.Cols) == 0 && len(sc.Narration.Map) != 0 {
-		return nil, fmt.Errorf("shape %q: [narration.map] is set but [narration].cols is empty; the map would never be consulted", name)
+	if len(sc.Narration.Col) == 0 && len(sc.Narration.Map) != 0 {
+		return nil, fmt.Errorf("shape %q: [narration.map] is set but [narration].col is empty; the map would never be consulted", name)
 	}
 
 	if len(sc.Amount) == 0 {
@@ -175,22 +211,28 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 
 	// nil == "no map configured" (see shape.accountMap doc).
 	s := &shape{
-		delimiter:       ',',
-		skipLines:       sc.SkipLines,
-		dateCol:         sc.Date.Col,
-		dateFormat:      sc.Date.Format,
-		accountCol:      sc.Account.Col,
-		accountDefault:  sc.Account.Default,
-		accountMap:      nilIfEmpty(sc.Account.Map),
-		payeeCol:        sc.Payee.Col,
-		payeeMap:        nilIfEmpty(sc.Payee.Map),
-		currencyCol:     sc.Currency.Col,
-		currencyDefault: sc.Currency.Default,
-		currencyMap:     nilIfEmpty(sc.Currency.Map),
-		narrationCols:   sc.Narration.Cols,
-		narrationSep:    sc.Narration.Separator,
-		narrationMap:    nilIfEmpty(sc.Narration.Map),
-		amounts:         sc.Amount,
+		delimiter:             ',',
+		skipLines:             sc.SkipLines,
+		dateCol:               sc.Date.Col,
+		dateFormat:            sc.Date.Format,
+		accountCols:           []string(sc.Account.Col),
+		accountSep:            sc.Account.Separator,
+		accountDefault:        sc.Account.Default,
+		accountMap:            nilIfEmpty(sc.Account.Map),
+		counterAccountCols:    []string(sc.CounterAccount.Col),
+		counterAccountSep:     sc.CounterAccount.Separator,
+		counterAccountDefault: sc.CounterAccount.Default,
+		counterAccountMap:     nilIfEmpty(sc.CounterAccount.Map),
+		payeeCols:             []string(sc.Payee.Col),
+		payeeSep:              sc.Payee.Separator,
+		payeeMap:              nilIfEmpty(sc.Payee.Map),
+		currencyCol:           sc.Currency.Col,
+		currencyDefault:       sc.Currency.Default,
+		currencyMap:           nilIfEmpty(sc.Currency.Map),
+		narrationCols:         []string(sc.Narration.Col),
+		narrationSep:          sc.Narration.Separator,
+		narrationMap:          nilIfEmpty(sc.Narration.Map),
+		amounts:               sc.Amount,
 	}
 
 	if sc.Match != "" {
@@ -208,6 +250,40 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		s.delimiter = r
 	}
 	return s, nil
+}
+
+// validateAccountSection enforces the common rules for an [account]-like
+// block (account, counter_account). When optional is true an entirely
+// empty block (no Col and no Default) is accepted without error; the
+// section is then treated as unconfigured by extract.
+func validateAccountSection(name, section string, cfg accountConfig, optional bool) error {
+	hasCol := len(cfg.Col) > 0
+	hasDefault := cfg.Default != ""
+	hasMap := len(cfg.Map) > 0
+
+	if !hasCol && !hasDefault {
+		if optional && !hasMap {
+			return nil
+		}
+		if !optional {
+			return fmt.Errorf("shape %q: [%s] requires col or default", name, section)
+		}
+	}
+	if hasCol && !hasMap && !hasDefault {
+		return fmt.Errorf("shape %q: [%s].col without map or default would leave every row unresolved", name, section)
+	}
+	if !hasCol && hasMap {
+		return fmt.Errorf("shape %q: [%s.map] is set but [%s].col is not; the map would never be consulted", name, section, section)
+	}
+	if hasDefault && !ast.Account(cfg.Default).IsValid() {
+		return fmt.Errorf("shape %q: [%s].default %q is not a valid beancount account", name, section, cfg.Default)
+	}
+	for k, v := range cfg.Map {
+		if !ast.Account(v).IsValid() {
+			return fmt.Errorf("shape %q: [%s.map][%q] = %q is not a valid beancount account", name, section, k, v)
+		}
+	}
+	return nil
 }
 
 func nilIfEmpty(m map[string]string) map[string]string {

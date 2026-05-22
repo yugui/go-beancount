@@ -60,7 +60,6 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 		dir, diag := processRow(in.Path, line, name, s, idx, row, in.Hints)
 		if diag != nil {
 			diags = append(diags, *diag)
-			continue
 		}
 		if dir != nil {
 			directives = append(directives, dir)
@@ -142,20 +141,37 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 		return nil, diag
 	}
 
+	counter, counterWarn, hasCounter := resolveCounterAccount(s, idx, row, path, line)
+
 	payee := resolvePayee(s, idx, row)
 	narration := buildNarration(s, idx, row)
+
+	postings := make([]ast.Posting, 0, 2)
+	postings = append(postings, ast.Posting{
+		Account: ast.Account(account),
+		Amount:  &ast.Amount{Number: *sum, Currency: currency},
+	})
+	if hasCounter {
+		var neg apd.Decimal
+		if _, err := apd.BaseContext.Neg(&neg, sum); err != nil {
+			d := rowDiag(DiagBadAmount, path, line,
+				fmt.Sprintf("cannot negate amount for counter posting: %v", err))
+			return nil, &d
+		}
+		postings = append(postings, ast.Posting{
+			Account: ast.Account(counter),
+			Amount:  &ast.Amount{Number: neg, Currency: currency},
+		})
+	}
 
 	tx := &ast.Transaction{
 		Date:      parsedDate,
 		Flag:      '*',
 		Payee:     payee,
 		Narration: narration,
-		Postings: []ast.Posting{{
-			Account: ast.Account(account),
-			Amount:  &ast.Amount{Number: *sum, Currency: currency},
-		}},
+		Postings:  postings,
 	}
-	return importerutil.StampMetadata(tx, rowhashKey, hash), nil
+	return importerutil.StampMetadata(tx, rowhashKey, hash), counterWarn
 }
 
 // fieldAt returns row[idx[col]] or "" when col is unknown or the row
@@ -167,6 +183,24 @@ func fieldAt(row []string, idx map[string]int, col string) string {
 		return ""
 	}
 	return row[i]
+}
+
+// joinKey trims each cell named in cols, drops blanks, and joins the
+// survivors with sep. Returns "" when every cell is blank or cols is
+// empty.
+func joinKey(cols []string, sep string, idx map[string]int, row []string) string {
+	if len(cols) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cols))
+	for _, c := range cols {
+		v := strings.TrimSpace(fieldAt(row, idx, c))
+		if v == "" {
+			continue
+		}
+		parts = append(parts, v)
+	}
+	return strings.Join(parts, sep)
 }
 
 type amountStatus int
@@ -209,26 +243,27 @@ func sumAmounts(s *shape, idx map[string]int, row []string) (*apd.Decimal, amoun
 	return sum, amountStatusOK, ""
 }
 
-// resolveAccount resolves a row's beancount account. Priority:
+// resolveAccount resolves a row's primary beancount account. Priority:
 //
 //  1. Hints["account"] when non-empty (CLI/caller override).
-//  2. [account].col cell when non-blank: with [account.map] set, a strict
-//     lookup returns the mapped value or DiagUnmappedAccount on miss; with
-//     no map, the trimmed cell value is used verbatim.
+//  2. joined [account].col cells (trimmed, blank-skipped, separator-joined)
+//     when non-empty: with [account.map] set, a strict lookup returns the
+//     mapped value or DiagUnmappedAccount on miss; with no map, the joined
+//     value is used verbatim.
 //  3. [account].default when non-empty.
 //  4. Otherwise: DiagMissingAccount.
 func resolveAccount(s *shape, idx map[string]int, row []string, hints map[string]string, path string, line int) (string, *ast.Diagnostic) {
 	if v, ok := hints["account"]; ok && v != "" {
 		return v, nil
 	}
-	if s.accountCol == "" {
+	if len(s.accountCols) == 0 {
 		return resolveAccountDefault(s, path, line)
 	}
-	cell := strings.TrimSpace(fieldAt(row, idx, s.accountCol))
-	if cell == "" {
+	key := joinKey(s.accountCols, s.accountSep, idx, row)
+	if key == "" {
 		return resolveAccountDefault(s, path, line)
 	}
-	return resolveAccountFromCell(s, cell, path, line)
+	return resolveAccountFromKey(s, key, path, line)
 }
 
 // resolveAccountDefault returns [account].default or DiagMissingAccount when
@@ -242,19 +277,62 @@ func resolveAccountDefault(s *shape, path string, line int) (string, *ast.Diagno
 	return s.accountDefault, nil
 }
 
-// resolveAccountFromCell resolves a non-blank [account].col cell through
-// [account.map]. With no map configured the cell value is returned verbatim;
+// resolveAccountFromKey resolves a non-empty joined key through
+// [account.map]. With no map configured the key is returned verbatim;
 // with a map configured a miss returns DiagUnmappedAccount.
-func resolveAccountFromCell(s *shape, cell, path string, line int) (string, *ast.Diagnostic) {
+func resolveAccountFromKey(s *shape, key, path string, line int) (string, *ast.Diagnostic) {
 	if s.accountMap == nil {
-		return cell, nil
+		return key, nil
 	}
-	if mapped, ok := s.accountMap[cell]; ok {
+	if mapped, ok := s.accountMap[key]; ok {
 		return mapped, nil
 	}
 	d := rowDiag(DiagUnmappedAccount, path, line,
-		fmt.Sprintf("account cell %q in column %q has no entry in [account.map]", cell, s.accountCol))
+		fmt.Sprintf("account key %q from columns %v has no entry in [account.map]", key, s.accountCols))
 	return "", &d
+}
+
+// resolveCounterAccount resolves a row's counter (balancing) account
+// when [counter_account] is configured. The third return reports
+// whether the caller should emit a second posting. Hints["account"] is
+// never consulted here — it overrides only the primary account.
+//
+// When [counter_account] is unconfigured (no col and no default),
+// returns ("", nil, false): no second posting is emitted.
+//
+// When configured but the joined key is empty and no default is set,
+// returns ("", nil, false): a single (unbalanced) posting remains. This
+// soft fallback lets shapes describe categorisation that may be absent
+// on some rows without dropping those rows.
+//
+// When configured with [counter_account.map] in strict mode, a
+// non-empty key missing from the map returns
+// ("", &DiagUnmappedCounterAccount with Warning severity, false): the
+// row is kept as a single (unbalanced) posting, and the warning
+// surfaces the configuration gap without dropping the transaction.
+func resolveCounterAccount(s *shape, idx map[string]int, row []string, path string, line int) (string, *ast.Diagnostic, bool) {
+	if len(s.counterAccountCols) == 0 && s.counterAccountDefault == "" {
+		return "", nil, false
+	}
+	if len(s.counterAccountCols) == 0 {
+		return s.counterAccountDefault, nil, true
+	}
+	key := joinKey(s.counterAccountCols, s.counterAccountSep, idx, row)
+	if key == "" {
+		if s.counterAccountDefault == "" {
+			return "", nil, false
+		}
+		return s.counterAccountDefault, nil, true
+	}
+	if s.counterAccountMap == nil {
+		return key, nil, true
+	}
+	if mapped, ok := s.counterAccountMap[key]; ok {
+		return mapped, nil, true
+	}
+	d := rowWarn(DiagUnmappedCounterAccount, path, line,
+		fmt.Sprintf("counter_account key %q from columns %v has no entry in [counter_account.map]", key, s.counterAccountCols))
+	return "", &d, false
 }
 
 // resolveCurrency resolves a row's currency. Priority:
@@ -281,13 +359,14 @@ func resolveCurrency(s *shape, idx map[string]int, row []string) string {
 }
 
 // resolvePayee resolves a row's payee. Returns "" when [payee].col is
-// unset or the cell is blank. Otherwise applies [payee.map] when present
-// (pass-through on miss) and returns the trimmed value.
+// unset or all cells join to a blank value. Otherwise applies
+// [payee.map] to the joined value (pass-through on miss) and returns
+// the result.
 func resolvePayee(s *shape, idx map[string]int, row []string) string {
-	if s.payeeCol == "" {
+	if len(s.payeeCols) == 0 {
 		return ""
 	}
-	v := strings.TrimSpace(fieldAt(row, idx, s.payeeCol))
+	v := joinKey(s.payeeCols, s.payeeSep, idx, row)
 	if v == "" {
 		return ""
 	}
@@ -297,7 +376,7 @@ func resolvePayee(s *shape, idx map[string]int, row []string) string {
 	return v
 }
 
-// buildNarration concatenates the trimmed values of [narration].cols with
+// buildNarration concatenates the trimmed values of [narration].col with
 // [narration].separator. When [narration.map] is set it is applied per
 // cell BEFORE concatenation: a hit replaces the cell, a miss passes the
 // value through unchanged. A mapped value of "" drops that cell from the

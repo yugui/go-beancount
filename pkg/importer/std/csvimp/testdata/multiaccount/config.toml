@@ -14,7 +14,7 @@ default = "Assets:Unknown"
 default = "USD"
 
 [narration]
-cols = ["Memo"]
+col = ["Memo"]
 
 [[amount]]
 col = "Amount"

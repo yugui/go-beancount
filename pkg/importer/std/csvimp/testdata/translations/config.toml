@@ -20,7 +20,7 @@ default = "USD"
 "$" = "USD"
 
 [narration]
-cols      = ["Desc"]
+col       = ["Desc"]
 separator = " / "
 
 [narration.map]

@@ -12,7 +12,7 @@ col = "Payee"
 default = "USD"
 
 [narration]
-cols      = ["Description", "Memo"]
+col       = ["Description", "Memo"]
 separator = " / "
 
 [[amount]]
