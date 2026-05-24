@@ -548,3 +548,130 @@ func TestCurrencyFilter(t *testing.T) {
 }
 
 func ptrAmt(a ast.Amount) *ast.Amount { return &a }
+
+func costSpec(perUnit int64, cur string) *ast.CostSpec {
+	var d apd.Decimal
+	d.SetInt64(perUnit)
+	return &ast.CostSpec{PerUnit: &d, Currency: cur}
+}
+
+func TestCostOnFlowAccountWarns(t *testing.T) {
+	postingSpan := ast.Span{Start: ast.Position{Filename: "l.beancount", Line: 42}}
+	t1 := tx(time.Date(2023, 5, 15, 0, 0, 0, 0, time.UTC), []ast.Posting{
+		{
+			Span:    postingSpan,
+			Account: "Expenses:Investments",
+			Amount:  ptrAmt(amt(100, "JPY")),
+			Cost:    costSpec(1, "JPY"),
+		},
+		{Account: "Assets:Cash", Amount: ptrAmt(amt(-100, "JPY"))},
+	})
+	cust := custom(time.Date(2023, 12, 31, 0, 0, 0, 0, time.UTC), []ast.MetaValue{
+		metaAcct("Expenses:Investments"),
+		metaAmount(amt(100, "JPY")),
+	})
+	in := api.Input{
+		Directive:  testPluginDir,
+		Directives: seqOf([]ast.Directive{t1, cust}),
+	}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []ast.Diagnostic{{
+		Code:     codeCostOnFlowAccount,
+		Span:     postingSpan,
+		Severity: ast.Warning,
+	}}
+	if diff := cmp.Diff(want, res.Diagnostics, diagCmpOpts); diff != "" {
+		t.Fatalf("diagnostics mismatch (-want +got):\n%s", diff)
+	}
+	if !strings.Contains(res.Diagnostics[0].Message, "Expenses:Investments") {
+		t.Errorf("message %q should name the offending account", res.Diagnostics[0].Message)
+	}
+}
+
+func TestCostOnFlowAccountOutOfWindowSilent(t *testing.T) {
+	t1 := tx(time.Date(2022, 12, 15, 0, 0, 0, 0, time.UTC), []ast.Posting{
+		{
+			Account: "Expenses:Investments",
+			Amount:  ptrAmt(amt(100, "JPY")),
+			Cost:    costSpec(1, "JPY"),
+		},
+		{Account: "Assets:Cash", Amount: ptrAmt(amt(-100, "JPY"))},
+	})
+	cust := custom(time.Date(2023, 12, 31, 0, 0, 0, 0, time.UTC), []ast.MetaValue{
+		metaAcct("Expenses:Investments"),
+		metaAmount(amt(0, "JPY")),
+	})
+	in := api.Input{
+		Directive:  testPluginDir,
+		Directives: seqOf([]ast.Directive{t1, cust}),
+	}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %v, want none (cost-bearing posting outside window)", res.Diagnostics)
+	}
+}
+
+func TestCostOnNonTargetAccountSilent(t *testing.T) {
+	t1 := tx(time.Date(2023, 5, 15, 0, 0, 0, 0, time.UTC), []ast.Posting{
+		{Account: "Expenses:Food", Amount: ptrAmt(amt(100, "JPY"))},
+		{
+			Account: "Assets:Brokerage",
+			Amount:  ptrAmt(amt(-100, "JPY")),
+			Cost:    costSpec(1, "JPY"),
+		},
+	})
+	cust := custom(time.Date(2023, 12, 31, 0, 0, 0, 0, time.UTC), []ast.MetaValue{
+		metaAcct("Expenses:Food"),
+		metaAmount(amt(100, "JPY")),
+	})
+	in := api.Input{
+		Directive:  testPluginDir,
+		Directives: seqOf([]ast.Directive{t1, cust}),
+	}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %v, want none (cost on non-target account)", res.Diagnostics)
+	}
+}
+
+func TestCostOnFlowAccountSumUnchanged(t *testing.T) {
+	t1 := tx(time.Date(2023, 5, 15, 0, 0, 0, 0, time.UTC), []ast.Posting{
+		{
+			Account: "Expenses:Investments",
+			Amount:  ptrAmt(amt(100, "JPY")),
+			Cost:    costSpec(1, "JPY"),
+		},
+		{Account: "Assets:Cash", Amount: ptrAmt(amt(-100, "JPY"))},
+	})
+	cust := custom(time.Date(2023, 12, 31, 0, 0, 0, 0, time.UTC), []ast.MetaValue{
+		metaAcct("Expenses:Investments"),
+		metaAmount(amt(50, "JPY")),
+	})
+	in := api.Input{
+		Directive:  testPluginDir,
+		Directives: seqOf([]ast.Directive{t1, cust}),
+	}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	codes := make(map[string]int)
+	for _, d := range res.Diagnostics {
+		codes[d.Code]++
+	}
+	if codes[codeCostOnFlowAccount] != 1 {
+		t.Errorf("want 1 cost-on-flow-account warning, got %d (diagnostics=%v)", codes[codeCostOnFlowAccount], res.Diagnostics)
+	}
+	if codes[codeMismatch] != 1 {
+		t.Errorf("want 1 mismatch error (sum is raw 100 vs expected 50), got %d (diagnostics=%v)", codes[codeMismatch], res.Diagnostics)
+	}
+}

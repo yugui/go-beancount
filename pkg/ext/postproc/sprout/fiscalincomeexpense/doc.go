@@ -54,10 +54,15 @@
 //   - "fiscal-income-expense-mismatch": actual net change differs from
 //     the expected amount by more than the (explicit or inferred)
 //     tolerance.
+//   - "fiscal-income-expense-cost-on-flow-account" (Warning): a summed
+//     posting carries a cost annotation. Lots/costs are uncommon on
+//     income/expense (flow) accounts; the cost is ignored when computing
+//     the actual, which can diverge from booking-aware realization.
+//     Anchored at the offending posting's Span.
 //
-// All diagnostics are anchored at the Custom directive's Span, falling
-// back to the triggering plugin directive's Span when the Custom has
-// none.
+// Configuration, parse, and mismatch diagnostics are anchored at the
+// Custom directive's Span, falling back to the triggering plugin
+// directive's Span when the Custom has none.
 //
 // # Deviations
 //
@@ -66,11 +71,12 @@
 // currency), with no booking-aware cost or price reduction. This
 // agrees with Python beancount's `realization.realize` output for
 // cost-free postings. Income and Expense accounts almost never carry
-// cost annotations in practice, so the practical impact of this
-// divergence is low; ledgers that nevertheless attach costs to those
-// accounts may see actuals that differ from upstream beansprout's
-// realization-driven sum. Porting full booking-aware realization is
-// out of scope for this plugin.
+// cost annotations in practice; ledgers that nevertheless attach costs
+// to those accounts may see actuals that differ from upstream
+// beansprout's realization-driven sum. To surface that divergence the
+// plugin emits a "fiscal-income-expense-cost-on-flow-account" Warning
+// for each summed posting that carries a cost annotation. Porting
+// full booking-aware realization is out of scope for this plugin.
 //
 // # Usage
 //
