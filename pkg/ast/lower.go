@@ -371,7 +371,7 @@ func (l *lowerer) tokenToMetaValue(n *syntax.Node, t *syntax.Token) MetaValue {
 	case syntax.LINK:
 		return MetaValue{Kind: MetaLink, String: t.Raw}
 	case syntax.NUMBER:
-		num, err := parseNumber(t)
+		num, err := parseNumberToken(t)
 		if err != nil {
 			l.addDiagnostic(n, fmt.Sprintf("invalid metadata number %q: %v", t.Raw, err))
 			return MetaValue{Kind: MetaString, String: t.Raw}
@@ -694,103 +694,25 @@ func (l *lowerer) lowerAmountOptionalCurrency(n *syntax.Node) (Amount, bool) {
 // declared (or inferred) tolerance.
 var arithCtx = apd.BaseContext.WithPrecision(34)
 
-// evalExpr evaluates an ArithExprNode into an apd.Decimal.
+// evalExpr evaluates an ArithExprNode into an apd.Decimal, recording any
+// diagnostic against the lowerer's file with Line/Column rehydrated from
+// the source byte offsets.
 func (l *lowerer) evalExpr(n *syntax.Node) (apd.Decimal, bool) {
-	var nodes []*syntax.Node
-	var tokens []*syntax.Token
-	for _, c := range n.Children {
-		if c.Node != nil {
-			nodes = append(nodes, c.Node)
-		}
-		if c.Token != nil {
-			tokens = append(tokens, c.Token)
-		}
+	d, diag := evalArithExpr(n)
+	if diag != nil {
+		l.file.Diagnostics = append(l.file.Diagnostics, l.rebaseDiagnostic(*diag))
+		return apd.Decimal{}, false
 	}
-
-	// Case 1: single NUMBER token (primary)
-	if len(nodes) == 0 && len(tokens) == 1 && tokens[0].Kind == syntax.NUMBER {
-		d, err := parseNumber(tokens[0])
-		if err != nil {
-			l.addDiagnostic(n, err.Error())
-			return apd.Decimal{}, false
-		}
-		return d, true
-	}
-
-	// Case 2: parenthesized (LPAREN expr RPAREN)
-	if len(nodes) == 1 && len(tokens) == 2 && tokens[0].Kind == syntax.LPAREN {
-		return l.evalExpr(nodes[0])
-	}
-
-	// Case 3: unary prefix (PLUS/MINUS + expr)
-	if len(nodes) == 1 && len(tokens) == 1 {
-		op := tokens[0]
-		if op.Kind == syntax.PLUS || op.Kind == syntax.MINUS {
-			val, ok := l.evalExpr(nodes[0])
-			if !ok {
-				return apd.Decimal{}, false
-			}
-			if op.Kind == syntax.MINUS {
-				val.Negative = !val.Negative
-			}
-			return val, true
-		}
-	}
-
-	// Case 4: binary (expr op expr)
-	if len(nodes) == 2 && len(tokens) == 1 {
-		op := tokens[0]
-		left, ok := l.evalExpr(nodes[0])
-		if !ok {
-			return apd.Decimal{}, false
-		}
-		right, ok := l.evalExpr(nodes[1])
-		if !ok {
-			return apd.Decimal{}, false
-		}
-		var result apd.Decimal
-		var err error
-		// The first return value (apd.Condition) carries informational flags
-		// such as Rounded/Inexact that fire on representational truncation at
-		// the configured precision; those are not failures, so we discard
-		// them and rely solely on err, which is non-nil only when one of the
-		// trapped conditions (overflow, underflow, subnormal, division-by-
-		// zero, division-undefined, division-impossible, invalid-operation)
-		// actually occurred. See the arithCtx comment above for rationale.
-		switch op.Kind {
-		case syntax.PLUS:
-			_, err = arithCtx.Add(&result, &left, &right)
-		case syntax.MINUS:
-			_, err = arithCtx.Sub(&result, &left, &right)
-		case syntax.STAR:
-			_, err = arithCtx.Mul(&result, &left, &right)
-		case syntax.SLASH:
-			_, err = arithCtx.Quo(&result, &left, &right)
-		default:
-			l.addDiagnostic(n, fmt.Sprintf("unexpected operator %s in expression", op.Kind))
-			return apd.Decimal{}, false
-		}
-		if err != nil {
-			l.addDiagnostic(n, fmt.Sprintf("arithmetic error: %v", err))
-			return apd.Decimal{}, false
-		}
-		return result, true
-	}
-
-	l.addDiagnostic(n, "malformed arithmetic expression")
-	return apd.Decimal{}, false
+	return d, true
 }
 
-// parseNumber parses a NUMBER token into apd.Decimal.
-// NUMBER tokens may contain commas (e.g., "1,234.56").
-func parseNumber(t *syntax.Token) (apd.Decimal, error) {
-	s := strings.ReplaceAll(t.Raw, ",", "")
-	var d apd.Decimal
-	_, _, err := d.SetString(s)
-	if err != nil {
-		return apd.Decimal{}, fmt.Errorf("invalid number %q: %w", t.Raw, err)
-	}
-	return d, nil
+// rebaseDiagnostic upgrades an offset-only diagnostic produced by the
+// shared helpers (evalArithExpr / parseNumberToken) into one carrying
+// the lowerer's filename and Line/Column derived from the source text.
+func (l *lowerer) rebaseDiagnostic(d Diagnostic) Diagnostic {
+	d.Span.Start = l.posAt(d.Span.Start.Offset)
+	d.Span.End = l.posAt(d.Span.End.Offset)
+	return d
 }
 
 // lowerPad converts a PadDirective CST node into a Pad AST directive.

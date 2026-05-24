@@ -45,7 +45,7 @@ func (t *Transaction) Clone() *Transaction {
 		return nil
 	}
 	out := *t
-	out.Meta = cloneMeta(t.Meta)
+	out.Meta = CloneMeta(t.Meta)
 	if t.Postings != nil {
 		out.Postings = make([]Posting, len(t.Postings))
 		for i := range t.Postings {
@@ -61,7 +61,7 @@ func (t *Transaction) Clone() *Transaction {
 // the original. Span, Flag, and Account are copied by value.
 func (p Posting) Clone() Posting {
 	out := p
-	out.Meta = cloneMeta(p.Meta)
+	out.Meta = CloneMeta(p.Meta)
 	out.Amount = p.Amount.Clone()
 	out.Cost = cloneCostHolder(p.Cost)
 	out.Price = p.Price.Clone()
@@ -163,10 +163,10 @@ func (b *Balance) Clone() *Balance {
 	return &out
 }
 
-// cloneMeta returns a fresh Metadata whose Props map is a shallow copy of
+// CloneMeta returns a fresh Metadata whose Props map is a shallow copy of
 // src.Props. The values themselves (MetaValue structs) are copied by value;
 // the map is a new allocation so mutations do not alias the original.
-func cloneMeta(src Metadata) Metadata {
+func CloneMeta(src Metadata) Metadata {
 	if src.Props == nil {
 		return Metadata{}
 	}

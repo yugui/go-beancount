@@ -56,6 +56,22 @@ type Input struct {
 	// Directive is the *ast.Plugin directive that triggered this call,
 	// provided for source-location-aware error reporting.
 	Directive *ast.Plugin
+
+	// SourceFilename is the absolute or repository-relative path of the
+	// root beancount source file that produced the ledger under
+	// transformation. It is the filename of the first entry of
+	// [ast.Ledger.Files] — the file the user named when invoking
+	// [ast.LoadFile] (or the equivalent root for [ast.Load] /
+	// [ast.LoadReader]). Plugins use it as the anchor directory for
+	// path-bearing config (e.g. YAML side-files referenced relatively
+	// from the ledger).
+	//
+	// Empty when the ledger was constructed programmatically without an
+	// associated source file (i.e. len(ledger.Files) == 0) or when the
+	// runner is invoked on a hand-built &Ledger{} with no Files slice.
+	// Plugins that require a non-empty value must report a Diagnostic
+	// rather than returning an error.
+	SourceFilename string
 }
 
 // Result is what a [Plugin] returns to the runner. Diagnostics never

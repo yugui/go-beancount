@@ -41,6 +41,11 @@ func Apply(ctx context.Context, ledger *ast.Ledger) error {
 		return nil
 	}
 
+	var sourceFilename string
+	if len(ledger.Files) > 0 && ledger.Files[0] != nil {
+		sourceFilename = ledger.Files[0].Filename
+	}
+
 	for _, pd := range plugins {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -57,10 +62,11 @@ func Apply(ctx context.Context, ledger *ast.Ledger) error {
 		}
 
 		result, err := p.Apply(ctx, api.Input{
-			Directives: ledger.All(),
-			Options:    ledger.Options,
-			Config:     pd.Config,
-			Directive:  pd,
+			Directives:     ledger.All(),
+			Options:        ledger.Options,
+			Config:         pd.Config,
+			Directive:      pd,
+			SourceFilename: sourceFilename,
 		})
 		if err != nil {
 			return fmt.Errorf("plugin %q: %w", pd.Name, err)

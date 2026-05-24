@@ -23,11 +23,14 @@ import (
 	"github.com/yugui/go-beancount/pkg/loader"
 
 	// Side-effect: register every plugin shipped under
-	// pkg/ext/postproc/std so plugin directives that name the upstream
-	// Python module path (e.g. "beancount.plugins.check_closing")
-	// resolve through the postproc registry. Subset selection by
-	// blank-importing individual subpackages remains available to
-	// callers that build their own loader frontend.
+	// pkg/ext/postproc/std and pkg/ext/postproc/sprout so plugin
+	// directives that name the upstream Python module path (e.g.
+	// "beancount.plugins.check_closing" or
+	// "beansprout.plugins.check_metadata") resolve through the
+	// postproc registry. Subset selection by blank-importing
+	// individual subpackages remains available to callers that build
+	// their own loader frontend.
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout"
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std"
 )
 
