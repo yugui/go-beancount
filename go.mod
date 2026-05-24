@@ -9,6 +9,7 @@ require (
 	github.com/google/go-cmp v0.7.0
 	github.com/mattn/go-runewidth v0.0.23
 	golang.org/x/text v0.36.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
