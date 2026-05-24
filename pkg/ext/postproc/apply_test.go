@@ -387,6 +387,44 @@ func TestApply_PluginErrorHalts(t *testing.T) {
 	}
 }
 
+func TestApply_SourceFilenamePopulated(t *testing.T) {
+	fake := &fakePlugin{name: "example.com/fake/src"}
+	registerFake(t, fake)
+
+	l := newLedger(&ast.Plugin{Name: "example.com/fake/src"})
+	l.Files = []*ast.File{{Filename: "/tmp/main.beancount"}}
+
+	if err := Apply(context.Background(), l); err != nil {
+		t.Fatalf("Apply returned unexpected error: %v", err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("Apply called plugin %d times, want 1", len(fake.calls))
+	}
+	if got := fake.calls[0].SourceFilename; got != "/tmp/main.beancount" {
+		t.Errorf("SourceFilename = %q, want %q", got, "/tmp/main.beancount")
+	}
+}
+
+func TestApply_SourceFilenameEmptyWhenNoFiles(t *testing.T) {
+	fake := &fakePlugin{name: "example.com/fake/nosrc"}
+	registerFake(t, fake)
+
+	l := newLedger(&ast.Plugin{Name: "example.com/fake/nosrc"})
+
+	if err := Apply(context.Background(), l); err != nil {
+		t.Fatalf("Apply returned unexpected error: %v", err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("Apply called plugin %d times, want 1", len(fake.calls))
+	}
+	if got := fake.calls[0].SourceFilename; got != "" {
+		t.Errorf("SourceFilename = %q, want empty", got)
+	}
+	if len(l.Diagnostics) != 0 {
+		t.Errorf("ledger.Diagnostics = %v, want empty", l.Diagnostics)
+	}
+}
+
 func TestApply_OptionsSnapshotLastWins(t *testing.T) {
 	fake := &fakePlugin{name: "example.com/fake/opts"}
 	registerFake(t, fake)

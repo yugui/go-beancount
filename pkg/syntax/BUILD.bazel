@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "syntax",
     srcs = [
+        "balance_expr.go",
         "error.go",
         "file.go",
         "node.go",
@@ -20,6 +21,7 @@ go_library(
 go_test(
     name = "syntax_test",
     srcs = [
+        "balance_expr_test.go",
         "node_kind_test.go",
         "node_test.go",
         "parser_integration_test.go",
