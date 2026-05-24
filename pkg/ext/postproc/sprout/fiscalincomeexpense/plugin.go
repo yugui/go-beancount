@@ -13,10 +13,11 @@ import (
 )
 
 const (
-	customTypeName    = "fiscal_income_expense"
-	codeInvalidConfig = "fiscal-income-expense-invalid-config"
-	codeParse         = "fiscal-income-expense-parse"
-	codeMismatch      = "fiscal-income-expense-mismatch"
+	customTypeName        = "fiscal_income_expense"
+	codeInvalidConfig     = "fiscal-income-expense-invalid-config"
+	codeParse             = "fiscal-income-expense-parse"
+	codeMismatch          = "fiscal-income-expense-mismatch"
+	codeCostOnFlowAccount = "fiscal-income-expense-cost-on-flow-account"
 )
 
 // half is the multiplier applied to the per-currency exponent scale to
@@ -94,29 +95,29 @@ func validate(cust *ast.Custom, all []ast.Directive, plug *ast.Plugin) []ast.Dia
 		return diags
 	}
 
-	actual := computeNetChange(all, check.account, check.begin, check.end, check.currency)
+	actual, diags := computeNetChange(all, check.account, check.begin, check.end, check.currency)
 
 	diff := new(apd.Decimal)
 	expected := check.expected
 	if _, err := apd.BaseContext.Sub(diff, &actual, &expected); err != nil {
-		return []ast.Diagnostic{{
+		return append(diags, ast.Diagnostic{
 			Code:     codeMismatch,
 			Span:     span,
 			Severity: ast.Error,
 			Message:  fmt.Sprintf("fiscal_income_expense: arithmetic error subtracting expected from actual: %v", err),
-		}}
+		})
 	}
 	absDiff := new(apd.Decimal)
 	if _, err := apd.BaseContext.Abs(absDiff, diff); err != nil {
-		return []ast.Diagnostic{{
+		return append(diags, ast.Diagnostic{
 			Code:     codeMismatch,
 			Span:     span,
 			Severity: ast.Error,
 			Message:  fmt.Sprintf("fiscal_income_expense: arithmetic error taking |diff|: %v", err),
-		}}
+		})
 	}
 	if absDiff.Cmp(&check.tolerance) > 0 {
-		return []ast.Diagnostic{{
+		return append(diags, ast.Diagnostic{
 			Code:     codeMismatch,
 			Span:     span,
 			Severity: ast.Error,
@@ -130,9 +131,9 @@ func validate(cust *ast.Custom, all []ast.Directive, plug *ast.Plugin) []ast.Dia
 				actual.String(), check.currency,
 				diff.String(),
 			),
-		}}
+		})
 	}
-	return nil
+	return diags
 }
 
 // parseCheck unpacks a Custom directive's Values into a fiscalCheck.
@@ -276,9 +277,13 @@ func inferTolerance(d *apd.Decimal) apd.Decimal {
 
 // computeNetChange sums every Transaction posting against account or
 // any sub-account, in the given currency, whose date falls in
-// [begin, end] inclusive.
-func computeNetChange(all []ast.Directive, account ast.Account, begin, end time.Time, currency string) apd.Decimal {
+// [begin, end] inclusive. It additionally emits a Warning diagnostic
+// for each summed posting that carries a cost annotation: lots are
+// uncommon on income/expense (flow) accounts and the cost is ignored
+// when summing, which may diverge from booking-aware realization.
+func computeNetChange(all []ast.Directive, account ast.Account, begin, end time.Time, currency string) (apd.Decimal, []ast.Diagnostic) {
 	var sum apd.Decimal
+	var diags []ast.Diagnostic
 	for _, d := range all {
 		tx, ok := d.(*ast.Transaction)
 		if !ok {
@@ -298,11 +303,22 @@ func computeNetChange(all []ast.Directive, account ast.Account, begin, end time.
 			if !account.Covers(p.Account) {
 				continue
 			}
+			if p.Cost != nil {
+				diags = append(diags, ast.Diagnostic{
+					Code:     codeCostOnFlowAccount,
+					Span:     p.Span,
+					Severity: ast.Warning,
+					Message: fmt.Sprintf(
+						"fiscal_income_expense: cost annotation on posting to %s is ignored; lots are unusual on income/expense accounts and the raw amount is summed instead",
+						p.Account,
+					),
+				})
+			}
 			num := p.Amount.Number
 			_, _ = apd.BaseContext.Add(&sum, &sum, &num)
 		}
 	}
-	return sum
+	return sum, diags
 }
 
 // spanFor returns the Custom's own span, falling back to the triggering
