@@ -151,6 +151,263 @@ caught here before user observation.
 
 **Commit subject:** `add sprout postproc umbrella; expose balance-expr public API`
 
+### Detailed Design
+
+#### Contract
+
+##### 1. `api.Input.SourceFilename`
+
+Add to `pkg/ext/postproc/api/plugin.go`, immediately after the `Directive *ast.Plugin` field (i.e. last field of `Input`):
+
+```go
+// SourceFilename is the absolute or repository-relative path of the
+// root beancount source file that produced the ledger under
+// transformation. It is the filename of the first entry of
+// [ast.Ledger.Files] — the file the user named when invoking
+// [ast.LoadFile] (or the equivalent root for [ast.Load] /
+// [ast.LoadReader]). Plugins use it as the anchor directory for
+// path-bearing config (e.g. YAML side-files referenced relatively
+// from the ledger).
+//
+// Empty when the ledger was constructed programmatically without an
+// associated source file (i.e. len(ledger.Files) == 0) or when the
+// runner is invoked on a hand-built &Ledger{} with no Files slice.
+// Plugins that require a non-empty value must report a Diagnostic
+// rather than returning an error.
+SourceFilename string
+```
+
+Runner population in `pkg/ext/postproc/apply.go`, computed once per `Apply` call (not per plugin):
+
+```go
+var sourceFilename string
+if len(ledger.Files) > 0 && ledger.Files[0] != nil {
+    sourceFilename = ledger.Files[0].Filename
+}
+```
+
+Behaviour: `len(ledger.Files) == 0` → empty string. `ledger.Files[0] == nil` (defensive) → empty string. Value computed once before the loop; later `ReplaceAll` does not change it (consistent with how `Options` snapshot is handled). No new error path — `Apply` retains its existing return contract.
+
+##### 2. `ast.ParseAmountExpression` and `ast.ParseBalanceAmount`
+
+New file `pkg/ast/balance_expr.go`:
+
+```go
+// ParseAmountExpression parses a single beancount amount expression of
+// the form `<arith-expr> <CURRENCY>` (e.g. "100 USD", "1,000 + 500 USD",
+// "(100+200)*1.05 USD"). It is the public entry point for callers that
+// want to consume amount text outside the directive grammar — most
+// notably postproc plugins whose config or Custom directive bodies
+// carry user-authored amount strings.
+//
+// On success the returned Diagnostics slice is empty; on failure the
+// returned Amount is the zero value and Diagnostics carry stable codes.
+// Diagnostic Spans are anchored at byte offsets within s (Start.Filename
+// empty, Line and Column zero); the caller rebases them onto the
+// enclosing CST/AST node before surfacing them on the ledger.
+//
+// Diagnostic codes:
+//   - "amount-expr-parse"        underlying syntax parse failure
+//   - "amount-expr-eval"         arithmetic evaluation failure (divide by zero, overflow)
+//   - "amount-missing-currency"  no CURRENCY token after the expression
+//   - "amount-trailing-input"    unconsumed tokens after the currency
+func ParseAmountExpression(s string) (Amount, []Diagnostic)
+
+// ParseBalanceAmount parses a balance directive body of the form
+// `<arith-expr> [~ <arith-expr>] <CURRENCY>`. Tolerance is non-nil iff
+// the input contained a `~ <expr>` clause, in which case the tolerance
+// shares Amount.Currency (it has no independent currency in beancount
+// syntax).
+//
+// Adds the diagnostic code:
+//   - "balance-tolerance-eval"   tolerance expression failed to evaluate
+func ParseBalanceAmount(s string) (Amount, *apd.Decimal, []Diagnostic)
+```
+
+Error semantics (locked):
+- All ledger-content failures (bad syntax, divide-by-zero, missing currency, trailing garbage, invalid number) are reported as Diagnostics. The functions never panic on user input and never return an `error`.
+- Multiple diagnostics may be returned for one call.
+- An empty or whitespace-only input string yields exactly one Diagnostic with code `"amount-expr-parse"` and message `"empty amount expression"`.
+- `Diagnostic.Span` is `{Start:{Offset: N}, End:{Offset: M}}` where N and M are byte offsets within s. `Filename`, `Line`, and `Column` are zero — caller rebases.
+
+##### 3. `pkg/syntax` thin entry points
+
+Add to `pkg/syntax/balance_expr.go`:
+
+```go
+// ParseBalanceAmount parses src as a balance directive body of the form
+//   <arith-expr> [~ <arith-expr>] <CURRENCY>
+// returning the resulting BalanceAmountNode subtree and any parse errors.
+// The returned Node is never nil; trailing input is reported as an error
+// and consumed into the node.
+func ParseBalanceAmount(src string) (*Node, []Error)
+
+// ParseAmountExpression parses src as a single amount of the form
+//   <arith-expr> <CURRENCY>
+// returning an AmountNode subtree and any parse errors.
+func ParseAmountExpression(src string) (*Node, []Error)
+```
+
+Both wrap a single private helper that constructs the `parser` with a fresh scanner over `src`, calls `p.advance()` once, invokes `p.parseBalanceAmount()` (or `p.parseAmount()`), then verifies `p.peek() == EOF` and records a trailing-input error otherwise. The existing private productions are unchanged.
+
+##### 4. Stable diagnostic codes (kebab-case)
+
+| Code | Trigger |
+|---|---|
+| `amount-expr-parse` | syntax error from `pkg/syntax` (any `Error` not otherwise classified) |
+| `amount-expr-eval` | apd arithmetic trap on the main expression |
+| `amount-missing-currency` | no CURRENCY token where one was required |
+| `amount-trailing-input` | unconsumed tokens after the directive body completed |
+| `balance-tolerance-eval` | apd arithmetic trap on the tolerance expression |
+
+`amount-missing-currency` is detected at the ast-layer wrapper (`AmountNode.FindToken(CURRENCY) == nil`) rather than substring-matching the syntax error message; the syntax layer's "expected CURRENCY, got X" error is then suppressed for that exact offset to avoid duplicate diagnostics (mirrors `lowerer.hasParserErrorIn`).
+
+##### 5. `pkg/ext/postproc/sprout/` umbrella
+
+`pkg/ext/postproc/sprout/doc.go` — only file in directory at end of Step 1: `package sprout` with godoc adapted from `std/doc.go`. **No blank imports during Step 1.** The file exists so `cmd/beancheck` has a real package to import; Wave 2 lights up the contents.
+
+##### 6. `cmd/beancheck` activation
+
+`cmd/beancheck/main.go` gains a second side-effect import next to the existing `std` import:
+
+```go
+_ "github.com/yugui/go-beancount/pkg/ext/postproc/std"
+_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout"
+```
+
+One-line addition to the comment block explaining the umbrella covers both. No new tests required at this step (umbrella has no plugins to verify).
+
+#### Suggested Internals
+
+##### Shared `evalArithExpr` / `parseNumberToken`
+
+Recommendation: **option (a) — extract as package-level free functions in `pkg/ast`** (e.g. `evalArithExpr(n *syntax.Node) (apd.Decimal, *Diagnostic)` and `parseNumberToken(t *syntax.Token) (apd.Decimal, error)`), and update `lowerer.evalExpr` to delegate.
+
+```go
+// in balance_expr.go
+func evalArithExpr(n *syntax.Node) (apd.Decimal, *Diagnostic) { /* port of lowerer.evalExpr without the *lowerer receiver */ }
+func parseNumberToken(t *syntax.Token) (apd.Decimal, error)   { /* identical body to current parseNumber */ }
+
+// in lower.go
+func (l *lowerer) evalExpr(n *syntax.Node) (apd.Decimal, bool) {
+    d, diag := evalArithExpr(n)
+    if diag != nil {
+        l.file.Diagnostics = append(l.file.Diagnostics, l.rebaseDiagnostic(*diag))
+        return apd.Decimal{}, false
+    }
+    return d, true
+}
+```
+
+Rationale: `evalArithExpr` produces diagnostics anchored at the CST node's byte offsets — exactly what the public string-input API exposes; the lowerer needs the same offsets rehydrated through `posAt` into Line/Column under `l.filename`. No new package needed. Option (b) (throwaway lowerer) rejected because it would require fake `filename`/`source`/`lineStarts`. Option (c) (internal subpackage) rejected as overengineering for two helpers.
+
+The `arithCtx` constant stays where it is in `lower.go` (or migrates to `balance_expr.go`; either works, just one location).
+
+##### `syntax.ParseBalanceAmount` wrapping
+
+The existing private `parseBalanceAmount` is already a clean unit. The public wrapper only needs:
+
+```go
+func ParseBalanceAmount(src string) (*Node, []Error) {
+    p := &parser{scanner: newScanner(src), src: src}
+    p.advance()
+    node := p.parseBalanceAmount()
+    if p.peek() != EOF {
+        p.errorf("unexpected trailing input")
+        for p.peek() != EOF {
+            tok := p.advance()
+            node.AddToken(&tok)
+        }
+    }
+    return node, p.errors
+}
+```
+
+No new top-level production needed. `parseAmount` gets identical treatment for `ParseAmountExpression`. The `isAtNextLine()` check inside `parseBalanceAmount` keeps working: a freestanding amount string has no newlines, so the production runs end-to-end on one logical line.
+
+##### File layout
+
+- `pkg/ast/balance_expr.go` — public `ParseAmountExpression`, `ParseBalanceAmount`, and the extracted free helpers `evalArithExpr`, `parseNumberToken`.
+- `pkg/ast/balance_expr_test.go` — table-driven coverage of both public functions plus targeted tests for diagnostic codes and span offsets.
+- `pkg/ast/lower.go` — `evalExpr` / `parseNumber` shrink to thin delegators; existing `arithCtx` stays in `lower.go`.
+- `pkg/syntax/balance_expr.go` — public `ParseBalanceAmount` and `ParseAmountExpression` wrappers (kept separate from `parser.go` so the public surface is greppable).
+- `pkg/syntax/balance_expr_test.go` — CST-level smoke tests for the two wrappers.
+- `pkg/ext/postproc/sprout/doc.go` — umbrella.
+- `pkg/ext/postproc/sprout/BUILD.bazel` — hand-written, identical shape to `std/BUILD.bazel` minus the deps list.
+
+##### BUILD.bazel changes
+
+- `pkg/ast/BUILD.bazel`: add `"balance_expr.go"` to `go_library.srcs` (alphabetical: between `ast.go` and `booking.go`); add `"balance_expr_test.go"` to `go_test.srcs`. No new deps.
+- `pkg/syntax/BUILD.bazel`: add `"balance_expr.go"` to `go_library.srcs` (between `error.go` and `file.go`); add `"balance_expr_test.go"` to `go_test.srcs`. No new deps.
+- `pkg/ext/postproc/sprout/BUILD.bazel` (new): `go_library` named `sprout`, `srcs = ["doc.go"]`, empty deps.
+- `cmd/beancheck/BUILD.bazel`: add `"//pkg/ext/postproc/sprout"` to both `go_binary.deps` and `go_test.deps` (alphabetical, after the existing `std` entry).
+- `pkg/ext/postproc/BUILD.bazel`: no source changes. If `apply_test.go` grows additional deps for the new test, update accordingly (likely no change).
+
+##### Diagnostic-code dispatch from syntax errors
+
+In `ast.ParseBalanceAmount`:
+1. Call `syntax.ParseBalanceAmount(s)`.
+2. Validate structural expectations (currency token present, second `ArithExprNode` after TILDE if any).
+3. For each `syntax.Error`, classify: if `Pos` falls inside a byte range where a structural failure was already detected (missing currency, trailing input), emit the structural code only — suppress the generic one (mirrors `lowerer.hasParserErrorIn`). Otherwise emit `amount-expr-parse`.
+4. Call `evalArithExpr` on the main `ArithExprNode`; stamp `amount-expr-eval` on any returned diagnostic.
+5. Call `evalArithExpr` on the tolerance `ArithExprNode` if present; stamp `balance-tolerance-eval`.
+
+`evalArithExpr` produces a `*Diagnostic` with empty `Code`; the caller stamps the code based on which expression it was evaluating. Keeps `evalArithExpr` agnostic to its calling context.
+
+#### Verification Plan (Step 1)
+
+**`pkg/ast/balance_expr_test.go`** — table-driven for `ParseBalanceAmount`:
+
+| Input | Expected Amount | Expected Tolerance | Expected diag codes |
+|---|---|---|---|
+| `"100 USD"` | `{100, "USD"}` | nil | none |
+| `"1,000 + 500 USD"` | `{1500, "USD"}` | nil | none |
+| `"(100+200)*1.05 USD"` | `{315, "USD"}` | nil | none |
+| `"319.020 ~ 0.002 USD"` | `{319.020, "USD"}` | `0.002` | none |
+| `"-100 USD"` | `{-100, "USD"}` | nil | none |
+| `"100 / 0 USD"` | zero | nil | `["amount-expr-eval"]` |
+| `"100"` | zero | nil | `["amount-missing-currency"]` |
+| `"100 USD trailing"` | as above | nil | `["amount-trailing-input"]` |
+| `"100 USD EUR"` | as above | nil | `["amount-trailing-input"]` |
+| `"100 + USD"` | zero | nil | `["amount-expr-parse"]` |
+| `""` | zero | nil | `["amount-expr-parse"]` |
+| `"100 ~ 0/0 USD"` | zero | nil | `["balance-tolerance-eval"]` |
+
+For each row also assert `Diagnostic.Severity == ast.Error` and `Diagnostic.Span.Start.Offset` is within `len(input)`. Use `apd.Decimal.Cmp` for numeric comparison.
+
+**`ParseAmountExpression`** parallel table (subset, no tolerance):
+
+| Input | Expected | Expected diag codes |
+|---|---|---|
+| `"100 USD"` | `{100, "USD"}` | none |
+| `"1,234.56 EUR"` | `{1234.56, "EUR"}` | none |
+| `"100 ~ 1 USD"` | zero | `["amount-trailing-input"]` (tolerance form intentionally rejected) |
+| `"100"` | zero | `["amount-missing-currency"]` |
+| `"abc USD"` | zero | `["amount-expr-parse"]` |
+
+**`pkg/syntax/balance_expr_test.go`** — CST-level smoke:
+- `"100 USD"` round-trips through the wrapper: returned `*Node.Kind == BalanceAmountNode`, contains one `ArithExprNode` and one `CURRENCY` token, `len(errors) == 0`.
+- `"100 USD junk"` returns the same node shape plus one `Error` with `Pos` at the offset of `j`.
+
+**`pkg/ext/postproc/apply_test.go`** — new tests:
+- `TestApply_SourceFilenamePopulated`: construct a ledger with `Files: []*ast.File{{Filename: "/tmp/main.beancount"}}` + a plugin directive; register a fake plugin that captures `api.Input.SourceFilename`; assert captured value == `/tmp/main.beancount`.
+- `TestApply_SourceFilenameEmptyWhenNoFiles`: ledger with empty `Files`; captured value == `""`; no diagnostic.
+
+**`pkg/ext/postproc/api/plugin_test.go`** — one-line check that `api.Input{}.SourceFilename == ""` (zero-value contract).
+
+**Build verification:**
+- `bazel build //pkg/ast/... //pkg/syntax/... //pkg/ext/postproc/... //cmd/beancheck/...` passes.
+- `bazel test //pkg/ast/... //pkg/syntax/... //pkg/ext/postproc/... //cmd/beancheck/...` passes (existing `lower_test.go` evalExpr-via-balance-directive cases must remain green — delegation must be byte-identical).
+- `bazel test //...` shows no regression.
+
+#### Cross-Step Coupling
+
+- **Wave 1 / `infermetadata`** depends on `api.Input.SourceFilename` being non-empty for YAML side-file resolution.
+- **Wave 1 / `comprehensivebalance`** depends on `ast.ParseBalanceAmount` to parse each non-empty line of a Custom directive body.
+- **Wave 1 / `fiscalincomeexpense`** depends on `ast.ParseBalanceAmount` (and optionally `ast.ParseAmountExpression` for the string-amount path that does not accept tolerance).
+- **Wave 2** uses no new types from this step; only wires existing umbrella deps.
+- No coupling to other ports/phases — additions are purely additive (new field defaults to zero, lowerer.evalExpr delegation is byte-identical, covered by existing `lower_test.go`).
+
 ### Step 2 — Wave 1: port 10 plugins (parallel execution)
 
 **Functional requirements:** each of the 10 beansprout plugins ported
