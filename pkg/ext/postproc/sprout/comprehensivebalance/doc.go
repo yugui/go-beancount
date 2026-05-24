@@ -1,8 +1,10 @@
 // Package comprehensivebalance is the Go port of beansprout's
 // comprehensive_balance plugin — it expands a Custom directive carrying
 // an account and a multi-line list of balance assertions into a set of
-// standard Balance directives, and synthesizes zero-balance assertions
-// for any commodity the account holds that the user did not list.
+// standard Balance directives covering every commodity the account
+// could plausibly hold at the Custom's position. Evaluation of those
+// Balance directives, including any pad bridging, is delegated to the
+// downstream pad→balance pipeline in [pkg/loader] postBuiltins.
 //
 // Upstream source:
 //
@@ -25,15 +27,35 @@
 // carry byte offsets into the line; the plugin re-anchors them onto the
 // enclosing Custom's Span before surfacing.
 //
-// For every parsed assertion the plugin emits a synthetic [ast.Balance]
-// directive at the Custom's date and account, copying the parsed amount
-// and tolerance. In addition, for every commodity the account currently
-// holds (computed by summing every preceding [ast.Transaction] posting
-// on the account in directive-sequence order, up to but not past the
-// Custom directive itself) that the body did NOT list, the plugin
-// emits a zero-balance assertion of that commodity. Commodities whose
-// current balance is zero are not listed and require no assertion. The
-// matching Custom is removed from the output.
+// The set of commodities the plugin asserts against — the "universe"
+// for the (account, position) pair — is the union of:
+//
+//   - currencies that appeared on the account in any [ast.Transaction]
+//     posting strictly before the Custom in source order,
+//   - currencies that appeared on the account in any [ast.Balance]
+//     directive strictly before the Custom in source order,
+//   - currencies listed in the Custom's body.
+//
+// For each currency in the universe, exactly one [ast.Balance] is
+// emitted, dated at the Custom's date. Listed currencies carry the
+// user's amount and tolerance; currencies in the universe by virtue of
+// prior activity but not listed in the body carry amount 0 and nil
+// tolerance — the downstream balance plugin will fail those assertions
+// if the actual residual is non-zero. The matching Custom is removed
+// from the output. Emitted Balance directives are sorted by currency
+// for deterministic downstream behavior.
+//
+// # Pad interaction
+//
+// Because this plugin emits [ast.Balance] directives, the downstream
+// pad plugin treats the Custom's position as a valid pad target. When
+// a pad directive on the account precedes a comprehensive_balance
+// Custom with no intervening user-written balance, the pad fires
+// against the Custom's emitted Balance — which is the intended
+// semantic: comprehensive_balance is itself a balance assertion, and
+// the user placing it after a pad is asserting "this account must
+// equal X here." A later user-written balance on the same account
+// evaluates without that pad's help.
 //
 // # Diagnostic codes
 //
@@ -52,21 +74,6 @@
 // back to the triggering plugin directive's Span when the Custom has
 // none.
 //
-// # Deviations
-//
-// "What commodities does the account currently hold?" is computed by
-// summing each preceding [ast.Transaction] posting's raw
-// `Amount.Number` per (account, currency), with no booking-aware cost
-// or price reduction. This agrees with Python beancount's
-// `realization.realize` output for cost-free postings, which is the
-// common case for comprehensive_balance's intended targets (cash,
-// checking, simple commodity inventories). Ledgers that carry cost
-// annotations or per-leg `@ price` reductions on the asserted account
-// may see a different set of "missing" commodities than upstream
-// beansprout, which delegates to realization to consume those cost
-// legs. Porting full booking-aware realization is out of scope for
-// this plugin.
-//
 // # Usage
 //
 // Either registered name activates the plugin:
@@ -77,8 +84,9 @@
 //
 //	plugin "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/comprehensivebalance"
 //
-// Example body asserting two currencies and (implicitly) zero of any
-// other commodity the account holds:
+// Example body asserting two currencies; the plugin additionally
+// emits a zero-balance assertion for any other commodity the account
+// has previously touched:
 //
 //	2024-01-01 custom "comprehensive_balance" Assets:Checking "
 //	  1,000.00 USD
