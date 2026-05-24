@@ -1,0 +1,27 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "commoditypattern",
+    srcs = [
+        "doc.go",
+        "plugin.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/commoditypattern",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/postproc",
+        "//pkg/ext/postproc/api",
+    ],
+)
+
+go_test(
+    name = "commoditypattern_test",
+    srcs = ["plugin_test.go"],
+    embed = [":commoditypattern"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/postproc/api",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
