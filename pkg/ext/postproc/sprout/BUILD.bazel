@@ -5,4 +5,16 @@ go_library(
     srcs = ["doc.go"],
     importpath = "github.com/yugui/go-beancount/pkg/ext/postproc/sprout",
     visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ext/postproc/sprout/checkmetadata",
+        "//pkg/ext/postproc/sprout/commoditypattern",
+        "//pkg/ext/postproc/sprout/comprehensivebalance",
+        "//pkg/ext/postproc/sprout/fiscalincomeexpense",
+        "//pkg/ext/postproc/sprout/infermetadata",
+        "//pkg/ext/postproc/sprout/inheritmetadata",
+        "//pkg/ext/postproc/sprout/leafonly",
+        "//pkg/ext/postproc/sprout/pricecompletion",
+        "//pkg/ext/postproc/sprout/print",
+        "//pkg/ext/postproc/sprout/tradingvalidation",
+    ],
 )
