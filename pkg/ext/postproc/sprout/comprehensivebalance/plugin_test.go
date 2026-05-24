@@ -3,7 +3,6 @@ package comprehensivebalance
 import (
 	"context"
 	"iter"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -198,7 +197,12 @@ func TestUnlistedCommodityZeroAssertion(t *testing.T) {
 	}
 }
 
-func TestZeroBalanceCommodityIgnored(t *testing.T) {
+// TestNetZeroCommodityAsserted documents the post-delegation contract:
+// a currency that appeared in any prior posting (even if the net is
+// zero) is part of the commodity universe and gets a zero-balance
+// assertion. The downstream balance plugin verifies the actual residual
+// matches; this plugin no longer pre-filters by computed sum.
+func TestNetZeroCommodityAsserted(t *testing.T) {
 	day1 := time.Date(2023, 12, 31, 0, 0, 0, 0, time.UTC)
 	day2 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	usd := amt(1000, "USD")
@@ -223,8 +227,15 @@ func TestZeroBalanceCommodityIgnored(t *testing.T) {
 		t.Fatalf("diagnostics = %v, want none", res.Diagnostics)
 	}
 	got := balancesByCurrency(t, res)
-	if _, has := got["Assets:Checking:EUR"]; has {
-		t.Errorf("zero-EUR account got an unwanted Balance directive: %v", got["Assets:Checking:EUR"])
+	eur := got["Assets:Checking:EUR"]
+	if eur == nil {
+		t.Fatalf("expected zero-balance EUR assertion; got %#v", res.Directives)
+	}
+	if eur.Amount.Number.Sign() != 0 {
+		t.Errorf("EUR assertion amount = %s, want 0", eur.Amount.Number.String())
+	}
+	if eur.Tolerance != nil {
+		t.Errorf("EUR assertion tolerance = %v, want nil", eur.Tolerance)
 	}
 }
 
@@ -487,9 +498,7 @@ func TestEmptyInput(t *testing.T) {
 	}
 }
 
-func TestUnlistedSortedDeterministically(t *testing.T) {
-	// Many unlisted currencies — sorted output is required for stable
-	// downstream diffs.
+func TestEmittedBalancesSortedByCurrency(t *testing.T) {
 	day1 := time.Date(2023, 12, 31, 0, 0, 0, 0, time.UTC)
 	day2 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	postings := []ast.Posting{}
@@ -519,19 +528,203 @@ func TestUnlistedSortedDeterministically(t *testing.T) {
 			seenCurrencies = append(seenCurrencies, b.Amount.Currency)
 		}
 	}
-	// First N-1 are sorted unlisted zero-balances; last is the declared USD.
-	unlisted := seenCurrencies[:len(seenCurrencies)-1]
-	declared := seenCurrencies[len(seenCurrencies)-1]
-	if declared != "USD" {
-		t.Errorf("declared assertion not last: %q", declared)
+	wantCurrencies := []string{"AUD", "CHF", "GBP", "JPY", "USD"}
+	if diff := cmp.Diff(wantCurrencies, seenCurrencies); diff != "" {
+		t.Errorf("emit order mismatch (-want +got):\n%s", diff)
 	}
-	if !sort.StringsAreSorted(unlisted) {
-		t.Errorf("unlisted balances not sorted: %v", unlisted)
+	got := balancesByCurrency(t, res)
+	usd := got["Assets:X:USD"]
+	if usd == nil {
+		t.Fatalf("missing USD balance")
 	}
-	// Spot-check that USD did not appear as zero (since it's declared).
-	for _, cur := range unlisted {
-		if cur == "USD" {
-			t.Errorf("USD appears as zero-balance assertion; it should be declared only")
+	wantUSD := decimalLit(t, "100")
+	if usd.Amount.Number.Cmp(&wantUSD) != 0 {
+		t.Errorf("USD amount = %s, want 100", usd.Amount.Number.String())
+	}
+	for _, cur := range []string{"AUD", "CHF", "GBP", "JPY"} {
+		b := got["Assets:X:"+cur]
+		if b == nil {
+			t.Fatalf("missing %s zero-balance", cur)
 		}
+		if b.Amount.Number.Sign() != 0 {
+			t.Errorf("%s zero-balance got %s, want 0", cur, b.Amount.Number.String())
+		}
+	}
+}
+
+// TestPadBridgedAccount: a pad+balance pair preceding the Custom must
+// pass through unchanged, and the Custom must emit Balance directives
+// whose evaluation the downstream pad→balance pipeline will resolve
+// against the padded inventory.
+func TestPadBridgedAccount(t *testing.T) {
+	day1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	day3 := time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC)
+	pad := &ast.Pad{Date: day1, Account: "Assets:Foo", PadAccount: "Equity:Opening"}
+	priorBal := &ast.Balance{Date: day2, Account: "Assets:Foo", Amount: amt(1000, "USD")}
+	cust := custom(day3, "Assets:Foo", "1000.00 USD")
+
+	in := api.Input{
+		Directive:  testPluginDir,
+		Directives: seqOf([]ast.Directive{pad, priorBal, cust}),
+	}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %v, want none", res.Diagnostics)
+	}
+	if res.Directives[0] != ast.Directive(pad) {
+		t.Errorf("pad directive not preserved at position 0; got %#v", res.Directives[0])
+	}
+	if res.Directives[1] != ast.Directive(priorBal) {
+		t.Errorf("prior balance not preserved at position 1; got %#v", res.Directives[1])
+	}
+	bal := balancesByCurrency(t, res)["Assets:Foo:USD"]
+	if bal == nil {
+		t.Fatalf("expected emitted USD balance from Custom; got %#v", res.Directives)
+	}
+	want := decimalLit(t, "1000.00")
+	if bal.Amount.Number.Cmp(&want) != 0 {
+		t.Errorf("USD amount = %s, want 1000.00", bal.Amount.Number.String())
+	}
+	if bal.Date != day3 {
+		t.Errorf("emitted balance date = %v, want %v", bal.Date, day3)
+	}
+}
+
+// TestPriorBalanceContributesCommodity: a currency that appeared only
+// in a prior *ast.Balance (never in a posting before the Custom) is
+// nonetheless in the universe, so the Custom emits a zero-assertion
+// for it.
+func TestPriorBalanceContributesCommodity(t *testing.T) {
+	day1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	priorBal := &ast.Balance{Date: day1, Account: "Assets:Foo", Amount: amt(1000, "USD")}
+	cust := custom(day2, "Assets:Foo", "0 EUR")
+
+	in := api.Input{
+		Directive:  testPluginDir,
+		Directives: seqOf([]ast.Directive{priorBal, cust}),
+	}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %v, want none", res.Diagnostics)
+	}
+	got := balancesByCurrency(t, res)
+	usd := got["Assets:Foo:USD"]
+	if usd == nil {
+		t.Fatalf("expected USD balance from prior-balance contribution; got %#v", res.Directives)
+	}
+	if usd.Amount.Number.Sign() != 0 {
+		t.Errorf("USD assertion amount = %s, want 0 (unlisted)", usd.Amount.Number.String())
+	}
+	if usd.Tolerance != nil {
+		t.Errorf("USD assertion tolerance = %v, want nil", usd.Tolerance)
+	}
+	eur := got["Assets:Foo:EUR"]
+	if eur == nil {
+		t.Fatalf("expected listed EUR balance; got %#v", res.Directives)
+	}
+	if eur.Amount.Number.Sign() != 0 {
+		t.Errorf("EUR assertion amount = %s, want 0 (listed)", eur.Amount.Number.String())
+	}
+}
+
+// TestFutureBalanceIgnored: a *ast.Balance appearing AFTER the Custom
+// in source order must not contribute to the universe — only prior
+// directives do.
+func TestFutureBalanceIgnored(t *testing.T) {
+	day1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	pos := amt(100, "USD")
+	neg := amt(-100, "USD")
+	tx := makeTx(day1, []ast.Posting{
+		{Account: "Assets:Foo", Amount: &pos},
+		{Account: "Expenses:X", Amount: &neg},
+	})
+	cust := custom(day1, "Assets:Foo", "100 USD")
+	futureBal := &ast.Balance{Date: day2, Account: "Assets:Foo", Amount: amt(50, "EUR")}
+
+	in := api.Input{
+		Directive:  testPluginDir,
+		Directives: seqOf([]ast.Directive{tx, cust, futureBal}),
+	}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %v, want none", res.Diagnostics)
+	}
+	got := balancesByCurrency(t, res)
+	// EUR appears in res.Directives only via the trailing user-written
+	// balance, not via a Custom-emitted assertion. We can't distinguish
+	// the two via balancesByCurrency directly, so check the Custom's
+	// emit count is exactly 1 (USD only) by counting Balance directives
+	// dated at the Custom's date.
+	var custEmitted []*ast.Balance
+	for _, d := range res.Directives {
+		if b, ok := d.(*ast.Balance); ok && b.Date.Equal(cust.Date) {
+			custEmitted = append(custEmitted, b)
+		}
+	}
+	if len(custEmitted) != 1 {
+		t.Fatalf("Custom-emitted balance count at %v = %d, want 1; got %#v", cust.Date, len(custEmitted), custEmitted)
+	}
+	if custEmitted[0].Amount.Currency != "USD" {
+		t.Errorf("Custom-emitted currency = %q, want USD", custEmitted[0].Amount.Currency)
+	}
+	// futureBal must still be in the output unchanged.
+	if got["Assets:Foo:EUR"] != futureBal {
+		t.Errorf("future EUR balance not preserved verbatim")
+	}
+}
+
+// TestPendingPadAtCustomDate: a pad directive immediately followed by
+// a comprehensive_balance Custom with no intervening user balance —
+// the Custom's emitted *ast.Balance is the pad's fire target. Here we
+// only verify the Custom emits Balance directives in the expected
+// position; the pad firing semantics are validated by pad's own tests.
+func TestPendingPadAtCustomDate(t *testing.T) {
+	day1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	day2 := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
+	pad := &ast.Pad{Date: day1, Account: "Assets:Foo", PadAccount: "Equity:Opening"}
+	cust := custom(day2, "Assets:Foo", "1000.00 USD")
+
+	in := api.Input{
+		Directive:  testPluginDir,
+		Directives: seqOf([]ast.Directive{pad, cust}),
+	}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("diagnostics = %v, want none", res.Diagnostics)
+	}
+	if len(res.Directives) != 2 {
+		t.Fatalf("len(res.Directives) = %d, want 2 (pad + emitted balance); got %#v", len(res.Directives), res.Directives)
+	}
+	if res.Directives[0] != ast.Directive(pad) {
+		t.Errorf("pad not preserved at position 0; got %#v", res.Directives[0])
+	}
+	b, ok := res.Directives[1].(*ast.Balance)
+	if !ok {
+		t.Fatalf("position 1 = %#v, want *ast.Balance", res.Directives[1])
+	}
+	want := decimalLit(t, "1000.00")
+	if b.Amount.Number.Cmp(&want) != 0 || b.Amount.Currency != "USD" {
+		t.Errorf("emitted balance = %s %s, want 1000.00 USD", b.Amount.Number.String(), b.Amount.Currency)
+	}
+	if b.Account != "Assets:Foo" {
+		t.Errorf("emitted balance account = %q, want Assets:Foo", b.Account)
+	}
+	if b.Date != day2 {
+		t.Errorf("emitted balance date = %v, want %v", b.Date, day2)
 	}
 }
