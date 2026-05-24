@@ -17,3 +17,16 @@
 // Each subpackage's own godoc documents upstream attribution, behavior,
 // and any deviations from the Python original.
 package sprout
+
+import (
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/checkmetadata"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/commoditypattern"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/comprehensivebalance"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/fiscalincomeexpense"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/infermetadata"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/inheritmetadata"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/leafonly"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/pricecompletion"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/print"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/tradingvalidation"
+)
