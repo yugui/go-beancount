@@ -1,0 +1,31 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "tradingvalidation",
+    srcs = [
+        "doc.go",
+        "plugin.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/ext/postproc/sprout/tradingvalidation",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/postproc",
+        "//pkg/ext/postproc/api",
+        "//pkg/inventory",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "tradingvalidation_test",
+    srcs = ["plugin_test.go"],
+    embed = [":tradingvalidation"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/postproc/api",
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+        "@com_github_google_go_cmp//cmp/cmpopts",
+    ],
+)
