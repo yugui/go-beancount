@@ -223,6 +223,141 @@ Adopt seam shape **B** (`read(absPath) ([]byte, error)`), defined as an unexport
 「キー = 絶対パス、`[]byte` の所有権は呼び出し側、Load 中は変更しない」
 contract を明記。
 
+### Detailed Design
+
+#### Contract
+
+**Public signatures**
+
+In `pkg/ast/option.go`:
+
+```go
+// WithOverlay supplies in-memory source bytes that take precedence over
+// disk for matching absolute paths during Load, LoadReader, and LoadFile.
+//
+// Keys MUST be absolute paths in the OS-native form (filepath.IsAbs);
+// non-absolute keys are ignored and produce a Warning diagnostic with
+// Code "overlay-non-absolute-key". A nil or empty map is a no-op.
+//
+// The map and its []byte values are borrowed by the load: the caller
+// must not mutate them until the corresponding Load* call returns. The
+// loader does not copy values; ownership otherwise stays with the
+// caller, which is free to reuse or discard the map after the call.
+//
+// WithOverlay composes with WithBaseDir and WithFilename. Passing
+// WithOverlay multiple times replaces the previous overlay (last-wins,
+// matching the existing option semantics).
+func WithOverlay(overlay map[string][]byte) LoadOption
+```
+
+In `pkg/loader/option.go`:
+
+```go
+// WithOverlay re-exports ast.WithOverlay. See ast.WithOverlay for the
+// full contract.
+func WithOverlay(overlay map[string][]byte) Option
+```
+
+**Resolution semantics**
+
+- For every file load (top-level and every include resolution that reaches `loader.loadFile`), the absolute path is looked up in the overlay first. On hit, the overlay bytes are parsed; on miss, the existing on-disk read path runs and its error semantics are preserved verbatim (including the `"reading file %s: %v"` diagnostic wording).
+- Overlay lookup uses the **exact absolute path** the loader would otherwise pass to `os.ReadFile`. No path normalization beyond what callers already get through `filepath.Abs` / `filepath.Join` in `handleInclude`. Symlinks are not resolved, case folding is not performed.
+- Cycle detection continues to key on the `filename` argument to `loadFile`; overlay does not change cycle semantics.
+
+**Glob union semantics**
+
+`expandGlob` results include, in addition to the on-disk matches, every overlay key (absolute path) that:
+
+1. is itself absolute (already required by the overlay contract), and
+2. matches the glob pattern under the same `matchDoubleStar` rules used for disk paths.
+
+The union is deduplicated and returned sorted ascending. A glob that matches only overlay-only paths must NOT emit the "matched no files" Warning.
+
+**Non-absolute key handling**
+
+For each map entry with `!filepath.IsAbs(key)`, the load emits one Warning diagnostic and ignores the entry:
+
+- `Code: "overlay-non-absolute-key"`
+- `Severity: Warning`
+- `Span: Span{}` (zero — no source location)
+- `Message`: `overlay key %q is not an absolute path; ignored`
+
+Empty-string keys are treated as non-absolute. Diagnostics are sorted by message for determinism across map-iteration runs.
+
+**Independence and back-compat**
+
+- `WithOverlay` composes orthogonally with `WithBaseDir` and `WithFilename`.
+- Additive: no existing exported symbol changes shape or wording. Callers that do not use `WithOverlay` see byte-identical behavior. Pinned wordings remain stable: `"reading file %s: %v"`, `"circular include detected: %s"`, "matched no files" Warning, span filenames, existing diagnostic Codes.
+
+**Required tests (must exist in this step)**
+
+In a new `pkg/loader/overlay_test.go`:
+
+1. `TestLoadFile_OverlayReplacesDisk` — disk file has `2024-01-01 open Assets:Bank USD`; overlay supplies the same absolute path with `2024-01-01 open Assets:Bank EUR`; assert the loaded Open's currency is `EUR`.
+2. `TestLoadFile_OverlayIncludeRelative` — root file has `include "leaf.beancount"`; disk `leaf.beancount` is empty; overlay supplies the absolute path of `leaf.beancount` with one Open directive; assert that directive appears in the ledger.
+3. `TestLoadFile_OverlayIncludeAbsolute` — root file has `include "<abs>/leaf.beancount"`; overlay supplies that absolute path; same assertion.
+4. `TestLoadFile_OverlayGlobUnion` — root file has `include "*.beancount"`; disk has `a.beancount`; overlay supplies the absolute path of `b.beancount` (NOT on disk); assert both files contribute directives and no "matched no files" warning fires.
+5. `TestLoadFile_OverlayGlobOverlayOnly` — root has `include "*.beancount"`; disk has only the root file; overlay supplies an overlay-only file matching the glob; assert the overlay file's directive is loaded.
+6. `TestLoad_OverlayNonAbsoluteKeyWarning` — overlay contains `{"relative/path.beancount": ...}`; assert exactly one Warning diagnostic with `Code == "overlay-non-absolute-key"` and that the relative key has no effect.
+7. `TestLoadFile_OverlayWithBaseDir` — `ast.Load(src, WithBaseDir(dir), WithOverlay(...))` where `src` contains a relative include and the overlay supplies the resolved absolute path; assert the include is satisfied from overlay and `WithBaseDir` is still honored.
+8. `TestLoadFile_OverlayEmptyMap` — `WithOverlay(nil)` and `WithOverlay(map[string][]byte{})` are no-ops; existing disk-backed test passes through unchanged.
+
+In a new `pkg/ast/overlay_test.go` (lighter unit coverage):
+
+9. `TestLoad_OverlayPriorityOverDisk` — ast-layer mirror of (1) using `ast.LoadFile`, no plugin pipeline. Confirms overlay hit short-circuits disk read even when disk would succeed.
+10. `TestLoad_OverlayMissingDiskFallback` — overlay key for a path the include never resolves to; disk-backed include still works.
+
+Overlay-only files use `filepath.Join(t.TempDir(), name)` for the absolute path; the file is NOT written to disk.
+
+#### Suggested Internals
+
+1. **`internal/loadopt.Options` extension** — add `Overlay map[string][]byte` field (nil = no overlay). Keeps `Options` as a pure data carrier; alternative of storing a constructed `sourceReader` would require moving the interface out of `pkg/ast`.
+
+2. **`WithOverlay` implementation** — trivial assignment, matching `WithBaseDir`/`WithFilename`:
+   ```go
+   func WithOverlay(overlay map[string][]byte) LoadOption {
+       return func(o *loadopt.Options) { o.Overlay = overlay }
+   }
+   ```
+
+3. **Overlay-aware `sourceReader`** — closure adapter built in `pkg/ast/load.go` after `loadopt.Resolve`:
+   ```go
+   func overlaySource(overlay map[string][]byte, fallback sourceReader) sourceReader {
+       return sourceReaderFunc(func(p string) ([]byte, error) {
+           if b, ok := overlay[p]; ok { return b, nil }
+           return fallback.read(p)
+       })
+   }
+   ```
+   Returns map's stored slice directly — no copy.
+
+4. **Non-absolute key diagnostic — emit at load start, once per load.** Sort by message for determinism. Append to `ld.diagnostics` before the first `loadFile` call.
+
+5. **`glob.go` modification** — extend signature to `expandGlob(pattern string, extra []string) ([]string, error)` where `extra` is the sorted slice of absolute overlay keys. Match each `extra` against `matchDoubleStar(pattern, p)`, dedupe via `map[string]struct{}` or `slices.Sort`+`slices.Compact`. Caller (`handleInclude`) passes `ld.overlayPaths()` (cached sorted slice computed once per load).
+
+6. **`pkg/loader/option.go` re-export** — one-liner: `func WithOverlay(overlay map[string][]byte) Option { return ast.WithOverlay(overlay) }`.
+
+7. **Empty/nil map fast-path** — branch on `o.Overlay == nil || len(o.Overlay) == 0` at top of `Load*`; skip wrap + diagnostic helper. Avoids closure allocation in the common path.
+
+8. **Bazel/Gazelle** — new test files in existing packages. Run `bazel run //:gazelle` after add. No `MODULE.bazel` changes.
+
+#### Alternatives discussed
+
+- **Overlay placement**: map on `loadopt.Options` (recommended) vs sourceReader on Options (would require moving interface) vs new internal package (over-architected).
+- **Glob union**: extend `expandGlob` (single source of truth) vs union at `handleInclude` (duplicates matching logic).
+- **Diagnostic timing**: load start (recommended, fires reliably) vs hit-time (would never fire — relative keys cannot match absolute lookups) vs call-time panic (violates functional-options pattern).
+- **`[]byte` ownership**: borrow (recommended, zero-copy hot path) vs defensive copy (allocates on every load, unnecessary given documented mutation prohibition).
+
+#### Recommendation + rationale
+
+Adopt **map-on-Options + closure adapter + extended `expandGlob` + load-start diagnostic**.
+
+- Smallest delta consistent with the Step 1 seam.
+- No new package boundaries crossed — `sourceReader` remains private to `pkg/ast`; `internal/loadopt` stays a pure data carrier.
+- Glob union semantics live where glob matching lives (single source of truth for `matchDoubleStar`).
+- Diagnostics fire exactly when the user can act on them.
+- Zero-copy ownership matches LSP reality (didChange events carry full-document bytes).
+
 ### Step 3 — `pkg/session` パッケージ (core)
 
 **Functional requirements** (Contract):

@@ -16,16 +16,22 @@ func hasGlobMeta(path string) bool {
 
 // expandGlob returns the files matching pattern, sorted ascending. It
 // supports the same metacharacters as path/filepath.Match plus "**" as
-// a path component matching zero or more directories. If pattern
-// contains no glob metacharacter, it is returned as-is so callers can
-// surface an open/read error against the literal path. Unreadable
+// a path component matching zero or more directories. Unreadable
 // subtrees encountered during the walk are skipped.
-func expandGlob(pattern string) ([]string, error) {
+//
+// overlayKeys is a sorted slice of absolute paths; matching paths are
+// included in the result even when absent on disk. When pattern
+// contains no glob metacharacter, overlayKeys is ignored and pattern
+// is returned verbatim; the overlay union applies only to glob expansion.
+// Passing nil overlayKeys is a no-op.
+func expandGlob(pattern string, overlayKeys []string) ([]string, error) {
 	if !hasGlobMeta(pattern) {
 		return []string{pattern}, nil
 	}
-	root := walkRoot(pattern)
+	seen := make(map[string]struct{})
 	var matches []string
+
+	root := walkRoot(pattern)
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			if d != nil && d.IsDir() {
@@ -41,6 +47,7 @@ func expandGlob(pattern string) ([]string, error) {
 			return err
 		}
 		if ok {
+			seen[path] = struct{}{}
 			matches = append(matches, path)
 		}
 		return nil
@@ -48,6 +55,20 @@ func expandGlob(pattern string) ([]string, error) {
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
 	}
+
+	for _, p := range overlayKeys {
+		if _, already := seen[p]; already {
+			continue
+		}
+		ok, err := matchDoubleStar(pattern, p)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			matches = append(matches, p)
+		}
+	}
+
 	sort.Strings(matches)
 	return matches, nil
 }

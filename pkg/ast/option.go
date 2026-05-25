@@ -20,3 +20,18 @@ func WithBaseDir(dir string) LoadOption {
 func WithFilename(name string) LoadOption {
 	return func(o *loadopt.Options) { o.VirtualFilename = name }
 }
+
+// WithOverlay supplies in-memory source bytes that take precedence over
+// disk for matching absolute paths during Load, LoadReader, and LoadFile.
+//
+// Keys must be absolute paths in the OS-native form (filepath.IsAbs);
+// non-absolute keys are ignored and produce a Warning diagnostic with
+// Code "overlay-non-absolute-key". A nil or empty map is a no-op.
+//
+// The map and its []byte values are borrowed for the duration of the
+// load; the caller must not mutate them until the Load* call returns.
+// Passing WithOverlay multiple times replaces the previous overlay
+// (last-wins).
+func WithOverlay(overlay map[string][]byte) LoadOption {
+	return func(o *loadopt.Options) { o.Overlay = overlay }
+}
