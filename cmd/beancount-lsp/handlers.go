@@ -51,6 +51,7 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 				Change:    protocol.TextDocumentSyncKindIncremental,
 				Save:      &protocol.SaveOptions{IncludeText: false},
 			},
+			HoverProvider:                   true,
 			DocumentFormattingProvider:      true,
 			DocumentRangeFormattingProvider: true,
 			DocumentSymbolProvider:          true,

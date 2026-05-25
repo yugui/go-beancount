@@ -81,6 +81,8 @@ func dispatch(ctx context.Context, s *Server, reply jsonrpc2.Replier, req jsonrp
 		return s.handleDocumentSymbol(ctx, reply, raw)
 	case "textDocument/definition":
 		return s.handleDefinition(ctx, reply, raw)
+	case "textDocument/hover":
+		return s.handleHover(ctx, reply, raw)
 	default:
 		if _, isCall := req.(*jsonrpc2.Call); isCall {
 			return reply(ctx, nil, fmt.Errorf("%q: %w", req.Method(), jsonrpc2.ErrMethodNotFound))

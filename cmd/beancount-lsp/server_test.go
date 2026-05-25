@@ -194,8 +194,8 @@ func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 	}
 
 	caps := result.Capabilities
-	if caps.HoverProvider != nil {
-		t.Errorf("initialize: HoverProvider = %v, want nil", caps.HoverProvider)
+	if ok, _ := caps.HoverProvider.(bool); !ok {
+		t.Errorf("initialize: HoverProvider = %v, want true", caps.HoverProvider)
 	}
 	if ok, _ := caps.DefinitionProvider.(bool); !ok {
 		t.Errorf("initialize: DefinitionProvider = %v, want true", caps.DefinitionProvider)
