@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yugui/go-beancount/pkg/ast"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
@@ -25,8 +26,10 @@ type stubSession struct {
 	closed     bool
 	panicOnSet bool
 
-	setCh   chan struct{} // signalled on each SetOverlay call
-	clearCh chan struct{} // signalled on each ClearOverlay call
+	setCh     chan struct{}    // signalled on each SetOverlay call
+	clearCh   chan struct{}    // signalled on each ClearOverlay call
+	subCh     chan *ast.Ledger // Subscribe returns this channel
+	closeOnce sync.Once
 }
 
 func newStub() *stubSession {
@@ -34,6 +37,7 @@ func newStub() *stubSession {
 		overlays: make(map[string][]byte),
 		setCh:    make(chan struct{}, 10),
 		clearCh:  make(chan struct{}, 10),
+		subCh:    make(chan *ast.Ledger, 10),
 	}
 }
 
@@ -64,10 +68,19 @@ func (s *stubSession) ClearOverlay(absPath string) error {
 	return nil
 }
 
+func (s *stubSession) Snapshot(_ context.Context) (*ast.Ledger, error) {
+	return nil, nil
+}
+
+func (s *stubSession) Subscribe() (<-chan *ast.Ledger, func()) {
+	return s.subCh, func() { s.closeOnce.Do(func() { close(s.subCh) }) }
+}
+
 func (s *stubSession) Close() error {
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
+	s.closeOnce.Do(func() { close(s.subCh) })
 	return nil
 }
 
@@ -315,7 +328,10 @@ func TestDidOpen_CallsSetOverlay(t *testing.T) {
 
 func TestDidChange_CallsSetOverlay(t *testing.T) {
 	stub := newStub()
-	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
+	srv := NewServer(
+		WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }),
+		WithDebounce(0),
+	)
 	client, _ := newTestPair(t, srv)
 	ctx := context.Background()
 

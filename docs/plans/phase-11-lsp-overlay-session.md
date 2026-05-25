@@ -988,6 +988,178 @@ Adopt Contract as written. The cross-cutting choices that matter most:
 テーブルを 1 回構築、line 内は on-demand** (precompute と on-demand の
 ハイブリッド)。
 
+### Detailed Design
+
+#### Contract
+
+**1. SessionAPI widening (Step 5 stub session must extend)**
+
+```go
+type SessionAPI interface {
+    SetOverlay(absPath string, content []byte) error
+    ClearOverlay(absPath string) error
+    Snapshot(ctx context.Context) (*ast.Ledger, error)
+    Subscribe() (<-chan *ast.Ledger, func())
+    Close() error
+}
+```
+
+`*session.Session` already satisfies. `stubSession` in `server_test.go` MUST be extended to implement `Snapshot` and `Subscribe`. Existing 14 Step-5 tests must continue passing.
+
+**2. Subscriber goroutine lifecycle**
+
+- `Server` starts exactly one subscriber goroutine **after** the session has been constructed.
+- Starting points: end of `handleInitialize` success path AND end of lazy `ensureSession` success path. `sync.Once`-style guard or `started bool` under `s.mu` ensures idempotency.
+- The goroutine reads from `session.Subscribe()` and calls `publishDiagnostics(ctx, ledger)` for each value.
+- On shutdown: cancel goroutine ctx → `session.Close()` (closes subscribe channel) → goroutine exits → `Run` joins via `done` channel before returning. Without join, late `conn.Notify` may panic after `conn.Close`.
+
+**3. `publishDiagnostics` semantics**
+
+- Group `ledger.Diagnostics` by `Span.Start.Filename`. Empty-filename diagnostics dropped + logged at most once per ledger.
+- For every filename in current ledger: emit one notification.
+- For every filename in **previous** publish set but NOT in current: emit empty-array notification (LSP spec requirement).
+- Track previously-published files in `map[uri.URI]struct{}`.
+- `PublishDiagnosticsParams.Version` not set (ledger has no document-version concept).
+
+**4. ast.Diagnostic → LSP Diagnostic mapping**
+
+| LSP field | Source |
+|---|---|
+| Range | UTF-16 conversion of `d.Span` |
+| Severity | ast.Error(0) → LSP Error(1); ast.Warning(1) → LSP Warning(2); unknown → Error + log |
+| Code | `d.Code` wrapped if non-empty, else nil |
+| Source | Literal `"beancount"` |
+| Message | `d.Message` verbatim |
+| Tags / RelatedInformation / CodeDescription / Data | Zero values |
+
+**5. UTF-16 conversion (`position.go`)**
+
+```go
+type lineOffsets []int
+func computeLineOffsets(src []byte) lineOffsets
+func astPositionToLSP(p ast.Position, src []byte, lo lineOffsets) protocol.Position
+func astSpanToLSP(s ast.Span, src []byte, lo lineOffsets) protocol.Range
+```
+
+MUST satisfy:
+- ASCII: `Character == Column - 1`
+- 3-byte UTF-8 (CJK): `Character == Column - 1` (rune index == UTF-16 unit, both BMP)
+- 4-byte UTF-8 (supplementary plane, emoji): each rune contributes 2 UTF-16 units
+- TAB: 1 unit
+- CRLF: `\r` immediately preceding `\n` belongs to previous line; bare `\r` is line terminator
+- Past EOF: clamp to (lastLine, lastCol)
+- Invalid UTF-8: step byte-by-byte, treat as 1 UTF-16 unit each (matches gopls)
+
+**6. Text source selection (LOCKED priority)**
+
+For filename `f` needing line-offsets at publish time:
+
+1. **docStore lookup**: if document at `uri.From(f)` is open in `s.docs`, use its content. (Only source guaranteed to reflect what loader parsed for overlay-active files.)
+2. **`ledger.Files`** match: walk `ledger.Files` for `File.Filename == f`. **Caveat**: if `ast.File` does not expose source bytes, this slot collapses out; only (1) and (3) apply.
+3. **Disk read**: `os.ReadFile(f)`. Errors logged at most once per ledger per file; diagnostic published with zero Range + `"(no source available) "` message prefix rather than dropped.
+
+Table rebuilt per ledger for every file with at least one diagnostic. No cache.
+
+**7. Debounce on didChange (100ms, per-document)**
+
+- Per-document debounce: `didChange` for URI `u` cancels pending timer, schedules new one for 100ms.
+- On fire:
+  1. Read final content from `s.docs` (docStore updated synchronously in `handleDidChange`).
+  2. `session.SetOverlay(u.Filename(), content)`.
+  3. `session.Reload(ctx)` fire-and-forget in goroutine (subscriber picks up result).
+- `didOpen`/`didSave`/`didClose` NOT debounced — synchronous SetOverlay/ClearOverlay + async Reload.
+- **Behavior change from Step 5**: existing `TestDidChange_CallsSetOverlay` MUST be updated (currently expects sync call). New `ServerOption` `WithDebounce(d time.Duration)` (default 100ms; `0` = synchronous SetOverlay + async Reload). Step 5 tests use `WithDebounce(0)` to preserve sync behavior.
+- All pending timers MUST be stopped in `handleExit` BEFORE `sess.Close` so no late timer fires Reload on closing session.
+
+**8. Capabilities**
+
+No new capabilities declared. `publishDiagnostics` is server-initiated; requires no advertisement (LSP 3.17 confirmed).
+
+**9. URI handling**
+
+- `ast.Position.Filename` is absolute OS path. Conversion via `uri.File(filename)`.
+- Reverse `uri.URI.Filename()` (already used in Step 5).
+
+**10. Required tests**
+
+`cmd/beancount-lsp/position_test.go` (new):
+
+| Test | Asserts |
+|---|---|
+| `TestComputeLineOffsets_LFOnly` | `"a\nb\nc"` → `[0, 2, 4]` |
+| `TestComputeLineOffsets_TrailingLF` | `"a\nb\n"` → `[0, 2, 4]` |
+| `TestComputeLineOffsets_NoFinalLF` | `"a\nb"` → `[0, 2]` |
+| `TestComputeLineOffsets_Empty` | `""` → `[0]` |
+| `TestAstPositionToLSP_ASCII` | `"hello\n"` (L1,C3) → (0,2) |
+| `TestAstPositionToLSP_CJK3Byte` | `"こんにちは\n"` (L1,C3) → (0,2) |
+| `TestAstPositionToLSP_EmojiSurrogate` | `"a😀b\n"` (L1,C3) → (0,3) |
+| `TestAstPositionToLSP_TAB` | `"a\tb\n"` (L1,C3) → (0,2) |
+| `TestAstPositionToLSP_LineStart` | `"abc\ndef\n"` (L2,C1) → (1,0) |
+| `TestAstPositionToLSP_LineEnd` | `"abc\ndef\n"` (L1,C4) → (0,3) |
+| `TestAstPositionToLSP_PastEOF` | clamps to (lastLine, lastCol) |
+| `TestAstSpanToLSP` | multi-line span with mixed-width content |
+
+`cmd/beancount-lsp/diagnostics_test.go` (new):
+
+| Test | Asserts |
+|---|---|
+| `TestPublishDiagnostics_DeliveredOnSubscribe` | One diagnostic → one notification with correct URI/severity/code/source/range |
+| `TestPublishDiagnostics_GroupedByFile` | 3-file diagnostics → exactly 3 notifications |
+| `TestPublishDiagnostics_ClearsResolvedFile` | Ledger 1 has A+B; ledger 2 has A only → client receives empty for B |
+| `TestPublishDiagnostics_NoClearForUnseenFile` | Ledger 1 empty; ledger 2 has A → no spurious empty notifications |
+| `TestPublishDiagnostics_EmptyFilenameDiagnosticDropped` | No notification for empty-filename diagnostic |
+| `TestDidChange_Debounced` | 2 didChange 50ms apart with `WithDebounce(50ms)` → exactly 1 SetOverlay + 1 Reload |
+| `TestDidChange_DebounceCancelOnClose` | didChange → exit within window → no SetOverlay (timer stopped) |
+| `TestSubscriberGoroutine_ExitsOnClose` | Goroutine exits within deadline after session.Close |
+| `TestPublishDiagnostics_SeverityMapping` | Error+Warning → LSP severities 1 and 2 |
+| `TestPublishDiagnostics_UTF16Range` | Diagnostic spanning emoji → range Character reflects surrogate expansion |
+
+#### Suggested Internals
+
+1. **File layout**: new `diagnostics.go`, `diagnostics_test.go`, `position.go`, `position_test.go`. Optional `debounce.go` (or fold into `docsync.go`).
+2. **Subscriber goroutine**: `Server.runSubscriber(ctx, sub, done)` method; field `subscriberDone chan struct{}`; `subscriberStarted bool` under `s.mu`. Alternative: extract `diagnosticsService` struct if file grows past ~150 LOC.
+3. **Per-document debounce**: `map[uri.URI]*time.Timer` under dedicated `sync.Mutex` (not `s.mu` — keep concerns separate). `schedule(u, fn)` resets/replaces timer; `stopAll()` walks during shutdown. Check `timer.Stop()` return; drain channel if needed.
+4. **Line-offsets construction**:
+   ```go
+   func computeLineOffsets(src []byte) lineOffsets {
+       lo := make(lineOffsets, 1, 1+bytes.Count(src, []byte{'\n'}))
+       lo[0] = 0
+       for i, b := range src {
+           if b == '\n' { lo = append(lo, i+1) }
+       }
+       return lo
+   }
+   ```
+5. **Per-line UTF-16 walk**: `runeColToUTF16(line []byte, col int) uint32` using `utf8.DecodeRune`, handling surrogate pairs (`r >= 0x10000 → units += 2`).
+6. **Prev-set tracking**: `diagPublisher{prev map[uri.URI]struct{}}`. Update after all sends in a publish cycle.
+7. **`sendPublish`**: `jsonrpc2.Conn.Notify(ctx, "textDocument/publishDiagnostics", &protocol.PublishDiagnosticsParams{URI: u, Diagnostics: ds})`. Errors logged, not returned.
+8. **Text source helper**: `Server.sourceBytesFor(filename) ([]byte, bool)` — docStore → (ledger if exposed) → disk fallback.
+9. **Stub session extension**: add `subCh chan *ast.Ledger`; `Snapshot` returns nil, nil; `Subscribe` returns `s.subCh` + no-op cancel. Tests push test ledgers to `subCh`.
+10. **Caching of line-offsets across publishes**: out of scope for Step 6. Mention only.
+
+#### Alternatives discussed
+
+- **Subscriber goroutine placement**: in `Run` (chosen — single, clean shutdown, serializes publishes) vs in diagnostics module struct (equivalent) vs pull model from Reload handler (duplicates broadcast logic; rejected).
+- **Per-document vs single global debouncer**: per-document (chosen — typing in file A doesn't cancel B's pending work) vs global (cross-file edits trample).
+- **UTF-16 conversion**: hybrid (chosen, matches gopls) vs full precompute (over-allocates) vs fully on-demand (rescans from file start per position).
+- **Text source priority**: docStore first (chosen — overlay must match what loader parsed) vs disk first (catastrophic for unsaved buffers).
+- **Empty-filename diagnostics**: drop with single log (chosen — no defensible URI) vs attach to root (misleading) vs synthesize global (LSP has no global channel).
+- **SessionAPI widening vs separate interface**: widen (chosen — single test seam) vs separate `DiagnosticsSource` interface (no real benefit).
+
+#### Recommendation + rationale
+
+Adopt Contract as specified. Key locks:
+
+- `SessionAPI` shape (test seam, future production implementations).
+- Empty-array-clears-previous rule (LSP spec dependency).
+- Text-source priority (correctness of column positions).
+- Subscriber-goroutine-joined-on-Close (goroutine leak prevention).
+- `WithDebounce(0)` test seam (Step 5 test compatibility).
+
+Internals (file layout, types, helpers) stay in suggestions.
+
+**Open question for implementer**: verify whether `ast.File` exposes source bytes (`pkg/ast/ast.go`). If not, text-source slot 2 collapses; Contract still valid with docStore→disk only.
+
 ### Step 7 — `textDocument/formatting` + `textDocument/rangeFormatting`
 
 **Functional requirements**:

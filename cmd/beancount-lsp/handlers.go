@@ -38,6 +38,7 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 	s.mu.Unlock()
 
 	s.logger.Printf("initialized root=%s", root)
+	s.startSubscriber()
 
 	result := &protocol.InitializeResult{
 		ServerInfo: &protocol.ServerInfo{
@@ -123,6 +124,8 @@ func (s *Server) handleExit(ctx context.Context, reply jsonrpc2.Replier, _ json.
 	clean := s.shutdown
 	sess := s.session
 	conn := s.conn
+	subCancel := s.subscriberCancel
+	subDone := s.subscriberDone
 	if clean {
 		s.exitCode = 0
 	} else {
@@ -134,11 +137,24 @@ func (s *Server) handleExit(ctx context.Context, reply jsonrpc2.Replier, _ json.
 	// reply before closing (no-op for notification, but releases AsyncHandler chain).
 	_ = reply(ctx, nil, nil)
 
+	// Stop pending debounce timers before closing the session to prevent late
+	// Reload calls on a closed session.
+	s.timers.stopAll()
+
+	// Cancel the subscriber goroutine's context, then close the session (which
+	// closes the subscribe channel), then join to avoid conn.Notify after conn.Close.
+	if subCancel != nil {
+		subCancel()
+	}
 	if sess != nil {
 		if err := sess.Close(); err != nil {
 			s.logger.Printf("session close: %v", err)
 		}
 	}
+	if subDone != nil {
+		<-subDone
+	}
+
 	if conn != nil {
 		_ = conn.Close()
 	}

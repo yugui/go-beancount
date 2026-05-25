@@ -77,9 +77,9 @@ func (s *Server) handleDidOpen(ctx context.Context, reply jsonrpc2.Replier, raw 
 	return nil
 }
 
-// handleDidChange handles textDocument/didChange. Content changes are applied
-// by treating the last event as a full document replacement; proper UTF-16
-// incremental application is not yet implemented.
+// handleDidChange handles textDocument/didChange. Content is stored in docStore
+// immediately; SetOverlay and Snapshot are debounced per document (default 100ms).
+// When debounce is 0, SetOverlay is called synchronously.
 func (s *Server) handleDidChange(ctx context.Context, reply jsonrpc2.Replier, raw json.RawMessage) error {
 	defer func() { _ = reply(ctx, nil, nil) }()
 
@@ -94,14 +94,40 @@ func (s *Server) handleDidChange(ctx context.Context, reply jsonrpc2.Replier, ra
 
 	s.mu.Lock()
 	sess := s.session
+	d := s.debounce
 	s.mu.Unlock()
 
 	if sess == nil {
 		return nil
 	}
-	if err := sess.SetOverlay(u.Filename(), content); err != nil {
-		s.logger.Printf("didChange SetOverlay: %v", err)
+
+	if d == 0 {
+		if err := sess.SetOverlay(u.Filename(), content); err != nil {
+			s.logger.Printf("didChange SetOverlay: %v", err)
+		}
+		go func() {
+			if _, err := sess.Snapshot(context.Background()); err != nil {
+				s.logger.Printf("didChange Snapshot: %v", err)
+			}
+		}()
+		return nil
 	}
+
+	s.timers.schedule(u, d, func() {
+		latest, ok := s.docs.get(u)
+		if !ok {
+			return
+		}
+		if err := sess.SetOverlay(u.Filename(), latest); err != nil {
+			s.logger.Printf("didChange SetOverlay (debounced): %v", err)
+			return
+		}
+		go func() {
+			if _, err := sess.Snapshot(context.Background()); err != nil {
+				s.logger.Printf("didChange Snapshot (debounced): %v", err)
+			}
+		}()
+	})
 	return nil
 }
 

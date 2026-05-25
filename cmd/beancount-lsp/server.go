@@ -8,16 +8,18 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/session"
 	"go.lsp.dev/jsonrpc2"
 	"go.lsp.dev/uri"
 )
 
-// SessionAPI is the subset of session operations the server requires for
-// overlay management.
+// SessionAPI is the subset of session operations the server requires.
 type SessionAPI interface {
 	SetOverlay(absPath string, content []byte) error
 	ClearOverlay(absPath string) error
+	Snapshot(ctx context.Context) (*ast.Ledger, error)
+	Subscribe() (<-chan *ast.Ledger, func())
 	Close() error
 }
 
@@ -28,6 +30,7 @@ type serverConfig struct {
 	clock          func() time.Time
 	sessionFactory func(rootPath string) (SessionAPI, error)
 	logger         *log.Logger
+	debounce       time.Duration
 }
 
 // WithClock sets the clock used by the server. Defaults to time.Now.
@@ -48,29 +51,42 @@ func WithLogger(l *log.Logger) ServerOption {
 	return func(c *serverConfig) { c.logger = l }
 }
 
+// WithDebounce sets the per-document debounce delay for didChange events.
+// Defaults to 100ms. A value of 0 disables debouncing: SetOverlay and Reload
+// are called synchronously in the handler, which is useful for tests.
+func WithDebounce(d time.Duration) ServerOption {
+	return func(c *serverConfig) { c.debounce = d }
+}
+
 // Server is an LSP server that handles the beancount-lsp protocol lifecycle
 // and text-sync notifications. Create with NewServer; start with Run.
 type Server struct {
 	clock          func() time.Time
 	sessionFactory func(rootPath string) (SessionAPI, error)
 	logger         *log.Logger
+	debounce       time.Duration
 
-	mu          sync.Mutex
-	initialized bool
-	shutdown    bool
-	exitCode    int
-	exited      bool
-	session     SessionAPI
-	rootPath    string        // resolved root directory; empty until initialize completes
-	conn        jsonrpc2.Conn // set by Run; used by handleExit to close the connection
+	mu                sync.Mutex
+	initialized       bool
+	shutdown          bool
+	exitCode          int
+	exited            bool
+	session           SessionAPI
+	rootPath          string        // resolved root directory; empty until initialize completes
+	conn              jsonrpc2.Conn // set by Run; used by handleExit to close the connection
+	subscriberStarted bool
+	subscriberDone    chan struct{}
+	subscriberCancel  func()
 
-	docs *docStore
+	docs   *docStore
+	timers *debouncer
 }
 
 // NewServer creates a Server with the given options.
 func NewServer(opts ...ServerOption) *Server {
 	cfg := &serverConfig{
-		clock: time.Now,
+		clock:    time.Now,
+		debounce: 100 * time.Millisecond,
 		sessionFactory: func(root string) (SessionAPI, error) {
 			return session.New(root)
 		},
@@ -83,7 +99,9 @@ func NewServer(opts ...ServerOption) *Server {
 		clock:          cfg.clock,
 		sessionFactory: cfg.sessionFactory,
 		logger:         cfg.logger,
+		debounce:       cfg.debounce,
 		docs:           newDocStore(),
+		timers:         newDebouncer(),
 		exitCode:       1, // default until clean shutdown
 	}
 }
@@ -132,11 +150,13 @@ func (s *Server) ensureSession(fileURI uri.URI) {
 	if s.session == nil {
 		s.session = sess
 		s.logger.Printf("session created (lazy) root=%s", root)
+		s.mu.Unlock()
+		s.startSubscriber()
 	} else {
 		// another goroutine beat us; discard
 		_ = sess.Close()
+		s.mu.Unlock()
 	}
-	s.mu.Unlock()
 }
 
 // resolveRootFile picks the first *.beancount file in dir, falling back to
