@@ -392,6 +392,161 @@ func (s *Session) Close() error
 (`New` → 多数の `Snapshot`/`SetOverlay`/`Reload` → `Close`) と並行性契約
 を明文化。`Close` の冪等性も書く。
 
+### Detailed Design
+
+#### Contract
+
+**Package**: new `pkg/session`. Imports `context`, `errors`, `path/filepath`, `sync`, plus `pkg/ast` and `pkg/loader`. No other go-beancount packages.
+
+**Sentinel errors** (package level):
+
+```go
+var ErrSessionClosed = errors.New("session: closed")
+var ErrOverlayKeyNotAbsolute = errors.New("session: overlay key must be an absolute path")
+```
+
+**`New(rootPath string, opts ...loader.Option) (*Session, error)`**
+
+- `rootPath` is passed verbatim to `loader.LoadFile`. Empty `rootPath` returns `(nil, error)` with non-`ErrSessionClosed` error wording `"session: rootPath is empty"`.
+- `opts` are captured by reference and reused on every reload for the Session's lifetime. Callers must not mutate state retained inside `opts`.
+- **User-supplied `loader.WithOverlay` in `opts` is silently overridden** by the Session's own overlay state on every reload (the Session appends its own `WithOverlay` last, relying on `WithOverlay`'s last-wins semantics). Document this in `New`'s godoc.
+- `New` performs an **eager synchronous initial load** with `context.Background()` before returning. On loader error (I/O, ctx) returns `(nil, err)` unwrapped from loader. Ledger diagnostics are NOT failures.
+- On success, returns `(*Session, nil)` with a non-empty cached ledger.
+
+**`Snapshot(ctx context.Context) (*ast.Ledger, error)`**
+
+- Returns cached `*ast.Ledger`. If cache is invalid, performs synchronous reload.
+- **Concurrent semantics**: at most one reload runs; concurrent invalidation-triggering Snapshot callers coalesce and receive the same `*ast.Ledger`.
+- **ctx**: threaded into `loader.LoadFile`. Cancellation during a load returns `(nil, ctx.Err())` and leaves cache invalid (next caller retries). Cancellation while waiting for another in-flight reload returns `(nil, ctx.Err())` immediately without affecting that reload.
+- Returned `*ast.Ledger` is **read-only**; Session does not mutate it after publishing. Subsequent SetOverlay/Reload produces new `*ast.Ledger` values.
+- After `Close`, returns `(nil, ErrSessionClosed)`.
+
+**`SetOverlay(absPath string, content []byte) error`**
+
+- `absPath` MUST satisfy `filepath.IsAbs`. Otherwise returns `ErrOverlayKeyNotAbsolute`; state unchanged. Empty string also fails this check.
+- `content` is **borrowed** (no copy). Caller MUST NOT mutate backing array until next SetOverlay for same key, ClearOverlay, or Close.
+- Invalidates cache. Does NOT trigger reload; next Snapshot/Reload rebuilds.
+- After `Close`, returns `ErrSessionClosed` (state unchanged).
+
+**`ClearOverlay(absPath string) error`**
+
+- Removes entry if present (no-op if absent, returns `nil` — not `ErrOverlayKeyNotAbsolute` even for non-absolute keys, since map-delete semantics).
+- Invalidates cache **only if an entry was actually removed**.
+- After `Close`, returns `ErrSessionClosed`.
+
+**`Overlays() map[string][]byte`**
+
+- Returns a **shallow copy** of the current overlay map (fresh map spine; same `[]byte` headers).
+- Caller may freely add/remove entries in the returned map. Caller MUST NOT mutate `[]byte` backing arrays (Session still borrows them).
+- Never returns an error; no `Close` interaction (returns possibly-empty map after Close).
+
+**`Reload(ctx context.Context) (*ast.Ledger, error)`**
+
+- Unconditional rebuild (ignores cache validity). Updates cache on success.
+- **Serialized**: at most one loader call in flight. Concurrent Reload callers coalesce into one underlying load; all receive the same `(*ast.Ledger, error)`.
+- ctx semantics identical to Snapshot.
+- After `Close`, returns `(nil, ErrSessionClosed)`.
+
+**`Close() error`**
+
+- Idempotent (second+ calls return `nil` without side effects).
+- After Close: Snapshot/SetOverlay/ClearOverlay/Reload return `ErrSessionClosed`. Overlays continues to work.
+- Does NOT wait for in-flight Reload. A late-finishing reload's cache update is no-op'd. Concurrent waiters may observe either the completed ledger or `ErrSessionClosed` — both contract-compliant.
+- Returns `nil` in Step 3 (no I/O to flush). The `error` return is reserved for Step 4+.
+
+**Concurrency contract (summary)**:
+
+- All exported methods safe for concurrent use.
+- Concurrent invalidation-triggering Snapshots coalesce to one reload.
+- Concurrent Reloads serialize through the same coalescing path.
+- No goroutine leaks; ctx-cancelable waits.
+
+#### Suggested Internals
+
+1. **Struct layout (baseline)**:
+   ```go
+   type Session struct {
+       rootPath string
+       opts     []loader.Option
+       loadFunc func(ctx context.Context, path string, opts ...loader.Option) (*ast.Ledger, error)
+
+       mu       sync.Mutex
+       overlay  map[string][]byte
+       cached   *ast.Ledger
+       valid    bool
+       closed   bool
+
+       reloading  bool
+       done       chan struct{}
+       lastResult *ast.Ledger
+       lastErr    error
+   }
+   ```
+   `loadFunc` defaults to `loader.LoadFile`; test hook overrides it.
+
+2. **Reload coalescing** (suggested mechanism — hand-rolled `done` channel):
+   - Snapshot calls `s.reload(ctx, false)`; Reload calls `s.reload(ctx, true)`.
+   - First caller becomes runner: sets `reloading=true`, creates `done` channel, snapshots overlay spine, releases `s.mu`, invokes `loadFunc` outside the lock, then re-acquires `s.mu` to write `lastResult/lastErr/cached/valid`, closes `done`.
+   - Waiters: `select { case <-done: ...; case <-ctx.Done(): return ctx.Err() }`.
+   - The `closed` check on cache write prevents a late reload from resurrecting a closed Session's cache.
+
+3. **Overlay snapshot for the loader call**: copy the map spine at reload start while holding `s.mu`, pass the copy as the `WithOverlay` argument. Decouples load duration from `SetOverlay` latency. Values (`[]byte`) NOT copied — borrowing contract already requires no mutation.
+
+4. **User `WithOverlay` handling**: Option X (override) chosen — always append a Session-controlled `loader.WithOverlay(snapshot)` last. No detection needed. No `internal/loadopt` import.
+
+5. **Lazy vs eager `New`**: Eager (chosen).
+
+6. **`Overlays()` implementation**: under `s.mu`, allocate fresh `map[string][]byte` of same length and copy entries. No caching.
+
+7. **Closed-state handling**: every state-changing method begins with `s.mu.Lock(); if s.closed { s.mu.Unlock(); return ErrSessionClosed }`. `Overlays` checks `closed` only to decide whether to return populated/empty.
+
+8. **Step 4 hook points**: leave clear sites at `reload` (after `s.cached = ledger`) and `Close` (after `s.closed = true`) for subscriber broadcast. A no-op `broadcast(ledger)` method or TODO comment is sufficient in this step.
+
+9. **Bazel/Gazelle**: new package — run `bazel run //:gazelle` after creating files. No `MODULE.bazel` changes.
+
+10. **File layout**: `pkg/session/doc.go` (package godoc), `pkg/session/session.go` (everything), `pkg/session/session_test.go` (white-box tests in `package session`). Split if `session.go` exceeds ~300 lines.
+
+#### Required tests
+
+File: `pkg/session/session_test.go` (white-box, `package session`).
+
+- `TestNew_LoadsLedger` — root file with one Open directive; New + Snapshot returns ledger with that directive.
+- `TestNew_EmptyRootPath` — `New("")` returns `(nil, err)`.
+- `TestNew_NonExistentRoot` — non-existent path; captures whatever `loader.LoadFile` does.
+- `TestNew_OverridesUserWithOverlay` — `New(root, loader.WithOverlay(map))`; user-supplied overlay has no observable effect on Snapshot.
+- `TestSnapshot_CachedAcrossCalls` — two consecutive Snapshots with no mutation; load count via hook stays at 1 (from New's eager load).
+- `TestSnapshot_InvalidationByOverlay` — disk USD, SetOverlay EUR; Snapshot reflects EUR.
+- `TestSetOverlay_NonAbsoluteError` — returns `ErrOverlayKeyNotAbsolute` via `errors.Is`; Snapshot still serves disk.
+- `TestSetOverlay_EmptyPathError` — same.
+- `TestSetOverlay_ContentBorrowed` — SetOverlay, Snapshot, mutate buf, Snapshot reflects mutation.
+- `TestClearOverlay_Idempotent` — ClearOverlay with no prior Set returns nil; load count unchanged.
+- `TestClearOverlay_RemovesEntry` — SetOverlay EUR → Snapshot EUR → ClearOverlay → Snapshot USD.
+- `TestOverlays_ReturnsCopy` — mutate returned map (delete/add); Session state unchanged.
+- `TestReload_Forced` — disk modified after Snapshot; Snapshot returns stale; Reload returns fresh.
+- `TestReload_Serialized` — blocking loadFunc stub; 10 concurrent Reload goroutines; exactly 1 loader invocation; all receive same ledger.
+- `TestSnapshot_Coalesced` — blocking loadFunc; 10 concurrent Snapshot after invalidation; exactly 1 loader invocation.
+- `TestSnapshot_Concurrent` — 100 goroutines on valid cache; `-race` clean.
+- `TestSnapshot_ContextCanceled` — blocking loadFunc; canceled ctx → `(nil, ctx.Err())`; subsequent non-canceled Snapshot succeeds (cache not poisoned).
+- `TestClose_Idempotent` — double Close returns nil both times.
+- `TestClose_AfterClose_Errors` — all of Snapshot/SetOverlay/ClearOverlay/Reload return `errors.Is(err, ErrSessionClosed)`.
+- `TestClose_OverlaysStillWorks` — Close then Overlays does not panic.
+
+**Test hook**: unexported `loadFunc` field on `Session`, defaulting to `loader.LoadFile`. Tests in `package session` swap it. This is a justified CLAUDE.md exception ("coverage via exported API would require disproportionately many fragile timing-based tests").
+
+#### Alternatives discussed
+
+- **Mutex strategy**: single `sync.Mutex` (chosen) vs `sync.RWMutex` (over-optimization for sub-microsecond cache-hit path) vs 2 mutexes (achievable via single Mutex + release-during-load).
+- **Coalescing mechanism**: hand-rolled `done` channel (chosen) vs `singleflight` (new dep) vs `sync.Cond` (awkward ctx interaction).
+- **Lazy vs eager New**: eager (chosen, supports LSP initialize ordering).
+- **WithOverlay in opts**: override (chosen) vs reject (requires internal/loadopt import).
+- **Overlay copy at reload**: spine copy (chosen) vs hold mu across load (writer starvation) vs immutable versions (excess allocation on writes).
+- **Overlays() copy** vs live map (caller could corrupt Session state).
+- **Pointer-equality contract for repeat Snapshot**: not promised; tests assert via load-count not pointer identity, leaving future flexibility.
+
+#### Recommendation + rationale
+
+Single `sync.Mutex` + hand-rolled `done`-channel coalescing; eager `New`; override user-supplied `WithOverlay`; copy overlay spine at reload start; `Overlays()` returns shallow copy; white-box tests with `loadFunc` hook; Step 4 broadcast hooks reserved at clearly-marked sites. Minimal LOC, zero new dependencies, ctx-cancelable waits, no lock-upgrade hazards, leaves Step 4 a localized diff.
+
 ### Step 4 — Session 変更通知 API
 
 **Functional requirements**:
