@@ -75,7 +75,7 @@ def pytest_collection_modifyitems(config, items):
     # strict=False matches the Go-side t.Skipf semantics: a denylisted
     # fixture briefly passing produces XPASS in the report without failing
     # the suite, surfacing the maintenance signal without acting as a
-    # tripwire. See docs/plans/pyharness-denylist-migration.md.
+    # tripwire. See docs/architecture/beancompat-pytest-harness.md.
     seen: set[str] = set()
     for item in items:
         fid = _fixture_id_of(item)

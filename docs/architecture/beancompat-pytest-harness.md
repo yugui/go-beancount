@@ -2,11 +2,10 @@
 
 This document describes the steady-state architecture of the Bazel-native
 harness that runs upstream beancompat's pytest compatibility suite against
-go-beancount via a subprocess adapter. It is the post-decision reference;
-the chronological design narrative (alternatives weighed, decisions made)
-lives in `docs/plans/beancompat-pytest-integration.md` and, for the
-denylist + full-pipeline migration that brought coverage to all 13
-upstream fixtures, `docs/plans/pyharness-denylist-migration.md`.
+go-beancount via a subprocess adapter. The architectural decisions —
+subprocess boundary, full-pipeline beanparse, two-tier xfail policy,
+filegroup-only third-party exposure — are recorded inline below; the
+rest of this document is reference material for extending the harness.
 
 ## Overview
 

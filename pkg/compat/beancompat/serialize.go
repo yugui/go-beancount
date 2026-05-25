@@ -48,16 +48,6 @@ func SerializeParsed(ledger *ast.Ledger) (Result, error) {
 // check-tier-only payloads not yet implemented in the booking pipeline
 // will surface as missing keys in the output and fail matching at the
 // fixture site rather than here.
-//
-// Known divergence: the reducer's terminal pass installs *ast.Cost only
-// for augmenting postings and single-lot reductions (see
-// [pkg/inventory.Reducer] finalizeBookedCost). Multi-lot reductions
-// retain their parse-tier *ast.CostSpec, so the check-tier output of
-// such postings is "kind": "cost_spec". Upstream beancount expands a
-// multi-lot reduction into multiple postings each carrying a kind:cost
-// Cost; matching that contract requires posting expansion at the
-// reducer layer and is tracked as future work in
-// docs/plans/cost-holder-interface.md.
 func SerializeChecked(ledger *ast.Ledger) (Result, error) {
 	if ledger == nil {
 		return Result{}, errors.New("beancompat: SerializeChecked: nil ledger")

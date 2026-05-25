@@ -332,6 +332,36 @@ it via `ledger.Options.Bool("render_commas")` and pass the result to
 `format.WithCommaGrouping`. No production caller exists yet; the canonical
 wiring is exercised in tests.
 
+### `inferred_tolerance_default` — IMPLEMENTED
+
+The per-currency tolerance default (`option "inferred_tolerance_default"
+"EUR:0.005"`) is registered as `KindDecimalMap` and consumed by
+`pkg/validation/internal/tolerance/tolerance.go::Infer`. Precedence:
+posting-level inferred tolerance > per-currency entry > zero. A zero or
+negative entry is treated as absent. See
+`pkg/validation/internal/tolerance/doc.go` for the full precedence
+contract and the deliberate divergence from upstream's integer-assertion
+special case noted under "Deliberate behavioral divergences" below.
+
+### `booking_method` — IMPLEMENTED (consumer-side resolution)
+
+`option "booking_method" "FIFO"` is registered as `KindString` (default
+`"STRICT"`) and applied at the two sites that read `Open.Booking` for
+runtime behavior: `pkg/inventory/reducer.go::Walk` and
+`pkg/validation/internal/accountstate/build.go::Build`. The helper
+`pkg/ast/booking.go::ResolveBookingMethod` returns the explicit Open
+booking when present and falls back to the option value when the source
+omits the keyword (i.e. `Open.Booking == BookingDefault`), emitting an
+Error-severity `invalid-option` diagnostic on an unknown option value
+and falling back to `BookingStrict`.
+
+Lower-pass resolution was rejected: the lower runs per-file before
+`ParseOptions`, so it has no option access; and `BookingDefault` is
+load-bearing for round-trip — the printer suppresses the booking keyword
+and the beancompat serializer emits JSON `null` on it. Overwriting the
+field would break the `open_single` parse fixture. Consumer-side
+resolution keeps source-faithfulness intact.
+
 ### `tolerance_multiplier` / `inferred_tolerance_multiplier` alias — IMPLEMENTED
 
 `tolerance_multiplier` is the canonical key; `inferred_tolerance_multiplier`
