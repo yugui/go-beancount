@@ -4,10 +4,12 @@ go_library(
     name = "beancount-lsp_lib",
     srcs = [
         "debounce.go",
+        "definition.go",
         "diagnostics.go",
         "docsync.go",
         "formatting.go",
         "handlers.go",
+        "locate.go",
         "main.go",
         "position.go",
         "recover.go",
@@ -36,8 +38,10 @@ go_binary(
 go_test(
     name = "beancount-lsp_test",
     srcs = [
+        "definition_test.go",
         "diagnostics_test.go",
         "formatting_test.go",
+        "locate_test.go",
         "position_test.go",
         "server_test.go",
         "symbol_test.go",
@@ -46,6 +50,7 @@ go_test(
     deps = [
         "//pkg/ast",
         "//pkg/session",
+        "//pkg/syntax",
         "@com_github_google_go_cmp//cmp",
         "@dev_lsp_go_jsonrpc2//:jsonrpc2",
         "@dev_lsp_go_protocol//:protocol",

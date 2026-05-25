@@ -197,8 +197,8 @@ func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 	if caps.HoverProvider != nil {
 		t.Errorf("initialize: HoverProvider = %v, want nil", caps.HoverProvider)
 	}
-	if caps.DefinitionProvider != nil {
-		t.Errorf("initialize: DefinitionProvider = %v, want nil", caps.DefinitionProvider)
+	if ok, _ := caps.DefinitionProvider.(bool); !ok {
+		t.Errorf("initialize: DefinitionProvider = %v, want true", caps.DefinitionProvider)
 	}
 	if caps.CompletionProvider != nil {
 		t.Errorf("initialize: CompletionProvider = %v, want nil", caps.CompletionProvider)
