@@ -146,6 +146,21 @@ End each invocation with a structured report:
 - For subsequent fix-cycles on the **same step's commit**, use `git commit --amend` (most recent) or `git rebase -i ... fixup` to fold the fix into the original commit. **Do not** add a new standalone commit per review round.
 - Never use `--no-verify`, `--no-gpg-sign`, or skip pre-commit hooks. If a hook fails, fix the underlying cause.
 
+## Knowledge-migration workflow (Phase 9c of orchestration)
+
+When invoked with `Mode: knowledge-migration` and a `Migration brief:` payload, you are doing end-of-flow plan cleanup, not implementation. The brief lists items to migrate from the plan document into their long-term homes. Execute the brief:
+
+1. For each `→ godoc / inline comment` item: open the target `<file>:<symbol>`, verify whether equivalent documentation already exists, and if not, add it in the project's Go style (brevity, contract focus, no implementation narration — see `CLAUDE.md`'s `## Go Code Style`). If the brief's content sketch turns out to overlap with existing doc, do not duplicate — note the overlap in your report.
+2. For each `→ docs/architecture/<topic>.md` item: create `docs/architecture/` if absent; create or append to the named file. Use the content sketch as guidance, expanded to a coherent doc section. Cross-reference related symbols by path when helpful.
+3. `git rm docs/plans/<slug>.md` to remove the plan scaffolding.
+4. Run `bazel build //... && bazel test //...` as a safety net. Doc-only changes rarely break builds, but verify.
+5. Create a **single dedicated commit** for the migration. Do **not** amend or fixup into any earlier step's commit — the cleanup must be independently revertable.
+   - Subject: convey purpose, e.g. "Preserve `<slug>` design notes and remove plan scaffolding".
+   - Body: enumerate which files received doc additions, which `docs/architecture/*.md` files were created or updated, and confirm `docs/plans/<slug>.md` was removed.
+6. Report (use the Reporting format below, populating the relevant sections): files touched, architecture docs created/updated, plan-file removal confirmed, build/test outcome. Skip the fix-cycle disposition sections — they do not apply at this scope.
+
+Do **not** migrate the plan document verbatim. The brief already filtered for enduring knowledge; your job is to land each migrated item in its target with appropriate framing, not to dump prose.
+
 ## What you must not do
 
 - Do not advance past your assigned slice. If you discover prior or subsequent work is needed, report it; the caller decides.

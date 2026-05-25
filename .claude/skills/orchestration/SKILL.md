@@ -15,8 +15,8 @@ This skill drives a structured, multi-phase workflow for non-trivial development
 | Subagent | Role | When invoked |
 |---|---|---|
 | `Explore` (built-in) | Read-only code reconnaissance | Phase 1, light context lookup |
-| `planner` | Design consultant — produces alternative-aware plans | Phase 2 (full plan) and Phase 4 (per-step detailed design) |
-| `generator` | Implementer of one plan step (one session reused across that step's fix-cycles via SendMessage when reachable; fresh spawn with explicit `Fix-cycle context` as fallback) | Phases 5 and 7 |
+| `planner` | Design consultant — produces alternative-aware plans | Phase 2 (full plan), Phase 4 (per-step detailed design), Phase 9a (knowledge-migration triage) |
+| `generator` | Implementer of one plan step (one session reused across that step's fix-cycles via SendMessage when reachable; fresh spawn with explicit `Fix-cycle context` as fallback) | Phases 5, 7, and 9c (knowledge migration + plan cleanup) |
 | `evaluator` | Architectural / requirement-fit reviewer | Phase 6 (parallel with go-code-reviewer) |
 | `go-code-reviewer` (skill) | Go language style reviewer | Phase 6 (parallel with evaluator) |
 
@@ -43,7 +43,7 @@ This skill accepts two entry paths:
 
 Detection: rely on the `Plan mode is active` system-reminder when present, or on the designated plan-file path mentioned in plan-mode preamble. If ambiguous, an early Write attempt that the harness refuses confirms plan mode is on.
 
-Phases 4-8 are identical for both entry paths — once Phase 3 finishes, you are always in coding mode with `docs/plans/<slug>.md` as the persistent plan reference.
+Phases 4-9 are identical for both entry paths — once Phase 3 finishes, you are always in coding mode with `docs/plans/<slug>.md` as the persistent plan reference.
 
 ---
 
@@ -127,7 +127,7 @@ Phase 4 will append `### Detailed Design` subsections under each step section as
 
 ## Step loop (Phases 4-8 repeat per step)
 
-Each step starts at Phase 4. After Phase 8 commits the step, advance to the next step's Phase 4.
+Each step starts at Phase 4. After Phase 8 commits the step, advance to the next step's Phase 4. After Phase 8 commits the **last** step, advance to Phase 9 (knowledge migration + cleanup) instead.
 
 ---
 
@@ -276,9 +276,70 @@ The integrated finding list and tally drive Phase 7.
   - First convergence for this step → new commit (subject in imperative mood, body conveys why/behavior/design intent, per project `CLAUDE.md`).
   - If fix-cycles ran on top of an already-existing commit for this step → `git commit --amend` or `git rebase -i ... fixup` to fold the fix in. Do not add a new standalone commit per round.
 - Verify the commit was created (read `git log -1` summary in the generator's report).
-- Advance to the next step → Phase 4 (per-step detailed design for that next step).
+- Advance to the next step → Phase 4 (per-step detailed design for that next step). If this was the **last** step, advance to **Phase 9** instead.
 
-**Skill complete** when all plan steps have converged and committed. Optionally summarize for the user: steps shipped, deferred items, follow-up suggestions.
+---
+
+## Phase 9 — Knowledge migration + cleanup
+
+**Participants:** orchestrator + `planner` subagent (triage) + `generator` subagent (migration + delete) + user.
+
+**Trigger:** Phase 8 has committed the **last** step of the plan. All steps converged.
+
+**Purpose:** preserve enduring knowledge from `docs/plans/<slug>.md` in its proper long-term home (godoc, inline comments, `docs/architecture/`), then remove the plan scaffolding from the branch tip. The plan document is a process artifact, not a deliverable; what survives is the subset of its content that cannot be recovered from the implementation alone.
+
+**Do not run Phase 9** when the skill terminates mid-flow (user-requested stop, unresolved blocker, or any path that did not advance every step through Phase 8). The plan file stays in place under those conditions.
+
+### Phase 9a — Knowledge triage (planner)
+
+Invoke `planner` with this invocation header:
+```
+Plan: docs/plans/<slug>.md
+Mode: knowledge-migration
+Steps shipped: <list of step titles or ordinals>
+Commit range: <first-step-commit>..HEAD
+```
+
+The planner reads the plan and compares it against the implementation (`git log` / `git diff` in the commit range). It returns a **Migration brief** with four buckets; each item carries a one-line rationale:
+
+- **Already in code (discard):** items the implementation captures via type names, function names, module structure. No migration needed.
+- **→ godoc / inline comment:** API contracts, error semantics, invariants, non-obvious workarounds. Each item names the target `<file>:<symbol>` and a 1–3 line content sketch following the project Go style (concise, contract-focused — see `CLAUDE.md`).
+- **→ `docs/architecture/<topic>.md`:** architecture-wide judgments that span multiple packages or are not naturally attached to any one symbol (e.g. cross-cutting design rationale, rejected architectural alternatives whose reasoning informs future work). Each item names the target file (existing or new) and a content sketch.
+- **Discard (ephemeral):** process artifacts whose conclusion is fully reflected in the current code (e.g. rejected alternatives that ended in a clear winner now implemented). No migration needed.
+
+### Phase 9b — User review
+
+Surface the Migration brief to the user with `planner proposes…` attribution. Heuristic for how to surface (mirrors Phase 4):
+
+- **Material categorization tradeoff** (item plausibly belongs in `docs/architecture/` vs. just a godoc; item plausibly belongs in the Discard bucket but the user might want it preserved) → present the alternatives and ask the user.
+- **Categorization clearly sound** → summarize the brief and proceed.
+- **Always** display the full **Discard** list verbatim — the user is the final authority on what counts as scaffolding.
+
+### Phase 9c — Migrate + delete (generator)
+
+Invoke `generator` via SendMessage to the most recent generator session when reachable; fall back to a fresh spawn (Phase 7's continuity rules apply). Invocation:
+```
+Plan: docs/plans/<slug>.md
+Mode: knowledge-migration
+Migration brief: <agreed brief from 9b, verbatim>
+```
+
+Generator:
+1. For each `→ godoc / inline` item: verify whether the target file already carries equivalent documentation; add it if missing, conforming to the project Go style (brevity, contract focus, no narration of implementation).
+2. For each `→ docs/architecture/` item: create `docs/architecture/` if it does not exist, then create or append to `docs/architecture/<topic>.md`.
+3. `git rm docs/plans/<slug>.md`.
+4. Run `bazel build //... && bazel test //...` as a safety net (added godoc rarely breaks builds, but verify).
+5. Create a **single dedicated commit** (do not amend or fixup into an earlier step's commit — keep cleanup independently revertable):
+   - Subject (imperative): convey purpose, e.g. "Preserve <slug> design notes and remove plan scaffolding".
+   - Body: enumerate which files received doc additions, which architecture docs were created/updated, and confirm the plan file was removed.
+6. Report: files touched, architecture docs created/updated, plan file removal confirmed, build/test status.
+
+**Do not:**
+- Migrate the plan document verbatim. The point is to preserve only what the implementation alone cannot convey.
+- Skip Phase 9a triage. Without it, generator either copies everything (over-migration) or drops decisions worth preserving (under-migration).
+- Amend or fixup the cleanup into an earlier step's commit. Keep it independent so it can be reverted without unwinding implementation work.
+
+**Skill complete** when Phase 9c's commit lands and the generator's report confirms `docs/plans/<slug>.md` no longer exists. Optionally summarize for the user: steps shipped, deferred items, follow-up suggestions, where preserved knowledge now lives.
 
 ---
 
@@ -293,4 +354,5 @@ The integrated finding list and tally drive Phase 7.
 | 5 | Working implementation (generator agent id recorded for SendMessage-first fix-cycles), all tests green, self-simplify pass done |
 | 6 | Integrated findings list with tally |
 | 7 | Convergence (Critical/High = 0); High/Critical disputes arbitrated by orchestrator or escalated; all dispositions surfaced |
-| 8 | Commit landed, ready for next step |
+| 8 | Step commit landed; advance to next step's Phase 4, or Phase 9 if this was the last step |
+| 9 | Plan knowledge migrated to godoc / inline comments / `docs/architecture/`; `docs/plans/<slug>.md` removed; final dedicated commit landed |
