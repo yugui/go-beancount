@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
+	"go.lsp.dev/protocol"
 )
 
 func TestComputeLineOffsets_LFOnly(t *testing.T) {
@@ -130,6 +131,131 @@ func TestAstPositionToLSP_PastEOF(t *testing.T) {
 	// clamped line = len(lo)-1 = 1; runeLen(lineBytes(src, lo, 1)) = 0
 	if got.Line != 1 || got.Character != 0 {
 		t.Errorf("got (%d,%d), want (1,0)", got.Line, got.Character)
+	}
+}
+
+func TestLspPositionToByte_ASCII(t *testing.T) {
+	src := []byte("hello\nworld\n")
+	lo := computeLineOffsets(src)
+	// Line 0, character 3 → byte offset 3 ('l' in "hello")
+	got := lspPositionToByte(protocol.Position{Line: 0, Character: 3}, src, lo)
+	if got != 3 {
+		t.Errorf("lspPositionToByte(0,3): got %d, want 3", got)
+	}
+}
+
+func TestLspPositionToByte_CJK3Byte(t *testing.T) {
+	// "こん\n" — each rune is 3 bytes UTF-8, but 1 UTF-16 unit
+	src := []byte("\xe3\x81\x93\xe3\x82\x93\n")
+	lo := computeLineOffsets(src)
+	// Line 0, character 1 → second CJK rune starts at byte 3
+	got := lspPositionToByte(protocol.Position{Line: 0, Character: 1}, src, lo)
+	if got != 3 {
+		t.Errorf("lspPositionToByte(CJK, 0,1): got %d, want 3", got)
+	}
+}
+
+func TestLspPositionToByte_EmojiSurrogatePair(t *testing.T) {
+	// "a😀b\n" — 😀 is U+1F600, 4 bytes UTF-8, 2 UTF-16 units
+	src := []byte("a\xf0\x9f\x98\x80b\n")
+	lo := computeLineOffsets(src)
+	// Line 0, character 3 (after 'a'=1 unit, '😀'=2 units) → byte offset 5 ('b')
+	got := lspPositionToByte(protocol.Position{Line: 0, Character: 3}, src, lo)
+	if got != 5 {
+		t.Errorf("lspPositionToByte(emoji, 0,3): got %d, want 5", got)
+	}
+}
+
+func TestLspPositionToByte_LineStart(t *testing.T) {
+	src := []byte("abc\ndef\n")
+	lo := computeLineOffsets(src)
+	// Line 1, character 0 → byte offset 4 (start of "def")
+	got := lspPositionToByte(protocol.Position{Line: 1, Character: 0}, src, lo)
+	if got != 4 {
+		t.Errorf("lspPositionToByte(line-start, 1,0): got %d, want 4", got)
+	}
+}
+
+func TestLspPositionToByte_LineEnd(t *testing.T) {
+	src := []byte("abc\ndef\n")
+	lo := computeLineOffsets(src)
+	// Line 0, character 3 → byte offset 3 ('\n')
+	got := lspPositionToByte(protocol.Position{Line: 0, Character: 3}, src, lo)
+	if got != 3 {
+		t.Errorf("lspPositionToByte(line-end, 0,3): got %d, want 3", got)
+	}
+}
+
+func TestLspPositionToByte_PastEOFClamp(t *testing.T) {
+	src := []byte("abc\n")
+	lo := computeLineOffsets(src)
+	// Line 99 → clamp to len(src)
+	got := lspPositionToByte(protocol.Position{Line: 99, Character: 0}, src, lo)
+	if got != len(src) {
+		t.Errorf("lspPositionToByte(past-EOF, 99,0): got %d, want %d", got, len(src))
+	}
+}
+
+func TestByteOffsetToLSP_ASCII(t *testing.T) {
+	src := []byte("hello\nworld\n")
+	lo := computeLineOffsets(src)
+	// Byte offset 3 → line 0, character 3
+	got := byteOffsetToLSP(3, src, lo)
+	if got.Line != 0 || got.Character != 3 {
+		t.Errorf("byteOffsetToLSP(3): got (%d,%d), want (0,3)", got.Line, got.Character)
+	}
+}
+
+func TestByteOffsetToLSP_CJK3Byte(t *testing.T) {
+	// "こん\n" — each CJK rune is 3 bytes UTF-8, 1 UTF-16 unit
+	src := []byte("\xe3\x81\x93\xe3\x82\x93\n")
+	lo := computeLineOffsets(src)
+	// Byte offset 3 (start of second CJK rune) → line 0, character 1
+	got := byteOffsetToLSP(3, src, lo)
+	if got.Line != 0 || got.Character != 1 {
+		t.Errorf("byteOffsetToLSP(CJK, 3): got (%d,%d), want (0,1)", got.Line, got.Character)
+	}
+}
+
+func TestByteOffsetToLSP_EmojiSurrogatePair(t *testing.T) {
+	// "a😀b\n" — 😀 is U+1F600, 4 bytes UTF-8, 2 UTF-16 units
+	src := []byte("a\xf0\x9f\x98\x80b\n")
+	lo := computeLineOffsets(src)
+	// Byte offset 5 ('b') → line 0, character 3 ('a'=1, '😀'=2)
+	got := byteOffsetToLSP(5, src, lo)
+	if got.Line != 0 || got.Character != 3 {
+		t.Errorf("byteOffsetToLSP(emoji, 5): got (%d,%d), want (0,3)", got.Line, got.Character)
+	}
+}
+
+func TestByteOffsetToLSP_LineStart(t *testing.T) {
+	src := []byte("abc\ndef\n")
+	lo := computeLineOffsets(src)
+	// Byte offset 4 (start of "def") → line 1, character 0
+	got := byteOffsetToLSP(4, src, lo)
+	if got.Line != 1 || got.Character != 0 {
+		t.Errorf("byteOffsetToLSP(line-start, 4): got (%d,%d), want (1,0)", got.Line, got.Character)
+	}
+}
+
+func TestByteOffsetToLSP_LineEnd(t *testing.T) {
+	src := []byte("abc\ndef\n")
+	lo := computeLineOffsets(src)
+	// Byte offset 3 ('\n') → line 0, character 3
+	got := byteOffsetToLSP(3, src, lo)
+	if got.Line != 0 || got.Character != 3 {
+		t.Errorf("byteOffsetToLSP(line-end, 3): got (%d,%d), want (0,3)", got.Line, got.Character)
+	}
+}
+
+func TestByteOffsetToLSP_PastEOFClamp(t *testing.T) {
+	src := []byte("abc\n")
+	lo := computeLineOffsets(src)
+	// Byte offset past EOF → clamp to last position (line 1, character 0)
+	got := byteOffsetToLSP(999, src, lo)
+	// computeLineOffsets("abc\n") → [0, 4]; EOF is at line 1, char 0
+	if got.Line != 1 || got.Character != 0 {
+		t.Errorf("byteOffsetToLSP(past-EOF, 999): got (%d,%d), want (1,0)", got.Line, got.Character)
 	}
 }
 

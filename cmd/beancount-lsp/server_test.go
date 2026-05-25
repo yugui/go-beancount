@@ -193,7 +193,6 @@ func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 		t.Errorf("initialize: ServerInfo.Name = %q, want beancount-lsp", result.ServerInfo.Name)
 	}
 
-	// Contract §4: only TextDocumentSync is declared; no other capability set.
 	caps := result.Capabilities
 	if caps.HoverProvider != nil {
 		t.Errorf("initialize: HoverProvider = %v, want nil", caps.HoverProvider)
@@ -204,8 +203,11 @@ func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 	if caps.CompletionProvider != nil {
 		t.Errorf("initialize: CompletionProvider = %v, want nil", caps.CompletionProvider)
 	}
-	if caps.DocumentFormattingProvider != nil {
-		t.Errorf("initialize: DocumentFormattingProvider = %v, want nil", caps.DocumentFormattingProvider)
+	if ok, _ := caps.DocumentFormattingProvider.(bool); !ok {
+		t.Errorf("initialize: DocumentFormattingProvider = %v, want true", caps.DocumentFormattingProvider)
+	}
+	if ok, _ := caps.DocumentRangeFormattingProvider.(bool); !ok {
+		t.Errorf("initialize: DocumentRangeFormattingProvider = %v, want true", caps.DocumentRangeFormattingProvider)
 	}
 	if caps.Workspace != nil {
 		t.Errorf("initialize: Workspace = %v, want nil", caps.Workspace)

@@ -6,6 +6,7 @@ go_library(
         "debounce.go",
         "diagnostics.go",
         "docsync.go",
+        "formatting.go",
         "handlers.go",
         "main.go",
         "position.go",
@@ -16,7 +17,9 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/ast",
+        "//pkg/format",
         "//pkg/session",
+        "//pkg/syntax",
         "@dev_lsp_go_jsonrpc2//:jsonrpc2",
         "@dev_lsp_go_protocol//:protocol",
         "@dev_lsp_go_uri//:uri",
@@ -33,6 +36,7 @@ go_test(
     name = "beancount-lsp_test",
     srcs = [
         "diagnostics_test.go",
+        "formatting_test.go",
         "position_test.go",
         "server_test.go",
     ],

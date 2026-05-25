@@ -7,6 +7,80 @@ import (
 	"go.lsp.dev/protocol"
 )
 
+// utf16Units returns the number of UTF-16 code units that r occupies.
+// Invalid UTF-8 bytes (RuneError, size 1) each count as 1 unit; supplementary
+// plane runes (U+10000+) count as 2 (surrogate pair).
+func utf16Units(r rune, size int) uint32 {
+	if r == utf8.RuneError && size == 1 {
+		return 1
+	}
+	if r >= 0x10000 {
+		return 2
+	}
+	return 1
+}
+
+// byteOffsetToLSP converts a byte offset in src to an LSP protocol.Position
+// (0-based line, UTF-16 character index). Out-of-range offsets clamp to the
+// nearest valid position.
+func byteOffsetToLSP(offset int, src []byte, lo lineOffsets) protocol.Position {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(src) {
+		offset = len(src)
+	}
+
+	// Find the last line whose start <= offset.
+	line := len(lo) - 1
+	for l := 0; l < len(lo)-1; l++ {
+		if lo[l+1] > offset {
+			line = l
+			break
+		}
+	}
+
+	lineStart := lo[line]
+	var ch uint32
+	for i := lineStart; i < offset; {
+		r, size := utf8.DecodeRune(src[i:])
+		ch += utf16Units(r, size)
+		i += size
+	}
+	return protocol.Position{Line: uint32(line), Character: ch}
+}
+
+// lspPositionToByte converts an LSP protocol.Position (0-based line,
+// UTF-16 character index) to a byte offset in src. Out-of-range positions
+// clamp to the nearest valid offset.
+func lspPositionToByte(p protocol.Position, src []byte, lo lineOffsets) int {
+	line := int(p.Line)
+	if line >= len(lo) {
+		return len(src)
+	}
+
+	lineStart := lo[line]
+	var lineEnd int
+	if line+1 < len(lo) {
+		lineEnd = lo[line+1]
+	} else {
+		lineEnd = len(src)
+	}
+
+	var units uint32
+	i := lineStart
+	for i < lineEnd && units < p.Character {
+		r, size := utf8.DecodeRune(src[i:])
+		u := utf16Units(r, size)
+		if units+u > p.Character {
+			break
+		}
+		units += u
+		i += size
+	}
+	return i
+}
+
 // lineOffsets is the byte offset of each line's first byte, indexed from 0.
 type lineOffsets []int
 
