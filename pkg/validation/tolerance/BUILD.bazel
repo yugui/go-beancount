@@ -6,8 +6,8 @@ go_library(
         "doc.go",
         "tolerance.go",
     ],
-    importpath = "github.com/yugui/go-beancount/pkg/validation/internal/tolerance",
-    visibility = ["//pkg/validation:__subpackages__"],
+    importpath = "github.com/yugui/go-beancount/pkg/validation/tolerance",
+    visibility = ["//visibility:public"],
     deps = [
         "//pkg/ast",
         "@com_github_cockroachdb_apd_v3//:apd",

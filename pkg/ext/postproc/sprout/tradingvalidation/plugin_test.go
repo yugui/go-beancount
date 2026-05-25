@@ -498,3 +498,53 @@ func TestDiagCmpOptsUsable(t *testing.T) {
 		t.Errorf("diagCmpOpts should ignore Message; diff:\n%s", diff)
 	}
 }
+
+// totalCost builds the *ast.Cost a booked posting carries for the
+// `{{ T CUR }}` (total-only) form.
+func totalCost(t *testing.T, totalStr, cur string) *ast.Cost {
+	t.Helper()
+	d, _, err := apd.NewFromString(totalStr)
+	if err != nil {
+		t.Fatalf("parse %q: %v", totalStr, err)
+	}
+	return &ast.Cost{
+		Currency: cur,
+		Total:    &ast.Amount{Number: *d, Currency: cur},
+	}
+}
+
+// TestHighPrecisionJPYResidualWithinTolerance: a transaction whose
+// non-trading-side JPY residual is the inevitable tail of a
+// high-precision JPY literal (0.000000000123456789, from the 18-digit
+// posting) must not produce a diagnostic. The least precise JPY
+// exponent in the rule's subset is -8, so the inferred tolerance
+// 0.5×10⁻⁸ comfortably absorbs the residual.
+func TestHighPrecisionJPYResidualWithinTolerance(t *testing.T) {
+	neg100Stock := amtF("-100", "STOCK")
+	negTinyStock := amtF("-0.00001234567", "STOCK")
+	jpy3 := amtF("30000.234567890123456789", "JPY")
+	jpy4 := amtF("-10000.10864196", "JPY")
+	posBigStock := amtF("100.00001234567", "STOCK")
+	jpy6 := amtF("-20000.12592593", "JPY")
+
+	tx := mkTx([]ast.Posting{
+		{Account: "Assets:Stock", Amount: &neg100Stock, Cost: totalCost(t, "20000.12345678", "JPY")},
+		{Account: "Assets:Stock", Amount: &negTinyStock, Cost: totalCost(t, "0.00246915", "JPY")},
+		{Account: "Assets:Stock", Amount: &jpy3},
+		{Account: "Income:CapitalGain", Amount: &jpy4},
+		{Account: "Equity:Trading:STOCK-JPY", Amount: &posBigStock, Cost: totalCost(t, "20000.12592593", "JPY")},
+		{Account: "Equity:Trading:STOCK-JPY", Amount: &jpy6},
+	})
+	in := api.Input{Directive: testPluginDir, Directives: seqOf([]ast.Directive{tx})}
+
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Errorf("want no diagnostics for high-precision residual within tolerance, got %d:", len(res.Diagnostics))
+		for _, d := range res.Diagnostics {
+			t.Errorf("  %s: %s", d.Code, d.Message)
+		}
+	}
+}

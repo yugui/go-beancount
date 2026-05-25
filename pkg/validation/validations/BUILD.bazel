@@ -19,7 +19,7 @@ go_library(
         "//pkg/inventory",
         "//pkg/validation",
         "//pkg/validation/internal/accountstate",
-        "//pkg/validation/internal/tolerance",
+        "//pkg/validation/tolerance",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )
