@@ -28,6 +28,11 @@ const (
 	ContextLink
 	// ContextInString means the cursor is inside a string literal.
 	ContextInString
+	// ContextPayee means the cursor is in the payee string (first quoted string) of a transaction header line.
+	ContextPayee
+	// ContextNarration means the cursor is inside the narration string of a
+	// transaction header (the second quoted string).
+	ContextNarration
 )
 
 // String returns the human-readable name of k.
@@ -49,6 +54,10 @@ func (k ContextKind) String() string {
 		return "Link"
 	case ContextInString:
 		return "InString"
+	case ContextPayee:
+		return "Payee"
+	case ContextNarration:
+		return "Narration"
 	default:
 		return fmt.Sprintf("ContextKind(%d)", int(k))
 	}
@@ -64,13 +73,33 @@ var (
 
 	// reCurrencyToken: uppercase-only token (no colon).
 	reCurrencyToken = regexp.MustCompile(`[A-Z][A-Z0-9]*$`)
+
+	// reTxnHeader matches a transaction header prefix: date followed by a flag
+	// (* or !) or the keyword "txn".
+	reTxnHeader = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\s+(?:\*|!|txn)\s`)
 )
 
 // classifyContext returns the completion context for the cursor at the end of
 // linePrefix (the bytes from start of line to cursor, exclusive). The heuristic
 // is lexical only; when ambiguous it returns ContextUnknown, which produces
 // no completions rather than wrong ones.
+//
+// For transaction header lines (date + flag/txn keyword), quote counting
+// distinguishes payee from narration: 1 quote → ContextPayee (cursor is in
+// the first string; whether a second string follows is unknown at this point),
+// 3 quotes → ContextNarration (cursor is in the second string).
 func classifyContext(linePrefix string) ContextKind {
+	// must precede the generic odd-quote InString check
+	if reTxnHeader.MatchString(linePrefix) {
+		n := strings.Count(linePrefix, `"`)
+		if n == 1 {
+			return ContextPayee
+		}
+		if n == 3 {
+			return ContextNarration
+		}
+	}
+
 	// Count quotes: odd number means we are inside a string literal.
 	if strings.Count(linePrefix, `"`)%2 == 1 {
 		return ContextInString

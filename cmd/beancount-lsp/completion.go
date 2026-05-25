@@ -56,10 +56,14 @@ func (s *Server) handleCompletion(ctx context.Context, reply jsonrpc2.Replier, r
 	items := make([]protocol.CompletionItem, 0, len(candidates))
 	compKind := completionItemKind(kind)
 	for _, c := range candidates {
-		items = append(items, protocol.CompletionItem{
+		item := protocol.CompletionItem{
 			Label: c,
 			Kind:  compKind,
-		})
+		}
+		if kind == ContextPayee || kind == ContextNarration {
+			item.InsertText = c
+		}
+		items = append(items, item)
 	}
 
 	return reply(ctx, &protocol.CompletionList{IsIncomplete: false, Items: items}, nil)
@@ -126,6 +130,27 @@ func completionCandidates(kind ContextKind, linePrefix string, ledger *ast.Ledge
 			}
 		}
 
+	case ContextPayee:
+		if ledger != nil {
+			for _, d := range ledger.All() {
+				if tx, ok := d.(*ast.Transaction); ok && tx.Payee != "" {
+					seen[tx.Payee] = struct{}{}
+				}
+			}
+		}
+
+	case ContextNarration:
+		// TODO: plan requires currentPayee / currentAccounts / currentFile group filtering
+		// via findEnclosingTransaction + sortText prefixes. Deferred; current impl returns
+		// unfiltered narrations.
+		if ledger != nil {
+			for _, d := range ledger.All() {
+				if tx, ok := d.(*ast.Transaction); ok && tx.Narration != "" {
+					seen[tx.Narration] = struct{}{}
+				}
+			}
+		}
+
 	case ContextInString, ContextUnknown:
 		// no candidates
 	}
@@ -186,6 +211,8 @@ func completionItemKind(kind ContextKind) protocol.CompletionItemKind {
 		return protocol.CompletionItemKindEnum
 	case ContextLink:
 		return protocol.CompletionItemKindReference
+	case ContextPayee, ContextNarration:
+		return protocol.CompletionItemKindValue
 	default:
 		return protocol.CompletionItemKindText
 	}

@@ -57,7 +57,6 @@ func TestClassifyContext(t *testing.T) {
 		// InString context (odd number of quotes) — takes priority over tag/link
 		{`  "`, ContextInString},
 		{`  * "`, ContextInString},
-		{`2024-01-01 * "Dinner`, ContextInString},
 		// # inside a string literal must NOT trigger ContextTag
 		{`"Hello #notTag"`, ContextUnknown},
 
@@ -73,6 +72,18 @@ func TestClassifyContext(t *testing.T) {
 
 		// Negative: non-indented non-date non-special → ContextUnknown
 		{"something", ContextUnknown},
+
+		// Transaction header payee/narration heuristics.
+		// 1 quote → cursor is in first string → ContextPayee
+		{`2024-01-01 * "`, ContextPayee},
+		{`2024-01-01 ! "foo`, ContextPayee},
+		{`2024-01-01 txn "`, ContextPayee},
+		// 3 quotes → cursor is in second string → ContextNarration
+		{`2024-01-01 * "Test" "`, ContextNarration},
+		{`2024-01-01 * "foo" "bar`, ContextNarration},
+		// Even-quote txn-header cases: cursor is outside any string → ContextUnknown
+		{`2024-01-01 * "foo" `, ContextUnknown},
+		{`2024-01-01 * "foo" "bar" `, ContextUnknown},
 	}
 
 	for _, tc := range tests {
@@ -98,6 +109,8 @@ func TestContextKindString(t *testing.T) {
 		{ContextTag, "Tag"},
 		{ContextLink, "Link"},
 		{ContextInString, "InString"},
+		{ContextPayee, "Payee"},
+		{ContextNarration, "Narration"},
 		{ContextKind(99), "ContextKind(99)"},
 	}
 	for _, tc := range tests {

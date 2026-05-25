@@ -286,19 +286,155 @@ func TestCompletion_Link(t *testing.T) {
 	}
 }
 
-// TestCompletion_InString: cursor inside a "..." string → empty list.
+// TestCompletion_InString: cursor inside a string literal that is NOT a
+// transaction header → no completions, even when payees exist in the ledger.
 func TestCompletion_InString(t *testing.T) {
 	dir := t.TempDir()
-	const src = `2024-01-15 * "Dinner
+	// The ledger contains a transaction with a payee so candidates would exist
+	// if the context were ContextPayee; the option directive line is NOT a txn
+	// header, so classifyContext must produce ContextInString (odd quote count).
+	const src = `2024-01-15 * "Acme" "Dinner"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+option "title" "Foo bar
 `
 	rootFile := writeTempFile(t, dir, "main.beancount", src)
 	client := newCompletionServer(t, rootFile)
 	docURI := uri.File(rootFile)
 
-	list := callCompletion(t, client, docURI, 0, 19)
+	// Line 3 is `option "title" "Foo bar` — cursor inside second string.
+	list := callCompletion(t, client, docURI, 3, 23)
 
 	if len(list.Items) != 0 {
 		t.Errorf("handleCompletion: InString: got %d items, want 0: %v", len(list.Items), labelSet(list.Items))
+	}
+}
+
+// TestCompletion_Payee: ledger with payees "Acme" and "Beta"; cursor at first
+// quoted string of a transaction header returns both payees.
+func TestCompletion_Payee(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Acme" "Lunch"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Beta" "Dinner"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	// Push overlay with a new transaction header line: cursor in first string.
+	editedSrc := src + "2024-02-01 * \"\n"
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_Payee: didOpen: %v", err)
+	}
+
+	// Line 8 (0-indexed), char 14 — cursor after the opening quote.
+	list := awaitCompletion(t, client, docURI, 8, 14, 2)
+
+	if !containsLabel(list.Items, "Acme") {
+		t.Errorf("TestCompletion_Payee: missing 'Acme'; got %v", labelSet(list.Items))
+	}
+	if !containsLabel(list.Items, "Beta") {
+		t.Errorf("TestCompletion_Payee: missing 'Beta'; got %v", labelSet(list.Items))
+	}
+	for _, it := range list.Items {
+		if it.Kind != protocol.CompletionItemKindValue {
+			t.Errorf("TestCompletion_Payee: item %q kind = %v, want Value", it.Label, it.Kind)
+		}
+		if it.InsertText != it.Label {
+			t.Errorf("TestCompletion_Payee: item %q InsertText = %q, want bare label", it.Label, it.InsertText)
+		}
+	}
+}
+
+// TestCompletion_Narration_All: ledger with narrations "Lunch" and "Dinner";
+// cursor at second quoted string of a transaction header returns both narrations.
+func TestCompletion_Narration_All(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Acme" "Lunch"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Beta" "Dinner"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	// Push overlay with a new transaction header line: cursor in second string.
+	editedSrc := src + "2024-02-01 * \"Foo\" \"\n"
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_Narration_All: didOpen: %v", err)
+	}
+
+	// Line 8, char 20 — cursor after the opening quote of the second string.
+	list := awaitCompletion(t, client, docURI, 8, 20, 2)
+
+	if !containsLabel(list.Items, "Lunch") {
+		t.Errorf("TestCompletion_Narration_All: missing 'Lunch'; got %v", labelSet(list.Items))
+	}
+	if !containsLabel(list.Items, "Dinner") {
+		t.Errorf("TestCompletion_Narration_All: missing 'Dinner'; got %v", labelSet(list.Items))
+	}
+	for _, it := range list.Items {
+		if it.Kind != protocol.CompletionItemKindValue {
+			t.Errorf("TestCompletion_Narration_All: item %q kind = %v, want Value", it.Label, it.Kind)
+		}
+		if it.InsertText != it.Label {
+			t.Errorf("TestCompletion_Narration_All: item %q InsertText = %q, want bare label", it.Label, it.InsertText)
+		}
+	}
+}
+
+// TestCompletion_Payee_DeduplicatedAndSorted: multiple transactions sharing the
+// same payee appear only once and results are sorted.
+func TestCompletion_Payee_DeduplicatedAndSorted(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Zebra" "Lunch"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Acme" "Dinner"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+2024-01-17 * "Acme" "Coffee"
+  Assets:Bank  -5 USD
+  Expenses:Food  5 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	editedSrc := src + "2024-02-01 * \"\n"
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_Payee_DeduplicatedAndSorted: didOpen: %v", err)
+	}
+
+	// Line 11 (0-indexed), char 14.
+	list := awaitCompletion(t, client, docURI, 11, 14, 2)
+
+	got := labelSet(list.Items)
+	want := []string{"Acme", "Zebra"}
+	if !slices.Equal(got, want) {
+		t.Errorf("TestCompletion_Payee_DeduplicatedAndSorted: labels = %v, want %v", got, want)
 	}
 }
 
