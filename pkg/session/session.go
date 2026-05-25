@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sync"
 
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -28,17 +29,52 @@ type Session struct {
 	opts     []loader.Option
 	loadFunc func(ctx context.Context, path string, opts ...loader.Option) (*ast.Ledger, error)
 
-	mu      sync.Mutex
-	overlay map[string][]byte
-	cached  *ast.Ledger
-	valid   bool
-	closed  bool
+	mu          sync.Mutex
+	overlay     map[string][]byte
+	cached      *ast.Ledger
+	valid       bool
+	closed      bool
+	subscribers []*subscriber
 
 	// coalescing state: at most one reload runs at a time.
 	reloading  bool
 	done       chan struct{}
 	lastResult *ast.Ledger
 	lastErr    error
+}
+
+// subscriber holds a single subscription's channel and the state needed to
+// safely coordinate concurrent send and cancel operations.
+type subscriber struct {
+	ch     chan *ast.Ledger
+	mu     sync.Mutex // serializes send vs close
+	closed bool
+	once   sync.Once
+}
+
+// send delivers ledger with latest-wins semantics; it is a no-op after close.
+func (sub *subscriber) send(ledger *ast.Ledger) {
+	sub.mu.Lock()
+	defer sub.mu.Unlock()
+	if sub.closed {
+		return
+	}
+	// drain stale value
+	select {
+	case <-sub.ch:
+	default:
+	}
+	sub.ch <- ledger
+}
+
+// close closes the subscriber's channel exactly once.
+func (sub *subscriber) close() {
+	sub.once.Do(func() {
+		sub.mu.Lock()
+		sub.closed = true
+		close(sub.ch)
+		sub.mu.Unlock()
+	})
 }
 
 // New creates a Session rooted at rootPath. opts are captured and reused on
@@ -147,6 +183,68 @@ func (s *Session) Overlays() map[string][]byte {
 	return out
 }
 
+// Subscribe registers a receiver for ledger updates produced by successful
+// reloads. It returns a receive-only channel of capacity 1 carrying the
+// latest *ast.Ledger, and a cancel function that unsubscribes and closes
+// the channel.
+//
+// Latest-wins delivery: on each successful reload the session attempts a
+// non-blocking send to every live subscriber; if the channel still holds an
+// unread ledger from a prior reload, that value is dropped and the new one
+// takes its place.
+//
+// cancel is safe to call any number of times and from any goroutine; the
+// first call unsubscribes and closes the channel.
+//
+// Subscribe is safe for concurrent use. A subscriber registered while a
+// reload is in flight may or may not observe that reload but is guaranteed
+// to observe every reload that completes strictly after Subscribe returns.
+// Symmetrically, a subscriber whose cancel runs concurrently with an
+// in-flight reload may receive that reload's ledger one final time before
+// the channel close becomes visible; cancel is guaranteed to suppress every
+// reload that starts strictly after cancel returns.
+//
+// After Session.Close, Subscribe returns an already-closed channel and a
+// no-op cancel.
+func (s *Session) Subscribe() (<-chan *ast.Ledger, func()) {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		ch := make(chan *ast.Ledger)
+		close(ch)
+		return ch, func() {}
+	}
+	sub := &subscriber{ch: make(chan *ast.Ledger, 1)}
+	s.subscribers = append(s.subscribers, sub)
+	s.mu.Unlock()
+	cancel := func() {
+		s.mu.Lock()
+		for i, candidate := range s.subscribers {
+			if candidate == sub {
+				s.subscribers[i] = s.subscribers[len(s.subscribers)-1]
+				s.subscribers[len(s.subscribers)-1] = nil
+				s.subscribers = s.subscribers[:len(s.subscribers)-1]
+				break
+			}
+		}
+		s.mu.Unlock()
+		sub.close()
+	}
+	return sub.ch, cancel
+}
+
+// broadcast sends ledger to all live subscribers using latest-wins semantics.
+// It snapshots the subscriber list under s.mu and sends outside the lock so
+// that slow receivers cannot stall the session.
+func (s *Session) broadcast(ledger *ast.Ledger) {
+	s.mu.Lock()
+	subs := slices.Clone(s.subscribers)
+	s.mu.Unlock()
+	for _, sub := range subs {
+		sub.send(ledger)
+	}
+}
+
 // Close marks the session as closed. All subsequent calls to Snapshot,
 // SetOverlay, ClearOverlay, and Reload return ErrSessionClosed. Overlays
 // continues to work. Close does not wait for any in-flight reload; a
@@ -155,8 +253,12 @@ func (s *Session) Overlays() map[string][]byte {
 func (s *Session) Close() error {
 	s.mu.Lock()
 	s.closed = true
+	subs := s.subscribers
+	s.subscribers = nil
 	s.mu.Unlock()
-	// TODO: broadcast close to subscribers
+	for _, sub := range subs {
+		sub.close()
+	}
 	return nil
 }
 
@@ -209,9 +311,11 @@ func (s *Session) reload(ctx context.Context, force bool) (*ast.Ledger, error) {
 	if err == nil && !s.closed {
 		s.cached = ledger
 		s.valid = true
-		// TODO: broadcast to subscribers
 	}
 	s.mu.Unlock()
+	if err == nil {
+		s.broadcast(ledger)
+	}
 	close(done)
 
 	return ledger, err

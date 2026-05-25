@@ -31,4 +31,13 @@
 // retries.
 //
 // Close is idempotent; thereafter all state-changing methods return ErrSessionClosed.
+//
+// # Subscriptions
+//
+// [Session.Subscribe] returns a capacity-1 channel that receives the latest
+// [ast.Ledger] after each successful reload. Delivery uses latest-wins
+// semantics: if the channel already holds an unread value from a prior reload,
+// it is replaced. The returned cancel function unsubscribes and closes the
+// channel; it is safe to call any number of times from any goroutine.
+// [Session.Close] closes all live subscriber channels.
 package session

@@ -16,7 +16,10 @@ go_library(
 
 go_test(
     name = "session_test",
-    srcs = ["session_test.go"],
+    srcs = [
+        "session_test.go",
+        "subscribe_test.go",
+    ],
     embed = [":session"],
     deps = [
         "//pkg/ast",

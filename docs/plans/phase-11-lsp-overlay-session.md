@@ -574,6 +574,156 @@ func (s *Session) Subscribe() (<-chan *ast.Ledger, cancel func())
 **Quality requirements**: godoc に latest-wins セマンティクスと cancel の
 sync.Once 安全性を明記。
 
+### Detailed Design
+
+#### Contract
+
+**Public signature**:
+
+```go
+// Subscribe registers a receiver for ledger updates produced by successful
+// reloads. It returns a receive-only channel of capacity 1 carrying the
+// latest *ast.Ledger, and a cancel function that unsubscribes and closes
+// the channel.
+//
+// Latest-wins delivery: on each successful reload the session attempts a
+// non-blocking send to every live subscriber; if the channel still holds
+// an unread ledger from a prior reload, that value is dropped and the new
+// one takes its place.
+//
+// cancel is safe to call any number of times and from any goroutine; the
+// first call unsubscribes and closes the channel.
+//
+// Subscribe is safe for concurrent use. A subscriber registered while a
+// reload is in flight may or may not observe that reload but is guaranteed
+// to observe every reload that completes strictly after Subscribe returns.
+//
+// After Session.Close, Subscribe returns an already-closed channel and a
+// no-op cancel.
+func (s *Session) Subscribe() (<-chan *ast.Ledger, func())
+```
+
+**Broadcast triggers**:
+
+- Broadcast fires exactly once per successful reload, at the existing hook in `reload()` (immediately after `s.cached = ledger`, while `err == nil && !s.closed`).
+- Broadcast does NOT fire on: Reload failure, the eager initial load inside `New`, or `Session.Close`. A new subscriber registered before the first post-New Reload starts empty.
+
+**Channel semantics**:
+
+- Capacity 1, direction `<-chan *ast.Ledger` (receive-only).
+- Values are pointer-equal to those returned by Snapshot/Reload for the same reload. Read-only by Session contract.
+- Latest-wins: broadcaster drains a stale value (if any) before pushing the new one. Each subscriber has its own channel; subscribers never race the broadcaster.
+- Channel is closed exactly once, either by `cancel()` or by `Session.Close()`.
+
+**Cancel semantics**:
+
+- Idempotent via `sync.Once`. Multiple concurrent invocations are safe.
+- First call: removes the subscriber from the session's live set and closes the channel.
+- Cancel acquires `s.mu` briefly to detach. The implementation must avoid a panic from a broadcast send racing channel close (see Suggested Internals).
+
+**Close interaction**:
+
+- `Session.Close()` closes every live subscriber's channel via each subscriber's own `sync.Once` (so a concurrent `cancel()` is safe).
+- After Close, no further broadcasts fire (the existing `!s.closed` guard suffices).
+- After Close, `Subscribe()` returns an already-closed channel and a no-op cancel function. Identical observable behavior to "cancel called immediately after Subscribe".
+
+**Required tests** (new file `pkg/session/subscribe_test.go`, white-box):
+
+1. `TestSubscribe_DeliversOnReload` — Subscribe → Reload → channel yields the Reload's ledger.
+2. `TestSubscribe_NoInitialDelivery` — Subscribe after New; no value arrives until a Reload.
+3. `TestSubscribe_LatestWins` — Subscribe; three Reloads without reading; one receive returns the third Reload's ledger.
+4. `TestSubscribe_CancelClosesChannel` — Subscribe + cancel → `<-ch` returns `ok=false`.
+5. `TestSubscribe_CancelIdempotent` — three concurrent cancel calls; no panic.
+6. `TestSubscribe_CancelStopsDelivery` — Subscribe + cancel + Reload → channel stays closed (no late delivery).
+7. `TestSubscribe_MultipleSubscribers` — 10 subscribers, one Reload, all 10 channels yield the ledger.
+8. `TestSubscribe_AfterClose` — Close → Subscribe → channel is already closed, cancel is no-op (does not panic).
+9. `TestClose_ClosesAllSubscribers` — three Subscribes → Close → all channels yield `ok=false`; no goroutine leaks.
+10. `TestSubscribe_FailedReloadNoBroadcast` — loadFunc returns error → Reload fails → no delivery.
+11. `TestSubscribe_NoBlockOnSlowSubscriber` — Subscribe but never read; 5 successive Reloads complete quickly; final receive yields the fifth.
+
+#### Suggested Internals
+
+1. **Subscriber struct**:
+   ```go
+   type subscriber struct {
+       ch     chan *ast.Ledger
+       once   sync.Once  // serializes close
+       // EITHER atomic.Bool closed + recover() in send (Pattern A)
+       // OR    sync.Mutex per subscriber serializing send vs close (Pattern C)
+   }
+   ```
+
+2. **Session field**: add `subscribers []*subscriber` protected by existing `s.mu`. No new mutex.
+
+3. **Broadcast — snapshot under lock, send outside**:
+   ```go
+   func (s *Session) broadcast(ledger *ast.Ledger) {
+       s.mu.Lock()
+       subs := append([]*subscriber(nil), s.subscribers...)
+       s.mu.Unlock()
+       for _, sub := range subs {
+           sub.send(ledger) // see Pattern A vs C below
+       }
+   }
+   ```
+   Hook: replace the existing `// TODO: broadcast to subscribers` in `reload()` with `s.broadcast(ledger)`. Position: after `s.cached = ledger`, before `close(done)`. Snapshot-then-send keeps `s.mu` held only O(N_subscribers) time, decoupling broadcast from any slow subscriber.
+
+4. **Cancel/broadcast race resolution — pick ONE pattern**:
+
+   - **Pattern A** (planner's primary recommendation): subscriber has `atomic.Bool closed`. `send()` checks the flag, drains, re-checks, then sends in a non-blocking select wrapped in `defer recover()` to tolerate a close happening between drain and push. Documented inline as a narrow accepted race.
+
+   - **Pattern C** (orchestrator-suggested alternative): subscriber has `sync.Mutex` that serializes send vs close on that single subscriber. `send()` locks, checks `closed` flag, drains, sends, unlocks. `cancel`'s `sync.Once` locks the same mutex, sets `closed=true`, closes channel, unlocks. No `recover` needed; reasoning is local and obvious. Cost: one mutex per subscriber, but subscribers are typically 1–3 in LSP usage.
+
+   Generator: pick the one you find cleaner. Pattern C is recommended unless you find a concrete reason to prefer A. The Contract does not require either.
+
+5. **Subscribe implementation**:
+   ```go
+   func (s *Session) Subscribe() (<-chan *ast.Ledger, func()) {
+       s.mu.Lock()
+       if s.closed {
+           s.mu.Unlock()
+           ch := make(chan *ast.Ledger)
+           close(ch)
+           return ch, func() {}
+       }
+       sub := &subscriber{ch: make(chan *ast.Ledger, 1)}
+       s.subscribers = append(s.subscribers, sub)
+       s.mu.Unlock()
+       cancel := func() { sub.cancel(s) }  // detach from s.subscribers + close ch
+       return sub.ch, cancel
+   }
+   ```
+
+6. **Close integration**: replace `// TODO: broadcast close to subscribers` in `Close()` with a walk over `s.subscribers` calling each subscriber's `cancel`-equivalent close-once (under `s.mu` to snapshot, outside to close). Then `s.subscribers = nil`.
+
+7. **File layout**: extend `pkg/session/session.go` (recommended) OR new `pkg/session/subscribe.go`. Either fine.
+
+8. **`doc.go` addition**: short paragraph under a new `# Subscriptions` heading pointing at `Session.Subscribe`.
+
+9. **Test helper** in `subscribe_test.go`:
+   ```go
+   func recvWithin(t *testing.T, ch <-chan *ast.Ledger, d time.Duration) (*ast.Ledger, bool) {
+       t.Helper()
+       select {
+       case l, ok := <-ch: return l, ok
+       case <-time.After(d): return nil, false
+       }
+   }
+   ```
+
+#### Alternatives discussed
+
+- **Channel capacity**: cap=1 latest-wins (chosen) vs unbuffered (blocks reload runner) vs unlimited (memory unbounded) vs ring buffer (history not needed for LSP).
+- **Initial-ledger replay**: no replay (chosen) vs replay current ledger (every caller must dedupe).
+- **`s.mu` during broadcast**: released (chosen) vs held (slow subscriber stalls SetOverlay/next Reload).
+- **Subscribe-after-Close**: already-closed channel + no-op cancel (chosen, idiomatic Go) vs error return (signature noise) vs nil channel (footgun).
+- **Cancel mechanism**: `sync.Once` (chosen) vs atomic CAS (equivalent, more code) vs channel-based done.
+- **Cancel/broadcast race resolution**: Pattern A (atomic flag + recover) vs Pattern C (per-subscriber mutex). Pattern C is cleaner reasoning; either acceptable.
+
+#### Recommendation + rationale
+
+Adopt the Contract above. For internals, pattern C (per-subscriber mutex) is cleaner than the recover-based pattern A; generator picks one. Hooks at the Step 3-reserved sites in `reload` and `Close` ensure a localized diff.
+
 ### Step 5 — `cmd/beancount-lsp` scaffold
 
 **Functional requirements**:
