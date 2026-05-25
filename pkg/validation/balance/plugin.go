@@ -39,7 +39,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/validation"
-	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
+	"github.com/yugui/go-beancount/pkg/validation/tolerance"
 )
 
 // Apply runs the balance-assertion check as a postproc plugin. It

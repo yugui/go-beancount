@@ -3,6 +3,7 @@ package tradingvalidation
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/cockroachdb/apd/v3"
@@ -10,6 +11,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ext/postproc"
 	"github.com/yugui/go-beancount/pkg/ext/postproc/api"
 	"github.com/yugui/go-beancount/pkg/inventory"
+	"github.com/yugui/go-beancount/pkg/validation/tolerance"
 )
 
 const (
@@ -17,8 +19,6 @@ const (
 	codeTradingCommodityNotBalanced = "trading-commodity-not-balanced"
 
 	defaultPrefix = "Equity:Trading"
-
-	defaultToleranceMultiplier = "0.5"
 )
 
 func init() {
@@ -40,8 +40,6 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		return api.Result{}, nil
 	}
 
-	tolMult := toleranceMultiplier(in.Options)
-
 	disabledCommodities := map[string]struct{}{}
 	var transactions []*ast.Transaction
 
@@ -61,7 +59,11 @@ func apply(ctx context.Context, in api.Input) (api.Result, error) {
 		if !hasTradingPosting(tx, prefix) {
 			continue
 		}
-		diags = append(diags, checkTransaction(tx, prefix, disabledCommodities, tolMult, in.Directive)...)
+		more, err := checkTransaction(tx, prefix, disabledCommodities, in.Options, in.Directive)
+		if err != nil {
+			return api.Result{}, err
+		}
+		diags = append(diags, more...)
 	}
 
 	if len(diags) == 0 {
@@ -84,110 +86,166 @@ func isTrading(acct ast.Account, prefix string) bool {
 	return s == prefix || strings.HasPrefix(s, prefix+":")
 }
 
-// checkTransaction validates the three balance rules for tx and returns
-// any diagnostics.
+// checkTransaction evaluates the three balance rules against tx and
+// returns one diagnostic per per-currency residual that exceeds its
+// rule-scoped tolerance. The error return is reserved for tolerance
+// inference or decimal arithmetic failures.
 func checkTransaction(
 	tx *ast.Transaction,
 	prefix string,
 	disabled map[string]struct{},
-	tolMult *apd.Decimal,
+	opts *ast.OptionValues,
 	trigger *ast.Plugin,
-) []ast.Diagnostic {
+) ([]ast.Diagnostic, error) {
 	span := txSpan(tx, trigger)
-	tol := inferTolerances(tx.Postings, tolMult)
-
 	var diags []ast.Diagnostic
 
-	// Rule 1: the weighted sum of trading-account postings must be zero.
-	tradingWeights := map[string]*apd.Decimal{}
-	for i := range tx.Postings {
-		p := &tx.Postings[i]
-		if !isTrading(p.Account, prefix) {
-			continue
-		}
-		w, err := inventory.PostingWeight(p)
-		if err != nil || w == nil {
-			continue
-		}
-		addDecimal(tradingWeights, w.Currency, &w.Number)
+	// Rule 1: weighted sum of trading-account postings must balance.
+	trading := selectPostings(tx.Postings, func(p *ast.Posting) bool {
+		return isTrading(p.Account, prefix)
+	})
+	rule1, err := residuals(trading, opts)
+	if err != nil {
+		return nil, err
 	}
-	for cur, sum := range tradingWeights {
-		if balanceErr(sum, tol[cur]) {
-			diags = append(diags, ast.Diagnostic{
-				Code:     codeTradingNotBalanced,
-				Span:     span,
-				Message:  fmt.Sprintf("trading accounts do not balance for %s: %s", cur, sum.Text('f')),
-				Severity: ast.Error,
-			})
-		}
+	for _, r := range rule1 {
+		diags = append(diags, ast.Diagnostic{
+			Code:     codeTradingNotBalanced,
+			Span:     span,
+			Message:  fmt.Sprintf("trading accounts do not balance for %s: %s", r.Currency, r.Sum.Text('f')),
+			Severity: ast.Error,
+		})
 	}
 
-	// Rule 2: the weighted sum of non-trading-account postings must be zero.
-	nonTradingWeights := map[string]*apd.Decimal{}
-	for i := range tx.Postings {
-		p := &tx.Postings[i]
-		if isTrading(p.Account, prefix) {
-			continue
-		}
-		w, err := inventory.PostingWeight(p)
-		if err != nil || w == nil {
-			continue
-		}
-		addDecimal(nonTradingWeights, w.Currency, &w.Number)
+	// Rule 2: weighted sum of non-trading-account postings must balance.
+	nonTrading := selectPostings(tx.Postings, func(p *ast.Posting) bool {
+		return !isTrading(p.Account, prefix)
+	})
+	rule2, err := residuals(nonTrading, opts)
+	if err != nil {
+		return nil, err
 	}
-	for cur, sum := range nonTradingWeights {
-		if balanceErr(sum, tol[cur]) {
-			diags = append(diags, ast.Diagnostic{
-				Code:     codeTradingNotBalanced,
-				Span:     span,
-				Message:  fmt.Sprintf("non-trading accounts do not balance for %s: %s", cur, sum.Text('f')),
-				Severity: ast.Error,
-			})
-		}
+	for _, r := range rule2 {
+		diags = append(diags, ast.Diagnostic{
+			Code:     codeTradingNotBalanced,
+			Span:     span,
+			Message:  fmt.Sprintf("non-trading accounts do not balance for %s: %s", r.Currency, r.Sum.Text('f')),
+			Severity: ast.Error,
+		})
 	}
 
 	// Rule 3: per-effective-commodity balance.
-	commodities := effectiveCommodities(tx, disabled)
-	for commodity := range commodities {
-		bals := map[string]*apd.Decimal{}
-		for i := range tx.Postings {
-			p := &tx.Postings[i]
-			if p.Amount == nil {
-				continue
-			}
-			unitsCur := p.Amount.Currency
-			if _, dis := disabled[unitsCur]; dis {
-				// disabled: grouped by price currency; contribute via weight
-				// (units × price) only when the price currency matches.
-				if p.Price == nil || p.Price.Amount.Currency != commodity {
-					continue
-				}
-				w, err := inventory.PostingWeight(p)
-				if err != nil || w == nil {
-					continue
-				}
-				addDecimal(bals, w.Currency, &w.Number)
-			} else {
-				// normal: grouped by units currency; use raw units only.
-				if unitsCur != commodity {
-					continue
-				}
-				addDecimal(bals, unitsCur, &p.Amount.Number)
-			}
+	for _, commodity := range sortedKeys(effectiveCommodities(tx, disabled)) {
+		scoped := postingsForCommodity(tx, commodity, disabled)
+		rule3, err := residuals(scoped, opts)
+		if err != nil {
+			return nil, err
 		}
-		for cur, sum := range bals {
-			if balanceErr(sum, tol[cur]) {
-				diags = append(diags, ast.Diagnostic{
-					Code:     codeTradingCommodityNotBalanced,
-					Span:     span,
-					Message:  fmt.Sprintf("commodity %s does not balance: %s %s", commodity, sum.Text('f'), cur),
-					Severity: ast.Error,
-				})
-			}
+		for _, r := range rule3 {
+			diags = append(diags, ast.Diagnostic{
+				Code:     codeTradingCommodityNotBalanced,
+				Span:     span,
+				Message:  fmt.Sprintf("commodity %s does not balance: %s %s", commodity, r.Sum.Text('f'), r.Currency),
+				Severity: ast.Error,
+			})
 		}
 	}
 
-	return diags
+	return diags, nil
+}
+
+// residual reports a single per-currency balance-rule failure.
+type residual struct {
+	Currency string
+	Sum      *apd.Decimal
+}
+
+// residuals returns one residual per currency whose weighted sum of
+// postings exceeds the tolerance inferred from those same postings.
+// Returns nil for an empty input or a fully balanced subset.
+func residuals(postings []ast.Posting, opts *ast.OptionValues) ([]residual, error) {
+	if len(postings) == 0 {
+		return nil, nil
+	}
+	sums := map[string]*apd.Decimal{}
+	for i := range postings {
+		w, err := inventory.PostingWeight(&postings[i])
+		if err != nil || w == nil {
+			continue
+		}
+		cell, ok := sums[w.Currency]
+		if !ok {
+			cell = new(apd.Decimal)
+			sums[w.Currency] = cell
+		}
+		if _, err := apd.BaseContext.Add(cell, cell, &w.Number); err != nil {
+			return nil, fmt.Errorf("accumulate posting weight: %w", err)
+		}
+	}
+
+	nonZero := nonZeroSortedKeys(sums)
+	if len(nonZero) == 0 {
+		return nil, nil
+	}
+	tol, err := tolerance.Infer(postings, opts, nonZero)
+	if err != nil {
+		return nil, fmt.Errorf("infer tolerance: %w", err)
+	}
+	var out []residual
+	for _, cur := range nonZero {
+		within, err := tolerance.Within(sums[cur], tol[cur])
+		if err != nil {
+			return nil, fmt.Errorf("check tolerance: %w", err)
+		}
+		if !within {
+			out = append(out, residual{Currency: cur, Sum: sums[cur]})
+		}
+	}
+	return out, nil
+}
+
+// selectPostings returns a fresh slice containing shallow copies of
+// the postings for which keep reports true. Callers may mutate
+// returned entries (e.g. nil out Cost/Price) without affecting tx.
+func selectPostings(postings []ast.Posting, keep func(*ast.Posting) bool) []ast.Posting {
+	out := make([]ast.Posting, 0, len(postings))
+	for i := range postings {
+		if keep(&postings[i]) {
+			out = append(out, postings[i])
+		}
+	}
+	return out
+}
+
+// postingsForCommodity returns the subset of tx.Postings that
+// contribute to commodity for rule 3. Disabled-commodity postings are
+// kept whole so PostingWeight evaluates them in their price currency;
+// normal-commodity postings are returned with Cost and Price nil-ed
+// so PostingWeight degrades to raw units in the commodity's own
+// currency.
+func postingsForCommodity(tx *ast.Transaction, commodity string, disabled map[string]struct{}) []ast.Posting {
+	out := make([]ast.Posting, 0, len(tx.Postings))
+	for i := range tx.Postings {
+		p := tx.Postings[i]
+		if p.Amount == nil {
+			continue
+		}
+		cur := p.Amount.Currency
+		if _, dis := disabled[cur]; dis {
+			if p.Price == nil || p.Price.Amount.Currency != commodity {
+				continue
+			}
+			out = append(out, p)
+		} else {
+			if cur != commodity {
+				continue
+			}
+			p.Cost = nil
+			p.Price = nil
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // effectiveCommodities returns the set of commodity keys used for rule 3.
@@ -210,65 +268,24 @@ func effectiveCommodities(tx *ast.Transaction, disabled map[string]struct{}) map
 	return out
 }
 
-// balanceErr reports whether sum is outside tolerance.
-func balanceErr(sum, tolCur *apd.Decimal) bool {
-	abs := new(apd.Decimal)
-	if _, err := apd.BaseContext.Abs(abs, sum); err != nil {
-		return false
-	}
-	if tolCur == nil {
-		tolCur = new(apd.Decimal)
-	}
-	return abs.Cmp(tolCur) > 0
-}
-
-// inferTolerances returns the per-currency tolerance map. The tolerance for
-// a currency is tolMult × 10^minExp, where minExp is the smallest (most
-// precise) exponent observed in unit amounts in that currency.
-func inferTolerances(postings []ast.Posting, tolMult *apd.Decimal) map[string]*apd.Decimal {
-	minExp := map[string]int32{}
-	for i := range postings {
-		p := &postings[i]
-		if p.Amount == nil {
-			continue
-		}
-		cur := p.Amount.Currency
-		exp := p.Amount.Number.Exponent
-		if e, ok := minExp[cur]; !ok || exp < e {
-			minExp[cur] = exp
+func nonZeroSortedKeys(m map[string]*apd.Decimal) []string {
+	out := make([]string, 0, len(m))
+	for k, v := range m {
+		if v != nil && !v.IsZero() {
+			out = append(out, k)
 		}
 	}
-	out := make(map[string]*apd.Decimal, len(minExp))
-	for cur, e := range minExp {
-		base := new(apd.Decimal)
-		base.Set(tolMult)
-		base.Exponent += e
-		out[cur] = base
-	}
+	sort.Strings(out)
 	return out
 }
 
-// toleranceMultiplier reads the tolerance_multiplier option, falling back
-// to the beancount default of 0.5.
-func toleranceMultiplier(opts *ast.OptionValues) *apd.Decimal {
-	if opts != nil {
-		m := opts.Decimal("tolerance_multiplier")
-		if m != nil {
-			return m
-		}
+func sortedKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
 	}
-	d, _, _ := apd.NewFromString(defaultToleranceMultiplier)
-	return d
-}
-
-// addDecimal adds delta into m[cur], allocating a fresh entry when absent.
-func addDecimal(m map[string]*apd.Decimal, cur string, delta *apd.Decimal) {
-	cell, ok := m[cur]
-	if !ok {
-		cell = new(apd.Decimal)
-		m[cur] = cell
-	}
-	_, _ = apd.BaseContext.Add(cell, cell, delta)
+	sort.Strings(out)
+	return out
 }
 
 // txSpan returns the most specific available span: transaction → plugin directive.

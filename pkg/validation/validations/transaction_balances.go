@@ -9,7 +9,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/validation"
-	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
+	"github.com/yugui/go-beancount/pkg/validation/tolerance"
 )
 
 // transactionBalances enforces per-currency balance for every

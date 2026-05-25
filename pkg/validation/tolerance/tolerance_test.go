@@ -6,7 +6,7 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ast/asttest"
-	"github.com/yugui/go-beancount/pkg/validation/internal/tolerance"
+	"github.com/yugui/go-beancount/pkg/validation/tolerance"
 )
 
 func mustDefaults() *ast.OptionValues { return ast.NewOptionValues() }
