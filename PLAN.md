@@ -22,136 +22,143 @@ The system is layered. Higher layers depend on lower layers; each layer is indep
 └──────────────────────────────────────────────────────────────┘
 ```
 
+Shipped-phase entries below carry only a brief purpose statement and a
+pointer to the package whose godoc owns the spec. Phases that have not
+yet started keep their full design entries — they are still acting as
+plans.
+
 ---
 
 ## Phase 1: CST Parser (`pkg/syntax`)
 
-**Dependencies:** none
+**Dependencies:** none.
 
-The foundation of the entire system. The concrete syntax tree preserves every byte of the source — whitespace, comments, blank lines — enabling round-trip fidelity and lossless rewriting.
+**Status:** done.
 
-### Deliverables
+The foundation of the entire system. The concrete syntax tree preserves
+every byte of the source — whitespace, comments, blank lines — enabling
+round-trip fidelity and lossless rewriting. Parser error recovery
+isolates a syntax error to the directive that contains it; subsequent
+directives parse unaffected.
 
-- **Lexer:** tokenizes all beancount lexical elements (dates, flags, currencies, strings, numbers, indented postings, metadata, inline comments, block comments, directives keywords).
-- **CST node types:** a node for every syntactic construct, carrying the exact source span and text.
-- **Parser with error recovery:** when a syntax error is encountered, the parser emits an error node and skips forward to the next directive boundary (a line starting at column 0 that looks like a date or a recognized keyword, or a comment). Subsequent directives are unaffected.
-- **Public API:** `Parse(r io.Reader) (*syntax.File, []syntax.Error)` returning the complete CST even on errors.
-
-### Key design decisions
-
-- Nodes store `[]byte` source slices, not re-encoded strings, so the printer can emit the original text unchanged.
-- Error recovery is at the directive level: a bad posting inside a transaction corrupts only that transaction node.
+**Spec:** `pkg/syntax` godoc (package doc on `pkg/syntax/file.go`,
+node/token contracts on `pkg/syntax/node.go` and `pkg/syntax/token.go`).
 
 ---
 
 ## Phase 2: AST (`pkg/ast`)
 
-**Dependencies:** Phase 1 (CST)
+**Dependencies:** Phase 1 (CST).
 
-The abstract syntax tree represents the semantic structure of a ledger, divorced from formatting. It is the primary data structure for all analysis and transformation.
+**Status:** done.
 
-### Deliverables
+The abstract syntax tree represents the semantic structure of a ledger,
+divorced from formatting. It is the primary data structure for all
+analysis and transformation. `ast.Load` recursively resolves `include`
+directives into a single `ast.Ledger` with origin tracking per directive
+for diagnostics and source mapping.
 
-- **Typed directive nodes** for every Beancount directive:
-  - `Open`, `Close`, `Balance`, `Pad`, `Note`, `Document`, `Custom`
-  - `Transaction` with `Posting` children
-  - `Option`, `Plugin`, `Include`
-  - `Price`
-- **Metadata** attached to any directive or posting.
-- **CST → AST lowering pass:** transforms a `syntax.File` into an `ast.File`, resolving syntactic ambiguities and filling typed fields (parsed `decimal.Decimal` amounts, `time.Time` dates, etc.).
-- **Include resolution:** `ast.Load(filename string) (*ast.Ledger, []error)` recursively reads and merges files referenced by `include` directives, producing a single logical ledger. File boundaries are tracked for error reporting and source mapping.
-
-### Key design decisions
-
-- `ast.Ledger` holds directives in source order across all included files, with each directive carrying its origin file and line.
-- The AST does not resolve semantic meaning (accounts are strings; amounts are not yet booked). That is left to higher layers.
+**Spec:** `pkg/ast` godoc.
 
 ---
 
 ## Phase 3: Formatter and `beanfmt` (`pkg/format`, `cmd/beanfmt`)
 
-**Dependencies:** Phase 1 (CST), Phase 2 (AST)
+**Dependencies:** Phase 1, Phase 2.
 
-### Deliverables
+**Status:** done.
 
-- **`pkg/format`:** implements canonical Beancount formatting rules:
-  - Column-aligned amounts within a transaction
-  - Consistent spacing around metadata
-  - Normalized number of blank lines between directives
-- **CST-based formatter:** rewrites only the parts that differ from canonical form, preserving all other source text (safe for version-controlled files).
-- **AST-based printer (`pkg/printer`):** renders an `ast.File` or `ast.Ledger` to `io.Writer` from scratch. Used for programmatic ledger generation.
-- **`beanfmt` command:** reads one or more `.beancount` files, writes formatted output in-place (with `-w`) or to stdout.
+`pkg/format` is a CST-based formatter — it rewrites only the parts that
+differ from canonical form, leaving every other source byte intact, so
+the formatter is safe to run on version-controlled files. `pkg/printer`
+is the parallel AST-based renderer for programmatic ledger generation.
+`cmd/beanfmt` is the command-line driver.
+
+**Spec:** `pkg/format`, `pkg/printer`, and `cmd/beanfmt` godoc. Display-
+precision integration and option wiring are recorded in
+`docs/architecture/display-precision.md`.
 
 ---
 
 ## Phase 4: Validation (`pkg/validation`)
 
-**Dependencies:** Phase 2 (AST)
+**Dependencies:** Phase 2.
 
-### Deliverables
+**Status:** done.
 
-- **Account lifecycle checker:** verifies every account referenced in a directive was opened before use and not yet closed; flags use-after-close.
-- **Transaction balance checker:** verifies that postings in each transaction sum to zero (with at most one auto-computed posting per transaction). Residual tolerance is evaluated **per currency** — a tight-currency tolerance (e.g. JPY integer) must not mask an out-of-tolerance residual in a looser currency.
-- **Balance assertion checker:** verifies `balance` directives match the running balance at their date. The balance syntax follows Beancount upstream: `Account Number [~ Number] Currency` (single trailing currency, shared by the main amount and the optional tolerance).
-- **Pad computation:** computes the amount for `pad` directives such that the subsequent `balance` assertion holds.
-- **Custom assertion extension point:** handles `custom` directives used as assertions. A public `CustomAssertion` interface plus `RegisterCustomAssertion` registry allows additional handlers to be plugged in from `init()` without modifying the core checker. A built-in `"assert"` handler is provided.
-- **Tolerance inference:** default tolerance is `multiplier × 10^e` where `e` is the least-significant exponent of the relevant amount and `multiplier` defaults to `0.5`. Used uniformly by balance assertions, transaction residuals, and custom assertions.
-- **Option-driven tolerance configuration:** the following Beancount options are honored:
-  - `inferred_tolerance_multiplier` (decimal, default `0.5`) — scales the inferred tolerance.
-  - `infer_tolerance_from_cost` (bool, default `false`) — when enabled, postings with a cost spec additionally contribute `|units| × (multiplier × 10^costExp)` to the residual tolerance of the cost currency.
-  - `inferred_tolerance_default` is **not** supported.
-- **Generic option directive registry:** a package-internal registry (`pkg/validation/options.go`) reads `option` directives in a pre-pass before the directive walk, with typed accessors (String/Bool/Decimal/StringList). Unknown keys are silently ignored (Beancount parity); malformed values emit `CodeInvalidOption`. `operating_currency` is registered but not yet consumed. New options are added by registering a spec, not by threading ad-hoc fields through the checker.
-- **API:** the three `postproc/api.Plugin` implementations `pad.Apply`, `balance.Apply`, and `validations.Apply` exported from `pkg/validation/{pad,balance,validations}`. Callers invoke them in that order against a ledger snapshot (`ledger.All()` fed into `api.Input.Directives`), committing any non-nil `Result.Directives` back via `ast.Ledger.ReplaceAll` between stages and appending `Result.Diagnostics` to `ast.Ledger.Diagnostics` for structured diagnostics with source locations.
+Validation is delivered as a three-stage pipeline (`pad` → `balance` →
+`validations`) implemented as three `postproc/api.Plugin`
+implementations in `pkg/validation/{pad,balance,validations}`. The
+pipeline enforces account lifecycle, per-currency transaction
+balancing, balance assertions, and pad/balance synthesis. Tolerance
+inference is option-driven (`tolerance_multiplier`,
+`inferred_tolerance_default`, `infer_tolerance_from_cost`).
+
+**Spec:** `pkg/validation` godoc. Tolerance precedence and the
+deliberate divergence from upstream's integer-assertion special case
+are documented in `pkg/validation/internal/tolerance/doc.go` and
+`docs/architecture/display-precision.md`.
 
 ---
 
 ## Phase 5: Inventory (`pkg/inventory`)
 
-**Dependencies:** Phase 2 (AST), Phase 4 (validation)
+**Dependencies:** Phase 2, Phase 4.
 
-Lot-based inventory tracking is required for capital gains, cost basis reporting, and booking.
+**Status:** done.
 
-### Deliverables
+Lot-based inventory tracking for capital gains, cost basis reporting,
+and booking. Supports the STRICT / FIFO / LIFO / NONE booking methods.
+The streaming `Reducer.Walk` API replays directives once and feeds a
+visitor with deep-copied before/after snapshots, so memory cost is O(1)
+in input size. Multi-lot reductions are expanded into per-lot
+postings in the booking pipeline.
 
-- **`Lot` type:** commodity, number of units, cost per unit, cost currency, acquisition date, optional label.
-- **`Inventory` type:** ordered set of lots per account per commodity.
-- **Booking methods:**
-  - `STRICT`: requires the posting to exactly identify a lot; error if ambiguous.
-  - `FIFO`: reduces the oldest lot first.
-  - `LIFO`: reduces the newest lot first.
-- **`Reducer`:** processes transactions in date order, applies bookings, produces per-account inventories and realized gain/loss postings.
-- **Compatibility target:** booking semantics match Beancount v2.
+**Spec:** `pkg/inventory` godoc.
 
 ---
 
 ## Phase 6: Plugin System (`pkg/ext`)
 
-**Dependencies:** none (developed in parallel with other phases)
+**Dependencies:** none (developed in parallel with other phases).
 
-Beancount calls its post-parse/pre-validation transformation hooks "plugins". Each `plugin "name"` directive names a Go symbol that receives the directive list and returns a new one. go-beancount implements this under `pkg/ext`, a neutral umbrella for plugin framework packages. The name avoids collision with the Go standard library `plugin` package. Three sub-phases, delivered as independent PRs.
+Beancount calls its post-parse/pre-validation transformation hooks
+"plugins". Each `plugin "name"` directive names a Go symbol that
+receives the directive list and returns a new one. go-beancount
+implements this under `pkg/ext`, a neutral umbrella for plugin framework
+packages. The name avoids collision with the Go standard library
+`plugin` package.
 
 ### Phase 6a: Narrow beancount plugins (in-process Go)
 
-**Status:** done (branch `feature/phase6-plugin`).
+**Status:** done.
 
-The core postprocessor framework. Plugins are Go types registered at init time and invoked in source order on the parsed ledger.
+`pkg/ext/postproc/api` carries the stable `Plugin` interface and the
+`Input` / `Result` types kept minimal so the 6b/6c loaders can compile
+against it without pulling in the runner. `pkg/ext/postproc` provides
+`Register` (init-time, panics on duplicate) and `Apply` (walks
+`*ast.Plugin` directives, invokes each registered plugin, commits
+`Result.Directives` and appends `Result.Diagnostics` to the ledger).
 
-- `pkg/ext/postproc/api`: stable `Plugin` interface plus `Input` and `Result` types. Kept minimal so 6b/6c loaders can compile against it without pulling in the runner. Plugin diagnostics flow through `Result.Diagnostics` ([]ast.Diagnostic).
-- `pkg/ext/postproc`: `Register` (init-time, panics on duplicate) and `Apply(ctx, *ast.Ledger) error` (walks `*ast.Plugin` directives, invokes each registered plugin, commits `Result.Directives` via `ast.Ledger.ReplaceAll` and appends `Result.Diagnostics` to `ast.Ledger.Diagnostics` so later plugins see earlier output and the ledger carries all findings).
-- Plugin names follow Go fully-qualified package path convention (e.g. `github.com/yugui/go-beancount/plugins/auto_accounts`) to avoid collisions.
-- Runner-emitted diagnostics: only `plugin-not-registered` (a `plugin "foo"` directive whose name has no registered implementation — a ledger-content issue). System-level failures — a plugin's non-nil error from `Apply`, or context cancellation — halt the pipeline and propagate to the caller as a Go `error`, NOT as a diagnostic.
+**Spec:** `pkg/ext/postproc` and `pkg/ext/postproc/api` godoc.
 
 ### Phase 6b: Go `.so` loader (`pkg/ext/goplug`)
 
-Load plugins from `.so` files built with `go build -buildmode=plugin`, so third parties can ship plugins without forking go-beancount.
+**Status:** done.
 
-- Loader opens a `.so` via stdlib `plugin.Open`, looks up an exported `Plugin` symbol of type `api.Plugin`, and registers it.
-- `.so` files must be built against the same `go-beancount` module version and Go toolchain — constraints documented explicitly.
-- Opt-in: the loader is invoked only when the CLI (or an embedder) passes `--plugin-so=<path>`.
+Loads plugins from `.so` files built with `go build -buildmode=plugin`,
+so third parties can ship plugins without forking go-beancount. `.so`
+files must be built against the same `go-beancount` module version and
+Go toolchain.
+
+**Spec:** `pkg/ext/goplug` godoc.
 
 ### Phase 6c: External-process loader (`pkg/ext/extproc`)
 
-For plugins that cannot be `.so` files (different Go toolchain, non-Go implementation, sandboxing).
+**Status:** not started.
+
+For plugins that cannot be `.so` files (different Go toolchain, non-Go
+implementation, sandboxing).
 
 - Protocol: newline-delimited JSON-encoded protobuf messages over stdin/stdout.
 - Host spawns the subprocess, marshals `Input`, reads `Result`.
@@ -160,160 +167,96 @@ For plugins that cannot be `.so` files (different Go toolchain, non-Go implement
 
 ### Phase 6d: Standard plugin library (`pkg/ext/postproc/std`)
 
-Go ports of the plugins shipped in upstream `beancount/plugins/*.py`. Each
-port lives in its own subpackage under `pkg/ext/postproc/std/<name>/` so
-that users can depend on an individual plugin without pulling in the rest.
-The umbrella `pkg/ext/postproc/std` package has no runtime code; its sole
-purpose is to blank-import every port so a single import activates the
-whole library.
+**Status:** done.
 
-- **Location and naming.** Plugins live at
-  `pkg/ext/postproc/std/<name>/`, where `<name>` is the upstream Python
-  module's base name with underscores removed (e.g. `check_commodity` →
-  `checkcommodity`). Package identifiers may not contain underscores in
-  idiomatic Go; concatenating the upstream name preserves traceability
-  without introducing a parallel naming scheme.
-- **Dual registration.** Each ported plugin registers under two names:
-  the upstream Python module path (e.g. `beancount.plugins.check_commodity`)
-  so existing ledger files referencing beancount's plugin directives work
-  unchanged, and the Go import path
-  (`github.com/yugui/go-beancount/pkg/ext/postproc/std/checkcommodity`) so
-  go-beancount-native ledgers can follow Phase 6a's package-path
-  convention. This is an explicit exception to the single-name policy in
-  Phase 6a for upstream ports; it exists so the drop-in compatibility
-  that motivates porting these plugins is available by default.
-- **Umbrella package.** `pkg/ext/postproc/std/doc.go` blank-imports every
-  ported subpackage. Programs that want the entire standard library
-  available write `import _ "github.com/yugui/go-beancount/pkg/ext/postproc/std"`;
-  programs that want only a subset blank-import individual subpackages.
-- **Upstream attribution.** Every ported plugin preserves the upstream
-  `__copyright__` and `__license__` in its package `doc.go`. The project
-  is GPL-2, matching upstream.
-- **Deviations policy.** Any semantic or configuration-format departure
-  from upstream is documented in the plugin's `doc.go`. For example,
-  `check_commodity` takes JSON instead of a Python `eval`-parsed dict for
-  its `{account_regex: currency_regex}` ignore map — safer and more
-  idiomatic in Go. `check_drained` currently hardcodes the beancount
-  default balance-sheet roots (`Assets`, `Liabilities`, `Equity`) pending
-  a go-beancount options-registry extension for
-  `name_assets`/`name_liabilities`/`name_equity`.
-- **Initial scope.** The first batch ports three plugins:
-  - `checkcommodity` — diagnostic for commodities used without a
-    matching `Commodity` directive, with ignore-map support.
-  - `checkdrained` — synthesizes zero-balance assertions after every
-    `close` of a balance-sheet account.
-  - `checkclosing` — expands `closing: TRUE` posting metadata into a
-    zero-balance assertion dated transaction+1 day, stripping the
-    metadata key from a cloned posting.
-- **Future ports.** The upstream library has ~25 plugins; they fall into
-  three shapes that share boilerplate:
-  - *Diagnostic-only* (no new directives): `coherent_cost`, `leafonly`,
-    `noduplicates`, `nounused`, `onecommodity`, `sellgains`,
-    `unique_prices`, `valid_acctconfig`, `pedantic` (meta).
-  - *Synthesizing* (insert directives): `auto`, `auto_accounts`,
-    `close_tree`, `fill_account`, `ira_contribs`, `mark_unverified`,
-    `tag_pending`, `unrealized`, `forecast`, `implicit_prices`,
-    `split_expenses`, `book_conversions`.
-  - *Filtering / transforming*: `exclude_tag`, `commodity_attr`.
-- **Acceptance criteria for each future port.** (a) registered under
-  both the upstream and Go-path names, (b) blank-imported from the
-  umbrella `std` package, (c) unit tests alongside the plugin, (d)
-  deviations documented in `doc.go`, (e) upstream copyright preserved.
-  Ports that can't follow one of these criteria (e.g. behavior that
-  depends on unported framework features) note the gap in their `doc.go`
-  and open a TODO rather than silently diverging.
+Go ports of plugins shipped in upstream `beancount/plugins/*.py`. Each
+port is an independent subpackage under `pkg/ext/postproc/std/<name>/`,
+dual-registered under the upstream Python module path (e.g.
+`beancount.plugins.check_commodity`) and the Go import path. The
+umbrella `pkg/ext/postproc/std` blank-imports every port for one-line
+activation.
 
-### Deliverables
+**Spec:** `pkg/ext/postproc/std` godoc plus each subpackage's `doc.go`
+for per-plugin behavior, upstream attribution, and deviations.
 
-- `pkg/ext/postproc/api`: stable interface (6a — done).
-- `pkg/ext/postproc`: registry + runner (6a — done).
-- `pkg/ext/goplug`: `.so` loader (6b).
-- `pkg/ext/extproc`: external-process host + SDK (6c).
-- `pkg/ext/postproc/std`: Go ports of upstream's standard plugin
-  library, each as a blank-importable subpackage, aggregated by the
-  umbrella `std` package (6d).
+### Phase 6e: Beansprout postproc port (`pkg/ext/postproc/sprout`)
+
+**Status:** done.
+
+Go ports of [`beansprout`](https://github.com/yugui/beansprout)'s
+plugin library, following the same layout and dual-registration
+convention as Phase 6d. Ten plugins are ported: `checkmetadata`,
+`commoditypattern`, `comprehensivebalance`, `fiscalincomeexpense`,
+`infermetadata`, `inheritmetadata`, `leafonly`, `pricecompletion`,
+`print`, `tradingvalidation`.
+
+**Spec:** `pkg/ext/postproc/sprout` godoc plus each subpackage's
+`doc.go`.
 
 ---
 
 ## Phase 7: Quote Library (`pkg/quote`)
 
-**Dependencies:** Phase 6 (plugin system)
+**Dependencies:** Phase 6.
 
-`pkg/quote` fetches commodity and FX prices from external sources and emits them as `ast.Price` directives that the rest of the pipeline can consume directly. There is no parallel "Quote" type: the wire-out shape is `ast.Price`, with per-source attribution carried on `Price.Meta`. Bean-price's `price` meta grammar on Commodity directives is accepted as-is by `pkg/quote/meta`, so existing ledgers carry over without rewriting; outside that single point of compatibility the layer is Go-native.
+**Status:** done (7a, 7b shipped; 7c held until Phase 6c).
 
-The library is split so that out-of-tree quoter authors only need to depend on a small declarative package, while the orchestration code stays internal to the host:
+`pkg/quote` fetches commodity and FX prices from external sources and
+emits them as `ast.Price` directives. The wire-out shape is `ast.Price`
+itself — there is no parallel "Quote" type. bean-price's `price:` meta
+grammar on Commodity directives is accepted as-is by `pkg/quote/meta`
+so existing ledgers carry over without rewriting; outside that
+compatibility point the layer is Go-native. Sources declare only the
+batching shape they natively serve via optional `LatestSource` /
+`AtSource` / `RangeSource` sub-interfaces, with documented demotion
+paths. The orchestrator's level-by-level fallback scheduler is
+deadlock-safe under shared batch sources. ECB is the Phase 7 reference
+source.
 
-- **`pkg/quote/api`** — declarative interface package shared with out-of-tree plugins. Holds `Pair`, `SourceRef`, `PriceRequest`, `Mode`, `SourceQuery`, and the `Source` / `LatestSource` / `AtSource` / `RangeSource` interfaces. Any incompatible change here requires a goplug `APIVersion` bump.
-- **`pkg/quote`** — the orchestrator: `Register`/`Lookup`/`Names` plus `Fetch(ctx, registry, spec, opts...)`, `WithConcurrency`, `WithClock`, `WithObserver`.
-- **`pkg/quote/meta`** — bean-price-compatible `price:` meta parser; returns `[]PriceRequest` from a Commodity directive. The default key is `"price"`, overridable via `--meta-key`.
-- **`pkg/quote/sourceutil`** — composable author-side decorators (`WrapSingleCell`, `DateRangeIter`, `BatchPairs`, `Concurrency`, `RateLimit`, `RetryOnError`, `Cache`) that each preserve the wrapped source's capability sub-interfaces so they stack freely (typical: `Cache(RateLimit(RetryOnError(source)))`).
-- **`pkg/quote/pricedb`** — `Dedup` (key: `(Date.UTC, Commodity, Amount.Currency)`) and `FormatStream` (sort + canonical print). It deliberately does not merge prices into existing ledger files; ledger write-back belongs to bean-daemon (Phase 10).
-- **`pkg/quote/std/ecb`** — the Phase 7 reference source.
-- **`cmd/beanprice`** — the CLI driver.
+Sub-phase 7c (external-process `Source` via extproc) is deferred until
+Phase 6c lands.
 
-Real-world sources have one natural batching axis: a single (pair, date) cell, a row keyed by date, a column keyed by commodity, a full matrix, or latest-only. Forcing every source to implement a single all-shapes method either drowns callers in `unsupported`-error handling or forces stub implementations. Phase 7 instead uses a hybrid: a base `Source` interface (just `Name`) plus optional `LatestSource` / `AtSource` / `RangeSource` sub-interfaces. A source declares only what it natively serves — by implementing the matching sub-interface — and the orchestrator detects support via type assertions, with documented demotion paths (e.g. `ModeRange` against an `AtSource` becomes a per-day loop). `Pair` is the logical request unit; `SourceQuery` adds the source-specific symbol so the same commodity can have different tickers across sources without polluting the output.
-
-`Fetch` walks each `PriceRequest`'s priority-ordered `Sources[]` in synchronised levels. At level k every still-unresolved unit contributes its k-th source name to a `{name → []unit}` grouping; each named source is consulted exactly once on the level (potentially expanding into several physical calls per `BatchPairs` and `RangePerCall`), the entire level finishes, and then unresolved units advance to k+1. The barrier between levels is what makes fallback safe under shared batch sources: two requests with opposing priorities over the same two batch sources cannot deadlock, because at every level each source is hit exactly once with the union of pending queries that named it. A speculative fan-out that ran primary and fallback in parallel was rejected because it triggers unbounded fallback explosion the moment several priority chains share downstream sources. There is no `FallbackSource` decorator — chains are first-class on `PriceRequest.Sources`.
-
-`pkg/quote/meta.ParsePriceMeta` accepts the bean-price grammar `value := psource (WS+ psource)*`, `psource := CCY ":" entry ("," entry)*`, `entry := SOURCE "/" SYMBOL`. The quote currency (`CCY:`) is required; the bean-price `^` inverted-quote prefix and CCY-less forms are surfaced as `quote-meta-unsupported` rather than silently accepted, leaving them as a typed extension point. There is no `--quote` override flag — the meta is the single source of truth and `--source` mirrors the same psource grammar one psource at a time.
-
-`pkg/quote/std/ecb` registers the `ecb` source. It was chosen for the Phase 7 reference slot because it is public, unauthenticated, stable, natively range-capable (one HTTP call returns many days), and rate-limit-free in practice, so CI runs hermetically against checked-in XML fixtures. ECB only publishes EUR-base reference rates, so the source serves only `Pair.Commodity == "EUR"`; this is a useful start, with more standard sources (yahoo, google, AlphaVantage, ...) landing in later phases. There is no quote-specific loader: out-of-tree quoters ship as goplug `.so` files whose `InitPlugin` callback calls `quote.Register(name, source)`, and `--plugin PATH` on `cmd/beanprice` walks the supplied list through `pkg/ext/goplug`. An out-of-process `Source` (extproc) is deferred until Phase 6c lands.
-
-Sub-phase status:
-
-- **7a — landed in this branch.** All packages above plus `cmd/beanprice` and the ECB reference source.
-- **7b — landed in this branch.** A goplug fixture under `cmd/beanprice/testdata` exercises the `--plugin` path end-to-end and locks in the plugin ABI surface.
-- **7c — deferred.** External-process `Source` is held until Phase 6c (extproc) lands and is out of scope for Phase 7.
-
-Acceptance is covered by tests in this branch: a deadlock-regression test for the level-by-level scheduler under shared batch sources, a table-driven test of the bean-price meta grammar (including the rejected `^` and CCY-less forms), hermetic ECB tests against checked-in XML fixtures (with a `live`-tagged smoke test held separately), and a `cmd/beanprice` CLI suite covering flag parsing, exit codes, and the `--plugin` fixture path. `cmd/beansprout quote` (Phase 12) will wrap this library as a user-facing subcommand; persisting prices back into ledger source files is bean-daemon's responsibility (Phase 10), so `pricedb` deliberately stops at producing a printable, deduplicated stream.
+**Spec:** `pkg/quote` godoc (locked design decisions, scheduler
+contract, fallback semantics), plus per-subpackage godoc under
+`pkg/quote/{api,meta,sourceutil,pricedb,std/ecb}` and the
+`cmd/beanprice` command doc.
 
 ---
 
 ## Phase 7.5: Directive distribution CLI (`cmd/beanfile`)
 
-**Dependencies:** Phase 1 (CST), Phase 2 (AST), Phase 3 (printer / format).
-Phase 4 (validation) and Phase 6 (plugin system) are deliberately *not*
-required: the CLI uses `pkg/ast.LoadFile` / `LoadReader` directly to get
-include resolution without the validation/plugin pipeline.
+**Dependencies:** Phase 1, Phase 2, Phase 3.
 
-`cmd/beanfile` is a stateless offline CLI that reads a directive stream
-(stdin or files) and merges each directive into the appropriate file in a
-multi-file beancount ledger. It bridges directive *producers* (`beanprice`
-today, importers tomorrow) with the multi-file layout, without requiring
-`bean-daemon` to be running.
+**Status:** done.
 
-The supporting libraries live under `pkg/distribute/`:
+A stateless offline CLI that merges a directive stream (stdin or files)
+into the appropriate file of a multi-file ledger, bridging directive
+producers (`beanprice` today, importers tomorrow) with the multi-file
+layout without requiring a long-running daemon. A three-way decision
+(skip / comment-out marker / write active) makes re-runs idempotent.
 
-- `pkg/distribute/route` — directive → destination path resolution, with
-  per-account-tree and per-commodity overrides.
-- `pkg/distribute/dedup` — ledger-wide equivalence index covering both
-  active and commented-out directives.
-- `pkg/distribute/comment` — recognizer and emitter for commented-out
-  directives.
-- `pkg/distribute/merge` — CST round-trip insertion preserving every byte
-  outside the inserted region, atomic write, order-driven binary search for
-  the insertion offset.
-
-A directive is filed by a three-way decision: skip if an equivalent already
-exists at the destination (active or commented-out); write as a
-commented-out marker if an active equivalent exists elsewhere in the
-ledger; otherwise write as a normal active directive.
-
-The full user-facing specification (invocation, routing convention,
-dedup decision, merge semantics, stats) lives in the godoc on
-`cmd/beanfile`; the routing layer, dedup index, comment recognizer,
-merger spacing rules, and TOML schema live in their respective
-package godocs under `pkg/distribute/`.
+**Spec:** the user-facing specification (invocation, routing
+convention, dedup decision, merge semantics, stats) lives in the godoc
+on `cmd/beanfile`; the routing layer, dedup index, comment recognizer,
+merger spacing rules, and TOML schema live in their respective package
+godocs under `pkg/distribute/`.
 
 ---
 
 ## Phase 8: Transaction Import Framework (`pkg/importer`)
 
-**Dependencies:** Phase 2 (AST), Phase 6 (plugin system)
+**Dependencies:** Phase 2, Phase 6.
 
-Final design and shipped state: `docs/plans/phase-8-framework-redesign.md`.
+**Status:** done.
 
-`pkg/importer` defines a factory-based framework for plugging transaction importers into the library. Each importer kind registers a factory; a TOML config declares one or more instances of those kinds; the framework drives `Identify` + `Extract` over a single input file with declaration-order selection. `pkg/importer/hook` provides post-extract transformation hooks (e.g. classify postings against rules) following the same factory pattern. Both surfaces accept Go-plugin (`.so`) extensions via `pkg/ext/goplug`.
+`pkg/importer` defines a factory-based framework for plugging
+transaction importers into the library. Each importer kind registers a
+factory; a TOML config declares one or more instances of those kinds;
+the framework drives `Identify` + `Extract` over a single input file
+with declaration-order selection. `pkg/importer/hook` provides
+post-extract transformation hooks (e.g. classify postings against
+rules) following the same factory pattern. Both surfaces accept
+Go-plugin (`.so`) extensions via `pkg/ext/goplug`.
 
 ### Shipped surface
 
@@ -323,6 +266,13 @@ Final design and shipped state: `docs/plans/phase-8-framework-redesign.md`.
   - Example: `beanimport -config config.toml statement.csv`.
 - **`pkg/importer/std/csvimp`**: in-tree CSV importer kind (`kind = "csv"`). One instance per declared shape; optional `match` regex filters files; `[[importer.amount]]` sub-tables describe amount columns.
 - **`pkg/importer/hook/std/classify`**: in-tree classification hook kind (`kind = "classify"`). Per-instance rule list; matches `payee_regex` / `narration_regex` against postings to assign a target `account`.
+
+**Spec:** `pkg/importer` godoc carries the interface concurrency
+contract, the `Factory.New`-as-Configure pattern with the decode
+callback, declaration-order Dispatch, the framework diagnostic codes,
+and the error-vs-Diagnostic split. `pkg/importer/hook`,
+`pkg/importer/importerutil`, `pkg/importer/std/csvimp`, and
+`pkg/importer/hook/std/classify` carry their own package-level docs.
 
 ---
 
