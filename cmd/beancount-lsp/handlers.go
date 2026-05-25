@@ -53,6 +53,7 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 			},
 			DocumentFormattingProvider:      true,
 			DocumentRangeFormattingProvider: true,
+			DocumentSymbolProvider:          true,
 		},
 	}
 	return reply(ctx, result, nil)

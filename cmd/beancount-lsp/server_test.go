@@ -209,6 +209,9 @@ func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 	if ok, _ := caps.DocumentRangeFormattingProvider.(bool); !ok {
 		t.Errorf("initialize: DocumentRangeFormattingProvider = %v, want true", caps.DocumentRangeFormattingProvider)
 	}
+	if ok, _ := caps.DocumentSymbolProvider.(bool); !ok {
+		t.Errorf("initialize: DocumentSymbolProvider = %v, want true", caps.DocumentSymbolProvider)
+	}
 	if caps.Workspace != nil {
 		t.Errorf("initialize: Workspace = %v, want nil", caps.Workspace)
 	}

@@ -77,6 +77,8 @@ func dispatch(ctx context.Context, s *Server, reply jsonrpc2.Replier, req jsonrp
 		return s.handleFormatting(ctx, reply, raw)
 	case "textDocument/rangeFormatting":
 		return s.handleRangeFormatting(ctx, reply, raw)
+	case "textDocument/documentSymbol":
+		return s.handleDocumentSymbol(ctx, reply, raw)
 	default:
 		if _, isCall := req.(*jsonrpc2.Call); isCall {
 			return reply(ctx, nil, fmt.Errorf("%q: %w", req.Method(), jsonrpc2.ErrMethodNotFound))
