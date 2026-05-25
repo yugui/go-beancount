@@ -62,10 +62,14 @@ type loader struct {
 	files       []*File
 	directives  []Directive
 	diagnostics []Diagnostic
+	source      sourceReader
 }
 
 func newLoader() *loader {
-	return &loader{visited: make(map[string]bool)}
+	return &loader{
+		visited: make(map[string]bool),
+		source:  defaultSource,
+	}
 }
 
 func (ld *loader) finish() *Ledger {
@@ -81,10 +85,9 @@ func (ld *loader) finish() *Ledger {
 	return ledger
 }
 
-// loadFile parses absPath through syntax.ParseFile and merges the result
-// into the loader. filename is the cycle-detection key and span filename
-// (typically absPath but may be overridden); baseDir anchors the includes
-// contained in the loaded file.
+// loadFile reads absPath and merges the result into the loader. filename is
+// the cycle-detection key and span filename (typically absPath but may be
+// overridden); baseDir anchors the includes contained in the loaded file.
 func (ld *loader) loadFile(absPath, filename, baseDir string) {
 	if ld.visited[filename] {
 		ld.diagnostics = append(ld.diagnostics, Diagnostic{
@@ -94,7 +97,7 @@ func (ld *loader) loadFile(absPath, filename, baseDir string) {
 		return
 	}
 	ld.visited[filename] = true
-	cst, err := syntax.ParseFile(absPath)
+	data, err := ld.source.read(absPath)
 	if err != nil {
 		ld.diagnostics = append(ld.diagnostics, Diagnostic{
 			Message:  fmt.Sprintf("reading file %s: %v", absPath, err),
@@ -102,6 +105,7 @@ func (ld *loader) loadFile(absPath, filename, baseDir string) {
 		})
 		return
 	}
+	cst := syntax.Parse(string(data))
 	ld.loadCST(cst, filename, baseDir)
 }
 

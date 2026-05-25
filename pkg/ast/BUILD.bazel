@@ -19,6 +19,7 @@ go_library(
         "optvalues.go",
         "order.go",
         "precision_profile.go",
+        "source.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/ast",
     visibility = ["//visibility:public"],
