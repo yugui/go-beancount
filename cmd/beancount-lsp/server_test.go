@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -200,8 +201,12 @@ func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 	if ok, _ := caps.DefinitionProvider.(bool); !ok {
 		t.Errorf("initialize: DefinitionProvider = %v, want true", caps.DefinitionProvider)
 	}
-	if caps.CompletionProvider != nil {
-		t.Errorf("initialize: CompletionProvider = %v, want nil", caps.CompletionProvider)
+	if caps.CompletionProvider == nil {
+		t.Fatalf("initialize: CompletionProvider = nil, want non-nil")
+	}
+	wantTriggers := []string{":", "#", "^"}
+	if !slices.Equal(caps.CompletionProvider.TriggerCharacters, wantTriggers) {
+		t.Errorf("initialize: TriggerCharacters = %v, want %v", caps.CompletionProvider.TriggerCharacters, wantTriggers)
 	}
 	if ok, _ := caps.DocumentFormattingProvider.(bool); !ok {
 		t.Errorf("initialize: DocumentFormattingProvider = %v, want true", caps.DocumentFormattingProvider)

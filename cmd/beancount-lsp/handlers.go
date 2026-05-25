@@ -56,6 +56,9 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 			DocumentRangeFormattingProvider: true,
 			DocumentSymbolProvider:          true,
 			DefinitionProvider:              true,
+			CompletionProvider: &protocol.CompletionOptions{
+				TriggerCharacters: []string{":", "#", "^"},
+			},
 		},
 	}
 	return reply(ctx, result, nil)
