@@ -1,0 +1,37 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "beancount-lsp_lib",
+    srcs = [
+        "docsync.go",
+        "handlers.go",
+        "main.go",
+        "recover.go",
+        "server.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/cmd/beancount-lsp",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/session",
+        "@dev_lsp_go_jsonrpc2//:jsonrpc2",
+        "@dev_lsp_go_protocol//:protocol",
+        "@dev_lsp_go_uri//:uri",
+    ],
+)
+
+go_binary(
+    name = "beancount-lsp",
+    embed = [":beancount-lsp_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "beancount-lsp_test",
+    srcs = ["server_test.go"],
+    embed = [":beancount-lsp_lib"],
+    deps = [
+        "@dev_lsp_go_jsonrpc2//:jsonrpc2",
+        "@dev_lsp_go_protocol//:protocol",
+        "@dev_lsp_go_uri//:uri",
+    ],
+)

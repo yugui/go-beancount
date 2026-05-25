@@ -749,6 +749,219 @@ Adopt the Contract above. For internals, pattern C (per-subscriber mutex) is cle
 **Quality requirements**: capability は実装したものだけ true。
 `bazel run //:gazelle -- update-repos -from_file=go.mod` 後ビルド可。
 
+### Detailed Design
+
+#### Contract
+
+**1. Binary, package, and dependencies**
+
+- Binary: `cmd/beancount-lsp/beancount-lsp` (Bazel target `//cmd/beancount-lsp:beancount-lsp`, Go `package main`).
+- CLI surface: no flags, no positional args. `flag.Parse()` runs to reject unknown flags (exit 2).
+- I/O: stdin/stdout for framed JSON-RPC; stderr for logs only. Anything else to stdout is a defect.
+- Exit codes: 0 on clean shutdown via LSP `exit` after `shutdown`; 1 on `exit` without prior `shutdown` (per LSP 3.17 §Lifecycle) and on top-level panic; 2 on flag-parse failure.
+- External dependencies added in this step (pinned in `go.mod`): `go.lsp.dev/protocol`, `go.lsp.dev/jsonrpc2`, `go.lsp.dev/uri`.
+- Bazel/Bzlmod mechanics (must follow exactly):
+  1. Edit `go.mod` to add the three direct deps.
+  2. `go mod tidy`.
+  3. `bazel run //:gazelle -- update-repos -from_file=go.mod`.
+  4. `bazel run //:gazelle` for `cmd/beancount-lsp/BUILD.bazel`.
+  5. `bazel build //...` and `bazel test //...` must be green.
+
+**2. Exported package surface (all in `package main`, for white-box tests)**
+
+```go
+type Server struct { /* unexported */ }
+type ServerOption func(*serverConfig)
+
+func NewServer(opts ...ServerOption) *Server
+func WithClock(clock func() time.Time) ServerOption  // default time.Now
+func WithSessionFactory(f func(rootPath string) (SessionAPI, error)) ServerOption  // test seam
+func WithLogger(l *log.Logger) ServerOption
+
+type SessionAPI interface {
+    SetOverlay(absPath string, content []byte) error
+    ClearOverlay(absPath string) error
+    Close() error
+}
+
+func (s *Server) Run(ctx context.Context, stream jsonrpc2.Stream) error
+```
+
+`SessionAPI` is the **minimum** subset needed in this step. Step 6+ widens it.
+
+**3. LSP methods**
+
+This step handles exactly:
+
+- `initialize` (request): validates state, resolves root, constructs Session, returns `InitializeResult` with capabilities per §4. Returns `jsonrpc2.ErrInvalidRequest` if called twice.
+- `initialized` (notification): sets `initialized=true`. No-op otherwise.
+- `shutdown` (request): sets `shutdown=true`. Returns `null`. After this, non-`exit` requests return `jsonrpc2.ErrInvalidRequest`; notifications dropped silently.
+- `exit` (notification): closes Session; terminates process. Exit 0 if `shutdown` was received, else 1.
+- `textDocument/didOpen`: `session.SetOverlay(uri.Filename(), []byte(params.TextDocument.Text))`. Non-absolute key errors logged, otherwise ignored.
+- `textDocument/didChange`: applies content changes (degraded full-replace for any event in this step — Step 6 adds the proper UTF-16 position machinery), then `session.SetOverlay(path, fullDocBytes)`.
+- `textDocument/didClose`: `session.ClearOverlay(path)`; forgets in-memory doc state.
+- `textDocument/didSave`: **`session.ClearOverlay(path)`** (LOCKED — see §11).
+
+Other methods: requests get `jsonrpc2.ErrMethodNotFound`; notifications are silently ignored.
+
+**4. Capabilities (this step declares only these)**
+
+- `TextDocumentSync.OpenClose = true`
+- `TextDocumentSync.Change = protocol.TextDocumentSyncKindIncremental`
+- `TextDocumentSync.Save = &protocol.SaveOptions{IncludeText: false}`
+- `ServerInfo.Name = "beancount-lsp"`, `ServerInfo.Version = "0.0.0"`.
+
+Nothing else true. Steps 6–12 add capabilities on the same commit that adds the handler. **`workspaceFolders` capability is NOT declared** in this step (no `workspace/workspaceFolders` or `workspace/didChangeWorkspaceFolders` handler; declaring it would be a lie).
+
+**5. Root path resolution (exactly once during `initialize`)**
+
+Precedence (first non-empty wins):
+
+1. `params.WorkspaceFolders[0].URI` (only the first folder; multi-root explicitly out of scope).
+2. `params.RootURI` (deprecated but still common).
+3. `params.RootPath` (deprecated string form).
+4. Defer to first `textDocument/didOpen`: `filepath.Dir(uri.Filename())`. **Session is created lazily** on this path.
+5. Final fallback: `os.Getwd()`.
+
+For (1)–(3): the directory is searched for `*.beancount` files (lex sorted); the first is the root file. If none exist, the directory itself passes to `session.New`, which surfaces the loader's own error.
+
+If `session.New` fails, log to stderr and leave `session == nil`. Text-sync notifications check for nil and no-op. Step 6 surfaces session-construction errors via `publishDiagnostics`.
+
+**6. Session integration**
+
+- One `SessionAPI` per Server lifetime.
+- Created via `WithSessionFactory` seam (default: `session.New(rootPath)`).
+- Eager when root is determined at `initialize`; lazy on first `didOpen` for path 4.
+- Never recreated within a single LSP session.
+- Closed exactly once during `exit`, before process termination. Errors from Close logged and ignored.
+
+**7. URI ↔ filesystem mapping**
+
+- All conversion via `go.lsp.dev/uri.URI.Filename()`.
+- Server normalizes nothing else (no symlink resolution, no case folding).
+- Document store keyed by **URI string** (not path), to preserve round-tripping for `publishDiagnostics` in Step 6.
+- Path lookup goes through `URI.Filename()` at each Session call.
+
+**8. Concurrency**
+
+- jsonrpc2 dispatches each message in a fresh goroutine.
+- Server uses one `sync.Mutex` protecting `initialized`, `shutdown`, `session`, `rootPath`, doc map.
+- Handlers release `s.mu` before calling Session methods (avoid lock inversion when Step 4's Subscribe hooks become relevant later).
+- `clock` read without lock (set once at construction).
+
+**9. Clock injection**
+
+- `Server` carries `clock func() time.Time`, default `time.Now`. Set via `WithClock`. Not used in Step 5 but the field exists in the Contract so Step 10 needs no struct-shape change.
+
+**10. Logging and panic recovery**
+
+- All logs to configured `*log.Logger` (default `log.New(os.Stderr, "beancount-lsp: ", log.LstdFlags|log.Lmsgprefix)`). Override via `WithLogger`.
+- Startup logs: one on server start, one on root resolution. No other steady-state logs.
+- Every handler wrapped in `defer recover()`. On panic:
+  1. Log method, recovered value, `debug.Stack()`.
+  2. Requests: return `jsonrpc2.ErrInternal` with message `"internal error"`.
+  3. Notifications: swallow.
+- Top-level `main` has a final `defer recover()` that logs and exits 1.
+
+**11. `didSave` policy (LOCKED)**
+
+On `textDocument/didSave`, the server calls `session.ClearOverlay(path)`.
+
+Rationale:
+- After save, client buffer == disk; keeping overlay only adds a redundant lookup hop.
+- More critically, external modifications (git checkout, formatter, another editor) would otherwise be shadowed by the overlay indefinitely. Clearing on save closes that window to "between edits" only.
+- Steps 6+ rely on this: post-save diagnostics reflect canonical disk state, matching what `beancheck` would report from CLI.
+
+This is documented in the godoc of the `didSave` handler.
+
+**12. Required tests** (in `cmd/beancount-lsp/server_test.go`, `package main`, white-box)
+
+Tests build a `Server` with `WithSessionFactory` returning a stub that records calls, driven through an in-memory `net.Pipe()`-based `jsonrpc2.Stream`.
+
+1. `TestInitialize_ReturnsExpectedCapabilities`
+2. `TestInitialize_TwiceRejected`
+3. `TestLifecycle_Happy` (initialize → initialized → shutdown → exit; tracked exit code 0)
+4. `TestExit_WithoutShutdown_ExitCode1`
+5. `TestRequestAfterShutdown_InvalidRequest`
+6. `TestDidOpen_CallsSetOverlay`
+7. `TestDidChange_CallsSetOverlay`
+8. `TestDidClose_CallsClearOverlay`
+9. `TestDidSave_CallsClearOverlay`
+10. `TestRootResolution_WorkspaceFolders`
+11. `TestRootResolution_RootURI`
+12. `TestRootResolution_FirstDidOpen` (lazy session creation path)
+13. `TestHandlerPanic_Recovered` (stub session panics; server stays alive)
+14. `TestHandlerPanic_RequestReturnsInternalError`
+
+Manual VS Code/Neovim verification is optional, not CI.
+
+#### Suggested Internals
+
+1. **File layout**:
+   ```
+   cmd/beancount-lsp/
+     main.go        # entry point, signal handling, stream setup
+     server.go      # Server struct, NewServer, options, Run
+     handlers.go    # initialize, initialized, shutdown, exit
+     docsync.go     # didOpen, didChange, didClose, didSave + doc store
+     recover.go     # panic-recovery wrapper
+     uri.go         # URI helpers (thin shim over go.lsp.dev/uri)
+     *_test.go
+   ```
+   Alternative: collapse into `main.go` + `server.go` if total LOC < ~400.
+
+2. **Wiring `jsonrpc2`**: `Run(ctx, stream)` creates `conn := jsonrpc2.NewConn(stream); conn.Go(ctx, s.handler()); <-conn.Done(); return conn.Err()`.
+
+3. **Dispatcher (Pattern A recommended)**: handwritten switch on `req.Method()` rather than `protocol.ServerHandler` (~50-method interface most of which return MethodNotFound). Migrate to Pattern B if dispatch grows past Step 11.
+
+4. **Document store**:
+   ```go
+   type document struct {
+       uri     uri.URI
+       version int32
+       content []byte
+   }
+   type docStore struct {
+       mu   sync.Mutex
+       docs map[uri.URI]*document
+   }
+   ```
+   For incremental `didChange`: in Step 5, treat any event as full-replace (capability declares Incremental for client commit, but Step 6 adds the proper UTF-16 line-offset machinery). If event has `Range`, fall back to a naive line-by-line splice; Step 6 replaces this.
+
+5. **Recovery wrapper**: centralized `safeHandle(ctx, req)` with `defer recover()` is cleaner than per-handler `defer`. Either acceptable.
+
+6. **Session factory default**: `func defaultSessionFactory(root string) (SessionAPI, error) { return session.New(root) }`.
+
+7. **Lazy session init**: `ensureSession(uri)` called at the head of every text-sync handler; cheap fast-path when session already exists.
+
+8. **Logger**: `log.Logger` (not `log/slog`) — ~5 log lines per session in steady state. Revisit if Step 6+ adds substantive verbose logging.
+
+9. **Test transport**: `net.Pipe()` (idiomatic duplex stream), not `bytes.Buffer` pairs.
+
+10. **Exit-code plumbing for tests**: split `main()` from `run(...) int`. Exit code computed inside `Server.Run` (sentinel error or `exitCode` field) so tests can assert. Mirrors `beancheck`.
+
+#### Alternatives discussed
+
+- **LSP library**: already decided in Step 2 plan; Step 5 is first user. Re-confirmed.
+- **textDocumentSync: Full vs Incremental**: Incremental declared (avoids client-visible capability flap at Step 6). Step 5 implements degraded full-replace fallback.
+- **Root: eager vs lazy**: hybrid (eager-with-lazy-fallback). Pure-lazy defers errors past correlation point; pure-eager crashes on single-file edits.
+- **`didSave`: clear vs keep overlay**: clear (locked). Keep-overlay creates undetectable divergence under external modification.
+- **Capabilities: declare future vs declare-as-implemented**: declare-as-implemented. Declaring `workspaceFolders` without a handler is a protocol-level lie.
+- **Server impl: switch vs `protocol.Server` interface**: switch (Pattern A) for Step 5; migrate if dispatch grows.
+- **Panic recovery: middleware vs per-handler**: centralized wrapper, mechanism at implementer's discretion.
+- **Logger: `log` vs `log/slog`**: `log` for now.
+- **Test transport: `net.Pipe` vs `bytes.Buffer`**: `net.Pipe`.
+
+#### Recommendation + rationale
+
+Adopt Contract as written. The cross-cutting choices that matter most:
+
+- **`SessionAPI` minimal interface** — Step 5 consumes 3 methods; widening to all of `*session.Session` would pull `Snapshot`/`Reload`/`Subscribe` into Step 5 tests unnecessarily.
+- **Eager-with-lazy-fallback root resolution** — Matches real client behavior.
+- **`didSave` clears overlay** — Closes a real divergence window.
+- **Capabilities discipline** — Declare only what's implemented. Each subsequent step adds capability on the same commit that adds the handler.
+- **Internals stay in the suggestion layer** — File layout, dispatcher pattern, recovery mechanism are reshapeable as Steps 6–12 land.
+
 ### Step 6 — Diagnostics pipeline
 
 **Functional requirements**:

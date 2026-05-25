@@ -25,7 +25,7 @@ use_repo(pip, "gobeancount_pip")
 
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
-use_repo(go_deps, "co_honnef_go_tools", "com_github_burntsushi_toml", "com_github_cockroachdb_apd_v3", "com_github_google_go_cmp", "com_github_mattn_go_runewidth", "in_gopkg_yaml_v3", "org_golang_x_text", "org_golang_x_vuln")
+use_repo(go_deps, "co_honnef_go_tools", "com_github_burntsushi_toml", "com_github_cockroachdb_apd_v3", "com_github_google_go_cmp", "com_github_mattn_go_runewidth", "dev_lsp_go_jsonrpc2", "dev_lsp_go_protocol", "dev_lsp_go_uri", "in_gopkg_yaml_v3", "org_golang_x_text", "org_golang_x_vuln")
 
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
