@@ -16,9 +16,6 @@
 // the specific subpackages they need instead of this umbrella package.
 // Each subpackage's own godoc documents upstream attribution, behavior,
 // and any deviations from the Python original.
-//
-// See PLAN.md Phase 6d for the overall design and the list of plugins
-// slated for porting.
 package std
 
 import (
