@@ -82,7 +82,10 @@ func (s *Server) handleHover(ctx context.Context, reply jsonrpc2.Replier, raw js
 }
 
 // contextDateFor returns the directive's own date when it has one, otherwise
-// the server clock.
+// the server clock. For dateless directives (Option, Plugin, Include, Pushtag,
+// Poptag) and positions outside any directive, the server clock is used rather
+// than the ledger's last-recorded date, to avoid silently confusing users
+// editing historical ledgers.
 func (s *Server) contextDateFor(loc Located) time.Time {
 	return dateFromSyntaxNode(loc.Directive, s.clock)
 }
@@ -140,6 +143,8 @@ func (s *Server) hoverAccount(account string, ledger *ast.Ledger) string {
 
 // hoverCurrency builds hover Markdown for a currency/commodity token.
 // It always attempts a price lookup even when no Commodity directive exists.
+// Only base-side matches of Price directives are reported; quote-side inverses
+// are not synthesized (Beancount Price semantics are directional).
 func (s *Server) hoverCurrency(currency string, ledger *ast.Ledger, contextDate time.Time) string {
 	var commodity *ast.Commodity
 	var latestPrice *ast.Price

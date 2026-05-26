@@ -88,6 +88,9 @@ func (sub *subscriber) close() {
 // New performs an eager synchronous load with context.Background(). On
 // loader I/O failure, New returns (nil, err). Ledger diagnostics are not
 // failures and do not prevent New from succeeding.
+//
+// The supplied opts are captured by reference and reused on every reload;
+// callers must not mutate state held inside opts after passing them to New.
 func New(rootPath string, opts ...loader.Option) (*Session, error) {
 	if rootPath == "" {
 		return nil, fmt.Errorf("session: rootPath is empty")

@@ -150,9 +150,9 @@ func completionCandidates(kind ContextKind, linePrefix string, ledger *ast.Ledge
 		}
 
 	case ContextNarration:
-		// TODO: plan requires currentPayee / currentAccounts / currentFile group filtering
-		// via findEnclosingTransaction + sortText prefixes. Deferred; current impl returns
-		// unfiltered narrations.
+		// TODO: planned narration priority — Group 1 (same Payee via findEnclosingTransaction),
+		// Group 2 (same Account), Group 3 (same File). Currently returns all distinct
+		// narrations unfiltered. SortText prefixes "0"/"1"/"2" pending.
 		if ledger != nil {
 			for _, d := range ledger.All() {
 				if tx, ok := d.(*ast.Transaction); ok && tx.Narration != "" {

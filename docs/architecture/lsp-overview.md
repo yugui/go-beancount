@@ -121,3 +121,31 @@ mutate the active tag / meta state); they do not appear as directives in
 - `pkg/session` — long-lived loader view with Snapshot/Subscribe
 - `pkg/ast` — directive AST and source-provider seam
 - `pkg/syntax` — CST parser
+
+## Why a public WithOverlay LoadOption (not Session-only)
+
+Overlay injection lives at the loader layer (`pkg/loader.WithOverlay` / `pkg/ast.WithOverlay`)
+rather than only on Session because CLI tools and tests need the same shadowing semantics
+without taking on Session's lifecycle and concurrency contract. Layering it inside `pkg/ast`'s
+source-reader seam avoids reimplementing include resolution, glob expansion, and cycle
+detection above the loader.
+
+## Completion candidate sourcing (no derived index)
+
+Completion walks the snapshot per request rather than maintaining a derived index inside
+Session. Snapshot-side caching would leak LSP-specific concerns into `pkg/session`; an
+LSP-layer LRU is reserved for when measured latency requires it. Current target: under
+5 ms per request at ~1k directives.
+
+## Range formatting and ErrorNodes
+
+Range formatting passes through directives containing syntax errors rather than skipping
+them. This inherits `pkg/format`'s existing behavior and avoids silent gaps in user-
+requested formatting; the alternative (skip-with-warning) was rejected as a worse UX.
+
+## Completion context detection: lexical, not CST
+
+ContextKind classification uses line-prefix lexical heuristics rather than parsing the
+partial buffer as a CST. Incomplete-input CST behavior is not contractually stable, and
+misclassification under this approach degrades to "no completion" rather than wrong
+completion — a strictly better failure mode for editor UX.

@@ -31,7 +31,7 @@ func WithFilename(name string) LoadOption {
 // The map and its []byte values are borrowed for the duration of the
 // load; the caller must not mutate them until the Load* call returns.
 // Passing WithOverlay multiple times replaces the previous overlay
-// (last-wins).
+// (last-wins). Composes orthogonally with WithBaseDir and WithFilename.
 func WithOverlay(overlay map[string][]byte) LoadOption {
 	return func(o *loadopt.Options) { o.Overlay = overlay }
 }

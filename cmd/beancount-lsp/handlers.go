@@ -59,6 +59,9 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 			DocumentSymbolProvider:          true,
 			DefinitionProvider:              true,
 			CompletionProvider: &protocol.CompletionOptions{
+				// Trigger characters: `:`, `#`, `^`. `"`, `*`, `!` are deliberately excluded
+				// to avoid misfires during string/flag entry; alphanumeric completion is
+				// delegated to the client's word-boundary detection.
 				TriggerCharacters: []string{":", "#", "^"},
 			},
 		},

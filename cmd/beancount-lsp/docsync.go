@@ -192,9 +192,9 @@ func (s *Server) handleDidClose(ctx context.Context, reply jsonrpc2.Replier, raw
 	return nil
 }
 
-// handleDidSave handles textDocument/didSave. After save, the client buffer
-// equals disk; clearing the overlay ensures the session reads the canonical
-// on-disk content, closing the divergence window between edits.
+// handleDidSave handles textDocument/didSave by clearing the file's overlay so
+// subsequent loads see canonical disk content. This closes the window where an
+// external editor or formatter could be shadowed by a stale overlay.
 func (s *Server) handleDidSave(ctx context.Context, reply jsonrpc2.Replier, raw json.RawMessage) error {
 	defer func() { _ = reply(ctx, nil, nil) }()
 
