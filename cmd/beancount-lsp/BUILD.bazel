@@ -24,6 +24,8 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/ast",
+        "//pkg/ext/postproc/sprout",
+        "//pkg/ext/postproc/std",
         "//pkg/format",
         "//pkg/session",
         "//pkg/syntax",

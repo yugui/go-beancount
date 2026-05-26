@@ -19,6 +19,10 @@ import (
 	"syscall"
 
 	"go.lsp.dev/jsonrpc2"
+
+	// register the bundled std/sprout postproc plugins
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std"
 )
 
 func main() {
