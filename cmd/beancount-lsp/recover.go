@@ -85,6 +85,8 @@ func dispatch(ctx context.Context, s *Server, reply jsonrpc2.Replier, req jsonrp
 		return s.handleHover(ctx, reply, raw)
 	case "textDocument/completion":
 		return s.handleCompletion(ctx, reply, raw)
+	case "workspace/didChangeWatchedFiles":
+		return s.handleDidChangeWatchedFiles(ctx, reply, raw)
 	default:
 		if _, isCall := req.(*jsonrpc2.Call); isCall {
 			return reply(ctx, nil, fmt.Errorf("%q: %w", req.Method(), jsonrpc2.ErrMethodNotFound))

@@ -18,6 +18,7 @@ go_library(
         "recover.go",
         "server.go",
         "symbol.go",
+        "watch.go",
     ],
     importpath = "github.com/yugui/go-beancount/cmd/beancount-lsp",
     visibility = ["//visibility:private"],
@@ -51,6 +52,7 @@ go_test(
         "position_test.go",
         "server_test.go",
         "symbol_test.go",
+        "watch_test.go",
     ],
     embed = [":beancount-lsp_lib"],
     deps = [

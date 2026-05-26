@@ -11,6 +11,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/session"
 	"go.lsp.dev/jsonrpc2"
+	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 )
 
@@ -19,6 +20,10 @@ type SessionAPI interface {
 	SetOverlay(absPath string, content []byte) error
 	ClearOverlay(absPath string) error
 	Snapshot(ctx context.Context) (*ast.Ledger, error)
+	// Reload re-reads the ledger from disk and returns the updated snapshot.
+	// Returns ErrSessionClosed after the session has been closed. Safe to call
+	// concurrently with other SessionAPI methods.
+	Reload(ctx context.Context) (*ast.Ledger, error)
 	Subscribe() (<-chan *ast.Ledger, func())
 	Close() error
 }
@@ -72,8 +77,9 @@ type Server struct {
 	exitCode          int
 	exited            bool
 	session           SessionAPI
-	rootPath          string        // resolved root directory; empty until initialize completes
-	conn              jsonrpc2.Conn // set by Run; used by handleExit to close the connection
+	rootPath          string                       // resolved root directory; empty until initialize completes
+	conn              jsonrpc2.Conn                // set by Run; used by handleExit to close the connection
+	clientCaps        *protocol.ClientCapabilities // nil until initialize completes; guarded by mu
 	subscriberStarted bool
 	subscriberDone    chan struct{}
 	subscriberCancel  func()

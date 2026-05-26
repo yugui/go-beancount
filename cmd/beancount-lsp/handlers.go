@@ -31,10 +31,12 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 		// session stays nil; text-sync handlers will no-op
 	}
 
+	caps := params.Capabilities
 	s.mu.Lock()
 	s.initialized = true
 	s.session = sess
 	s.rootPath = root
+	s.clientCaps = &caps
 	s.mu.Unlock()
 
 	s.logger.Printf("initialized root=%s", root)
@@ -112,9 +114,42 @@ func resolveRoot(params *protocol.InitializeParams) string {
 	return ""
 }
 
-// handleInitialized handles the LSP initialized notification.
+// handleInitialized handles the LSP initialized notification. If the client
+// declared dynamic registration for workspace/didChangeWatchedFiles, it
+// immediately sends a client/registerCapability request to watch *.beancount.
+// Failure to register file-watcher capability is logged and non-fatal.
 func (s *Server) handleInitialized(ctx context.Context, reply jsonrpc2.Replier, _ json.RawMessage) error {
-	return reply(ctx, nil, nil)
+	_ = reply(ctx, nil, nil) // notification: release the AsyncHandler chain first
+
+	s.mu.Lock()
+	caps := s.clientCaps
+	conn := s.conn
+	s.mu.Unlock()
+
+	if caps == nil || caps.Workspace == nil ||
+		caps.Workspace.DidChangeWatchedFiles == nil ||
+		!caps.Workspace.DidChangeWatchedFiles.DynamicRegistration {
+		return nil
+	}
+
+	params := &protocol.RegistrationParams{
+		Registrations: []protocol.Registration{
+			{
+				ID:     "beancount-file-watcher",
+				Method: "workspace/didChangeWatchedFiles",
+				RegisterOptions: &protocol.DidChangeWatchedFilesRegistrationOptions{
+					Watchers: []protocol.FileSystemWatcher{
+						{GlobPattern: "**/*.beancount"},
+					},
+				},
+			},
+		},
+	}
+	var nullReply json.RawMessage
+	if _, err := conn.Call(ctx, "client/registerCapability", params, &nullReply); err != nil {
+		s.logger.Printf("registerCapability: %v", err)
+	}
+	return nil
 }
 
 // handleShutdown handles the LSP shutdown request.

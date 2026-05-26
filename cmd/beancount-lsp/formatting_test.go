@@ -65,7 +65,7 @@ func newFormattingServer(t *testing.T) (*lspClient, *stubSession) {
 	t.Helper()
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 	if err := client.call(ctx, "initialize", initializeParams("file:///tmp"), nil); err != nil {
 		t.Fatalf("initialize: %v", err)

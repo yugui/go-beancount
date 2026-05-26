@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net"
 	"slices"
 	"strings"
 	"sync"
@@ -17,18 +16,20 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// stubSession records calls for testing; setCh/clearCh let tests wait for
-// async notifications without time.Sleep.
+// stubSession records calls for testing; setCh/clearCh/reloadCh let tests
+// wait for async notifications without time.Sleep.
 type stubSession struct {
-	mu         sync.Mutex
-	overlays   map[string][]byte
-	setCalls   []string
-	clearCalls []string
-	closed     bool
-	panicOnSet bool
+	mu          sync.Mutex
+	overlays    map[string][]byte
+	setCalls    []string
+	clearCalls  []string
+	reloadCalls int
+	closed      bool
+	panicOnSet  bool
 
 	setCh     chan struct{}    // signalled on each SetOverlay call
 	clearCh   chan struct{}    // signalled on each ClearOverlay call
+	reloadCh  chan struct{}    // signalled on each Reload call
 	subCh     chan *ast.Ledger // Subscribe returns this channel
 	closeOnce sync.Once
 }
@@ -38,6 +39,7 @@ func newStub() *stubSession {
 		overlays: make(map[string][]byte),
 		setCh:    make(chan struct{}, 10),
 		clearCh:  make(chan struct{}, 10),
+		reloadCh: make(chan struct{}, 10),
 		subCh:    make(chan *ast.Ledger, 10),
 	}
 }
@@ -73,6 +75,17 @@ func (s *stubSession) Snapshot(_ context.Context) (*ast.Ledger, error) {
 	return nil, nil
 }
 
+func (s *stubSession) Reload(_ context.Context) (*ast.Ledger, error) {
+	s.mu.Lock()
+	s.reloadCalls++
+	s.mu.Unlock()
+	select {
+	case s.reloadCh <- struct{}{}:
+	default:
+	}
+	return nil, nil
+}
+
 func (s *stubSession) Subscribe() (<-chan *ast.Ledger, func()) {
 	return s.subCh, func() { s.closeOnce.Do(func() { close(s.subCh) }) }
 }
@@ -105,32 +118,26 @@ func (s *stubSession) awaitClear(t *testing.T, d time.Duration) {
 	}
 }
 
+// awaitReload waits up to d for a Reload call to arrive, failing t on timeout.
+func (s *stubSession) awaitReload(t *testing.T, d time.Duration) {
+	t.Helper()
+	select {
+	case <-s.reloadCh:
+	case <-time.After(d):
+		t.Fatal("timed out waiting for Reload call")
+	}
+}
+
 // lspClient is a helper that sends LSP messages over a net.Pipe connection.
 type lspClient struct {
 	conn jsonrpc2.Conn
 }
 
 // newTestPair creates a server + client pair connected via net.Pipe.
-// The server runs in a goroutine; done is closed when the server exits.
-func newTestPair(t *testing.T, srv *Server) (client *lspClient, done <-chan struct{}) {
+// Cleanup is registered with t.Cleanup.
+func newTestPair(t *testing.T, srv *Server) *lspClient {
 	t.Helper()
-	serverConn, clientConn := net.Pipe()
-	t.Cleanup(func() {
-		serverConn.Close()
-		clientConn.Close()
-	})
-
-	ch := make(chan struct{})
-	go func() {
-		defer close(ch)
-		srv.Run(context.Background(), jsonrpc2.NewStream(serverConn))
-	}()
-
-	cc := jsonrpc2.NewConn(jsonrpc2.NewStream(clientConn))
-	cc.Go(context.Background(), jsonrpc2.MethodNotFoundHandler)
-	t.Cleanup(func() { cc.Close() })
-
-	return &lspClient{conn: cc}, ch
+	return newTestPairWithClientHandler(t, srv, jsonrpc2.MethodNotFoundHandler)
 }
 
 func (c *lspClient) call(ctx context.Context, method string, params, result any) error {
@@ -163,7 +170,7 @@ func waitFor(t *testing.T, ch <-chan struct{}, d time.Duration) {
 func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var result protocol.InitializeResult
@@ -225,7 +232,7 @@ func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 func TestInitialize_TwiceRejected(t *testing.T) {
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var result protocol.InitializeResult
@@ -241,7 +248,17 @@ func TestInitialize_TwiceRejected(t *testing.T) {
 func TestLifecycle_Happy(t *testing.T) {
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, done := newTestPair(t, srv)
+	// Register exit-code check before newTestPair so it runs last (LIFO), after
+	// newTestPair's cleanup has waited for the server goroutine to exit.
+	t.Cleanup(func() {
+		srv.mu.Lock()
+		code := srv.exitCode
+		srv.mu.Unlock()
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+	})
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
@@ -258,21 +275,22 @@ func TestLifecycle_Happy(t *testing.T) {
 		// connection closing is expected on exit
 		_ = err
 	}
-
-	waitFor(t, done, 3*time.Second)
-
-	srv.mu.Lock()
-	code := srv.exitCode
-	srv.mu.Unlock()
-	if code != 0 {
-		t.Errorf("exit code = %d, want 0", code)
-	}
 }
 
 func TestExit_WithoutShutdown_ExitCode1(t *testing.T) {
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, done := newTestPair(t, srv)
+	// Register exit-code check before newTestPair so it runs last (LIFO), after
+	// newTestPair's cleanup has waited for the server goroutine to exit.
+	t.Cleanup(func() {
+		srv.mu.Lock()
+		code := srv.exitCode
+		srv.mu.Unlock()
+		if code != 1 {
+			t.Errorf("exit code = %d, want 1", code)
+		}
+	})
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
@@ -280,21 +298,12 @@ func TestExit_WithoutShutdown_ExitCode1(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 	_ = client.notify(ctx, "exit", nil)
-
-	waitFor(t, done, 3*time.Second)
-
-	srv.mu.Lock()
-	code := srv.exitCode
-	srv.mu.Unlock()
-	if code != 1 {
-		t.Errorf("exit code = %d, want 1", code)
-	}
 }
 
 func TestRequestAfterShutdown_InvalidRequest(t *testing.T) {
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
@@ -314,7 +323,7 @@ func TestRequestAfterShutdown_InvalidRequest(t *testing.T) {
 func TestDidOpen_CallsSetOverlay(t *testing.T) {
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
@@ -342,7 +351,7 @@ func TestDidChange_CallsSetOverlay(t *testing.T) {
 		WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }),
 		WithDebounce(0),
 	)
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
@@ -392,7 +401,7 @@ func TestDidChange_CallsSetOverlay(t *testing.T) {
 func TestDidClose_CallsClearOverlay(t *testing.T) {
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
@@ -420,7 +429,7 @@ func TestDidClose_CallsClearOverlay(t *testing.T) {
 func TestDidSave_CallsClearOverlay(t *testing.T) {
 	stub := newStub()
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
@@ -451,7 +460,7 @@ func TestRootResolution_WorkspaceFolders(t *testing.T) {
 		capturedRoot = root
 		return newStub(), nil
 	}))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	params := &protocol.InitializeParams{
@@ -483,7 +492,7 @@ func TestRootResolution_RootURI(t *testing.T) {
 		capturedRoot = root
 		return newStub(), nil
 	}))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	params := &protocol.InitializeParams{
@@ -511,7 +520,7 @@ func TestRootResolution_FirstDidOpen(t *testing.T) {
 		sessionRoots = append(sessionRoots, root)
 		return stub, nil
 	}))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	// Empty params → no eager session
@@ -550,7 +559,7 @@ func TestHandlerPanic_Recovered(t *testing.T) {
 	stub.panicOnSet = true
 
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
@@ -576,7 +585,7 @@ func TestHandlerPanic_RequestReturnsInternalError(t *testing.T) {
 	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) {
 		panic("factory panic")
 	}))
-	client, _ := newTestPair(t, srv)
+	client := newTestPair(t, srv)
 	ctx := context.Background()
 
 	var initResult protocol.InitializeResult
