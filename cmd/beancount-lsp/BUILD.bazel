@@ -51,6 +51,7 @@ go_test(
         "locate_test.go",
         "position_test.go",
         "server_test.go",
+        "smoke_test.go",
         "symbol_test.go",
         "watch_test.go",
     ],

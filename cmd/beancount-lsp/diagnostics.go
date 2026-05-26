@@ -52,8 +52,9 @@ type diagPublisher struct {
 }
 
 // publish groups ledger diagnostics by file and emits publishDiagnostics
-// notifications. Files that had diagnostics in the previous cycle but not the
-// current one receive an empty-array notification (LSP clear).
+// notifications. All open documents receive a notification on every cycle:
+// files with errors get their diagnostics; all others receive an empty array
+// (which clears any previously shown errors in the editor).
 func (p *diagPublisher) publish(ctx context.Context, s *Server, ledger *ast.Ledger) {
 	s.mu.Lock()
 	conn := s.conn
@@ -76,7 +77,7 @@ func (p *diagPublisher) publish(ctx context.Context, s *Server, ledger *ast.Ledg
 		byFile[f] = append(byFile[f], d)
 	}
 
-	current := make(map[uri.URI]struct{}, len(byFile))
+	current := make(map[uri.URI]struct{})
 
 	for filename, diags := range byFile {
 		u := uri.File(filename)
@@ -93,6 +94,15 @@ func (p *diagPublisher) publish(ctx context.Context, s *Server, ledger *ast.Ledg
 		s.sendPublish(ctx, conn, u, lspDiags)
 	}
 
+	// clear open files with no errors
+	for _, u := range s.docs.uris() {
+		if _, ok := current[u]; !ok {
+			current[u] = struct{}{}
+			s.sendPublish(ctx, conn, u, []protocol.Diagnostic{})
+		}
+	}
+
+	// clear previously-diagnosed, now-clean files
 	for u := range p.prev {
 		if _, ok := current[u]; !ok {
 			s.sendPublish(ctx, conn, u, []protocol.Diagnostic{})

@@ -48,6 +48,17 @@ func (ds *docStore) delete(u uri.URI) {
 	ds.mu.Unlock()
 }
 
+// uris returns the URIs of all currently open documents.
+func (ds *docStore) uris() []uri.URI {
+	ds.mu.Lock()
+	defer ds.mu.Unlock()
+	out := make([]uri.URI, 0, len(ds.docs))
+	for u := range ds.docs {
+		out = append(out, u)
+	}
+	return out
+}
+
 // handleDidOpen handles textDocument/didOpen. It stores the document content
 // as an overlay and triggers lazy session creation if needed.
 func (s *Server) handleDidOpen(ctx context.Context, reply jsonrpc2.Replier, raw json.RawMessage) error {
@@ -73,7 +84,13 @@ func (s *Server) handleDidOpen(ctx context.Context, reply jsonrpc2.Replier, raw 
 	}
 	if err := sess.SetOverlay(u.Filename(), content); err != nil {
 		s.logger.Printf("didOpen SetOverlay: %v", err)
+		return nil
 	}
+	go func() {
+		if _, err := sess.Snapshot(context.Background()); err != nil {
+			s.logger.Printf("didOpen Snapshot: %v", err)
+		}
+	}()
 	return nil
 }
 
@@ -144,6 +161,8 @@ func applyChanges(ds *docStore, u uri.URI, changes []protocol.TextDocumentConten
 
 // handleDidClose handles textDocument/didClose. It removes the in-memory
 // document state and clears the session overlay so disk content takes effect.
+// An empty-array publishDiagnostics notification is sent immediately so the
+// editor drops any stale error markers for the closed file.
 func (s *Server) handleDidClose(ctx context.Context, reply jsonrpc2.Replier, raw json.RawMessage) error {
 	defer func() { _ = reply(ctx, nil, nil) }()
 
@@ -157,7 +176,12 @@ func (s *Server) handleDidClose(ctx context.Context, reply jsonrpc2.Replier, raw
 
 	s.mu.Lock()
 	sess := s.session
+	conn := s.conn
 	s.mu.Unlock()
+
+	if conn != nil {
+		s.sendPublish(ctx, conn, u, []protocol.Diagnostic{})
+	}
 
 	if sess == nil {
 		return nil
