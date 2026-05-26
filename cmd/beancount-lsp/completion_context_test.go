@@ -70,6 +70,17 @@ func TestClassifyContext(t *testing.T) {
 		// Negative: closed string (even quotes) is not ContextInString
 		{`  "done"`, ContextUnknown},
 
+		// MetaKey
+		{"  key", ContextMetaKey},
+		{"  k", ContextMetaKey},
+		// MetaValue
+		{"  key:", ContextMetaValue},
+		{`  key: "par`, ContextMetaValue},
+		// in-string MetaValue boundary: multiple quotes
+		{`  source: "foo" "par`, ContextMetaValue},
+		// No indent → not a metadata line
+		{"key", ContextUnknown},
+
 		// Negative: non-indented non-date non-special → ContextUnknown
 		{"something", ContextUnknown},
 
@@ -111,6 +122,8 @@ func TestContextKindString(t *testing.T) {
 		{ContextInString, "InString"},
 		{ContextPayee, "Payee"},
 		{ContextNarration, "Narration"},
+		{ContextMetaKey, "MetaKey"},
+		{ContextMetaValue, "MetaValue"},
 		{ContextKind(99), "ContextKind(99)"},
 	}
 	for _, tc := range tests {

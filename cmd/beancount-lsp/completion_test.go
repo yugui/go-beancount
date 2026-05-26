@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -435,6 +436,314 @@ func TestCompletion_Payee_DeduplicatedAndSorted(t *testing.T) {
 	want := []string{"Acme", "Zebra"}
 	if !slices.Equal(got, want) {
 		t.Errorf("TestCompletion_Payee_DeduplicatedAndSorted: labels = %v, want %v", got, want)
+	}
+}
+
+// TestCompletion_MetaKey: ledger with metadata keys "source" and "category";
+// cursor on an indented partial key returns both keys sorted alphabetically.
+func TestCompletion_MetaKey(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Test1"
+  source: "grocery"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Test2"
+  category: "food"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	// Overlay adds a partial metadata key line inside a new transaction.
+	const editedSrc = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Test1"
+  source: "grocery"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Test2"
+  category: "food"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+2024-01-17 * "Test3"
+  sou
+`
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_MetaKey: didOpen: %v", err)
+	}
+
+	// Line 11 (0-indexed): "  sou", cursor at char 5.
+	list := awaitCompletion(t, client, docURI, 11, 5, 2)
+
+	want := []string{"category", "source"}
+	got := labelSet(list.Items)
+	if !slices.Equal(got, want) {
+		t.Errorf("TestCompletion_MetaKey: labels = %v, want %v", got, want)
+	}
+	for _, it := range list.Items {
+		if it.Kind != protocol.CompletionItemKindProperty {
+			t.Errorf("TestCompletion_MetaKey: item %q kind = %v, want Property", it.Label, it.Kind)
+		}
+	}
+}
+
+// TestCompletion_MetaValue_String: ledger with two transactions sharing a
+// "subaccount" key with different string values; cursor on value position
+// returns distinct values wrapped in quotes.
+func TestCompletion_MetaValue_String(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Test1"
+  subaccount: "foo"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Test2"
+  subaccount: "bar"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	// Overlay: cursor on value side of "subaccount:" (after the colon).
+	const editedSrc = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Test1"
+  subaccount: "foo"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Test2"
+  subaccount: "bar"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+2024-01-17 * "Test3"
+  subaccount:
+`
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_MetaValue_String: didOpen: %v", err)
+	}
+
+	// Line 11 (0-indexed): "  subaccount:", cursor at char 13 (after the colon).
+	list := awaitCompletion(t, client, docURI, 11, 13, 2)
+
+	want := []string{`"bar"`, `"foo"`}
+	got := labelSet(list.Items)
+	if !slices.Equal(got, want) {
+		t.Errorf("TestCompletion_MetaValue_String: labels = %v, want %v", got, want)
+	}
+	for _, it := range list.Items {
+		if it.Kind != protocol.CompletionItemKindValue {
+			t.Errorf("TestCompletion_MetaValue_String: item %q kind = %v, want Value", it.Label, it.Kind)
+		}
+	}
+}
+
+// TestCompletion_MetaValue_NotInLedger: cursor on value position for a key
+// that never appears in the ledger → empty completion list.
+func TestCompletion_MetaValue_NotInLedger(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Test"
+  source: "grocery"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	// Overlay: cursor on value side of a key ("unknown-key") not in the ledger.
+	const editedSrc = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Test"
+  source: "grocery"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Test2"
+  unknown-key:
+`
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_MetaValue_NotInLedger: didOpen: %v", err)
+	}
+
+	// Line 7 (0-indexed): "  unknown-key:", cursor at char 14 (after the colon).
+	list := callCompletion(t, client, docURI, 7, 14)
+
+	if len(list.Items) != 0 {
+		t.Errorf("TestCompletion_MetaValue_NotInLedger: got %d items, want 0: %v", len(list.Items), labelSet(list.Items))
+	}
+}
+
+// TestCompletion_MetaValue_Account: metadata value with MetaAccount kind
+// returns the bare account name (no quotes).
+func TestCompletion_MetaValue_Account(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 * "Test1"
+  acct: Assets:Bank
+  Assets:Bank  -10 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	const editedSrc = `2024-01-01 open Assets:Bank USD
+2024-01-01 * "Test1"
+  acct: Assets:Bank
+  Assets:Bank  -10 USD
+2024-01-02 * "Test2"
+  acct:
+`
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_MetaValue_Account: didOpen: %v", err)
+	}
+
+	// Line 5 (0-indexed): "  acct:", cursor at char 7 (after colon).
+	list := awaitCompletion(t, client, docURI, 5, 7, 1)
+
+	if !containsLabel(list.Items, "Assets:Bank") {
+		t.Errorf("TestCompletion_MetaValue_Account: missing 'Assets:Bank'; got %v", labelSet(list.Items))
+	}
+	for _, it := range list.Items {
+		if it.Label == "Assets:Bank" && strings.Contains(it.Label, `"`) {
+			t.Errorf("TestCompletion_MetaValue_Account: account label should be bare, got %q", it.Label)
+		}
+	}
+}
+
+// TestCompletion_MetaValue_ExcludedKind: metadata value with MetaNumber kind
+// produces no completions.
+func TestCompletion_MetaValue_ExcludedKind(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 * "Test1"
+  num: 100
+  Assets:Bank  -10 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	const editedSrc = `2024-01-01 * "Test1"
+  num: 100
+  Assets:Bank  -10 USD
+2024-01-02 * "Test2"
+  num:
+`
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_MetaValue_ExcludedKind: didOpen: %v", err)
+	}
+
+	// Line 4 (0-indexed): "  num:", cursor at char 6.
+	list := callCompletion(t, client, docURI, 4, 6)
+
+	if len(list.Items) != 0 {
+		t.Errorf("TestCompletion_MetaValue_ExcludedKind: got %d items, want 0: %v", len(list.Items), labelSet(list.Items))
+	}
+}
+
+// TestCompletion_MetaKey_PostingLevel: metadata key defined at posting level
+// (4-space indent inside a posting) appears in MetaKey completions.
+func TestCompletion_MetaKey_PostingLevel(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Test1"
+  Assets:Bank  -10 USD
+    receipt: "abc"
+  Expenses:Food  10 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	const editedSrc = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Test1"
+  Assets:Bank  -10 USD
+    receipt: "abc"
+  Expenses:Food  10 USD
+2024-01-16 * "Test2"
+  Assets:Bank  -20 USD
+    rec
+`
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_MetaKey_PostingLevel: didOpen: %v", err)
+	}
+
+	// Line 8 (0-indexed): "    rec", cursor at char 7.
+	list := awaitCompletion(t, client, docURI, 8, 7, 1)
+
+	if !containsLabel(list.Items, "receipt") {
+		t.Errorf("TestCompletion_MetaKey_PostingLevel: missing 'receipt'; got %v", labelSet(list.Items))
+	}
+}
+
+// TestCompletion_MetaValue_InStringInsert: when the cursor is inside an
+// already-opened string (linePrefix ends with odd number of quotes after the
+// colon), the InsertText strips the surrounding quotes so the editor does not
+// duplicate the opening quote.
+func TestCompletion_MetaValue_InStringInsert(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 * "Test1"
+  key: "foo"
+  Assets:Bank  -10 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	const editedSrc = `2024-01-01 * "Test1"
+  key: "foo"
+  Assets:Bank  -10 USD
+2024-01-02 * "Test2"
+  key: "
+`
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_MetaValue_InStringInsert: didOpen: %v", err)
+	}
+
+	// Line 4 (0-indexed): `  key: "`, cursor at char 8 (inside open string).
+	list := awaitCompletion(t, client, docURI, 4, 8, 1)
+
+	found := false
+	for _, it := range list.Items {
+		if it.Label == `"foo"` {
+			found = true
+			if it.InsertText != "foo" {
+				t.Errorf("TestCompletion_MetaValue_InStringInsert: InsertText = %q, want %q", it.InsertText, "foo")
+			}
+		}
+	}
+	if !found {
+		t.Errorf("TestCompletion_MetaValue_InStringInsert: missing label %q; got %v", `"foo"`, labelSet(list.Items))
 	}
 }
 

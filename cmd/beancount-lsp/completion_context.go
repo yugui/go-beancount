@@ -33,6 +33,11 @@ const (
 	// ContextNarration means the cursor is inside the narration string of a
 	// transaction header (the second quoted string).
 	ContextNarration
+	// ContextMetaKey means the cursor is on an indented metadata key being typed.
+	ContextMetaKey
+	// ContextMetaValue means the cursor is on the value side of a metadata line
+	// (the key has already been typed and the colon separator is present).
+	ContextMetaValue
 )
 
 // String returns the human-readable name of k.
@@ -58,6 +63,10 @@ func (k ContextKind) String() string {
 		return "Payee"
 	case ContextNarration:
 		return "Narration"
+	case ContextMetaKey:
+		return "MetaKey"
+	case ContextMetaValue:
+		return "MetaValue"
 	default:
 		return fmt.Sprintf("ContextKind(%d)", int(k))
 	}
@@ -77,6 +86,11 @@ var (
 	// reTxnHeader matches a transaction header prefix: date followed by a flag
 	// (* or !) or the keyword "txn".
 	reTxnHeader = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\s+(?:\*|!|txn)\s`)
+
+	// reMetaKey matches an indented line where only the key is being typed (no colon yet).
+	reMetaKey = regexp.MustCompile(`^\s+[a-z][a-z0-9_-]*$`)
+	// reMetaValue matches an indented line with key: value — captures (key, value-prefix).
+	reMetaValue = regexp.MustCompile(`^\s+([a-z][a-z0-9_-]*):\s*(.*)$`)
 )
 
 // classifyContext returns the completion context for the cursor at the end of
@@ -98,6 +112,12 @@ func classifyContext(linePrefix string) ContextKind {
 		if n == 3 {
 			return ContextNarration
 		}
+	}
+
+	// Metadata value: indented key: value-prefix — must precede the odd-quote
+	// InString check so that `  key: "partial` is MetaValue, not InString.
+	if reMetaValue.MatchString(linePrefix) {
+		return ContextMetaValue
 	}
 
 	// Count quotes: odd number means we are inside a string literal.
@@ -156,8 +176,12 @@ func classifyContext(linePrefix string) ContextKind {
 		return ContextKeyword
 	}
 
-	// Posting line: starts with whitespace + account token
+	// Indented line: could be a posting or a metadata line.
 	if strings.HasPrefix(linePrefix, " ") || strings.HasPrefix(linePrefix, "\t") {
+		// Metadata key: indented lowercase key chars, no colon yet
+		if reMetaKey.MatchString(linePrefix) {
+			return ContextMetaKey
+		}
 		if tok := trailingAccountToken(trimmed); tok != "" {
 			if strings.Contains(tok, ":") {
 				return ContextAccount
@@ -257,4 +281,14 @@ var headerKeywords = map[string]bool{
 
 func isKeyword(s string) bool {
 	return dateDirectiveKeywords[s] || headerKeywords[s]
+}
+
+// metaKeyFromLine returns the metadata key name from a ContextMetaValue line
+// prefix (matches reMetaValue), or "" if the line is not in value-context.
+func metaKeyFromLine(linePrefix string) string {
+	m := reMetaValue.FindStringSubmatch(linePrefix)
+	if m == nil {
+		return ""
+	}
+	return m[1]
 }
