@@ -14,10 +14,20 @@ func TestClassifyContext(t *testing.T) {
 		{"   ", ContextKeyword},
 		{"\t", ContextKeyword},
 
-		// Date-first lines → ContextKeyword (only when nothing follows the date+space)
+		// Date-first lines: empty afterDate and partial directive keywords both
+		// classify as ContextKeyword so the editor's word-boundary auto-trigger
+		// can prefix-filter against the directive list.
 		{"2024-01-01 ", ContextKeyword},
-		// Partial keyword after date falls through to ContextUnknown (acceptable failure mode)
-		{"2023-12-31 op", ContextUnknown},
+		{"2023-12-31 o", ContextKeyword},
+		{"2023-12-31 op", ContextKeyword},
+		{"2023-12-31 ope", ContextKeyword},
+		// Lowercase tokens that are neither flags nor keyword-prefixes still
+		// classify as Keyword; the editor's prefix filter renders them empty,
+		// which is preferable to the prior "no completion at all" failure.
+		{"2023-12-31 zzz", ContextKeyword},
+		// Uppercase or digit-leading tokens take other paths (currency / unknown).
+		{"2023-12-31 OPEN", ContextCurrency},
+		{"2023-12-31 9", ContextUnknown},
 
 		// Account token after date + open/close → ContextAccount
 		{"2024-01-01 open Assets:Bank", ContextAccount},

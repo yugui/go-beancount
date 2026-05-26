@@ -87,6 +87,12 @@ var (
 	// (* or !) or the keyword "txn".
 	reTxnHeader = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}\s+(?:\*|!|txn)\s`)
 
+	// rePartialKeyword matches a token of all lowercase letters with no other
+	// characters, treated as a directive keyword the user is part-way through
+	// typing (e.g. "o", "op", "ope"). Digits, uppercase, and punctuation are
+	// excluded so currency- and account-like tokens stay on their own paths.
+	rePartialKeyword = regexp.MustCompile(`^[a-z]+$`)
+
 	// reMetaKey matches an indented line where only the key is being typed (no colon yet).
 	reMetaKey = regexp.MustCompile(`^\s+[a-z][a-z0-9_-]*$`)
 	// reMetaValue matches an indented line with key: value — captures (key, value-prefix).
@@ -152,6 +158,12 @@ func classifyContext(linePrefix string) ContextKind {
 		case len(fields) == 1 && isFlag(fields[0]):
 			return ContextFlag
 		case len(fields) == 1 && isKeyword(fields[0]):
+			return ContextKeyword
+		case len(fields) == 1 && rePartialKeyword.MatchString(fields[0]):
+			// Partial directive keyword in progress (e.g. "o", "op"); the
+			// editor's word-boundary auto-trigger calls completion here, and
+			// returning ContextKeyword lets the client prefix-filter against
+			// the full directive list.
 			return ContextKeyword
 		case isOpenOrClose && reCurrencyToken.MatchString(trimmed):
 			// narrowest first: pure uppercase token is a currency identifier

@@ -170,13 +170,33 @@ func TestCompletion_Keyword_AfterDate(t *testing.T) {
 
 	list := awaitCompletion(t, client, docURI, 0, 11, 5)
 
-	for _, want := range []string{"open", "close", "commodity", "balance", "txn"} {
+	for _, want := range []string{"open", "close", "commodity", "balance", "txn", "*", "!"} {
 		if !containsLabel(list.Items, want) {
 			t.Errorf("handleCompletion: Keyword_AfterDate: missing %q; got %v", want, labelSet(list.Items))
 		}
 	}
 	if containsLabel(list.Items, "option") {
 		t.Errorf("handleCompletion: Keyword_AfterDate: unexpected 'option' in dated-directive list")
+	}
+}
+
+// TestCompletion_PartialKeyword_AfterDate covers the editor's word-boundary
+// auto-trigger path: the user has typed "o" after the date and the client
+// fires completion. The server returns the full date-first directive list so
+// the client can prefix-filter to "open".
+func TestCompletion_PartialKeyword_AfterDate(t *testing.T) {
+	dir := t.TempDir()
+	const src = "2024-01-01 o\n"
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	list := awaitCompletion(t, client, docURI, 0, 12, 5)
+
+	for _, want := range []string{"open", "close", "commodity", "txn"} {
+		if !containsLabel(list.Items, want) {
+			t.Errorf("handleCompletion: PartialKeyword_AfterDate: missing %q; got %v", want, labelSet(list.Items))
+		}
 	}
 }
 

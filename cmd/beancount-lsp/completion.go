@@ -113,6 +113,13 @@ func completionCandidates(kind ContextKind, linePrefix string, ledger *ast.Ledge
 			for k := range dateDirectiveKeywords {
 				seen[k] = struct{}{}
 			}
+			// Transaction-flag shorthands are valid at the same position as
+			// the "txn" keyword, so a manually-invoked completion at
+			// "DATE " surfaces them alongside the directive list. They are
+			// filtered out by the client's prefix match the moment the
+			// user starts typing a letter.
+			seen["*"] = struct{}{}
+			seen["!"] = struct{}{}
 		} else {
 			for k := range headerKeywords {
 				seen[k] = struct{}{}
