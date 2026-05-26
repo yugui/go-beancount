@@ -59,10 +59,22 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 			DocumentSymbolProvider:          true,
 			DefinitionProvider:              true,
 			CompletionProvider: &protocol.CompletionOptions{
-				// Trigger characters: `:`, `#`, `^`. `"`, `*`, `!` are deliberately excluded
-				// to avoid misfires during string/flag entry; alphanumeric completion is
-				// delegated to the client's word-boundary detection.
-				TriggerCharacters: []string{":", "#", "^"},
+				// Trigger characters cover lexical positions where the user
+				// has just committed to a specific completion context and
+				// will not otherwise hit a word-boundary that the client
+				// auto-triggers on:
+				//   `:` — account path separator
+				//   `#` — tag introducer
+				//   `^` — link introducer
+				//   `"` — start of payee/narration or metadata string
+				// `*` and `!` (transaction flags) remain excluded: they
+				// open no string scope, and triggering on them would
+				// misfire whenever they appear inside arithmetic or
+				// number-flag mixes. classifyContext returns no
+				// candidates for ContextInString / ContextUnknown, so a
+				// stray `"` (e.g. inside option/plugin strings) silently
+				// produces an empty list rather than wrong suggestions.
+				TriggerCharacters: []string{":", "#", "^", "\""},
 			},
 		},
 	}

@@ -211,7 +211,7 @@ func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
 	if caps.CompletionProvider == nil {
 		t.Fatalf("initialize: CompletionProvider = nil, want non-nil")
 	}
-	wantTriggers := []string{":", "#", "^"}
+	wantTriggers := []string{":", "#", "^", "\""}
 	if !slices.Equal(caps.CompletionProvider.TriggerCharacters, wantTriggers) {
 		t.Errorf("initialize: TriggerCharacters = %v, want %v", caps.CompletionProvider.TriggerCharacters, wantTriggers)
 	}
