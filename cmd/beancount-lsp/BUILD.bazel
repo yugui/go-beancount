@@ -46,6 +46,7 @@ go_test(
         "completion_test.go",
         "definition_test.go",
         "diagnostics_test.go",
+        "docsync_test.go",
         "formatting_test.go",
         "hover_test.go",
         "locate_test.go",

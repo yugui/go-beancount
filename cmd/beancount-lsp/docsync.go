@@ -100,7 +100,10 @@ func (s *Server) handleDidOpen(ctx context.Context, reply jsonrpc2.Replier, raw 
 func (s *Server) handleDidChange(ctx context.Context, reply jsonrpc2.Replier, raw json.RawMessage) error {
 	defer func() { _ = reply(ctx, nil, nil) }()
 
-	var params protocol.DidChangeTextDocumentParams
+	var params struct {
+		TextDocument   protocol.VersionedTextDocumentIdentifier `json:"textDocument"`
+		ContentChanges []rawContentChange                       `json:"contentChanges"`
+	}
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil
 	}
@@ -148,15 +151,49 @@ func (s *Server) handleDidChange(ctx context.Context, reply jsonrpc2.Replier, ra
 	return nil
 }
 
-// applyChanges returns the document content after applying all change events.
-// Events with a Range field are treated as full-replace; proper UTF-16
-// incremental application is not yet implemented.
-func applyChanges(ds *docStore, u uri.URI, changes []protocol.TextDocumentContentChangeEvent) []byte {
+// rawContentChange mirrors protocol.TextDocumentContentChangeEvent but uses
+// a pointer-typed Range so the JSON decoder can distinguish "range omitted"
+// (TextDocumentSyncKindFull: full-document replace) from "range present and
+// equal to (0,0)-(0,0)" (incremental insert at start of file). The protocol
+// library's value-typed Range conflates the two cases.
+type rawContentChange struct {
+	Range *protocol.Range `json:"range,omitempty"`
+	Text  string          `json:"text"`
+}
+
+// applyChanges returns the document content after applying all change events
+// in order. Each event is either a full-document replace (Range nil) or an
+// incremental splice over a UTF-16 character range. Per LSP spec, events are
+// applied sequentially against the buffer produced by the preceding event.
+func applyChanges(ds *docStore, u uri.URI, changes []rawContentChange) []byte {
 	current, _ := ds.get(u)
 	for _, ch := range changes {
-		current = []byte(ch.Text)
+		current = applyChange(current, ch)
 	}
 	return current
+}
+
+// applyChange returns buf with ch applied. For full-document changes (Range
+// nil), the new content replaces buf entirely. For incremental changes, the
+// LSP Range is resolved against buf's UTF-16 layout via lspPositionToByte and
+// the resulting byte span is spliced with ch.Text. A reversed range (Start
+// after End) is normalized so the spec's "empty range" insert at any position
+// always behaves as an insertion at that position.
+func applyChange(buf []byte, ch rawContentChange) []byte {
+	if ch.Range == nil {
+		return []byte(ch.Text)
+	}
+	lo := computeLineOffsets(buf)
+	start := lspPositionToByte(ch.Range.Start, buf, lo)
+	end := lspPositionToByte(ch.Range.End, buf, lo)
+	if start > end {
+		start, end = end, start
+	}
+	out := make([]byte, 0, len(buf)-(end-start)+len(ch.Text))
+	out = append(out, buf[:start]...)
+	out = append(out, ch.Text...)
+	out = append(out, buf[end:]...)
+	return out
 }
 
 // handleDidClose handles textDocument/didClose. It removes the in-memory
