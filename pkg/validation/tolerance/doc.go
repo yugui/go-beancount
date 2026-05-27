@@ -40,14 +40,13 @@
 // and falls through to zero; this avoids treating a likely typo as an
 // intentional "exact match" requirement.
 //
-// This package diverges from upstream beancount's get_balance_tolerance
-// (beancount/ops/balance.py): upstream consults the per-currency
-// inferred_tolerance_default for balance assertions whose asserted
-// amount has zero fractional digits, even when posting-level inference
-// is computable. This package does not replicate that nuance: the
-// precedence chain above is applied uniformly across Infer,
-// ForAmount, and ForBalanceAssertion — posting-level inference is
-// never overridden by the per-currency default. This divergence is
-// intentional; it can be revisited in a follow-up if a real consumer
-// reports the difference.
+// Integer balance assertions: ForBalanceAssertion takes a dedicated
+// branch for amounts with no fractional digits (Exponent >= 0). There
+// is no inferrable precision in the authored amount, so the
+// doubled-factor rule does not apply; instead the tolerance is looked
+// up in inferred_tolerance_default for the asserted currency and falls
+// through to zero when absent. This matches upstream beancount's
+// get_balance_tolerance branch on amount.number.exponent == 0 and
+// keeps "balance Assets:A 101 USD" against an accumulated 100 USD a
+// reportable mismatch rather than slipping under a 1-unit slack.
 package tolerance

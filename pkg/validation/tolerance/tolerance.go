@@ -29,15 +29,35 @@ func ForAmount(opts *ast.OptionValues, amount ast.Amount) *apd.Decimal {
 
 // ForBalanceAssertion returns the inferred tolerance for a Balance
 // directive's asserted amount, mirroring upstream beancount's
-// get_balance_tolerance (beancount/ops/balance.py). The tolerance is
-// 2 × tolerance_multiplier × 10^expo where expo is the exponent of
-// the assertion amount's least-significant digit. Upstream applies
-// the doubled factor specifically to balance assertions because
-// users hand-write the asserted amount and rounding noise can exceed
-// transaction-internal precision; transaction-balancing tolerance
-// computed from the same amount remains the un-doubled
-// tolerance_multiplier × 10^expo via ForAmount.
+// get_balance_tolerance (beancount/ops/balance.py).
+//
+// The result depends on whether the assertion amount has fractional
+// digits:
+//
+//   - Fractional amount (Exponent < 0): tolerance is
+//     2 × tolerance_multiplier × 10^expo. Upstream applies the doubled
+//     factor specifically to balance assertions because users
+//     hand-write the asserted amount and rounding noise can exceed
+//     transaction-internal precision; transaction-balancing tolerance
+//     computed from the same amount remains the un-doubled
+//     tolerance_multiplier × 10^expo via ForAmount.
+//
+//   - Integer amount (Exponent >= 0): no fractional digits were
+//     authored, so there is no inferrable precision. The tolerance is
+//     looked up in the per-currency inferred_tolerance_default option;
+//     absent (or zero/negative) entries fall through to zero, requiring
+//     an exact match. This matches upstream's branch on
+//     amount.number.as_tuple().exponent == 0 and is what makes
+//     "balance Assets:A 101 USD" against an accumulated 100 USD a
+//     reportable mismatch rather than slipping under a 1.0-unit slack.
 func ForBalanceAssertion(opts *ast.OptionValues, amount ast.Amount) *apd.Decimal {
+	if amount.Number.Exponent >= 0 {
+		defaults := opts.DecimalMap("inferred_tolerance_default")
+		if d := lookupPerCurrencyDefault(defaults, amount.Currency); d != nil {
+			return d
+		}
+		return new(apd.Decimal)
+	}
 	out := ForAmount(opts, amount)
 	// apd.Decimal stores sign separately and Coeff is a non-negative
 	// big.Int, so left-shifting the coefficient by 1 multiplies the

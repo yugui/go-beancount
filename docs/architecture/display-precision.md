@@ -394,13 +394,16 @@ expected keys), but their consumers do not yet exist in Go.
 
 ### Deliberate behavioral divergences
 
-- **`tolerance_multiplier` / `inferred_tolerance_default` vs upstream `get_balance_tolerance`.**
-  Upstream consults `inferred_tolerance_default` for balance assertions whose asserted
-  amount has zero fractional digits, even when posting-level inference is computable.
-  Go applies a simpler precedence chain (posting-level > per-currency default) uniformly
-  across all three computation functions (`Infer`, `ForAmount`, `ForBalanceAssertion`).
-  The divergence is documented in `pkg/validation/internal/tolerance/doc.go`. It is
-  reopenable if a real consumer encounters the integer-assertion nuance.
+- **`tolerance_multiplier` / `inferred_tolerance_default` vs upstream `get_balance_tolerance`
+  (resolved for integer balance assertions).**
+  `ForBalanceAssertion` now takes a dedicated branch for amounts with zero fractional
+  digits (`Exponent >= 0`): the tolerance is looked up in `inferred_tolerance_default`
+  for the asserted currency and falls through to zero when absent, matching upstream
+  `get_balance_tolerance`. Fractional balance assertions keep the
+  doubled-factor rule (`2 × tolerance_multiplier × 10^expo`). `Infer` and `ForAmount`
+  remain on the simpler precedence chain (posting-level > per-currency default) since
+  they drive transaction balancing, not balance-assertion verification. See
+  `pkg/validation/tolerance/doc.go` for the per-function contract.
 
 - **No deprecation diagnostic on `inferred_tolerance_multiplier` writes.**
   Upstream beancount's `grammar.py:387-391` emits a `DeprecatedError` warning
