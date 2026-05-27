@@ -917,7 +917,7 @@ func serializeCostHolder(c ast.CostHolder) (json.RawMessage, error) {
 //	}
 //
 // number / currency / date are always emitted: a booked Cost has them
-// by construction (ResolveCost guarantees all three, and the reducer's
+// by construction (ResolveLot guarantees all three, and the reducer's
 // terminal pass installs only fully-resolved Costs onto the AST). The
 // function trusts that precondition — a directly-constructed zero
 // [*ast.Cost] would surface as a "0001-01-01" date here rather than

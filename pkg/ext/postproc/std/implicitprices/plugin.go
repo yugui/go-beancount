@@ -158,29 +158,31 @@ func buildPrice(tx *ast.Transaction, p *ast.Posting) (*ast.Price, *ast.Diagnosti
 		}, nil
 	}
 
-	// Cost annotation: per-unit form ({X CUR}) wins, total form
-	// ({{T CUR}}) is divided by |units|. Combined form
-	// ({X # T CUR}) is collapsed to per + T/|units|, matching the
-	// resolution used by [pkg/inventory.ResolveCost]; upstream's
-	// price emission uses cost.number, which the booking layer
-	// derives the same way.
-	if p.Cost != nil {
-		amt, err := costPerUnit(p.Cost, p.Amount.Number, tx)
-		if err != nil {
-			return nil, err
-		}
-		if amt == nil {
-			return nil, nil
-		}
-		return &ast.Price{
-			Span:      tx.Span,
-			Date:      tx.Date,
-			Commodity: p.Amount.Currency,
-			Amount:    *amt,
-		}, nil
+	if p.Cost == nil {
+		return nil, nil
 	}
-
-	return nil, nil
+	// total-form with zero units: skip silently (no actionable error)
+	if !p.Cost.IsBooked() && p.Cost.GetTotal() != nil && p.Amount.Number.Sign() == 0 {
+		return nil, nil
+	}
+	amt, err := p.PerUnitCost()
+	if err != nil {
+		return nil, &ast.Diagnostic{
+			Code:     codeImplicitPriceError,
+			Span:     spanForTx(tx),
+			Message:  "derive per-unit cost: " + err.Error(),
+			Severity: ast.Error,
+		}
+	}
+	if amt == nil {
+		return nil, nil
+	}
+	return &ast.Price{
+		Span:      tx.Span,
+		Date:      tx.Date,
+		Commodity: p.Amount.Currency,
+		Amount:    *amt,
+	}, nil
 }
 
 // perUnitNumber returns the per-unit decimal for a price annotation.
@@ -213,89 +215,6 @@ func perUnitNumber(number, units apd.Decimal, isTotal bool, tx *ast.Transaction,
 		}
 	}
 	return out, nil
-}
-
-// costPerUnit derives the per-unit price for a posting's Cost
-// annotation. It accepts all four CostSpec shapes (per-unit only,
-// total only, combined, empty); returns (nil, nil) for the empty
-// case and for postings whose units would force a division by zero.
-func costPerUnit(c ast.CostHolder, units apd.Decimal, tx *ast.Transaction) (*ast.Amount, *ast.Diagnostic) {
-	if c == nil {
-		return nil, nil
-	}
-	perUnit := c.GetPerUnit()
-	total := c.GetTotal()
-	switch {
-	case perUnit != nil && total != nil:
-		// Combined form: per + T/|units|. The AST contract
-		// (pkg/ast/directives.go) guarantees both components share the
-		// same currency in the combined form, so a mismatch here would
-		// be a parser bug, not a user error — we treat it as
-		// unreachable rather than emit a diagnostic the user cannot
-		// act on.
-		if units.Sign() == 0 {
-			return nil, nil
-		}
-		absUnits := new(apd.Decimal)
-		if _, err := apd.BaseContext.Abs(absUnits, &units); err != nil {
-			return nil, &ast.Diagnostic{
-				Code:     codeImplicitPriceError,
-				Span:     spanForTx(tx),
-				Message:  "abs of units in combined cost: " + err.Error(),
-				Severity: ast.Error,
-			}
-		}
-		quo := new(apd.Decimal)
-		totalNum := total.Number
-		if _, err := quoContext.Quo(quo, &totalNum, absUnits); err != nil {
-			return nil, &ast.Diagnostic{
-				Code:     codeImplicitPriceError,
-				Span:     spanForTx(tx),
-				Message:  "divide total cost by units: " + err.Error(),
-				Severity: ast.Error,
-			}
-		}
-		out := new(apd.Decimal)
-		perNum := perUnit.Number
-		if _, err := apd.BaseContext.Add(out, &perNum, quo); err != nil {
-			return nil, &ast.Diagnostic{
-				Code:     codeImplicitPriceError,
-				Span:     spanForTx(tx),
-				Message:  "add per-unit and residual cost: " + err.Error(),
-				Severity: ast.Error,
-			}
-		}
-		return &ast.Amount{Number: *out, Currency: perUnit.Currency}, nil
-	case total != nil:
-		if units.Sign() == 0 {
-			return nil, nil
-		}
-		absUnits := new(apd.Decimal)
-		if _, err := apd.BaseContext.Abs(absUnits, &units); err != nil {
-			return nil, &ast.Diagnostic{
-				Code:     codeImplicitPriceError,
-				Span:     spanForTx(tx),
-				Message:  "abs of units in total cost: " + err.Error(),
-				Severity: ast.Error,
-			}
-		}
-		out := new(apd.Decimal)
-		totalNum := total.Number
-		if _, err := quoContext.Quo(out, &totalNum, absUnits); err != nil {
-			return nil, &ast.Diagnostic{
-				Code:     codeImplicitPriceError,
-				Span:     spanForTx(tx),
-				Message:  "divide total cost by units: " + err.Error(),
-				Severity: ast.Error,
-			}
-		}
-		return &ast.Amount{Number: *out, Currency: total.Currency}, nil
-	case perUnit != nil:
-		return &ast.Amount{Number: *ast.CloneDecimal(&perUnit.Number), Currency: perUnit.Currency}, nil
-	default:
-		// Empty cost spec ({} or {{}}): no concrete number to record.
-		return nil, nil
-	}
 }
 
 // spanForTx returns the span to anchor a diagnostic on. The

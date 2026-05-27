@@ -22,7 +22,7 @@ import (
 type ReductionStep struct {
 	// Lot is the cost of the lot that was reduced; zero value for a
 	// cash reduction.
-	Lot Cost
+	Lot Lot
 	// Units is the positive magnitude consumed from this lot.
 	Units apd.Decimal
 	// SalePricePer is the per-unit sale price from the reducing
@@ -37,7 +37,7 @@ type ReductionStep struct {
 }
 
 // Inventory holds a set of [Position]s in insertion order. Positions
-// of the same commodity and equal [Cost] merge on [Inventory.Add] per
+// of the same commodity and equal [Lot] merge on [Inventory.Add] per
 // Beancount's augmentation rule. An Inventory is conceptually a value
 // type but is exposed via pointer so callers can mutate it in place.
 //
@@ -54,8 +54,8 @@ func NewInventory() *Inventory {
 }
 
 // Add merges a position into i. A position with the same commodity
-// and an equal [Cost] (per [Cost.Equal]) — including the cash case
-// where both Costs are nil — has its Units number added to the
+// and an equal [Lot] (per [Lot.Equal]) — including the cash case
+// where both lots are nil — has its Units number added to the
 // existing one in place; otherwise p is cloned and appended at the
 // tail. A merge whose sum is zero drops the slot so the inventory
 // does not accumulate empty placeholders.
@@ -83,15 +83,9 @@ func (i *Inventory) Add(p Position) error {
 	return nil
 }
 
-// costsEqualForMerge reports whether two *Cost values should merge:
-// two nils merge (cash), nil-vs-non-nil never, otherwise [Cost.Equal].
-func costsEqualForMerge(a, b *Cost) bool {
-	if a == nil && b == nil {
-		return true
-	}
-	if a == nil || b == nil {
-		return false
-	}
+// costsEqualForMerge reports whether two *Lot values should merge:
+// two nils merge (cash), nil-vs-non-nil never, otherwise [Lot.Equal].
+func costsEqualForMerge(a, b *Lot) bool {
 	return a.Equal(b)
 }
 
@@ -163,7 +157,7 @@ func (i *Inventory) Reduce(
 		if p.Units.Currency != commodity {
 			continue
 		}
-		var lot Cost
+		var lot Lot
 		if p.Cost != nil {
 			lot = *p.Cost
 		}

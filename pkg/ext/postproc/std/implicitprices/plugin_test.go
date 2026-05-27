@@ -645,6 +645,47 @@ func TestCanceledContextMidLoop(t *testing.T) {
 	}
 }
 
+// TestBookedCostEmitsCanonicalNumber: a posting whose Cost is a
+// booked *ast.Cost (post-booking AST) emits a Price using the
+// canonical c.Number, even when PerUnit and Total provenance fields
+// are nil. This is the shape the reducer installs for an empty `{}`
+// cost matched against a lot; the previous CostHolder.GetPerUnit() /
+// GetTotal() path silently dropped this case, while upstream
+// implicit_prices reads cost.number and emits the price.
+func TestBookedCostEmitsCanonicalNumber(t *testing.T) {
+	units := amt(t, "-3", "HOOL")
+	txDate := time.Date(2024, 10, 1, 0, 0, 0, 0, time.UTC)
+	tx := &ast.Transaction{
+		Date: txDate,
+		Flag: '*',
+		Postings: []ast.Posting{{
+			Account: "Assets:Brokerage",
+			Amount:  &units,
+			Cost: &ast.Cost{
+				Number:   dec(t, "100"),
+				Currency: "USD",
+			},
+		}},
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{tx})}
+	res, err := apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(res.Diagnostics) != 0 {
+		t.Fatalf("len(res.Diagnostics) = %d, want 0; errors = %v", len(res.Diagnostics), res.Diagnostics)
+	}
+
+	want := []*ast.Price{{
+		Date:      txDate,
+		Commodity: "HOOL",
+		Amount:    amt(t, "100", "USD"),
+	}}
+	if diff := cmp.Diff(want, filterPrices(res.Directives), astCmpOpts); diff != "" {
+		t.Errorf("synthesized Prices mismatch (-want +got):\n%s", diff)
+	}
+}
+
 // TestDeduplication: when two postings would emit the same
 // (date, base, quote, number) Price, only one is synthesized.
 // Upstream maintains the same dedup map; this test pins the behavior.

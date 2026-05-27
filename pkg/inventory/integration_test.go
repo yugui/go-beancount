@@ -137,7 +137,7 @@ func matchInventory(t *testing.T, tag string, inv *inventory.Inventory, want []w
 			Units: ast.Amount{Number: mustDecimal(t, wp.Units), Currency: wp.Currency},
 		}
 		if wp.Cost != nil {
-			wantPositions[i].Cost = &inventory.Cost{
+			wantPositions[i].Cost = &inventory.Lot{
 				Number:   mustDecimal(t, wp.Cost.Number),
 				Currency: wp.Cost.Currency,
 				Date:     wp.Cost.Date,
@@ -475,7 +475,7 @@ func TestInventoryIntegration_InspectFIFOReduction(t *testing.T) {
 			}
 			wantGain := mustDecimal(t, want.gain)
 			wantStep := inventory.ReductionStep{
-				Lot:          inventory.Cost{Number: mustDecimal(t, want.basis), Currency: "USD", Date: want.date},
+				Lot:          inventory.Lot{Number: mustDecimal(t, want.basis), Currency: "USD", Date: want.date},
 				Units:        mustDecimal(t, want.units),
 				RealizedGain: &wantGain,
 				GainCurrency: want.currency,
@@ -590,7 +590,7 @@ func TestReducerRun_OutputIsFixedPoint(t *testing.T) {
 	// at least one cost-bearing posting must have been converted to
 	// *ast.Cost so the second Run engages the already-booked path
 	// somewhere. The branch-specific coverage of the resolution
-	// helpers (ResolveCost / NewCostMatcher with *ast.Cost input)
+	// helpers (ResolveLot / NewCostMatcher with *ast.Cost input)
 	// is pinned by focused unit tests in idempotence_test.go; here
 	// we only assert that the integration glue connects the
 	// terminal pass to the next run.

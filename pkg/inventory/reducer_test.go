@@ -3440,7 +3440,7 @@ func TestReducerWalk_MultiLotReductionPartialGroupDrop(t *testing.T) {
 // inventory.
 func TestReverseBooking_AugmentationInverse(t *testing.T) {
 	buyDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	lot := &Cost{
+	lot := &Lot{
 		Number:   decimalVal(t, "100"),
 		Currency: "USD",
 		Date:     buyDate,
@@ -3494,7 +3494,7 @@ func TestReverseBooking_AugmentationInverse(t *testing.T) {
 // reduction (bp.Reduction != nil) restores the consumed lot.
 func TestReverseBooking_ReductionInverse(t *testing.T) {
 	buyDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	lot := Cost{
+	lot := Lot{
 		Number:   decimalVal(t, "100"),
 		Currency: "USD",
 		Date:     buyDate,
@@ -3505,7 +3505,7 @@ func TestReverseBooking_ReductionInverse(t *testing.T) {
 	t.Run("cash_sentinel", func(t *testing.T) {
 		inv := NewInventory() // empty; the reduction consumed the position entirely
 		step := ReductionStep{
-			Lot:   Cost{}, // zero value = cash sentinel
+			Lot:   Lot{}, // zero value = cash sentinel
 			Units: decimalVal(t, "200"),
 		}
 		bp := BookedPosting{
@@ -3558,6 +3558,149 @@ func TestReverseBooking_ReductionInverse(t *testing.T) {
 		}
 		if diff := cmp.Diff(want, got, astCmpOpts...); diff != "" {
 			t.Errorf("inventory after lot reduction reverse (-want +got):\n%s", diff)
+		}
+	})
+}
+
+// TestReducerWalk_ReducingPostingHasNoCostProvenance pins the central
+// install-discipline contract: an [*ast.Cost] the reducer installs on
+// a reducing posting must carry no presentation provenance, so
+// [PostingWeight] computes the weight from units × Number rather than
+// the augmenting posting's surcharge literal.
+func TestReducerWalk_ReducingPostingHasNoCostProvenance(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	buyDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+	sellDate := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	buy := mkTxn(buyDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "10", "STOCK"),
+			Cost: &ast.CostSpec{
+				Total:    decimalPtr(t, "100"),
+				Currency: "JPY",
+				Date:     &buyDate,
+			},
+		},
+		&ast.Posting{Account: "Equity:Open", Amount: mkAmountPtr(t, "-100", "JPY")},
+	)
+	sell := mkTxn(sellDate,
+		&ast.Posting{
+			Account: "Assets:A",
+			Amount:  mkAmountPtr(t, "-5", "STOCK"),
+			Cost:    &ast.CostSpec{},
+		},
+		&ast.Posting{Account: "Equity:Open", Amount: mkAmountPtr(t, "50", "JPY")},
+	)
+	ledger := mkLedger(
+		mkOpen(openDate, "Assets:A", ast.BookingDefault),
+		mkOpen(openDate, "Equity:Open", ast.BookingDefault),
+		buy,
+		sell,
+	)
+
+	r := NewReducer(ledger.All())
+	booked, diags, _ := r.Run()
+	if len(diags) != 0 {
+		t.Fatalf("Reducer.Run: unexpected diagnostics: %v", diags)
+	}
+	bookedSell := findBookedTxn(t, booked, sellDate)
+	red := &bookedSell.Postings[0]
+	if red.Cost == nil {
+		t.Fatalf("Reducer.Run: reducing posting Cost is nil; want a booked *ast.Cost")
+	}
+	c, ok := red.Cost.(*ast.Cost)
+	if !ok {
+		t.Fatalf("Reducer.Run: reducing posting Cost type = %T, want *ast.Cost", red.Cost)
+	}
+	if c.PerUnit != nil {
+		t.Errorf("Reducer.Run: reducing posting Cost.PerUnit = %+v, want nil (provenance must not leak)", c.PerUnit)
+	}
+	if c.Total != nil {
+		t.Errorf("Reducer.Run: reducing posting Cost.Total = %+v, want nil (provenance must not leak)", c.Total)
+	}
+	if c.Currency != "JPY" {
+		t.Errorf("Reducer.Run: reducing posting Cost.Currency = %q, want %q", c.Currency, "JPY")
+	}
+	wantNum := decimalVal(t, "10")
+	if c.Number.Cmp(&wantNum) != 0 {
+		t.Errorf("Reducer.Run: reducing posting Cost.Number = %s, want 10", c.Number.Text('f'))
+	}
+}
+
+// TestReducerWalk_AugmentingPostingRetainsCostProvenance pins the
+// dual side of [TestReducerWalk_ReducingPostingHasNoCostProvenance]:
+// an augmenting posting must retain its CostSpec's presentation
+// provenance (PerUnit or Total, depending on the user-written form)
+// so [(*ast.Posting).TotalCost] computes the divide-free augmentation
+// weight.
+func TestReducerWalk_AugmentingPostingRetainsCostProvenance(t *testing.T) {
+	openDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	txnDate := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("total_form", func(t *testing.T) {
+		buy := mkTxn(txnDate,
+			&ast.Posting{
+				Account: "Assets:A",
+				Amount:  mkAmountPtr(t, "10", "STOCK"),
+				Cost: &ast.CostSpec{
+					Total:    decimalPtr(t, "100"),
+					Currency: "JPY",
+				},
+			},
+			&ast.Posting{Account: "Equity:Open", Amount: mkAmountPtr(t, "-100", "JPY")},
+		)
+		ledger := mkLedger(
+			mkOpen(openDate, "Assets:A", ast.BookingDefault),
+			mkOpen(openDate, "Equity:Open", ast.BookingDefault),
+			buy,
+		)
+		r := NewReducer(ledger.All())
+		booked, diags, _ := r.Run()
+		if len(diags) != 0 {
+			t.Fatalf("Reducer.Run: unexpected diagnostics: %v", diags)
+		}
+		bookedBuy := findBookedTxn(t, booked, txnDate)
+		aug := &bookedBuy.Postings[0]
+		c, ok := aug.Cost.(*ast.Cost)
+		if !ok {
+			t.Fatalf("Reducer.Run: augmenting posting Cost type = %T, want *ast.Cost", aug.Cost)
+		}
+		if c.Total == nil {
+			t.Errorf("Reducer.Run: augmenting posting Cost.Total = nil, want CostSpec's Total to round-trip")
+		}
+	})
+
+	t.Run("per_unit_form", func(t *testing.T) {
+		buy := mkTxn(txnDate,
+			&ast.Posting{
+				Account: "Assets:B",
+				Amount:  mkAmountPtr(t, "10", "STOCK"),
+				Cost: &ast.CostSpec{
+					PerUnit:  decimalPtr(t, "10"),
+					Currency: "JPY",
+				},
+			},
+			&ast.Posting{Account: "Equity:Open", Amount: mkAmountPtr(t, "-100", "JPY")},
+		)
+		ledger := mkLedger(
+			mkOpen(openDate, "Assets:B", ast.BookingDefault),
+			mkOpen(openDate, "Equity:Open", ast.BookingDefault),
+			buy,
+		)
+		r := NewReducer(ledger.All())
+		booked, diags, _ := r.Run()
+		if len(diags) != 0 {
+			t.Fatalf("Reducer.Run: unexpected diagnostics: %v", diags)
+		}
+		bookedBuy := findBookedTxn(t, booked, txnDate)
+		aug := &bookedBuy.Postings[0]
+		c, ok := aug.Cost.(*ast.Cost)
+		if !ok {
+			t.Fatalf("Reducer.Run: augmenting posting Cost type = %T, want *ast.Cost", aug.Cost)
+		}
+		if c.PerUnit == nil {
+			t.Errorf("Reducer.Run: augmenting posting Cost.PerUnit = nil, want CostSpec's PerUnit to round-trip")
 		}
 	})
 }

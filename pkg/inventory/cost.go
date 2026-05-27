@@ -8,27 +8,18 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
-// quoContext is the apd context used for per-unit cost division. The
-// package-wide [apd.BaseContext] has Precision=0, which only works for
-// exact operations (Add/Sub/Mul/Neg/Abs). Division (Quo) needs a
-// positive precision; 34 digits matches IEEE-754 decimal128 and is
-// well above the practical ledger use case.
-var quoContext = apd.BaseContext.WithPrecision(34)
-
 // Cost is the booked, fully-resolved cost of a posting. The canonical
 // type lives in [pkg/ast]; this alias is the inventory-side spelling.
 type Cost = ast.Cost
 
-// Lot is the augmentation-flavoured alias for [Cost]: an augmenting
-// posting "adds a lot" while a reducing posting "matches a lot".
-type Lot = ast.Lot
-
-// ResolveCost turns an [ast.CostHolder] on an augmenting posting into
-// a concrete [Cost]:
+// ResolveLot turns an [ast.CostHolder] on an augmenting posting into
+// a provenance-free [Lot]:
 //
 //   - nil c: returns (nil, nil, nil) — a cash augmentation.
-//   - *[ast.Cost]: returns a clone — the reducer is re-entering its
-//     own output.
+//   - *[ast.Cost]: returns a fresh [Lot] carrying only the booked
+//     identity (Number/Currency/Date/Label); PerUnit/Total are
+//     discarded and txnDate is ignored (the booked Date is preserved
+//     verbatim). The reducer is re-entering its own output.
 //   - *[ast.CostSpec] with PerUnit and Total both nil: returns a
 //     [CodeAugmentationRequiresCost] finding. Reductions take the
 //     [CostMatcher] path instead.
@@ -37,23 +28,23 @@ type Lot = ast.Lot
 //     is undefined.
 //   - *[ast.CostSpec] otherwise: derives Number from the spec — X for
 //     per-unit-only, T/|units| for total-only, X + T/|units| for the
-//     combined form.
+//     combined form. Number is always positive. Date defaults to
+//     txnDate; Label is copied verbatim.
 //
-// On the CostSpec path the returned [ast.Cost] retains the spec's
-// PerUnit / Total literals so the printer round-trips the surcharge
-// form. Number is always positive. Date defaults to txnDate; Label is
-// copied verbatim.
+// The returned [Lot] never carries presentation provenance. Augmenting
+// installers route the spec separately to construct the AST-tier
+// [ast.Cost] that round-trips surcharge syntax.
 //
 // At most one of the second (user finding) and third (system error)
 // returns is non-nil. The error return is reserved for implementation
 // bugs — apd.BaseContext arithmetic failures from inputs the grammar
 // cannot produce.
-func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, *ast.Diagnostic, error) {
+func ResolveLot(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Lot, *ast.Diagnostic, error) {
 	if c == nil {
 		return nil, nil, nil
 	}
 	if cost, ok := c.(*ast.Cost); ok {
-		return cost.Clone(), nil, nil
+		return LotFromCost(cost), nil, nil
 	}
 	spec := c.(*ast.CostSpec)
 	if spec.PerUnit == nil && spec.Total == nil {
@@ -64,49 +55,35 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 		}, nil
 	}
 
-	out := &Cost{Currency: spec.Currency}
+	out := &Lot{Currency: spec.Currency, Label: spec.Label}
 	if spec.Date != nil && !spec.Date.IsZero() {
 		out.Date = *spec.Date
 	} else {
 		out.Date = txnDate
 	}
-	out.Label = spec.Label
-	out.PerUnit = spec.GetPerUnit()
-	out.Total = spec.GetTotal()
 
-	absUnits := new(apd.Decimal)
-	unitsNum := units.Number
-	if _, err := apd.BaseContext.Abs(absUnits, &unitsNum); err != nil {
-		return nil, nil, fmt.Errorf("inventory.ResolveCost: abs units: %w", err)
+	// Diagnostic-level zero-units check before PerUnitCost, which would
+	// otherwise surface this as a plain arithmetic error.
+	if spec.Total != nil {
+		absUnits := new(apd.Decimal)
+		unitsNum := units.Number
+		if _, err := apd.BaseContext.Abs(absUnits, &unitsNum); err != nil {
+			return nil, nil, fmt.Errorf("inventory.ResolveLot: abs units: %w", err)
+		}
+		if absUnits.Sign() == 0 {
+			return nil, &ast.Diagnostic{
+				Code:    CodeZeroUnitsCostTotal,
+				Span:    spec.Span,
+				Message: "augmenting posting with total cost has zero units; per-unit cost is undefined",
+			}, nil
+		}
 	}
 
-	// Pre-check the only user-reachable failure of [quoContext.Quo]
-	// below: zero units paired with a non-nil Total makes the per-unit
-	// cost undefined.
-	if spec.Total != nil && absUnits.Sign() == 0 {
-		return nil, &ast.Diagnostic{
-			Code:    CodeZeroUnitsCostTotal,
-			Span:    spec.Span,
-			Message: "augmenting posting with total cost has zero units; per-unit cost is undefined",
-		}, nil
+	perUnit, err := ast.PerUnitCost(spec, &units)
+	if err != nil {
+		return nil, nil, fmt.Errorf("inventory.ResolveLot: %w", err)
 	}
-
-	switch {
-	case spec.PerUnit != nil && spec.Total != nil:
-		quo := new(apd.Decimal)
-		if _, err := quoContext.Quo(quo, spec.Total, absUnits); err != nil {
-			return nil, nil, fmt.Errorf("inventory.ResolveCost: divide total by units: %w", err)
-		}
-		if _, err := apd.BaseContext.Add(&out.Number, spec.PerUnit, quo); err != nil {
-			return nil, nil, fmt.Errorf("inventory.ResolveCost: add per-unit and residual: %w", err)
-		}
-	case spec.Total != nil:
-		if _, err := quoContext.Quo(&out.Number, spec.Total, absUnits); err != nil {
-			return nil, nil, fmt.Errorf("inventory.ResolveCost: divide total by units: %w", err)
-		}
-	default:
-		out.Number = *ast.CloneDecimal(spec.PerUnit)
-	}
+	out.Number = *ast.CloneDecimal(&perUnit.Number)
 
 	return out, nil, nil
 }

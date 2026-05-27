@@ -8,6 +8,14 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
+// quoContext is the apd context used for total → per-unit price
+// division inside [fillRealizedGain]. The package-wide
+// [apd.BaseContext] has Precision=0, which only works for exact
+// operations (Add/Sub/Mul/Neg/Abs); division (Quo) needs a positive
+// precision. 34 digits matches IEEE-754 decimal128 and the matching
+// constant in pkg/ast.
+var quoContext = apd.BaseContext.WithPrecision(34)
+
 // specIsEmpty reports whether c is nil or structurally empty (no
 // per-unit, no total, no date, no label) — the cases for which the
 // price-currency hint rule applies. A booked [*ast.Cost] is never
@@ -54,7 +62,7 @@ type BookedPosting struct {
 	// auto-postings it is the residual inferred by the reducer (see
 	// InferredAuto).
 	Units ast.Amount
-	// Lot is the resolved cost lot for an augmentation; nil for cash
+	// Lot is the booked lot identity for an augmentation; nil for cash
 	// augmentations and reductions.
 	Lot *Lot
 	// Reduction is the per-lot reduction record; nil unless the
@@ -137,8 +145,8 @@ func classify(inv *Inventory, p *ast.Posting, m ast.BookingMethod) kind {
 // [BookedPosting]: a resolved lot for an augmentation, or per-lot
 // reduction steps for a reduction. bookOne does not mutate the
 // backing ast.Posting and does not construct the BookedPosting — the
-// CostSpec → Cost install and the BookedPosting shape live next to
-// the txn.Postings rewrite in the reducer.
+// reducer owns both the AST [*ast.Cost] install (via [augmentCostFor]
+// at the install site) and the BookedPosting shape.
 //
 // txnDate is the default acquisition date for augmentations whose
 // cost spec omits one. method is the booking method for the
@@ -180,10 +188,13 @@ func bookOne(
 // bookAugment handles the augmentation path of bookOne: resolve the
 // cost spec, build a Position, and Add it to the inventory. Returns
 // the resolved lot (nil iff p carried no cost spec — a cash
-// augmentation). See [bookOne] for the user-finding / system-error
-// split.
+// augmentation). The AST-tier [*ast.Cost] to install on the rebuilt
+// posting is built separately by [augmentCostFor] from p.Cost plus
+// the returned lot, so lot identity and AST round-trip provenance
+// remain orthogonal concerns. See [bookOne] for the user-finding /
+// system-error split.
 func bookAugment(inv *Inventory, p *ast.Posting, txnDate time.Time) (*Lot, *ast.Diagnostic, error) {
-	lot, finding, err := ResolveCost(p.Cost, *p.Amount, txnDate)
+	lot, finding, err := ResolveLot(p.Cost, *p.Amount, txnDate)
 	if err != nil {
 		return nil, nil, wrapSystemErr(err, p)
 	}
@@ -204,6 +215,32 @@ func bookAugment(inv *Inventory, p *ast.Posting, txnDate time.Time) (*Lot, *ast.
 	}
 
 	return lot, nil, nil
+}
+
+// augmentCostFor builds the AST-tier [*ast.Cost] the reducer installs
+// on an augmenting posting after booking. For a booked [*ast.Cost]
+// (the fixed-point re-entry path) the same pointer is returned. For a
+// [*ast.CostSpec], a fresh [*ast.Cost] is built from lot identity plus
+// the spec's PerUnit/Total, so [(*ast.Posting).TotalCost] reproduces
+// the user-written surcharge literal. Any other holder (including a
+// nil interface) yields nil — the cash-augmentation case where no
+// cost is installed.
+func augmentCostFor(cost ast.CostHolder, lot *Lot) *ast.Cost {
+	switch c := cost.(type) {
+	case *ast.Cost:
+		return c
+	case *ast.CostSpec:
+		return &ast.Cost{
+			Number:   *ast.CloneDecimal(&lot.Number),
+			Currency: lot.Currency,
+			Date:     lot.Date,
+			Label:    lot.Label,
+			PerUnit:  c.GetPerUnit(),
+			Total:    c.GetTotal(),
+		}
+	default:
+		return nil
+	}
 }
 
 // bookReduce is the reduction path of bookOne: build a matcher, call

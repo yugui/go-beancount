@@ -15,45 +15,51 @@ import (
 //     and never reach the cost-mutating branch. The end-to-end fixed
 //     point is exercised by TestReducerRun_OutputIsFixedPoint; the
 //     focused tests below pin down the booked-Cost short-circuit on
-//     the *resolution* helpers ([ResolveCost] / [NewCostMatcher])
+//     the *resolution* helpers ([ResolveLot] / [NewCostMatcher])
 //     that bookOne consults.
 //   - costNumberMissing's IsBooked short-circuit makes the deferred-
 //     unknowns classification deterministically refuse to drag an
 //     already-booked posting into the residual pass.
 
-func TestResolveCost_BookedShortCircuit(t *testing.T) {
-	// ResolveCost on an already-booked *ast.Cost must clone (not
-	// re-resolve) the value, so the canonical Number is preserved
-	// even if a parse-tier resolution would have produced a
-	// numerically different (precision-bound) result.
+func TestResolveLot_BookedShortCircuit(t *testing.T) {
+	// ResolveLot on an already-booked *ast.Cost extracts the
+	// provenance-free lot identity: Number/Currency/Date/Label are
+	// transferred, PerUnit/Total are dropped. txnDate is ignored
+	// because the booked Cost already carries its acquisition date.
 	booked := &ast.Cost{
 		Number:   mkAmount(t, "1.024390243902439024390243902439024", "JPY").Number,
 		Currency: "JPY",
 		Date:     time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Label:    "lot-X",
 		Total:    &ast.Amount{Number: mkAmount(t, "4.2", "JPY").Number, Currency: "JPY"},
 	}
-	got, finding, err := ResolveCost(booked, mkAmount(t, "4.1", "STOCK"), time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
+	got, finding, err := ResolveLot(booked, mkAmount(t, "4.1", "STOCK"), time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC))
 	if err != nil {
-		t.Fatalf("ResolveCost(*ast.Cost): %v", err)
+		t.Fatalf("ResolveLot(*ast.Cost): %v", err)
 	}
 	if finding != nil {
 		t.Fatalf("unexpected finding: %v", finding)
 	}
-	// Pointer identity: a fresh clone must be returned (the booked
-	// input is never reused) and its Total Amount must also be a
-	// fresh allocation. cmp.Diff cannot express "different pointer,
-	// same value", so these two checks stay independent of the value
-	// comparison below.
-	if got == booked {
-		t.Error("ResolveCost: returned the input pointer; want a fresh clone")
+	if got == nil {
+		t.Fatal("ResolveLot: got nil, want a *Lot")
 	}
-	if got.Total == booked.Total {
-		t.Error("ResolveCost: Total Amount pointer shared with input; want deep clone")
+	want := &Lot{
+		Number:   mkAmount(t, "1.024390243902439024390243902439024", "JPY").Number,
+		Currency: "JPY",
+		Date:     time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Label:    "lot-X",
 	}
-	// Value equality: a booked input must round-trip its
-	// Number/Currency/Date/Label/Total untouched, with txnDate ignored.
-	if diff := cmp.Diff(booked, got, astCmpOpts...); diff != "" {
-		t.Errorf("ResolveCost: booked Cost not preserved (-want +got):\n%s", diff)
+	if diff := cmp.Diff(want, got, astCmpOpts...); diff != "" {
+		t.Errorf("ResolveLot: lot identity mismatch (-want +got):\n%s", diff)
+	}
+
+	// Deep-copy of Number: mutating the result must not affect the
+	// input. The booked input still carries its provenance fields
+	// (which Lot intentionally does not expose).
+	newNum := mkAmount(t, "99.0", "JPY").Number
+	got.Number.Set(&newNum)
+	if booked.Number.String() != "1.024390243902439024390243902439024" {
+		t.Errorf("ResolveLot: mutating result.Number leaked into input: %s", booked.Number.String())
 	}
 }
 
@@ -85,11 +91,12 @@ func TestNewCostMatcher_BookedTightMatch(t *testing.T) {
 	}
 
 	// The matcher must accept the exact lot...
-	if !m.Matches(*booked) {
-		t.Error("Matches(self) = false; tight matcher must accept the booked Cost")
+	bookedLot := *LotFromCost(booked)
+	if !m.Matches(bookedLot) {
+		t.Error("Matches(self) = false; tight matcher must accept the booked lot identity")
 	}
 	// ...and reject lots that differ in any identity dimension.
-	other := *booked
+	other := bookedLot
 	other.Label = "lot-B"
 	if m.Matches(other) {
 		t.Error("Matches(different Label) = true; tight matcher must reject")

@@ -66,7 +66,7 @@ func TestClassify_NilInventoryIsAugment(t *testing.T) {
 func TestClassify_SameSignIsAugment(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "100", "ACME", mkCost(t, "10", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "100", "ACME", mkLot(t, "10", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "5", "ACME"), nil, nil)
@@ -78,7 +78,7 @@ func TestClassify_SameSignIsAugment(t *testing.T) {
 func TestClassify_OppositeSignIsReduce(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "100", "ACME", mkCost(t, "10", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "100", "ACME", mkLot(t, "10", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), nil, nil)
@@ -90,7 +90,7 @@ func TestClassify_OppositeSignIsReduce(t *testing.T) {
 func TestClassify_BookingNoneAlwaysAugments(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "100", "ACME", mkCost(t, "10", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "100", "ACME", mkLot(t, "10", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	// Opposite sign, but BookingNone must still route to augment.
@@ -103,10 +103,10 @@ func TestClassify_BookingNoneAlwaysAugments(t *testing.T) {
 func TestClassify_HintFiltersByCostCurrencyUSD(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "10000", "JPY", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "10000", "JPY", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	// -5 ACME @ 110 USD: no cost spec, price hint = USD. USD lot exists
@@ -121,10 +121,10 @@ func TestClassify_HintFiltersByCostCurrencyUSD(t *testing.T) {
 func TestClassify_HintFiltersByCostCurrencyJPY(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "10000", "JPY", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "10000", "JPY", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), nil,
@@ -137,10 +137,10 @@ func TestClassify_HintFiltersByCostCurrencyJPY(t *testing.T) {
 func TestClassify_NoHintFallsBackToCommodity(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "10000", "JPY", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "10000", "JPY", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	// +5 ACME, no cost spec, no price. Commodity-only lookup: same-sign
@@ -161,10 +161,10 @@ func TestClassify_NoHintFallsBackToCommodity(t *testing.T) {
 func TestClassify_EmptyCostSpecWithPriceHint(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "10000", "JPY", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "10000", "JPY", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	// -5 ACME {} @ 110 USD: empty spec + price hint = USD. Under STRICT
@@ -226,7 +226,7 @@ func TestBookOne_AugmentPerUnitCost(t *testing.T) {
 		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot == nil {
-		t.Fatal("bookOne lot should be set for augmentation with cost")
+		t.Fatal("bookOne: Lot = nil, want non-nil for per-unit cost augmentation")
 	}
 	want := decimalVal(t, "100")
 	if lot.Number.Cmp(&want) != 0 {
@@ -263,7 +263,7 @@ func TestBookOne_AugmentCombinedCost(t *testing.T) {
 		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot == nil {
-		t.Fatal("bookOne: Lot should be set")
+		t.Fatal("bookOne: Lot = nil, want non-nil for combined-cost augmentation")
 	}
 	want := decimalVal(t, "110")
 	if lot.Number.Cmp(&want) != 0 {
@@ -285,7 +285,7 @@ func TestBookOne_AugmentTotalCost(t *testing.T) {
 		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot == nil {
-		t.Fatal("bookOne: Lot should be set")
+		t.Fatal("bookOne: Lot = nil, want non-nil for total-cost augmentation")
 	}
 	want := decimalVal(t, "100")
 	if lot.Number.Cmp(&want) != 0 {
@@ -306,7 +306,7 @@ func TestBookOne_AugmentCash(t *testing.T) {
 		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot != nil {
-		t.Errorf("Lot should be nil for cash augmentation, got %+v", lot)
+		t.Errorf("bookOne: Lot = %+v, want nil for cash augmentation", lot)
 	}
 	if inv.Len() != 1 {
 		t.Fatalf("inventory Len = %d, want 1", inv.Len())
@@ -324,17 +324,11 @@ func TestBookOne_AugmentEmptyCostSpecErrors(t *testing.T) {
 
 	_, _, d, err := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if err != nil {
-
 		t.Fatalf("system error: %v", err)
-
 	}
-
 	if d == nil {
-
 		t.Fatal("expected finding, got nil")
-
 	}
-
 	if d.Code != CodeAugmentationRequiresCost {
 		t.Errorf("error code = %v, want CodeAugmentationRequiresCost", d.Code)
 	}
@@ -391,10 +385,10 @@ func TestBookOne_ReduceFIFO(t *testing.T) {
 	oldDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	newDate := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", oldDate, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", oldDate, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "120", "USD", newDate, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "120", "USD", newDate, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -425,10 +419,10 @@ func TestBookOne_ReduceFIFO(t *testing.T) {
 func TestBookOne_ReduceStrictWithLabel(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "lot-a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "lot-a"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "120", "USD", date, "lot-b"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "120", "USD", date, "lot-b"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -472,7 +466,7 @@ func TestBookOne_ReduceStrictWithLabel(t *testing.T) {
 func TestBookOne_ReduceWithPerUnitPrice_RealizedGain(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{},
@@ -512,7 +506,7 @@ func TestBookOne_ReduceWithPerUnitPrice_RealizedGain(t *testing.T) {
 func TestBookOne_ReduceWithTotalPrice_RealizedGain(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	// -5 ACME @@ 550 USD: total sale price, per-unit = 110.
@@ -543,7 +537,7 @@ func TestBookOne_ReduceWithTotalPrice_RealizedGain(t *testing.T) {
 func TestBookOne_ReduceWithPerUnitPrice_RealizedLoss(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	// -5 ACME @ 90 USD against a 100 USD lot: (90 - 100) * 5 = -50.
@@ -589,10 +583,10 @@ func TestBookOne_ReduceTotalMatchPerStepRealizedGain(t *testing.T) {
 	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d1, "a"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "110", "USD", d2, "b"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "110", "USD", d2, "b"))); err != nil {
 		t.Fatal(err)
 	}
 	// `{}` cost spec hints to USD via the price annotation; matcher
@@ -634,7 +628,7 @@ func TestBookOne_ReduceTotalMatchPerStepRealizedGain(t *testing.T) {
 func TestBookOne_ReduceWithoutPriceLeavesGainZero(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
@@ -666,24 +660,18 @@ func TestBookOne_ReduceWithoutPriceLeavesGainZero(t *testing.T) {
 func TestBookOne_ReduceExceedsInventory(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "3", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "3", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
 
 	_, _, d, err := bookOne(inv, p, ast.BookingFIFO, date)
 	if err != nil {
-
 		t.Fatalf("system error: %v", err)
-
 	}
-
 	if d == nil {
-
 		t.Fatal("expected finding, got nil")
-
 	}
-
 	if d.Code != CodeReductionExceedsInventory {
 		t.Errorf("code = %v, want CodeReductionExceedsInventory", d.Code)
 	}
@@ -692,7 +680,7 @@ func TestBookOne_ReduceExceedsInventory(t *testing.T) {
 func TestBookOne_ReduceNoMatchingLot(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "lot-a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "lot-a"))); err != nil {
 		t.Fatal(err)
 	}
 	spec := &ast.CostSpec{Label: "missing"}
@@ -700,17 +688,11 @@ func TestBookOne_ReduceNoMatchingLot(t *testing.T) {
 
 	_, _, d, err := bookOne(inv, p, ast.BookingStrict, date)
 	if err != nil {
-
 		t.Fatalf("system error: %v", err)
-
 	}
-
 	if d == nil {
-
 		t.Fatal("expected finding, got nil")
-
 	}
-
 	if d.Code != CodeNoMatchingLot {
 		t.Errorf("code = %v, want CodeNoMatchingLot", d.Code)
 	}
@@ -719,27 +701,21 @@ func TestBookOne_ReduceNoMatchingLot(t *testing.T) {
 func TestBookOne_ReduceStrictAmbiguous(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "lot-a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "lot-a"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "120", "USD", date, "lot-b"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "120", "USD", date, "lot-b"))); err != nil {
 		t.Fatal(err)
 	}
 	p := mkPosting(t, "Assets:A", mkAmount(t, "-5", "ACME"), &ast.CostSpec{}, nil)
 
 	_, _, d, err := bookOne(inv, p, ast.BookingStrict, date)
 	if err != nil {
-
 		t.Fatalf("system error: %v", err)
-
 	}
-
 	if d == nil {
-
 		t.Fatal("expected finding, got nil")
-
 	}
-
 	if d.Code != CodeAmbiguousLotMatch {
 		t.Errorf("code = %v, want CodeAmbiguousLotMatch", d.Code)
 	}
@@ -755,10 +731,10 @@ func TestBookOne_ReduceStrictAmbiguous(t *testing.T) {
 func TestBookOne_ReduceStrictTotalCostDisambiguates(t *testing.T) {
 	date := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "STOCK", mkCost(t, "1", "JPY", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "STOCK", mkLot(t, "1", "JPY", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "STOCK", mkCost(t, "1.5", "JPY", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "STOCK", mkLot(t, "1.5", "JPY", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -807,10 +783,10 @@ func TestBookOne_ReduceStrictCombinedCostDisambiguates(t *testing.T) {
 	inv := NewInventory()
 	// First lot was augmented with `{1 # 5 JPY}` on 10 units, so its
 	// per-unit cost is 1 + 5/10 = 1.5.
-	if err := inv.Add(mkPosition(t, "10", "STOCK", mkCost(t, "1.5", "JPY", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "STOCK", mkLot(t, "1.5", "JPY", date, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "STOCK", mkCost(t, "2", "JPY", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "STOCK", mkLot(t, "2", "JPY", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -877,7 +853,7 @@ func TestBookOne_BookingNoneShortPosition(t *testing.T) {
 		t.Fatalf("unexpected finding: %v", finding)
 	}
 	if lot != nil {
-		t.Errorf("Lot = %+v, want nil (no cost spec)", lot)
+		t.Errorf("bookOne: Lot = %+v, want nil (no cost spec)", lot)
 	}
 	if inv.Len() != 1 {
 		t.Fatalf("inventory Len = %d, want 1", inv.Len())
@@ -906,15 +882,10 @@ func TestBookOne_ErrorAsDiagnostic(t *testing.T) {
 
 	_, _, d, err := bookOne(inv, p, ast.BookingStrict, txnDate)
 	if err != nil {
-
 		t.Fatalf("system error: %v", err)
-
 	}
-
 	if d == nil {
-
 		t.Fatal("expected finding, got nil")
-
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 func TestPositionClone(t *testing.T) {
 	orig := Position{
 		Units: ast.Amount{Number: decimalVal(t, "10"), Currency: "ACME"},
-		Cost: &Cost{
+		Cost: &Lot{
 			Number:   decimalVal(t, "100"),
 			Currency: "USD",
 			Date:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
