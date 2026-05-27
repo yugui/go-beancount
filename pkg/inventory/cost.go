@@ -19,12 +19,14 @@ var quoContext = apd.BaseContext.WithPrecision(34)
 // type lives in [pkg/ast]; this alias is the inventory-side spelling.
 type Cost = ast.Cost
 
-// ResolveCost turns an [ast.CostHolder] on an augmenting posting into
-// a concrete [Cost]:
+// ResolveLot turns an [ast.CostHolder] on an augmenting posting into
+// a provenance-free [Lot]:
 //
 //   - nil c: returns (nil, nil, nil) — a cash augmentation.
-//   - *[ast.Cost]: returns a clone — the reducer is re-entering its
-//     own output.
+//   - *[ast.Cost]: returns a fresh [Lot] carrying only the booked
+//     identity (Number/Currency/Date/Label); PerUnit/Total are
+//     discarded and txnDate is ignored (the booked Date is preserved
+//     verbatim). The reducer is re-entering its own output.
 //   - *[ast.CostSpec] with PerUnit and Total both nil: returns a
 //     [CodeAugmentationRequiresCost] finding. Reductions take the
 //     [CostMatcher] path instead.
@@ -33,23 +35,23 @@ type Cost = ast.Cost
 //     is undefined.
 //   - *[ast.CostSpec] otherwise: derives Number from the spec — X for
 //     per-unit-only, T/|units| for total-only, X + T/|units| for the
-//     combined form.
+//     combined form. Number is always positive. Date defaults to
+//     txnDate; Label is copied verbatim.
 //
-// On the CostSpec path the returned [ast.Cost] retains the spec's
-// PerUnit / Total literals so the printer round-trips the surcharge
-// form. Number is always positive. Date defaults to txnDate; Label is
-// copied verbatim.
+// The returned [Lot] never carries presentation provenance. Augmenting
+// installers route the spec separately to construct the AST-tier
+// [ast.Cost] that round-trips surcharge syntax.
 //
 // At most one of the second (user finding) and third (system error)
 // returns is non-nil. The error return is reserved for implementation
 // bugs — apd.BaseContext arithmetic failures from inputs the grammar
 // cannot produce.
-func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, *ast.Diagnostic, error) {
+func ResolveLot(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Lot, *ast.Diagnostic, error) {
 	if c == nil {
 		return nil, nil, nil
 	}
 	if cost, ok := c.(*ast.Cost); ok {
-		return cost.Clone(), nil, nil
+		return LotFromCost(cost), nil, nil
 	}
 	spec := c.(*ast.CostSpec)
 	if spec.PerUnit == nil && spec.Total == nil {
@@ -60,20 +62,17 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 		}, nil
 	}
 
-	out := &Cost{Currency: spec.Currency}
+	out := &Lot{Currency: spec.Currency, Label: spec.Label}
 	if spec.Date != nil && !spec.Date.IsZero() {
 		out.Date = *spec.Date
 	} else {
 		out.Date = txnDate
 	}
-	out.Label = spec.Label
-	out.PerUnit = spec.GetPerUnit()
-	out.Total = spec.GetTotal()
 
 	absUnits := new(apd.Decimal)
 	unitsNum := units.Number
 	if _, err := apd.BaseContext.Abs(absUnits, &unitsNum); err != nil {
-		return nil, nil, fmt.Errorf("inventory.ResolveCost: abs units: %w", err)
+		return nil, nil, fmt.Errorf("inventory.ResolveLot: abs units: %w", err)
 	}
 
 	// Pre-check the only user-reachable failure of [quoContext.Quo]
@@ -91,14 +90,14 @@ func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Cost, 
 	case spec.PerUnit != nil && spec.Total != nil:
 		quo := new(apd.Decimal)
 		if _, err := quoContext.Quo(quo, spec.Total, absUnits); err != nil {
-			return nil, nil, fmt.Errorf("inventory.ResolveCost: divide total by units: %w", err)
+			return nil, nil, fmt.Errorf("inventory.ResolveLot: divide total by units: %w", err)
 		}
 		if _, err := apd.BaseContext.Add(&out.Number, spec.PerUnit, quo); err != nil {
-			return nil, nil, fmt.Errorf("inventory.ResolveCost: add per-unit and residual: %w", err)
+			return nil, nil, fmt.Errorf("inventory.ResolveLot: add per-unit and residual: %w", err)
 		}
 	case spec.Total != nil:
 		if _, err := quoContext.Quo(&out.Number, spec.Total, absUnits); err != nil {
-			return nil, nil, fmt.Errorf("inventory.ResolveCost: divide total by units: %w", err)
+			return nil, nil, fmt.Errorf("inventory.ResolveLot: divide total by units: %w", err)
 		}
 	default:
 		out.Number = *ast.CloneDecimal(spec.PerUnit)

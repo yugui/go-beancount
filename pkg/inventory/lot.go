@@ -48,3 +48,33 @@ func (l *Lot) Clone() *Lot {
 		Label:    l.Label,
 	}
 }
+
+// LotFromCost extracts the provenance-free identity from an AST cost,
+// discarding PerUnit and Total. Returns nil for a nil input. The
+// returned Lot owns its Number coefficient buffer.
+func LotFromCost(c *ast.Cost) *Lot {
+	if c == nil {
+		return nil
+	}
+	return &Lot{
+		Number:   *ast.CloneDecimal(&c.Number),
+		Currency: c.Currency,
+		Date:     c.Date,
+		Label:    c.Label,
+	}
+}
+
+// ToCost rebuilds a booked [ast.Cost] from a Lot's identity. PerUnit
+// and Total on the returned value are always nil. The returned value
+// owns its Number coefficient buffer. Returns nil for a nil receiver.
+func (l *Lot) ToCost() *ast.Cost {
+	if l == nil {
+		return nil
+	}
+	return &ast.Cost{
+		Number:   *ast.CloneDecimal(&l.Number),
+		Currency: l.Currency,
+		Date:     l.Date,
+		Label:    l.Label,
+	}
+}

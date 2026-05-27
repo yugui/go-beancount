@@ -90,7 +90,7 @@ func newDiag(code Code, span ast.Span, account ast.Account, msg string) ast.Diag
 //     canonical "<p.Account>: <msg>" prefix.
 //
 // d is mutated in place; the same pointer is returned for chaining.
-// Lower-level helpers ([ResolveCost], [Inventory.Reduce], …) MUST
+// Lower-level helpers ([ResolveLot], [Inventory.Reduce], …) MUST
 // construct findings with an empty Account so this prepend does not
 // double-stamp.
 func enrichDiagnostic(d *ast.Diagnostic, p *ast.Posting) *ast.Diagnostic {

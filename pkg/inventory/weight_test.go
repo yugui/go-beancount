@@ -161,6 +161,52 @@ func TestPostingWeight_CostAndTotalPriceUsesCost(t *testing.T) {
 	}
 }
 
+// TestPostingWeight_BookedCostWithoutProvenance pins the fallback path
+// for a booked [*ast.Cost] whose PerUnit and Total are both nil — the
+// shape the reducer installs on a reducing posting. Weight must come
+// from units × Number in the cost currency, with sign tracking units.
+func TestPostingWeight_BookedCostWithoutProvenance(t *testing.T) {
+	t.Run("negative units", func(t *testing.T) {
+		units := amt(-5, "A")
+		number := decimalFromString(t, "10")
+		p := &ast.Posting{
+			Account: "Assets:A",
+			Amount:  &units,
+			Cost:    &ast.Cost{Number: number, Currency: "JPY"},
+		}
+		w, err := PostingWeight(p)
+		if err != nil {
+			t.Fatalf("PostingWeight: unexpected error: %v", err)
+		}
+		if w.Currency != "JPY" {
+			t.Errorf("PostingWeight() currency = %q, want %q", w.Currency, "JPY")
+		}
+		if got := w.Number.Text('f'); got != "-50" {
+			t.Errorf("PostingWeight() weight = %q, want %q", got, "-50")
+		}
+	})
+
+	t.Run("positive units", func(t *testing.T) {
+		units := amt(10, "A")
+		number := decimalFromString(t, "10")
+		p := &ast.Posting{
+			Account: "Assets:A",
+			Amount:  &units,
+			Cost:    &ast.Cost{Number: number, Currency: "JPY"},
+		}
+		w, err := PostingWeight(p)
+		if err != nil {
+			t.Fatalf("PostingWeight: unexpected error: %v", err)
+		}
+		if w.Currency != "JPY" {
+			t.Errorf("PostingWeight() currency = %q, want %q", w.Currency, "JPY")
+		}
+		if got := w.Number.Text('f'); got != "100" {
+			t.Errorf("PostingWeight() weight = %q, want %q", got, "100")
+		}
+	})
+}
+
 // TestPostingWeight_PriceOnlyStillUsesPrice guards against accidentally
 // regressing the price-only path (FX-style conversions) when inverting
 // the cost/price precedence. A posting with no Cost annotation but a

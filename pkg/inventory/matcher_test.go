@@ -14,7 +14,7 @@ func TestCostMatcherZeroValueMatchesAny(t *testing.T) {
 	}
 
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
-	cases := []Cost{
+	cases := []Lot{
 		{}, // cash / zero-value lot
 		{Number: decimalVal(t, "100"), Currency: "USD", Date: date, Label: "lot"},
 		{Number: decimalVal(t, "0"), Currency: "EUR"},
@@ -30,14 +30,14 @@ func TestCostMatcherCurrencyOnly(t *testing.T) {
 	m := CostMatcher{Currency: "USD"}
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 
-	if !m.Matches(Cost{Number: decimalVal(t, "100"), Currency: "USD", Date: date}) {
+	if !m.Matches(Lot{Number: decimalVal(t, "100"), Currency: "USD", Date: date}) {
 		t.Error("USD lot should match currency-only matcher")
 	}
-	if m.Matches(Cost{Number: decimalVal(t, "100"), Currency: "EUR", Date: date}) {
+	if m.Matches(Lot{Number: decimalVal(t, "100"), Currency: "EUR", Date: date}) {
 		t.Error("EUR lot should not match currency-only matcher")
 	}
-	if m.Matches(Cost{}) {
-		t.Error("zero Cost should not match a currency-only matcher")
+	if m.Matches(Lot{}) {
+		t.Error("zero Lot should not match a currency-only matcher")
 	}
 }
 
@@ -49,16 +49,16 @@ func TestCostMatcherPerUnit(t *testing.T) {
 	}
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 
-	if !m.Matches(Cost{Number: decimalVal(t, "100"), Currency: "USD", Date: date}) {
+	if !m.Matches(Lot{Number: decimalVal(t, "100"), Currency: "USD", Date: date}) {
 		t.Error("exact match should succeed")
 	}
-	if !m.Matches(Cost{Number: decimalVal(t, "100.0"), Currency: "USD", Date: date}) {
+	if !m.Matches(Lot{Number: decimalVal(t, "100.0"), Currency: "USD", Date: date}) {
 		t.Error("different scale of same value should match")
 	}
-	if m.Matches(Cost{Number: decimalVal(t, "101"), Currency: "USD", Date: date}) {
+	if m.Matches(Lot{Number: decimalVal(t, "101"), Currency: "USD", Date: date}) {
 		t.Error("different number should not match")
 	}
-	if m.Matches(Cost{Number: decimalVal(t, "100"), Currency: "EUR", Date: date}) {
+	if m.Matches(Lot{Number: decimalVal(t, "100"), Currency: "EUR", Date: date}) {
 		t.Error("different currency should not match")
 	}
 }
@@ -68,18 +68,18 @@ func TestCostMatcherDateAndLabel(t *testing.T) {
 	d2 := time.Date(2024, 2, 15, 0, 0, 0, 0, time.UTC)
 
 	m := CostMatcher{HasDate: true, Date: d1}
-	if !m.Matches(Cost{Date: d1}) {
+	if !m.Matches(Lot{Date: d1}) {
 		t.Error("matching date should pass")
 	}
-	if m.Matches(Cost{Date: d2}) {
+	if m.Matches(Lot{Date: d2}) {
 		t.Error("mismatched date should fail")
 	}
 
 	lbl := CostMatcher{HasLabel: true, Label: "lot-a"}
-	if !lbl.Matches(Cost{Label: "lot-a"}) {
+	if !lbl.Matches(Lot{Label: "lot-a"}) {
 		t.Error("matching label should pass")
 	}
-	if lbl.Matches(Cost{Label: "lot-b"}) {
+	if lbl.Matches(Lot{Label: "lot-b"}) {
 		t.Error("mismatched label should fail")
 	}
 }
@@ -126,7 +126,7 @@ func TestNewCostMatcherPerUnit(t *testing.T) {
 func TestNewCostMatcherTotalOnly(t *testing.T) {
 	// Total-only spec `{{500 USD}}` on 10 reducing units must derive
 	// a per-unit constraint of 500/10 = 50 USD, mirroring what
-	// ResolveCost stores on an augmentation from the same spec.
+	// ResolveLot stores on an augmentation from the same spec.
 	total := decimalVal(t, "500")
 	spec := &ast.CostSpec{
 		Total:    &total,
@@ -144,10 +144,10 @@ func TestNewCostMatcherTotalOnly(t *testing.T) {
 	if m.Currency != "USD" {
 		t.Errorf("Currency = %q, want USD", m.Currency)
 	}
-	if !m.Matches(Cost{Number: decimalVal(t, "50"), Currency: "USD"}) {
+	if !m.Matches(Lot{Number: decimalVal(t, "50"), Currency: "USD"}) {
 		t.Error("Matches: USD lot at per-unit 50 should match {{500 USD}} on 10 units")
 	}
-	if m.Matches(Cost{Number: decimalVal(t, "60"), Currency: "USD"}) {
+	if m.Matches(Lot{Number: decimalVal(t, "60"), Currency: "USD"}) {
 		t.Error("Matches: USD lot at per-unit 60 must not match {{500 USD}} on 10 units")
 	}
 }
@@ -170,7 +170,7 @@ func TestNewCostMatcherTotalOnlyWithoutUnitsFallsBack(t *testing.T) {
 }
 
 func TestNewCostMatcherCombinedForm(t *testing.T) {
-	// Combined form `{100 # 500 USD}` on 10 units: ResolveCost stores
+	// Combined form `{100 # 500 USD}` on 10 units: ResolveLot stores
 	// the lot's Number as 100 + 500/10 = 150, so the matcher must
 	// derive the same per-unit value to find the lot it helped create.
 	perUnit := decimalVal(t, "100")
@@ -192,13 +192,13 @@ func TestNewCostMatcherCombinedForm(t *testing.T) {
 	if m.Currency != "USD" {
 		t.Errorf("Currency = %q, want USD", m.Currency)
 	}
-	if !m.Matches(Cost{Number: decimalVal(t, "150"), Currency: "USD"}) {
+	if !m.Matches(Lot{Number: decimalVal(t, "150"), Currency: "USD"}) {
 		t.Error("Matches: USD lot with per-unit 150 should match combined-form matcher")
 	}
-	if m.Matches(Cost{Number: decimalVal(t, "100"), Currency: "USD"}) {
+	if m.Matches(Lot{Number: decimalVal(t, "100"), Currency: "USD"}) {
 		t.Error("Matches: USD lot at per-unit 100 (PerUnit alone) must not match the combined-form derived 150")
 	}
-	if m.Matches(Cost{Number: decimalVal(t, "150"), Currency: "EUR"}) {
+	if m.Matches(Lot{Number: decimalVal(t, "150"), Currency: "EUR"}) {
 		t.Error("Matches: EUR lot must not match a USD combined-form matcher")
 	}
 }

@@ -5,16 +5,16 @@ import (
 )
 
 // Position is a single holding in an inventory: a signed unit amount
-// paired with an optional lot [Cost]. A nil Cost represents cash or a
+// paired with an optional [Lot]. A nil lot represents cash or a
 // fungible commodity that does not require lot bookkeeping; a non-nil
-// Cost binds the position to a specific acquisition lot.
+// lot binds the position to a specific acquisition.
 type Position struct {
 	Units ast.Amount
-	Cost  *Cost
+	Cost  *Lot
 }
 
 // Clone returns a deep copy of p. The Units amount is deep-copied via
-// [(*ast.Amount).Clone] and the Cost via [(*Cost).Clone]; both are
+// [(*ast.Amount).Clone] and the Cost via [(*Lot).Clone]; both are
 // nil-safe.
 func (p Position) Clone() Position {
 	return Position{

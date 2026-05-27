@@ -13,12 +13,16 @@ import (
 //
 // Precedence (matching upstream Beancount's Balancing Postings rule):
 //
-//   - p.Cost with a number: weight is [(*ast.Posting).TotalCost] in
+//   - p.Cost with PerUnit or Total set (a surcharge-form augmentation
+//     or its combined form): weight is [(*ast.Posting).TotalCost] in
 //     the cost currency, covering `{X CUR}`, `{{T CUR}}`, and the
 //     combined `{X # T CUR}` forms. When a price annotation is also
 //     present the cost still defines the weight; the price is only
 //     consulted by downstream consumers (prices database, realized-
 //     gain bookkeeping).
+//   - p.Cost is a booked [*ast.Cost] with both PerUnit and Total nil
+//     (the provenance-free shape the reducer installs on reducing
+//     postings): weight is units × Number in the cost currency.
 //   - p.Cost present but unresolved (unbooked spec with a currency
 //     and no number): returns an error — the reducer must resolve
 //     the cost before weighing.
@@ -39,6 +43,14 @@ func PostingWeight(p *ast.Posting) (*ast.Amount, error) {
 	}
 	if cost != nil {
 		return &ast.Amount{Number: *ast.CloneDecimal(&cost.Number), Currency: cost.Currency}, nil
+	}
+	// booked, no provenance
+	if c, ok := p.Cost.(*ast.Cost); ok && c != nil {
+		out := new(apd.Decimal)
+		if _, err := apd.BaseContext.Mul(out, &p.Amount.Number, &c.Number); err != nil {
+			return nil, err
+		}
+		return &ast.Amount{Number: *out, Currency: c.Currency}, nil
 	}
 	if p.Cost != nil && !p.Cost.IsBooked() && p.Cost.GetCurrency() != "" {
 		return nil, errors.New("posting weight: cost spec has currency but no number; reducer must resolve before weighing")

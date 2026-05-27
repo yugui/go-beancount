@@ -139,12 +139,12 @@ func TestCostClone(t *testing.T) {
 	})
 }
 
-func TestResolveCost(t *testing.T) {
+func TestResolveLot(t *testing.T) {
 	txnDate := time.Date(2024, 3, 10, 0, 0, 0, 0, time.UTC)
 	specDate := time.Date(2023, 12, 1, 0, 0, 0, 0, time.UTC)
 
 	t.Run("nil spec", func(t *testing.T) {
-		got, finding, err := ResolveCost(nil, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		got, finding, err := ResolveLot(nil, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -158,7 +158,7 @@ func TestResolveCost(t *testing.T) {
 
 	t.Run("empty spec", func(t *testing.T) {
 		spec := &ast.CostSpec{}
-		_, d, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		_, d, err := ResolveLot(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 
 			t.Fatalf("system error: %v", err)
@@ -183,7 +183,7 @@ func TestResolveCost(t *testing.T) {
 			Date:     &specDate,
 			Label:    "lot-a",
 		}
-		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveLot(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -210,7 +210,7 @@ func TestResolveCost(t *testing.T) {
 			PerUnit:  &perUnit,
 			Currency: "USD",
 		}
-		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveLot(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -228,7 +228,7 @@ func TestResolveCost(t *testing.T) {
 			Total:    &total,
 			Currency: "USD",
 		}
-		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveLot(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -253,7 +253,7 @@ func TestResolveCost(t *testing.T) {
 			Total:    &total,
 			Currency: "USD",
 		}
-		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "-5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveLot(spec, ast.Amount{Number: decimalVal(t, "-5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -277,7 +277,7 @@ func TestResolveCost(t *testing.T) {
 			Total:    &total,
 			Currency: "USD",
 		}
-		cost, finding, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
+		cost, finding, err := ResolveLot(spec, ast.Amount{Number: decimalVal(t, "5"), Currency: "ACME"}, txnDate)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -296,7 +296,7 @@ func TestResolveCost(t *testing.T) {
 
 	t.Run("total only with zero units", func(t *testing.T) {
 		// A cost spec with a non-nil Total paired with zero units
-		// makes the per-unit cost undefined. ResolveCost reports it
+		// makes the per-unit cost undefined. ResolveLot reports it
 		// as a user finding with CodeZeroUnitsCostTotal rather than
 		// letting the underlying division-by-zero surface as a
 		// system error.
@@ -305,7 +305,7 @@ func TestResolveCost(t *testing.T) {
 			Total:    &total,
 			Currency: "USD",
 		}
-		_, d, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "0"), Currency: "ACME"}, txnDate)
+		_, d, err := ResolveLot(spec, ast.Amount{Number: decimalVal(t, "0"), Currency: "ACME"}, txnDate)
 		if err != nil {
 
 			t.Fatalf("system error: %v", err)
@@ -332,7 +332,7 @@ func TestResolveCost(t *testing.T) {
 			Total:    &total,
 			Currency: "USD",
 		}
-		_, d, err := ResolveCost(spec, ast.Amount{Number: decimalVal(t, "0"), Currency: "ACME"}, txnDate)
+		_, d, err := ResolveLot(spec, ast.Amount{Number: decimalVal(t, "0"), Currency: "ACME"}, txnDate)
 		if err != nil {
 
 			t.Fatalf("system error: %v", err)

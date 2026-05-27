@@ -8,19 +8,19 @@ import (
 )
 
 // mkPosition is a test helper that builds a Position with the given
-// units and (optional) cost.
-func mkPosition(t *testing.T, num, currency string, cost *Cost) Position {
+// units and (optional) lot identity.
+func mkPosition(t *testing.T, num, currency string, lot *Lot) Position {
 	t.Helper()
 	return Position{
 		Units: ast.Amount{Number: decimalVal(t, num), Currency: currency},
-		Cost:  cost,
+		Cost:  lot,
 	}
 }
 
-// mkCost builds a Cost value for tests.
-func mkCost(t *testing.T, num, currency string, date time.Time, label string) *Cost {
+// mkLot builds a *Lot for tests.
+func mkLot(t *testing.T, num, currency string, date time.Time, label string) *Lot {
 	t.Helper()
-	return &Cost{
+	return &Lot{
 		Number:   decimalVal(t, num),
 		Currency: currency,
 		Date:     date,
@@ -32,10 +32,10 @@ func TestInventoryAddMergeEqualCost(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
 
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "lot"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "lot"))); err != nil {
 		t.Fatalf("Add 1: %v", err)
 	}
-	if err := inv.Add(mkPosition(t, "5", "ACME", mkCost(t, "100", "USD", date, "lot"))); err != nil {
+	if err := inv.Add(mkPosition(t, "5", "ACME", mkLot(t, "100", "USD", date, "lot"))); err != nil {
 		t.Fatalf("Add 2: %v", err)
 	}
 
@@ -53,10 +53,10 @@ func TestInventoryAddDistinctLabels(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
 
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "lot-a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "lot-a"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "5", "ACME", mkCost(t, "100", "USD", date, "lot-b"))); err != nil {
+	if err := inv.Add(mkPosition(t, "5", "ACME", mkLot(t, "100", "USD", date, "lot-b"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,7 +88,7 @@ func TestInventoryAddCashAndLotDoNotMerge(t *testing.T) {
 	if err := inv.Add(mkPosition(t, "10", "ACME", nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "5", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "5", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	if got := inv.Len(); got != 2 {
@@ -130,10 +130,10 @@ func TestInventoryReduceFIFO(t *testing.T) {
 	older := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	newer := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", newer, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", newer, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", older, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", older, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -195,10 +195,10 @@ func TestInventoryReduceLIFO(t *testing.T) {
 	newer := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
 	// Insert older first, newer second.
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", older, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", older, ""))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", newer, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", newer, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -241,11 +241,11 @@ func TestInventoryReduceLIFO(t *testing.T) {
 func TestInventoryReduceStrictSingleMatch(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	// A second lot with a different cost number is filtered out.
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "200", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "200", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -278,10 +278,10 @@ func TestInventoryReduceStrictAmbiguous(t *testing.T) {
 	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d1, "a"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "b"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d2, "b"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -318,10 +318,10 @@ func TestInventoryReduceStrictAmbiguous(t *testing.T) {
 func TestInventoryReduceStrictTotalMatch(t *testing.T) {
 	date := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "first"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "first"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "second"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "second"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -366,10 +366,10 @@ func TestInventoryReduceStrictTotalMatchEmptyMatcher(t *testing.T) {
 	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "first"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d1, "first"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "second"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d2, "second"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -399,10 +399,10 @@ func TestInventoryReduceDefaultTotalMatch(t *testing.T) {
 	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "7", "ACME", mkCost(t, "100", "USD", d1, "a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "7", "ACME", mkLot(t, "100", "USD", d1, "a"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "13", "ACME", mkCost(t, "100", "USD", d2, "b"))); err != nil {
+	if err := inv.Add(mkPosition(t, "13", "ACME", mkLot(t, "100", "USD", d2, "b"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -444,10 +444,10 @@ func TestInventoryReduceStrictAlmostTotalMatch(t *testing.T) {
 	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "first"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d1, "first"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "second"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d2, "second"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -488,10 +488,10 @@ func TestInventoryReduceStrictOverdraftBeatsAmbiguity(t *testing.T) {
 	d1 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d1, "first"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d1, "first"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", d2, "second"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", d2, "second"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -531,13 +531,13 @@ func TestInventoryReduceStrictTotalMatchThreeLots(t *testing.T) {
 	d2 := time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC)
 	d3 := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "5", "ACME", mkCost(t, "100", "USD", d1, "a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "5", "ACME", mkLot(t, "100", "USD", d1, "a"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "7", "ACME", mkCost(t, "100", "USD", d2, "b"))); err != nil {
+	if err := inv.Add(mkPosition(t, "7", "ACME", mkLot(t, "100", "USD", d2, "b"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "8", "ACME", mkCost(t, "100", "USD", d3, "c"))); err != nil {
+	if err := inv.Add(mkPosition(t, "8", "ACME", mkLot(t, "100", "USD", d3, "c"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -574,7 +574,7 @@ func TestInventoryReduceStrictTotalMatchThreeLots(t *testing.T) {
 func TestInventoryReduceExceedsInventory(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -643,7 +643,7 @@ func TestInventoryReduceCashOverflowAllowed(t *testing.T) {
 func TestInventoryReduceNoMatchingLot(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -672,7 +672,7 @@ func TestInventoryReduceNoMatchingLot(t *testing.T) {
 func TestInventoryReduceAverageRejected(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	_, d, err := inv.Reduce(
@@ -699,7 +699,7 @@ func TestInventoryReduceAverageRejected(t *testing.T) {
 func TestInventoryReduceNoneRejected(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	_, finding, err := inv.Reduce(
@@ -721,7 +721,7 @@ func TestInventoryReduceNoneRejected(t *testing.T) {
 func TestInventoryReduceFullyConsumesLot(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	steps, finding, err := inv.Reduce(
@@ -746,7 +746,7 @@ func TestInventoryReduceFullyConsumesLot(t *testing.T) {
 func TestInventoryClone(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -773,7 +773,7 @@ func TestInventoryClone(t *testing.T) {
 func TestInventoryCloneAfterReduceIndependent(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	clone := inv.Clone()
@@ -802,14 +802,14 @@ func TestInventoryEqual(t *testing.T) {
 		t.Error("two empty inventories should be equal")
 	}
 
-	if err := a.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := a.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	if a.Equal(b) {
 		t.Error("inventories with different length should not be equal")
 	}
 
-	if err := b.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := b.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	if !a.Equal(b) {
@@ -847,13 +847,13 @@ func TestInventoryEqual(t *testing.T) {
 func TestInventoryAllIterator(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "a"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "a"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := inv.Add(mkPosition(t, "5", "WIDGET", nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "20", "ACME", mkCost(t, "200", "USD", date, "b"))); err != nil {
+	if err := inv.Add(mkPosition(t, "20", "ACME", mkLot(t, "200", "USD", date, "b"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -890,7 +890,7 @@ func TestInventoryAllIterator(t *testing.T) {
 func TestInventoryAllIteratorIsClone(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, "lot"))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, "lot"))); err != nil {
 		t.Fatal(err)
 	}
 	for p := range inv.All() {
@@ -913,13 +913,13 @@ func TestInventoryAllIteratorIsClone(t *testing.T) {
 func TestInventoryGet(t *testing.T) {
 	date := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
 	inv := NewInventory()
-	if err := inv.Add(mkPosition(t, "10", "ACME", mkCost(t, "100", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "10", "ACME", mkLot(t, "100", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 	if err := inv.Add(mkPosition(t, "5", "WIDGET", nil)); err != nil {
 		t.Fatal(err)
 	}
-	if err := inv.Add(mkPosition(t, "20", "ACME", mkCost(t, "200", "USD", date, ""))); err != nil {
+	if err := inv.Add(mkPosition(t, "20", "ACME", mkLot(t, "200", "USD", date, ""))); err != nil {
 		t.Fatal(err)
 	}
 

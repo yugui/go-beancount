@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
 )
 
@@ -144,6 +146,91 @@ func TestLot_Clone(t *testing.T) {
 		}
 		if got := clone.Number.String(); got != "99.9" {
 			t.Errorf("after mutation, clone.Number = %q, want %q", got, "99.9")
+		}
+	})
+}
+
+func TestLotFromCost(t *testing.T) {
+	t.Run("nil input", func(t *testing.T) {
+		if got := inventory.LotFromCost(nil); got != nil {
+			t.Errorf("LotFromCost(nil) = %+v, want nil", got)
+		}
+	})
+
+	t.Run("transfers identity fields and drops provenance", func(t *testing.T) {
+		date := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+		cost := &ast.Cost{
+			Number:   mustDecimal(t, "100"),
+			Currency: "USD",
+			Date:     date,
+			Label:    "lot-a",
+			PerUnit:  &ast.Amount{Number: mustDecimal(t, "100"), Currency: "USD"},
+			Total:    &ast.Amount{Number: mustDecimal(t, "200"), Currency: "USD"},
+		}
+		got := inventory.LotFromCost(cost)
+		if got == nil {
+			t.Fatal("LotFromCost returned nil for non-nil input")
+		}
+		want := &inventory.Lot{
+			Number:   mustDecimal(t, "100"),
+			Currency: "USD",
+			Date:     date,
+			Label:    "lot-a",
+		}
+		if !got.Equal(want) {
+			t.Errorf("LotFromCost lot identity = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("deep copies Number", func(t *testing.T) {
+		cost := &ast.Cost{
+			Number:   mustDecimal(t, "42"),
+			Currency: "USD",
+		}
+		got := inventory.LotFromCost(cost)
+		newNum := mustDecimal(t, "99")
+		got.Number.Set(&newNum)
+		if cost.Number.String() != "42" {
+			t.Errorf("LotFromCost: after mutating result, input Cost.Number = %s, want 42", cost.Number.String())
+		}
+	})
+}
+
+func TestLot_ToCost(t *testing.T) {
+	t.Run("nil receiver", func(t *testing.T) {
+		var l *inventory.Lot
+		if got := l.ToCost(); got != nil {
+			t.Errorf("(*Lot).ToCost: (*Lot)(nil).ToCost() = %+v, want nil", got)
+		}
+	})
+
+	t.Run("returns provenance-free *ast.Cost", func(t *testing.T) {
+		date := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+		lot := &inventory.Lot{
+			Number:   mustDecimal(t, "100"),
+			Currency: "USD",
+			Date:     date,
+			Label:    "lot-a",
+		}
+		got := lot.ToCost()
+		want := &ast.Cost{
+			Number:   mustDecimal(t, "100"),
+			Currency: "USD",
+			Date:     date,
+			Label:    "lot-a",
+		}
+		if diff := cmp.Diff(want, got, invCmpOpts...); diff != "" {
+			t.Errorf("(*Lot).ToCost: (-want +got)\n%s", diff)
+		}
+	})
+
+	t.Run("deep copies Number", func(t *testing.T) {
+		lot := &inventory.Lot{Number: mustDecimal(t, "42"), Currency: "USD"}
+		got := lot.ToCost()
+		newNum := mustDecimal(t, "99")
+		got.Number.Set(&newNum)
+		if lot.Number.String() != "42" {
+			t.Errorf("(*Lot).ToCost: after mutating result, lot.Number = %s, want 42", lot.Number.String())
 		}
 	})
 }

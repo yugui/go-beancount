@@ -231,7 +231,7 @@ func (pr *postingResolution) markForDrop(weightCurrency string) {
 // (the second-run fixed-point path). p.Cost is preserved pointer-
 // identical so a reducer round-trip is byte-identical; lot / step
 // are kept on the BookedPosting for downstream consumers.
-func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Cost, step *ReductionStep, weightCurrency string) {
+func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account:   p.Account,
@@ -243,12 +243,14 @@ func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Cost, step *R
 }
 
 // addLotAugmentation records a first-run augmentation with a cost
-// spec. The rebuilt posting's parse-tier *ast.CostSpec is replaced
-// with a clone of lot; the BookedPosting carries lot directly.
-func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Cost, weightCurrency string) {
+// spec. The rebuilt posting's Cost holder is converted to a booked
+// [*ast.Cost] via [augmentCostFor] so [(*ast.Posting).TotalCost]
+// keeps the user-written PerUnit/Total surcharge literal; the
+// BookedPosting carries lot directly.
+func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
-	pr.postings[i].Cost = lot.Clone()
+	pr.postings[i].Cost = augmentCostFor(p.Cost, lot)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account: p.Account,
 		Units:   *p.Amount.Clone(),
@@ -269,17 +271,16 @@ func (pr *postingResolution) addCashAugmentation(p *ast.Posting, weightCurrency 
 }
 
 // addSingleLotReduction records a reduction whose matcher selected
-// exactly one lot. The rebuilt posting gets the matched lot's cost,
-// except for the cash-sentinel step (zero-value Lot) where the
-// parse-tier Cost holder is left alone so [PostingWeight] falls
-// through to price. Unlike [addMultiLotReduction], an @@ total-form
-// price needs no rewrite — the single child carries the parent's
-// full |units|.
+// exactly one lot. The rebuilt posting gets a fresh provenance-free
+// [*ast.Cost] from [Lot.ToCost], except for the cash-sentinel step
+// (zero-value Lot) where p.Cost is left untouched. Unlike
+// [addMultiLotReduction], an @@ total-form price needs no rewrite —
+// the single child carries the parent's full |units|.
 func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
 	if step.Lot.Currency != "" || step.Lot.Number.Sign() != 0 {
-		pr.postings[i].Cost = step.Lot.Clone()
+		pr.postings[i].Cost = step.Lot.ToCost()
 	}
 	pr.booked = append(pr.booked, BookedPosting{
 		Account:   p.Account,
@@ -300,8 +301,7 @@ func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step Reductio
 // An @@ total-form price on p is rewritten per-unit on each child:
 // the parent's total is bound to its full |units|, so reusing it on
 // a child would overstate the price-side weight. The rewrite reuses
-// step.SalePricePer (already computed by [fillRealizedGain] from the
-// same division) so Reduction.SalePricePer and child.Price stay
+// step.SalePricePer so Reduction.SalePricePer and child.Price stay
 // numerically equal by construction.
 func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep) {
 	rewriteTotalPrice := p.Price != nil && p.Price.IsTotal && p.Price.Amount.Currency != ""
@@ -313,7 +313,7 @@ func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []Reduct
 			Number:   signedMagnitude(&step.Units, p.Amount.Number.Negative),
 			Currency: p.Amount.Currency,
 		}
-		child.Cost = step.Lot.Clone()
+		child.Cost = step.Lot.ToCost()
 		if rewriteTotalPrice && step.SalePricePer != nil {
 			// synthetic child Price has no source-text Span.
 			child.Price = &ast.PriceAnnotation{
@@ -456,11 +456,13 @@ func (pr *postingResolution) groupForResidual() (
 }
 
 // promoteLotAugmentation is the Pass 2 mirror of
-// [addLotAugmentation]: the synthesized Cost on p is replaced with
-// lot.Clone(). InferredAuto stays false (only the cost was
-// inferred).
-func (pr *postingResolution) promoteLotAugmentation(p *ast.Posting, lot *Cost, currency string) {
-	p.Cost = lot.Clone()
+// [addLotAugmentation]: the spec on p (which the caller has already
+// staged from the synthesized candidate) is converted to a booked
+// [*ast.Cost] via [augmentCostFor], so the residual-derived
+// PerUnit/Total survives as round-trip provenance. InferredAuto
+// stays false (only the cost was inferred).
+func (pr *postingResolution) promoteLotAugmentation(p *ast.Posting, lot *Lot, currency string) {
+	p.Cost = augmentCostFor(p.Cost, lot)
 	descIdx := pr.unknownDescIndex(p)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account: p.Account,
@@ -495,13 +497,12 @@ func (pr *postingResolution) promoteCashAugmentation(p *ast.Posting, amt ast.Amo
 
 // promoteSingleLotReduction is the Pass 2 mirror of
 // [addSingleLotReduction] for an auto-posting whose residual
-// resolved to a single-lot reduction (typically the cash sentinel).
-// InferredAuto is true.
+// resolved to a single-lot reduction. InferredAuto is true.
 func (pr *postingResolution) promoteSingleLotReduction(p *ast.Posting, step ReductionStep, amt ast.Amount, currency string) {
 	a := amt
 	p.Amount = &a
 	if step.Lot.Currency != "" || step.Lot.Number.Sign() != 0 {
-		p.Cost = step.Lot.Clone()
+		p.Cost = step.Lot.ToCost()
 	}
 	descIdx := pr.unknownDescIndex(p)
 	pr.booked = append(pr.booked, BookedPosting{
@@ -617,18 +618,18 @@ func reverseBooking(inv *Inventory, bp BookedPosting) error {
 			Cost:  bp.Lot,
 		})
 	}
-	var cost *Cost
+	var lot *Lot
 	if bp.Reduction.Lot.Currency != "" || bp.Reduction.Lot.Number.Sign() != 0 {
 		// avoid aliasing step.Lot.
 		lotCopy := bp.Reduction.Lot
-		cost = lotCopy.Clone()
+		lot = lotCopy.Clone()
 	}
 	return inv.Add(Position{
 		Units: ast.Amount{
 			Number:   *ast.CloneDecimal(&bp.Reduction.Units),
 			Currency: bp.Units.Currency,
 		},
-		Cost: cost,
+		Cost: lot,
 	})
 }
 
@@ -730,6 +731,10 @@ func (r *Reducer) visitTxn(txn *ast.Transaction) (
 		}
 		switch {
 		case lot != nil:
+			// Hand the synthesized spec off to the installer so its
+			// residual-derived PerUnit/Total survives as round-trip
+			// provenance on the booked Cost.
+			orig.Cost = candidate.Cost
 			pr.promoteLotAugmentation(orig, lot, currency)
 		case len(steps) == 0:
 			pr.promoteCashAugmentation(orig, *candidate.Amount, currency)
@@ -1083,7 +1088,7 @@ func resolveFreeResiduals(
 }
 
 // synthesizeCostSpec builds a {{T CUR}} CostSpec from a Pass 2
-// residual. Per-unit Number is derived downstream by [ResolveCost].
+// residual. Per-unit Number is derived downstream by [ResolveLot].
 // Date and Label inherit from existing when it is a *ast.CostSpec;
 // Date falls back to txnDate.
 func synthesizeCostSpec(existing ast.CostHolder, residual ast.Amount, txnDate time.Time) *ast.CostSpec {
