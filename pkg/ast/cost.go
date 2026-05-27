@@ -208,6 +208,15 @@ func (c *Cost) GetLabel() string { return c.Label }
 // IsBooked reports true: a Cost is the booked form.
 func (*Cost) IsBooked() bool { return true }
 
+// quoContext is the apd context used for total → per-unit division
+// inside [PerUnitCost]. The package-wide [apd.BaseContext] has
+// Precision=0, which only supports exact operations (Add/Sub/Mul/
+// Neg/Abs); division (Quo) requires a positive precision. 34 digits
+// matches IEEE-754 decimal128 and pkg/inventory's own quoContext, so
+// per-unit cost values derived here agree bit-for-bit with values
+// derived by the booking layer.
+var quoContext = apd.BaseContext.WithPrecision(34)
+
 // signedAbs returns sign(units) * |val| as a freshly allocated
 // decimal. Used by both the Total-only and combined branches of
 // (*Posting).TotalCost so the same exact (division-free) formulation
@@ -293,4 +302,70 @@ func (p *Posting) TotalCost() (*Amount, error) {
 	default:
 		return nil, nil
 	}
+}
+
+// PerUnitCost computes the canonical per-unit cost-currency value for
+// a [CostHolder] paired with its posting's units. Returns (nil, nil)
+// when no number is derivable: c is nil, c is an empty [CostSpec], or
+// c is a booked [*Cost] with empty Currency. Total-form CostSpecs
+// (Total set, with or without PerUnit) require non-nil units with
+// |units| > 0; otherwise an error is returned. The returned Amount is
+// freshly allocated.
+func PerUnitCost(c CostHolder, units *Amount) (*Amount, error) {
+	if c == nil {
+		return nil, nil
+	}
+	if booked, ok := c.(*Cost); ok {
+		if booked.Currency == "" {
+			return nil, nil
+		}
+		return &Amount{Number: *CloneDecimal(&booked.Number), Currency: booked.Currency}, nil
+	}
+	spec := c.(*CostSpec)
+	if spec.PerUnit == nil && spec.Total == nil {
+		return nil, nil
+	}
+
+	currency := spec.Currency
+	if spec.Total == nil {
+		// PerUnit-only: no division needed.
+		return &Amount{Number: *CloneDecimal(spec.PerUnit), Currency: currency}, nil
+	}
+
+	if units == nil {
+		return nil, fmt.Errorf("PerUnitCost: total-form cost requires units, got nil")
+	}
+	absUnits := new(apd.Decimal)
+	if _, err := apd.BaseContext.Abs(absUnits, &units.Number); err != nil {
+		return nil, fmt.Errorf("PerUnitCost: abs units: %w", err)
+	}
+	if absUnits.Sign() == 0 {
+		return nil, fmt.Errorf("PerUnitCost: total-form cost with zero units; per-unit cost is undefined")
+	}
+	quo := new(apd.Decimal)
+	if _, err := quoContext.Quo(quo, spec.Total, absUnits); err != nil {
+		return nil, fmt.Errorf("PerUnitCost: divide total by units: %w", err)
+	}
+	if spec.PerUnit == nil {
+		return &Amount{Number: *quo, Currency: currency}, nil
+	}
+	out := new(apd.Decimal)
+	if _, err := apd.BaseContext.Add(out, spec.PerUnit, quo); err != nil {
+		return nil, fmt.Errorf("PerUnitCost: add per-unit and residual: %w", err)
+	}
+	return &Amount{Number: *out, Currency: currency}, nil
+}
+
+// PerUnitCost is the [Posting]-receiver form of [PerUnitCost]: it
+// pairs this posting's [Cost] with its [Amount]. Prefer this form when
+// a Posting is already in hand — the pairing of units with cost is
+// what makes a total-form cost interpretable, so reading them off the
+// same posting eliminates the risk of mismatched arguments.
+//
+// Returns (nil, nil) for postings with no Cost.
+func (p *Posting) PerUnitCost() (*Amount, error) {
+	if p == nil {
+		return nil, nil
+	}
+	return PerUnitCost(p.Cost, p.Amount)
 }

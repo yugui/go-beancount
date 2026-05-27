@@ -46,6 +46,7 @@ go_test(
         "lower_parsedate_test.go",
         "lower_test.go",
         "optvalues_test.go",
+        "per_unit_cost_test.go",
         "precision_profile_load_test.go",
         "precision_profile_test.go",
         "total_cost_test.go",
