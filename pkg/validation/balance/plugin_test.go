@@ -438,10 +438,13 @@ func TestPlugin_MultipleAutoPostingsReport(t *testing.T) {
 		Account: "Assets:Savings",
 		Amount:  amtInt(0, "USD"),
 	}
-	// And a non-zero assertion mismatches, confirming the running
-	// balance stayed at zero.
+	// And a non-zero assertion on a later date mismatches, confirming
+	// the running balance stayed at zero. The date is shifted off
+	// 2024-01-03 so this assertion sits in a different
+	// (account, date, currency) slot than balCashZero and does not
+	// trigger duplicate-balance detection.
 	balCashNonZero := &ast.Balance{
-		Date:    time.Date(2024, 1, 3, 0, 0, 0, 0, time.UTC),
+		Date:    time.Date(2024, 1, 4, 0, 0, 0, 0, time.UTC),
 		Account: "Assets:Cash",
 		Amount:  amtInt(-100, "USD"),
 	}
@@ -1146,6 +1149,217 @@ func TestPlugin_SubtreeAggregation(t *testing.T) {
 		}
 		if len(res.Diagnostics) != 0 {
 			t.Errorf("Result.Diagnostics = %v, want empty (leaf assertion sees only its own bucket)", res.Diagnostics)
+		}
+	})
+}
+
+// TestPlugin_DuplicateBalanceAssertion pins the upstream-compatible
+// behavior that two balance directives sharing (account, date,
+// currency) but asserting different numbers produce a Warning-severity
+// duplicate-balance diagnostic, while same-amount repetitions stay
+// silent. The first-seen amount is retained as the reference so a third
+// matching assertion does not re-emit the warning.
+func TestPlugin_DuplicateBalanceAssertion(t *testing.T) {
+	t.Run("different amounts emit one warning", func(t *testing.T) {
+		// Running balance is 100 USD; the integer-tolerance branch
+		// now requires an exact match, so the 101 USD assertion also
+		// reports a balance-mismatch in addition to duplicate-balance.
+		pos := amtInt(100, "USD")
+		neg := amtInt(-100, "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &pos},
+				{Account: "Equity:Opening", Amount: &neg},
+			},
+		}
+		bal1 := &ast.Balance{
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "USD"),
+		}
+		bal2Span := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 11, Column: 1}}
+		bal2 := &ast.Balance{
+			Span:    bal2Span,
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(101, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal1, bal2})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		want := []ast.Diagnostic{
+			{
+				Code:     string(validation.CodeBalanceMismatch),
+				Span:     bal2Span,
+				Message:  "balance assertion failed: account Assets:A: expected 101 USD, got 100 USD",
+				Severity: ast.Error,
+			},
+			{
+				Code:     string(validation.CodeDuplicateBalance),
+				Span:     bal2Span,
+				Message:  "duplicate balance assertion for account Assets:A on 2020-01-02: previous expected 100 USD, this asserts 101 USD",
+				Severity: ast.Warning,
+			},
+		}
+		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
+			t.Errorf("Result.Diagnostics mismatch (-want +got):\n%s", diff)
+		}
+	})
+
+	t.Run("same amount on same date is silent", func(t *testing.T) {
+		pos := amtInt(100, "USD")
+		neg := amtInt(-100, "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &pos},
+				{Account: "Equity:Opening", Amount: &neg},
+			},
+		}
+		bal1 := &ast.Balance{
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "USD"),
+		}
+		bal2 := &ast.Balance{
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal1, bal2})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (same amount on same date must be silent)", res.Diagnostics)
+		}
+	})
+
+	t.Run("different dates do not collide", func(t *testing.T) {
+		pos := amtInt(100, "USD")
+		neg := amtInt(-100, "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &pos},
+				{Account: "Equity:Opening", Amount: &neg},
+			},
+		}
+		bal1 := &ast.Balance{
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "USD"),
+		}
+		// A different date with a different expected amount is a
+		// distinct slot; it is allowed to fail against the running
+		// balance (and does, since the bucket stayed at 100), but
+		// must NOT trigger duplicate-balance.
+		bal2 := &ast.Balance{
+			Date:    time.Date(2020, 1, 3, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(101, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal1, bal2})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		for _, d := range res.Diagnostics {
+			if d.Code == string(validation.CodeDuplicateBalance) {
+				t.Errorf("got duplicate-balance diagnostic across distinct dates: %v", d)
+			}
+		}
+	})
+
+	t.Run("different currencies do not collide", func(t *testing.T) {
+		usd := amtInt(100, "USD")
+		usdNeg := amtInt(-100, "USD")
+		jpy := amtInt(100, "JPY")
+		jpyNeg := amtInt(-100, "JPY")
+		txn := &ast.Transaction{
+			Date: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &usd},
+				{Account: "Equity:Opening", Amount: &usdNeg},
+				{Account: "Assets:A", Amount: &jpy},
+				{Account: "Equity:Opening", Amount: &jpyNeg},
+			},
+		}
+		balUSD := &ast.Balance{
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "USD"),
+		}
+		balJPY := &ast.Balance{
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "JPY"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, balUSD, balJPY})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		if len(res.Diagnostics) != 0 {
+			t.Errorf("Result.Diagnostics = %v, want empty (different currencies are distinct slots)", res.Diagnostics)
+		}
+	})
+
+	t.Run("first-seen amount stays as reference", func(t *testing.T) {
+		// Sequence (100, 101, 100) on the same key: only the second
+		// (101) must trigger duplicate-balance; the third (100)
+		// matches the original and stays silent.
+		pos := amtInt(100, "USD")
+		neg := amtInt(-100, "USD")
+		txn := &ast.Transaction{
+			Date: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC),
+			Flag: '*',
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &pos},
+				{Account: "Equity:Opening", Amount: &neg},
+			},
+		}
+		bal1 := &ast.Balance{
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "USD"),
+		}
+		bal2Span := ast.Span{Start: ast.Position{Filename: "t.beancount", Line: 11, Column: 1}}
+		bal2 := &ast.Balance{
+			Span:    bal2Span,
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(101, "USD"),
+		}
+		bal3 := &ast.Balance{
+			Date:    time.Date(2020, 1, 2, 0, 0, 0, 0, time.UTC),
+			Account: "Assets:A",
+			Amount:  amtInt(100, "USD"),
+		}
+		in := api.Input{Directives: seqOf([]ast.Directive{txn, bal1, bal2, bal3})}
+		res, err := balance.Apply(context.Background(), in)
+		if err != nil {
+			t.Fatalf("balance.Apply: unexpected error %v", err)
+		}
+		var dupCount int
+		for _, d := range res.Diagnostics {
+			if d.Code == string(validation.CodeDuplicateBalance) {
+				dupCount++
+				if d.Span != bal2Span {
+					t.Errorf("duplicate-balance Span = %+v, want %+v (must point at the conflicting assertion)", d.Span, bal2Span)
+				}
+			}
+		}
+		if dupCount != 1 {
+			t.Errorf("got %d duplicate-balance diagnostics, want 1 (third assertion matches first and must be silent)", dupCount)
 		}
 	})
 }
