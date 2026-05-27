@@ -236,6 +236,167 @@ Rationale highlights:
 - `pkg/inventory/reducer_test.go` に新規テスト: reducing posting の install 後の AST `*ast.Cost` で `PerUnit==nil && Total==nil` を assert。augmenting posting の install 後の AST `*ast.Cost` では PerUnit/Total が CostSpec 由来で保持されることを assert。
 - 既存 integration test の `inventory.Cost{...}` 構築箇所 (`pkg/inventory/integration_test.go:136-145, 477` 等) を `inventory.Lot{...}` に書き換え。
 
+### Detailed Design (Step 2)
+
+#### Contract
+
+**Type migration (exported surface)**
+
+The alias `type Cost = ast.Cost` in `pkg/inventory/cost.go:18-20` stays — it remains the convenient spelling at the AST tier. What changes is who holds `*Cost` vs `*Lot`.
+
+- `inventory.Position.Cost` retyped from `*Cost` to `*Lot`. `Position.Clone` updates to `(*Lot).Clone()`. `costsEqualForMerge` retyped `(a, b *Lot) bool` (or merged into `Lot.Equal`).
+- `inventory.ReductionStep.Lot` retyped from `Cost` (value) to `Lot` (value). Zero-value `Lot{}` continues to encode the cash sentinel; the predicate `step.Lot.Currency != "" || step.Lot.Number.Sign() != 0` remains valid.
+- `inventory.BookedPosting.Lot` retyped from `*Cost` to `*Lot`. Any consumer that read `bp.Lot.PerUnit` or `bp.Lot.Total` becomes a compile-error site that must retarget to `bp.Source.Cost` (where the AST-tier `*ast.Cost` lives). Repo-wide grep confirms no such consumer exists.
+- `inventory.CostMatcher.Matches` retyped `Matches(c Lot) bool`. Matcher's own fields are unchanged.
+- `inventory.ResolveCost` retyped:
+  ```go
+  func ResolveCost(c ast.CostHolder, units ast.Amount, txnDate time.Time) (*Lot, *ast.Diagnostic, error)
+  ```
+  Findings and error semantics unchanged. The new return is provenance-free: even when the input is `*ast.Cost`, the result is a fresh `*Lot` containing only `Number/Currency/Date/Label`.
+- `inventory.Inventory.{Add, Reduce, Get, All, Equal, Clone}` keep their signatures; only the type behind `Position.Cost` changes.
+
+**New conversion helpers (exported, in `pkg/inventory/lot.go`)**
+
+```go
+// CostToLot extracts the provenance-free identity of a booked AST cost.
+// Returns nil for a nil input. The returned Lot's Number coefficient is
+// deep-copied; callers may mutate it without affecting c.
+func CostToLot(c *ast.Cost) *Lot
+
+// ToCost rebuilds a booked AST cost from a Lot's identity. The returned
+// *ast.Cost has PerUnit and Total nil — Lot carries no provenance, and
+// ToCost is the canonical place that absence is materialized. Number is
+// deep-copied. Returns nil for a nil receiver.
+func (l *Lot) ToCost() *ast.Cost
+```
+
+These are the canonical bridge points; ad-hoc field-by-field copying is allowed in tests but discouraged in production code so future `Lot` additions are caught at two well-known sites.
+
+**Reducer install paths — the central contract**
+
+After Step 2 the following invariant holds and is regression-tested:
+
+> Every `*ast.Posting.Cost` produced by the reducer is either (a) the original parse-tier `*ast.CostSpec` (when the posting was unaffected — see `needsBookingClone`), or (b) a freshly allocated `*ast.Cost`. For (b), it carries non-nil `PerUnit` or non-nil `Total` (or both) **iff** the posting is an augmentation. Reducing postings always carry `PerUnit == nil && Total == nil`.
+
+This is the precise discipline that the bug fix relies on: `PostingWeight → (*ast.Posting).TotalCost` returns nil for any reducing posting (Step 3's PostingWeight fallback then computes `units × Number`); for any augmenting posting `TotalCost` uses the Total-form (or combined-form) divide-free weight that `TestLoad_TotalCostAugmentationBalances` depends on.
+
+The three reducing-side install sites (`addSingleLotReduction` ~line 282, `addMultiLotReduction` ~line 316, `promoteSingleLotReduction` ~line 504) MUST install `step.Lot.ToCost()`. The three augmenting-side install sites (`addLotAugmentation` ~line 251, `promoteLotAugmentation` ~line 463, `addAlreadyBooked` ~line 234) MUST install a `*ast.Cost` whose `PerUnit`/`Total` reflect the parse-tier source.
+
+**bookOne / bookAugment signatures**
+
+`bookOne` and `bookAugment` are widened to return both `*Lot` (inventory side) and `*ast.Cost` (AST install side):
+
+```go
+// bookOne returns lot (inventory tier; provenance-free), astCost
+// (parse-tier round-trip witness; PerUnit/Total reflect the source
+// CostSpec for an augmentation, both nil for the booked-input path),
+// steps (per-lot reductions; nil for augmentation), finding, err.
+// astCost is non-nil iff lot is non-nil; both are nil for cash
+// augmentations and reductions.
+func bookOne(
+    inv *Inventory,
+    p *ast.Posting,
+    method ast.BookingMethod,
+    txnDate time.Time,
+) (lot *Lot, astCost *ast.Cost, steps []ReductionStep, finding *ast.Diagnostic, err error)
+```
+
+`bookAugment` returns `(*Lot, *ast.Cost, *ast.Diagnostic, error)` with the same `astCost` semantics. `bookReduce`'s signature is unchanged.
+
+**Install helper signature changes**
+
+The three augmenting installers gain an `astCost *ast.Cost` parameter:
+
+```go
+func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, astCost *ast.Cost, weightCurrency string)
+func (pr *postingResolution) promoteLotAugmentation(p *ast.Posting, lot *Lot, astCost *ast.Cost, currency string)
+func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep, weightCurrency string)
+```
+
+Each MUST install `astCost` into `pr.postings[i].Cost` (or `p.Cost` for the Pass-2 case). The cloning discipline already in place at these sites is satisfied because `astCost` is freshly built by `bookAugment` for first-run paths and is the input `p.Cost` directly for `addAlreadyBooked` (preserving its pointer-identical-on-round-trip property documented in `reducer.go:233`).
+
+The three reducing installers retain their signatures; they switch their inner cost install line from `step.Lot.Clone()` to `step.Lot.ToCost()`.
+
+**Round-trip invariants (already-booked path)**
+
+`addAlreadyBooked` keeps its pointer-identical-Cost contract: when `p.Cost.(*ast.Cost) != nil` and `IsBooked()` is true, the reducer does not touch `p.Cost`. `lot *Lot` is derived by `bookAugment → CostToLot(p.Cost.(*ast.Cost))` for inventory accounting; `astCost = p.Cost.(*ast.Cost)` is forwarded verbatim. Preserves `TestReducerRun_OutputIsFixedPoint` (`idempotence_test.go:11-23`).
+
+**Test rewrites required**
+
+- `TestResolveCost_BookedShortCircuit` (`pkg/inventory/idempotence_test.go:24-58`): rewrite to assert new `*Lot` contract — fresh allocation, Number/Currency/Date/Label transferred, deep-copied Number (mutation independence). PerUnit/Total assertions removed (no longer applicable).
+- `pkg/inventory/integration_test.go:140-145, 477-478`: `&inventory.Cost{...}` → `&inventory.Lot{...}` for `wantPositions[i].Cost` and `wantStep.Lot`.
+- `pkg/inventory/integration_test.go:39-41` `lotIdentityCmpOpts`: keep `IgnoreFields(ast.Cost{}, "PerUnit", "Total")` (still applies to `Source.Cost` comparison); `ReductionStep`-side ignore (if any) becomes unnecessary.
+
+**New tests (Step 2 install-witness)**
+
+In `pkg/inventory/lot_test.go`:
+- `TestCostToLot` — nil→nil; non-nil copies four fields; deep-copy of Number.
+- `TestLot_ToCost` — nil-receiver→nil; non-nil-receiver returns `*ast.Cost` with `PerUnit == nil && Total == nil` and four-field equality; deep-copy of Number.
+
+In `pkg/inventory/reducer_test.go`:
+- `TestReducerWalk_ReducingPostingHasNoCostProvenance` — `{{ T CUR }}` augmentation then partial reduction `-N CUR {}`; assert reducing posting's `*ast.Cost` has `PerUnit == nil && Total == nil`.
+- `TestReducerWalk_AugmentingPostingRetainsCostProvenance` — `{{ T CUR }}` augmentation; assert augmenting posting's `*ast.Cost.Total != nil`. Companion subtest: `{ X CUR }` augmentation → `PerUnit != nil`.
+
+**Cross-step coupling (the Step 2/3 boundary)**
+
+Step 2 ends with `bazel test //...` green. The Step 3 `PostingWeight` fallback (`units × Number` for booked Cost with no provenance) is purely additive: it makes the bug-ledger from the plan context pass (Step 4's new regression test), but no existing test exercises a reducing posting whose cost currency ≠ unit currency *and* relies on `units × Number` for balance. If the implementer discovers such a test during Step 2 work, Step 3 must be folded into Step 2 — escalate before splitting.
+
+#### Suggested Internals
+
+These are advisory.
+
+**Where to build `astCost` in `bookAugment`** — three options:
+1. *Inline in `bookAugment`*: switch on `p.Cost`'s concrete type and build the `*ast.Cost` directly.
+2. *Extract helper `costSpecToBookedCost(spec *ast.CostSpec, lot *Lot) *ast.Cost`* — preferred. Tightens the spec→AST transform into a unit-testable helper; keeps `bookAugment` concise.
+3. *Have `ResolveCost` produce both `*Lot` and `*ast.Cost`* — rejected; re-merges the tiers at the function meant to separate them.
+
+**Building the booked `*ast.Cost` from a CostSpec** — fields to copy:
+- `Number` ← `lot.Number` (deep clone)
+- `Currency` ← `lot.Currency` (= `spec.Currency`)
+- `Date` ← `lot.Date` (already resolved by `ResolveCost`)
+- `Label` ← `lot.Label` (= `spec.Label`)
+- `PerUnit` ← `spec.GetPerUnit()` (returns fresh `*Amount`)
+- `Total` ← `spec.GetTotal()` (same)
+
+The `*Amount` accessors `GetPerUnit`/`GetTotal` allocate fresh, so no extra cloning needed.
+
+**Pass 2 (deferred path)** — `synthesizeCostSpec` (`reducer.go:1089`) already builds a fresh `*ast.CostSpec` with `Total != nil`. When this synthetic spec flows through `bookAugment → costSpecToBookedCost`, the resulting `*ast.Cost` has `Total` set and `PerUnit` nil. `(*ast.Posting).TotalCost` then computes `sign(units) × |Total|` divide-free — exactly the precision-preserving behavior `TestLoad_TotalCostAugmentationWithAutoPostingBalances` pins. No special case needed.
+
+**`bookOne` return-tuple ergonomics** — five returns is uncomfortable. A small struct `type bookingOutcome struct { Lot *Lot; ASTCost *ast.Cost; Steps []ReductionStep; Finding *ast.Diagnostic }` plus `(bookingOutcome, error)` is cleaner. Implementer's call.
+
+**`addAlreadyBooked` path** — `bookAugment` must return the *input pointer* (not a clone) for the `*ast.Cost` case, to preserve `addAlreadyBooked`'s pointer-identical guarantee. One-line guard in the helper.
+
+**Order of edits** (procedural suggestion):
+1. Add `CostToLot` and `ToCost` to `lot.go` + unit tests.
+2. Rewrite `ResolveCost` to return `*Lot`; update `TestResolveCost_BookedShortCircuit`.
+3. Walk callers: `bookAugment`, `bookOne`, augmenting installers, `Position.Cost`, `ReductionStep.Lot`, `Inventory.*`, `CostMatcher.Matches`, `reverseBooking`. Type errors flush out missed sites.
+4. Switch the three reducing installers to `ToCost()`.
+5. Add the two new install-witness tests.
+6. Update `integration_test.go` fixtures.
+7. `bazel run //:gazelle`, `bazel test //...`.
+
+#### Alternatives
+
+**A. Step 2 = type migration only; Step 3 = augmenting install rewrite** — rejected; tests would break at Step 2/3 boundary (user already rejected this).
+
+**B. Interface-based interop between `*ast.Cost` and `*Lot`** — rejected; re-merges the tiers via interface, defeating Step 1.
+
+**C. `ResolveCost` returns `(*Lot, *ast.Cost, ...)` directly** — rejected as primary; re-widens `ResolveCost`'s scope. Implementer may pick if call-site ergonomics are awkward with the helper extraction.
+
+**D. Keep `bookAugment` signature unchanged; rebuild `*ast.Cost` at each installer site** — rejected; double work, and `addAlreadyBooked`'s pointer-identity contract makes re-classification at the installer awkward.
+
+**E. Drop pointer-identity in `addAlreadyBooked`** — rejected; violates documented contract and `TestReducerRun_OutputIsFixedPoint`.
+
+**F. Skip install-witness tests** — rejected; central invariant deserves direct pinning.
+
+#### Recommendation + rationale
+
+Adopt Suggested Internals option **2 (extract helper)** for the `astCost` build; widen `bookAugment` to return both `*Lot` and `*ast.Cost`; keep `bookOne` as a 5-tuple unless the call site grows awkward (then refactor to struct). Run the implementation in the order listed above.
+
+This integrates Step 2 + Step 3 cleanly: the augmenting Total-form weight is fundamentally a presentation-provenance feature, and once the inventory tier loses provenance, the AST tier has to install it from a different source. There is no incremental ordering that keeps tests green between those two changes; they are one design decision. Original alternative A (split) was explicitly rejected by the user.
+
+**Open contract for implementer**: if `bazel test //...` is not green after Step 2 (excluding the planned Step 4 regression test, not yet added), the conclusion is **not** "good enough, Step 3 will fix it" — escalate before proceeding.
+
 ### Step 3 (旧 Step 4): `PostingWeight` に booked Cost without provenance の fallback を追加
 
 **ゴール**: AST 上の booked `*ast.Cost` が PerUnit/Total を両方持たない場合に、weight = `units × Number` (in `Cost.Currency`) を返すよう `PostingWeight` を拡張する。
