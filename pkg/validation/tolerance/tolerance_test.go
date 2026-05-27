@@ -329,10 +329,13 @@ func TestForAmount_Exponents(t *testing.T) {
 }
 
 // TestForBalanceAssertion exercises the doubled-factor tolerance used
-// for balance assertions, mirroring upstream beancount's
+// for fractional balance assertions, mirroring upstream beancount's
 // get_balance_tolerance: tol = 2 * multiplier * 10^expo. The doubled
 // factor is upstream's deliberate relaxation for hand-written balance
 // assertions where rounding can exceed transaction-internal precision.
+// Integer assertions (no fractional digits) take the dedicated
+// inferred_tolerance_default lookup path; see
+// TestForBalanceAssertion_IntegerUsesPerCurrencyDefault.
 func TestForBalanceAssertion(t *testing.T) {
 	cases := []struct {
 		name string
@@ -343,7 +346,6 @@ func TestForBalanceAssertion(t *testing.T) {
 		{name: "exp -1, default mult", in: "100.0", want: "0.1"},
 		{name: "exp -2, default mult", in: "100.00", want: "0.01"},
 		{name: "exp -3, default mult", in: "100.000", want: "0.001"},
-		{name: "exp 0, default mult", in: "100", want: "1"},
 		{name: "exp -2, mult 1.0", in: "100.00", mult: "1.0", want: "0.02"},
 		{name: "exp -3, mult 2.0", in: "100.000", mult: "2.0", want: "0.004"},
 	}
@@ -363,6 +365,60 @@ func TestForBalanceAssertion(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestForBalanceAssertion_IntegerUsesPerCurrencyDefault pins the
+// upstream-compatible behavior for assertions whose asserted amount has
+// no fractional digits: there is no inferrable precision in the
+// authored amount, so the tolerance is looked up in
+// inferred_tolerance_default rather than computed from
+// tolerance_multiplier. Absent (or zero/negative) entries fall through
+// to zero, requiring an exact match.
+func TestForBalanceAssertion_IntegerUsesPerCurrencyDefault(t *testing.T) {
+	t.Run("absent default → exact match (tol=0)", func(t *testing.T) {
+		opts := mustDefaults()
+		got := tolerance.ForBalanceAssertion(opts, amtStr(t, "101", "USD"))
+		if !got.IsZero() {
+			t.Errorf("ForBalanceAssertion(101 USD) = %s, want 0", got.Text('f'))
+		}
+	})
+
+	t.Run("per-currency default applies for integer amount", func(t *testing.T) {
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "USD:0.5"})
+		got := tolerance.ForBalanceAssertion(opts, amtStr(t, "101", "USD"))
+		want := decimalFromString(t, "0.5")
+		if got.Cmp(&want) != 0 {
+			t.Errorf("ForBalanceAssertion(101 USD) = %s, want 0.5", got.Text('f'))
+		}
+	})
+
+	t.Run("per-currency default does not apply to fractional amount", func(t *testing.T) {
+		// Posting-level inference must win over inferred_tolerance_default
+		// once the amount has fractional digits — the integer special
+		// case is only for amounts with zero fractional digits.
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "USD:1.0"})
+		got := tolerance.ForBalanceAssertion(opts, amtStr(t, "100.00", "USD"))
+		want := decimalFromString(t, "0.01")
+		if got.Cmp(&want) != 0 {
+			t.Errorf("ForBalanceAssertion(100.00 USD) = %s, want 0.01 (fractional must use doubled factor, not 1.0 default)", got.Text('f'))
+		}
+	})
+
+	t.Run("zero entry falls through to zero", func(t *testing.T) {
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "USD:0"})
+		got := tolerance.ForBalanceAssertion(opts, amtStr(t, "101", "USD"))
+		if !got.IsZero() {
+			t.Errorf("ForBalanceAssertion(101 USD) = %s, want 0 (zero entry treated as absent)", got.Text('f'))
+		}
+	})
+
+	t.Run("missing currency in default map falls through to zero", func(t *testing.T) {
+		opts := mustOpts(t, map[string]string{"inferred_tolerance_default": "EUR:0.5"})
+		got := tolerance.ForBalanceAssertion(opts, amtStr(t, "101", "USD"))
+		if !got.IsZero() {
+			t.Errorf("ForBalanceAssertion(101 USD) = %s, want 0 (USD not in default map)", got.Text('f'))
+		}
+	})
 }
 
 // TestInfer_ToleranceMultiplierAlias verifies that the deprecated

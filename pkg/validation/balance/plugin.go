@@ -4,8 +4,17 @@
 // running balance from every *ast.Transaction's postings, and verify
 // each *ast.Balance directive against the running balance at its
 // date. Account-open enforcement is intentionally left to the
-// validations plugin; this plugin owns only balance-mismatch
-// diagnostics.
+// validations plugin; this plugin owns the balance-mismatch and
+// duplicate-balance diagnostics.
+//
+// Duplicate-balance detection: a second *ast.Balance directive with
+// the same (account, date, currency) as a previously seen one but a
+// different expected number emits a Warning-severity duplicate-balance
+// diagnostic, matching upstream's "Duplicate balance assertion with
+// different amounts" check. The first-seen amount is retained as the
+// reference, so two later conflicting assertions on the same key both
+// compare against the original. Repetitions with the same number are
+// silently accepted.
 //
 // The running balance is accumulated in the posting's NATIVE currency
 // (p.Amount.Currency), not in the weight currency returned by
@@ -33,6 +42,7 @@ package balance
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -58,6 +68,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	}
 
 	balances := map[balanceKey]*apd.Decimal{}
+	seen := map[seenKey]ast.Amount{}
 	var diags []ast.Diagnostic
 	for _, d := range in.Directives {
 		switch x := d.(type) {
@@ -65,6 +76,7 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 			diags = append(diags, applyTransaction(x, balances)...)
 		case *ast.Balance:
 			diags = append(diags, checkBalance(x, balances, in.Options)...)
+			diags = append(diags, checkDuplicate(x, seen)...)
 		}
 	}
 
@@ -84,6 +96,30 @@ func init() {
 type balanceKey struct {
 	Account  ast.Account
 	Currency string
+}
+
+// seenKey identifies a balance-assertion slot by (account, date,
+// currency) for duplicate detection. Date is normalized via a
+// year/month/day triple so two Balance directives parsed on the same
+// calendar day compare equal regardless of how their time.Time was
+// constructed (timezone, monotonic clock, etc.).
+type seenKey struct {
+	Account  ast.Account
+	Year     int
+	Month    time.Month
+	Day      int
+	Currency string
+}
+
+func newSeenKey(b *ast.Balance) seenKey {
+	y, m, d := b.Date.Date()
+	return seenKey{
+		Account:  b.Account,
+		Year:     y,
+		Month:    m,
+		Day:      d,
+		Currency: b.Amount.Currency,
+	}
 }
 
 // applyTransaction accumulates tx's postings into balances. The
@@ -217,4 +253,37 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *as
 		})
 	}
 	return diags
+}
+
+// checkDuplicate records b in seen and reports a duplicate-balance
+// diagnostic when an earlier entry on the same (account, date,
+// currency) asserted a different amount. The first-seen amount is
+// retained so later assertions all compare against the original;
+// repetitions with the same number are silently accepted.
+func checkDuplicate(b *ast.Balance, seen map[seenKey]ast.Amount) []ast.Diagnostic {
+	key := newSeenKey(b)
+	prev, ok := seen[key]
+	if !ok {
+		seen[key] = b.Amount
+		return nil
+	}
+	prevNum := prev.Number
+	newNum := b.Amount.Number
+	if prevNum.Cmp(&newNum) == 0 {
+		return nil
+	}
+	return []ast.Diagnostic{{
+		Code:     string(validation.CodeDuplicateBalance),
+		Span:     b.Span,
+		Severity: ast.Warning,
+		Message: fmt.Sprintf(
+			"duplicate balance assertion for account %s on %s: previous expected %s %s, this asserts %s %s",
+			b.Account,
+			b.Date.Format("2006-01-02"),
+			prevNum.Text('f'),
+			prev.Currency,
+			newNum.Text('f'),
+			b.Amount.Currency,
+		),
+	}}
 }

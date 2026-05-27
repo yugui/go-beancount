@@ -33,6 +33,12 @@ const (
 	CodeAutoPostingUnresolved Code = "auto-posting-unresolved"
 	// CodeBalanceMismatch indicates a balance assertion did not match the computed balance.
 	CodeBalanceMismatch Code = "balance-mismatch"
+	// CodeDuplicateBalance indicates two balance directives share the same
+	// (account, date, currency) but assert different expected amounts. The
+	// first-seen amount is retained as the reference; subsequent assertions
+	// with conflicting numbers each emit one diagnostic. Same-amount
+	// repetitions are silently ignored.
+	CodeDuplicateBalance Code = "duplicate-balance"
 	// CodePadUnresolved indicates a pad directive could not be resolved to a balance assertion.
 	CodePadUnresolved Code = "pad-unresolved"
 	// CodePadTargetHasCost indicates a Pad directive targets an account
