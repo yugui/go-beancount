@@ -8,6 +8,14 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 )
 
+// quoContext is the apd context used for total → per-unit price
+// division inside [fillRealizedGain]. The package-wide
+// [apd.BaseContext] has Precision=0, which only works for exact
+// operations (Add/Sub/Mul/Neg/Abs); division (Quo) needs a positive
+// precision. 34 digits matches IEEE-754 decimal128 and the matching
+// constant in pkg/ast.
+var quoContext = apd.BaseContext.WithPrecision(34)
+
 // specIsEmpty reports whether c is nil or structurally empty (no
 // per-unit, no total, no date, no label) — the cases for which the
 // price-currency hint rule applies. A booked [*ast.Cost] is never
