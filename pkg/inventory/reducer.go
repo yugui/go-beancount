@@ -231,7 +231,7 @@ func (pr *postingResolution) markForDrop(weightCurrency string) {
 // (the second-run fixed-point path). p.Cost is preserved pointer-
 // identical so a reducer round-trip is byte-identical; lot / step
 // are kept on the BookedPosting for downstream consumers.
-func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *ReductionStep, weightCurrency string) {
+func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Cost, step *ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	pr.booked = append(pr.booked, BookedPosting{
 		Account:   p.Account,
@@ -245,7 +245,7 @@ func (pr *postingResolution) addAlreadyBooked(p *ast.Posting, lot *Lot, step *Re
 // addLotAugmentation records a first-run augmentation with a cost
 // spec. The rebuilt posting's parse-tier *ast.CostSpec is replaced
 // with a clone of lot; the BookedPosting carries lot directly.
-func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Lot, weightCurrency string) {
+func (pr *postingResolution) addLotAugmentation(p *ast.Posting, lot *Cost, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
 	pr.postings[i].Cost = lot.Clone()
@@ -459,7 +459,7 @@ func (pr *postingResolution) groupForResidual() (
 // [addLotAugmentation]: the synthesized Cost on p is replaced with
 // lot.Clone(). InferredAuto stays false (only the cost was
 // inferred).
-func (pr *postingResolution) promoteLotAugmentation(p *ast.Posting, lot *Lot, currency string) {
+func (pr *postingResolution) promoteLotAugmentation(p *ast.Posting, lot *Cost, currency string) {
 	p.Cost = lot.Clone()
 	descIdx := pr.unknownDescIndex(p)
 	pr.booked = append(pr.booked, BookedPosting{

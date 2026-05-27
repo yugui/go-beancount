@@ -103,6 +103,115 @@ upstream beancount の `Cost` 型は `(number, currency, date, label)` のみで
 
 **テスト**: 既存テストが pass すること。新規テストは不要 (型変更が中心)。
 
+### Detailed Design (Step 1)
+
+#### Contract
+
+**New type `inventory.Lot`** (exported, defined in `pkg/inventory`):
+
+```go
+type Lot struct {
+    Number   apd.Decimal
+    Currency string
+    Date     time.Time
+    Label    string
+}
+```
+
+- `Number` is a value `apd.Decimal` (not `*apd.Decimal`), matching `ast.Cost.Number` so future Step 2 transfers `Position.Cost.Number → Lot.Number` are a direct field copy with no nil-handling discontinuity.
+- `Currency string`, `Label string`, `Date time.Time` — all value types, all carrying the same semantics as the identically-named fields on `ast.Cost`.
+- The struct has **no** `PerUnit`, `Total`, `Span`, or any other provenance/source-location field. Their absence is the type's whole purpose: inventory-tier code cannot reach for them.
+
+**Methods on `*inventory.Lot`** (exported):
+
+- `func (l *Lot) Equal(o *Lot) bool` — nil-safe both sides; two nils are equal, nil-vs-non-nil is unequal. Equality is by-value over `(Number via apd.Decimal.Cmp == 0, Currency, Date via time.Time.Equal, Label)`. Mirrors `ast.Cost.Equal` semantics exactly (which is already provenance-independent).
+- `func (l *Lot) Clone() *Lot` — nil-safe; returns nil for a nil receiver. Number is deep-copied via `ast.CloneDecimal`; the other fields are value-copied. The clone owns its coefficient buffer.
+
+**Sealed-union membership**: `inventory.Lot` does **not** implement `ast.CostHolder`. The CostHolder interface is the AST-tier union of parse-form (`*ast.CostSpec`) and booked-form (`*ast.Cost`); inventory-internal lot values are deliberately outside that vocabulary. Generator must not add `GetPerUnit`/`GetTotal`/`isCostHolder`/etc. methods.
+
+**Removals**:
+
+- `pkg/ast/cost.go` lines 158-160 (the `type Lot = Cost` alias and its 2-line godoc) are deleted in their entirety. After Step 1, the identifier `ast.Lot` does not exist.
+- `pkg/inventory/cost.go:22-24` (the `type Lot = ast.Lot` alias and its 2-line godoc) is deleted. The replacement is the new struct definition described above (whose home is `Suggested Internals`).
+- `type Cost = ast.Cost` at `pkg/inventory/cost.go:18-20` is **not** touched. `ResolveCost`'s signature `(*Cost, *ast.Diagnostic, error)` is **not** touched. `Position.Cost *Cost`, `ReductionStep.Lot Cost`, `BookedPosting.Lot *Lot` are **not** retyped here — all of these are Step 2.
+
+**Cross-step coupling**:
+
+- After Step 1, `inventory.Lot` and `inventory.Cost` (=`ast.Cost`) are two **distinct types** that happen to share four field names (`Number`, `Currency`, `Date`, `Label`). The codebase still uses `*Cost` everywhere lots flow; `inventory.Lot` is unreferenced by any other production code until Step 2 wires `Position.Cost`/`ReductionStep.Lot`/`BookedPosting.Lot`/`ResolveCost` to it.
+- The only behavioral assertion at the end of Step 1 is that the existing test suite (specifically `pkg/inventory/...`, `pkg/ast/...`, `pkg/loader/...`, `pkg/printer/...`, `pkg/validation/...`, `pkg/ext/...`) all build and pass with no diffs in observed behavior. New tests added in Step 1 are unit tests for `Lot.Equal` and `Lot.Clone` only.
+
+**Test obligations added in Step 1** (in `pkg/inventory/lot_test.go`, new file):
+
+- `TestLot_Equal` — covers: identical lots equal; differing Number unequal; differing Currency unequal; differing Date (same wall-clock different `Location`) handled per `time.Time.Equal`; differing Label unequal; nil/nil equal; nil/non-nil unequal.
+- `TestLot_Clone` — covers: nil receiver returns nil; clone is deeply independent (mutating clone's `Number` coefficient does not affect original; Currency/Label string equal).
+
+These two tests are the only new tests. No existing test is rewritten or expected to change.
+
+**BUILD/Gazelle**: after editing files, `bazel run //:gazelle` regenerates `pkg/inventory/BUILD.bazel` and `pkg/ast/BUILD.bazel`. No manual BUILD edits required.
+
+#### Suggested Internals
+
+These are advisory; the implementer may choose differently if a discovered constraint argues for it.
+
+**File placement**: `pkg/inventory/lot.go` (new file). Rationale: the project's one-concept-one-file pattern (`position.go`, `matcher.go`, `weight.go`, etc.) makes a dedicated `lot.go` discoverable. Alternative: place the struct in the existing `cost.go` directly below the `type Cost = ast.Cost` line; this keeps "cost-shaped types" colocated and avoids a new file. The dedicated file is suggested because Step 2 will add `costToLot` / `Lot.ToCost` conversion helpers that read more naturally near the type definition than mixed with `ResolveCost`.
+
+**Imports in the new file**: `time` and `github.com/cockroachdb/apd/v3` for the field types; `github.com/yugui/go-beancount/pkg/ast` for `ast.CloneDecimal` inside `Clone`. (Alternative: avoid the `ast` import by inlining the `apd.Decimal` clone, but `ast.CloneDecimal` is the project's single-source helper and re-using it is consistent.)
+
+**`Equal` implementation style**: mirror `ast.Cost.Equal` directly — early-return nil checks, then field comparisons in the order Currency, Label (string equality, cheap), Date (`time.Time.Equal`), Number (`apd.Decimal.Cmp`). The reason to mirror exactly is that future readers comparing the two types should see identical structure.
+
+**`Clone` implementation style**: mirror `ast.Cost.Clone` but drop the two provenance branches:
+
+```go
+func (l *Lot) Clone() *Lot {
+    if l == nil {
+        return nil
+    }
+    return &Lot{
+        Number:   *ast.CloneDecimal(&l.Number),
+        Currency: l.Currency,
+        Date:     l.Date,
+        Label:    l.Label,
+    }
+}
+```
+
+Alternative: write a value-receiver `Clone() Lot` since the type is small and value-copyable. This is rejected as a suggestion because `Position.Cost` will be `*Lot` after Step 2 and pointer-receiver `Clone() *Lot` composes more naturally with nil-bearing fields; matching the `*ast.Cost.Clone() *ast.Cost` shape also reduces friction at conversion-helper sites in Step 2.
+
+**Godoc tone**: short — a 2-3 line type doc on `Lot` plus 1-2 line contracts on `Equal` and `Clone`, in the project's brevity-first style. Suggested type doc emphasizes (a) provenance-free, (b) inventory-tier, (c) future role: pivot type for `Position`/`ReductionStep` once Step 2 lands. The `Position.Cost` field doc on `pkg/inventory/position.go:13` may optionally gain a one-line forward reference, but this is non-essential at Step 1.
+
+**Where to place tests**: `pkg/inventory/lot_test.go`. Use `package inventory_test` (consistent with most existing tests in the package per `inventory_test.go` etc.) so the tests exercise the exported surface only.
+
+**Removal of the orphan alias**: after deleting `ast.Lot`, the godoc text on `ast.Cost` (lines 124-156) still mentions "Cost" only; no surviving comment references "Lot" as a type. A quick grep for `Lot` in `pkg/ast/cost.go` after the edit should return no results other than incidental prose (none expected). The implementer should run that grep and adjust if anything turns up.
+
+#### Alternatives
+
+**A. Keep `inventory.Lot` as a type alias for the new struct and not introduce a new identifier** — rejected; aliases for in-package types add indirection with no benefit (the existing `type Cost = ast.Cost` alias is justified by cross-package retargeting only).
+
+**B. Define `inventory.Lot` with pointer-typed `Number *apd.Decimal`** — rejected; `ast.Cost.Number` is value-typed at the booked tier where the number is always concrete, and matching that shape keeps Step 2's `costToLot` a trivial field assignment. Also nil-decimal handling is a known source of bugs.
+
+**C. Define `inventory.Lot` to satisfy `ast.CostHolder`** — rejected; `CostHolder` is explicitly sealed via the unexported `isCostHolder()` marker (`pkg/ast/cost.go:28-30`), making `Lot` a `CostHolder` re-merges the two tiers at the interface level, and no Step 1 callsite needs it.
+
+**D. Defer alias removal: keep `type Lot = Cost` in `ast`** — rejected; the grep shows `ast.Lot` has exactly one usage in the entire repo (the dual alias in `pkg/inventory/cost.go:24` deleted in this same step), so there is no blast-radius risk to defer for.
+
+**E. Co-locate the struct in `pkg/inventory/cost.go`** — left as the explicit alternative in Suggested Internals; the implementer may pick based on what feels cleanest when they actually edit the file.
+
+#### Recommendation + rationale
+
+Recommended path:
+
+1. Create `pkg/inventory/lot.go` with the new `Lot` struct, `Equal`, and `Clone`. Imports: `time`, `github.com/cockroachdb/apd/v3`, `github.com/yugui/go-beancount/pkg/ast` (for `CloneDecimal`).
+2. Delete the alias block at `pkg/inventory/cost.go:22-24` (godoc + `type Lot = ast.Lot`).
+3. Delete the alias block at `pkg/ast/cost.go:158-160` (godoc + `type Lot = Cost`).
+4. Create `pkg/inventory/lot_test.go` with `TestLot_Equal` and `TestLot_Clone`.
+5. Run `bazel run //:gazelle` then `bazel test //...` and confirm green.
+
+Rationale highlights:
+
+- **Why a fresh struct, not a renamed/repurposed `ast.Cost`** (vs Alternative C): the entire premise of the bug fix in later steps is that inventory-tier code must not be able to reach for `PerUnit`/`Total`. Type identity is the project's chosen enforcement mechanism.
+- **Why value-typed `Number`** (vs Alternative B): symmetry with `ast.Cost.Number` makes the Step 2 conversion `costToLot` a one-line field copy.
+- **Why a dedicated file** (vs Alternative E): Step 2's conversion helpers will land near the type definition, and an already-named `lot.go` is the natural home. Implementer is explicitly free to overrule.
+- **Why delete `ast.Lot` immediately** (vs Alternative D): grep shows zero blast radius.
+
 ### Step 2: inventory 内部の `Position.Cost`, `ReductionStep.Lot`, `BookedPosting.Lot` を `*Lot` に移行
 
 **ゴール**: inventory tier で運搬される lot 情報の型を全て新しい `inventory.Lot` に変更する。

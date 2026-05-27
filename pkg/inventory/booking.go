@@ -54,9 +54,9 @@ type BookedPosting struct {
 	// auto-postings it is the residual inferred by the reducer (see
 	// InferredAuto).
 	Units ast.Amount
-	// Lot is the resolved cost lot for an augmentation; nil for cash
+	// Lot is the booked cost for an augmentation; nil for cash
 	// augmentations and reductions.
-	Lot *Lot
+	Lot *Cost
 	// Reduction is the per-lot reduction record; nil unless the
 	// posting was classified as a reduction.
 	Reduction *ReductionStep
@@ -157,7 +157,7 @@ func bookOne(
 	p *ast.Posting,
 	method ast.BookingMethod,
 	txnDate time.Time,
-) (*Lot, []ReductionStep, *ast.Diagnostic, error) {
+) (*Cost, []ReductionStep, *ast.Diagnostic, error) {
 	if p == nil {
 		return nil, nil, nil, fmt.Errorf("inventory.bookOne: nil posting")
 	}
@@ -182,7 +182,7 @@ func bookOne(
 // the resolved lot (nil iff p carried no cost spec — a cash
 // augmentation). See [bookOne] for the user-finding / system-error
 // split.
-func bookAugment(inv *Inventory, p *ast.Posting, txnDate time.Time) (*Lot, *ast.Diagnostic, error) {
+func bookAugment(inv *Inventory, p *ast.Posting, txnDate time.Time) (*Cost, *ast.Diagnostic, error) {
 	lot, finding, err := ResolveCost(p.Cost, *p.Amount, txnDate)
 	if err != nil {
 		return nil, nil, wrapSystemErr(err, p)

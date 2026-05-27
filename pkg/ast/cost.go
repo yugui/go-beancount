@@ -155,10 +155,6 @@ type Cost struct {
 	Total *Amount
 }
 
-// Lot is an alias for [Cost], preserved for documentation clarity at
-// call sites where "lot" reads more naturally than "cost".
-type Lot = Cost
-
 // Equal reports whether two costs describe the same lot: same per-unit
 // Number (by value), Currency, Date, and Label. PerUnit and Total are
 // presentation provenance and are intentionally excluded from the

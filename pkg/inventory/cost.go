@@ -19,10 +19,6 @@ var quoContext = apd.BaseContext.WithPrecision(34)
 // type lives in [pkg/ast]; this alias is the inventory-side spelling.
 type Cost = ast.Cost
 
-// Lot is the augmentation-flavoured alias for [Cost]: an augmenting
-// posting "adds a lot" while a reducing posting "matches a lot".
-type Lot = ast.Lot
-
 // ResolveCost turns an [ast.CostHolder] on an augmenting posting into
 // a concrete [Cost]:
 //
