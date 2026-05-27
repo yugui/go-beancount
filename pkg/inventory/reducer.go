@@ -271,11 +271,12 @@ func (pr *postingResolution) addCashAugmentation(p *ast.Posting, weightCurrency 
 }
 
 // addSingleLotReduction records a reduction whose matcher selected
-// exactly one lot. The rebuilt posting gets a fresh provenance-free
-// [*ast.Cost] from [Lot.ToCost], except for the cash-sentinel step
-// (zero-value Lot) where p.Cost is left untouched. Unlike
-// [addMultiLotReduction], an @@ total-form price needs no rewrite —
-// the single child carries the parent's full |units|.
+// exactly one lot. The rebuilt posting gets a provenance-free
+// [*ast.Cost] from [Lot.ToCost] (see docs/architecture/cost-tier-separation.md),
+// except for the cash-sentinel step (zero-value Lot) where p.Cost is
+// left untouched. Unlike [addMultiLotReduction], an @@ total-form
+// price needs no rewrite — the single child carries the parent's
+// full |units|.
 func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step ReductionStep, weightCurrency string) {
 	pr.postings = append(pr.postings, *p)
 	i := len(pr.postings) - 1
@@ -303,6 +304,9 @@ func (pr *postingResolution) addSingleLotReduction(p *ast.Posting, step Reductio
 // a child would overstate the price-side weight. The rewrite reuses
 // step.SalePricePer so Reduction.SalePricePer and child.Price stay
 // numerically equal by construction.
+//
+// Each child cost is installed via [Lot.ToCost]; see
+// [addSingleLotReduction].
 func (pr *postingResolution) addMultiLotReduction(p *ast.Posting, steps []ReductionStep) {
 	rewriteTotalPrice := p.Price != nil && p.Price.IsTotal && p.Price.Amount.Currency != ""
 	for _, step := range steps {

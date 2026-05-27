@@ -133,7 +133,8 @@ func (*CostSpec) IsBooked() bool { return false }
 // (`{X CUR, # CUR}`) after booking. Number is the canonical resolved
 // per-unit value used for inventory matching and equality; PerUnit and
 // Total carry presentation provenance only and are not consulted by
-// [Cost.Equal].
+// [Cost.Equal]. After booking, a Cost installed on a reducing posting
+// has both PerUnit and Total nil; only an augmenting posting carries them.
 //
 // Cost is a value type; the Number field is stored inline (not a
 // pointer) so a zero Cost has Number == 0 rather than a nil decimal.
