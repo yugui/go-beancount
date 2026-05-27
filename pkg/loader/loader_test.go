@@ -10,9 +10,19 @@ import (
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/loader"
 )
+
+// astCmpOpts holds semantic comparers for cmp.Diff over AST values
+// that contain apd.Decimal or time.Time (which carries monotonic
+// clock data); both require a semantic comparer rather than
+// reflect.DeepEqual.
+var astCmpOpts = cmp.Options{
+	cmp.Comparer(func(x, y apd.Decimal) bool { return x.Cmp(&y) == 0 }),
+	cmp.Comparer(func(x, y time.Time) bool { return x.Equal(y) }),
+}
 
 const minimalSrc = `2024-01-01 open Assets:Bank USD
 2024-01-01 open Equity:Opening
@@ -256,6 +266,95 @@ func TestLoad_StrictTotalCostReducingPostingMatchesByDerivedPerUnit(t *testing.T
 	}
 	if !found {
 		t.Errorf("loader.Load: 1970-01-03 STOCK posting not found in ledger output")
+	}
+}
+
+// TestLoad_PartialReductionOfDeferredCostMultiCurrency is the end-to-end
+// regression for the reported bug: a partial reduction (-5 of 10) of a
+// `{{T CUR}}`-augmented lot must weigh `units × Number`, not
+// `sign(units) × |Total|`. With two such lots in distinct cost
+// currencies, the wrong weight produced JPY=+50 / USD=-0.50 residuals
+// that a single Income:Gain auto-posting could not absorb, so the
+// transaction failed with unresolvable-interpolation and
+// unbalanced-transaction even though upstream bean-check accepts it.
+// The test also verifies that reducing postings carry no PerUnit/Total
+// provenance, since the weight calculation depends on that shape.
+func TestLoad_PartialReductionOfDeferredCostMultiCurrency(t *testing.T) {
+	const src = `1970-01-01 open Income:Gain
+1970-01-01 open Assets:A "STRICT"
+1970-01-01 open Assets:B "STRICT"
+1970-01-01 open Assets:Cash "STRICT"
+
+1970-01-01 * "txn"
+  Assets:A          10 A { }
+  Assets:Cash       -100 JPY
+
+1970-01-01  * "txn"
+  Assets:B          10 B { }
+  Assets:Cash       -1.00 USD
+
+1970-01-02 * "sell"
+  Assets:A          -5 A {}
+  Assets:B          -5 B {}
+  Assets:Cash        150 JPY
+  Assets:Cash        0.50 USD
+  Income:Gain
+`
+	ctx := context.Background()
+	ledger, err := loader.Load(ctx, src)
+	if err != nil {
+		t.Fatalf("loader.Load: %v", err)
+	}
+	for _, d := range ledger.Diagnostics {
+		if d.Severity == ast.Error {
+			t.Errorf("loader.Load: unexpected error diagnostic: [%s] %s", d.Code, d.Message)
+		}
+	}
+
+	sellDate := time.Date(1970, 1, 2, 0, 0, 0, 0, time.UTC)
+	var sellTxn *ast.Transaction
+	for _, d := range ledger.All() {
+		txn, ok := d.(*ast.Transaction)
+		if !ok || !txn.Date.Equal(sellDate) {
+			continue
+		}
+		sellTxn = txn
+		break
+	}
+	if sellTxn == nil {
+		t.Fatalf("loader.Load: 1970-01-02 sell transaction not found in ledger output")
+	}
+
+	wantGainAmount := &ast.Amount{Number: *apd.New(-100, 0), Currency: "JPY"}
+	var gainFound, reducingPostings int
+	for _, p := range sellTxn.Postings {
+		if p.Account == "Income:Gain" {
+			gainFound++
+			if diff := cmp.Diff(wantGainAmount, p.Amount, astCmpOpts); diff != "" {
+				t.Errorf("loader.Load: Income:Gain Amount mismatch (-want +got):\n%s", diff)
+			}
+			continue
+		}
+		if p.Amount == nil || (p.Amount.Currency != "A" && p.Amount.Currency != "B") {
+			continue
+		}
+		reducingPostings++
+		cost, ok := p.Cost.(*ast.Cost)
+		if !ok {
+			t.Errorf("loader.Load: reducing posting %s Cost = %T, want *ast.Cost",
+				p.Amount.Currency, p.Cost)
+			continue
+		}
+		if cost.PerUnit != nil || cost.Total != nil {
+			t.Errorf("loader.Load: reducing posting %s Cost has provenance: PerUnit=%v, Total=%v; want both nil",
+				p.Amount.Currency, cost.PerUnit, cost.Total)
+		}
+	}
+	if gainFound != 1 {
+		t.Errorf("loader.Load: Income:Gain posting count = %d, want 1", gainFound)
+	}
+	if reducingPostings != 2 {
+		t.Errorf("loader.Load: reducing posting count = %d, want 2", reducingPostings)
 	}
 }
 
