@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -40,6 +42,17 @@ func (s *Server) handleCompletion(ctx context.Context, reply jsonrpc2.Replier, r
 
 	kind := classifyContext(linePrefix)
 
+	// A lone first string may be payee or narration; a following second string
+	// makes it the payee.
+	if kind == ContextPayee {
+		lineEnd := len(src)
+		if line+1 < len(lo) {
+			lineEnd = lo[line+1]
+		}
+		suffix := strings.TrimRight(string(src[cursorOffset:lineEnd]), "\r\n")
+		kind = disambiguateFirstString(suffix)
+	}
+
 	s.mu.Lock()
 	sess := s.session
 	s.mu.Unlock()
@@ -51,6 +64,34 @@ func (s *Server) handleCompletion(ctx context.Context, reply jsonrpc2.Replier, r
 		if err != nil {
 			s.logger.Printf("handleCompletion: snapshot error: %v", err)
 		}
+	}
+
+	switch kind {
+	case ContextPayee, ContextNarration, ContextPayeeOrNarration:
+		filename := docURI.Filename()
+		scope := completionScope{
+			file:     filename,
+			dir:      filepath.Dir(filename),
+			accounts: enclosingPostingAccounts(ledger, filename, int(params.Position.Line)+1),
+		}
+		if kind == ContextNarration {
+			scope.payee = firstQuotedString(linePrefix)
+		}
+		ranked := stringCompletionCandidates(kind, scope, ledger)
+		items := make([]protocol.CompletionItem, 0, len(ranked))
+		for i, c := range ranked {
+			item := protocol.CompletionItem{
+				Label:      c.label,
+				Kind:       protocol.CompletionItemKindValue,
+				InsertText: c.label,
+				SortText:   fmt.Sprintf("%05d", i),
+			}
+			if d := roleDetail(c.roles); d != "" {
+				item.Detail = d
+			}
+			items = append(items, item)
+		}
+		return reply(ctx, &protocol.CompletionList{IsIncomplete: false, Items: items}, nil)
 	}
 
 	candidates := completionCandidates(kind, linePrefix, ledger)
@@ -82,8 +123,6 @@ func (s *Server) handleCompletion(ctx context.Context, reply jsonrpc2.Replier, r
 	for _, c := range candidates {
 		item := protocol.CompletionItem{Label: c, Kind: compKind}
 		switch {
-		case kind == ContextPayee || kind == ContextNarration:
-			item.InsertText = c
 		case kind == ContextMetaValue && inString && strings.HasPrefix(c, `"`) && strings.HasSuffix(c, `"`) && len(c) >= 2:
 			// strip surrounding quotes: user already typed the opening "
 			item.InsertText = c[1 : len(c)-1]
@@ -95,6 +134,238 @@ func (s *Server) handleCompletion(ctx context.Context, reply jsonrpc2.Replier, r
 	}
 
 	return reply(ctx, &protocol.CompletionList{IsIncomplete: false, Items: items}, nil)
+}
+
+// role is a bitmask marking whether a ranked candidate is known as a payee, a
+// narration, or both. It populates the completion item Detail in the ambiguous
+// first-string context.
+type role uint8
+
+const (
+	rolePayee role = 1 << iota
+	roleNarration
+)
+
+// rankedCandidate is a payee or narration completion candidate together with
+// its priority group (0 = highest) and total occurrence count, used to order
+// suggestions by contextual relevance then frequency.
+type rankedCandidate struct {
+	label string
+	group int
+	count int
+	roles role
+}
+
+// completionScope captures the cursor's surroundings used to rank payee and
+// narration candidates: the current file and its directory, the accounts of the
+// enclosing transaction's postings (empty when none or unparsed), and the payee
+// already present on the line (set only for narration completion).
+type completionScope struct {
+	file     string
+	dir      string
+	accounts map[ast.Account]struct{}
+	payee    string
+}
+
+// stringCompletionCandidates returns payee and/or narration candidates ordered
+// by priority group, then frequency-descending, then label. For
+// ContextPayeeOrNarration both fields are merged into a shared
+// file→directory→account-co-occurrence→rest grouping so the most contextually
+// relevant strings surface first regardless of field.
+func stringCompletionCandidates(kind ContextKind, scope completionScope, ledger *ast.Ledger) []rankedCandidate {
+	if ledger == nil {
+		return nil
+	}
+	var m map[string]*rankedCandidate
+	switch kind {
+	case ContextPayee:
+		m = collectRanked(ledger, payeeOf, baseGroup(scope), rolePayee)
+	case ContextNarration:
+		m = collectRanked(ledger, narrationOf, narrationGroup(scope), roleNarration)
+	case ContextPayeeOrNarration:
+		m = collectRanked(ledger, payeeOf, baseGroup(scope), rolePayee)
+		mergeRanked(m, collectRanked(ledger, narrationOf, baseGroup(scope), roleNarration))
+	default:
+		return nil
+	}
+	return sortRanked(m)
+}
+
+func payeeOf(tx *ast.Transaction) string     { return tx.Payee }
+func narrationOf(tx *ast.Transaction) string { return tx.Narration }
+
+// baseGroup ranks an occurrence by locality: same file (0), same directory (1),
+// co-occurrence with a posting account already in the transaction (2), rest (3).
+func baseGroup(scope completionScope) func(*ast.Transaction) int {
+	return func(tx *ast.Transaction) int {
+		switch {
+		case tx.Span.Start.Filename == scope.file:
+			return 0
+		case filepath.Dir(tx.Span.Start.Filename) == scope.dir:
+			return 1
+		case txCooccurs(tx, scope.accounts):
+			return 2
+		default:
+			return 3
+		}
+	}
+}
+
+// narrationGroup ranks a narration occurrence, prepending a top group for
+// narrations used with the payee already typed on the line, then the baseGroup
+// locality tiers shifted down by one.
+func narrationGroup(scope completionScope) func(*ast.Transaction) int {
+	return func(tx *ast.Transaction) int {
+		if scope.payee != "" && tx.Payee == scope.payee {
+			return 0
+		}
+		switch {
+		case tx.Span.Start.Filename == scope.file:
+			return 1
+		case filepath.Dir(tx.Span.Start.Filename) == scope.dir:
+			return 2
+		case txCooccurs(tx, scope.accounts):
+			return 3
+		default:
+			return 4
+		}
+	}
+}
+
+// txCooccurs reports whether any of tx's posting accounts is in accounts.
+func txCooccurs(tx *ast.Transaction, accounts map[ast.Account]struct{}) bool {
+	if len(accounts) == 0 {
+		return false
+	}
+	for _, p := range tx.Postings {
+		if _, ok := accounts[p.Account]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// collectRanked aggregates the non-empty strings returned by pick across all
+// transactions, recording each label's best (lowest) group, occurrence count,
+// and role.
+func collectRanked(ledger *ast.Ledger, pick func(*ast.Transaction) string, groupOf func(*ast.Transaction) int, r role) map[string]*rankedCandidate {
+	res := map[string]*rankedCandidate{}
+	for _, d := range ledger.All() {
+		tx, ok := d.(*ast.Transaction)
+		if !ok {
+			continue
+		}
+		s := pick(tx)
+		if s == "" {
+			continue
+		}
+		g := groupOf(tx)
+		if c, ok := res[s]; ok {
+			if g < c.group {
+				c.group = g
+			}
+			c.count++
+			c.roles |= r
+		} else {
+			res[s] = &rankedCandidate{label: s, group: g, count: 1, roles: r}
+		}
+	}
+	return res
+}
+
+// mergeRanked folds src into dst, keeping the best group, summing counts, and
+// unioning roles for labels present in both.
+func mergeRanked(dst, src map[string]*rankedCandidate) {
+	for label, c := range src {
+		if e, ok := dst[label]; ok {
+			if c.group < e.group {
+				e.group = c.group
+			}
+			e.count += c.count
+			e.roles |= c.roles
+		} else {
+			dst[label] = c
+		}
+	}
+}
+
+// sortRanked flattens m into a slice ordered by group ascending, then count
+// descending, then label ascending.
+func sortRanked(m map[string]*rankedCandidate) []rankedCandidate {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]rankedCandidate, 0, len(m))
+	for _, c := range m {
+		out = append(out, *c)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.group != b.group {
+			return a.group < b.group
+		}
+		if a.count != b.count {
+			return a.count > b.count
+		}
+		return a.label < b.label
+	})
+	return out
+}
+
+// roleDetail renders the completion item Detail for a candidate's roles.
+func roleDetail(r role) string {
+	switch r {
+	case rolePayee:
+		return "payee"
+	case roleNarration:
+		return "narration"
+	case rolePayee | roleNarration:
+		return "payee, narration"
+	default:
+		return ""
+	}
+}
+
+// enclosingPostingAccounts returns the set of accounts used by the postings of
+// the transaction in file that spans line (1-based). It returns nil when no such
+// transaction is found or it has no postings — the common case while a header
+// string is still being typed and the transaction does not yet parse.
+func enclosingPostingAccounts(ledger *ast.Ledger, file string, line int) map[ast.Account]struct{} {
+	if ledger == nil {
+		return nil
+	}
+	for _, d := range ledger.All() {
+		tx, ok := d.(*ast.Transaction)
+		if !ok || tx.Span.Start.Filename != file {
+			continue
+		}
+		if line < tx.Span.Start.Line || line > tx.Span.End.Line {
+			continue
+		}
+		if len(tx.Postings) == 0 {
+			return nil
+		}
+		set := make(map[ast.Account]struct{}, len(tx.Postings))
+		for _, p := range tx.Postings {
+			set[p.Account] = struct{}{}
+		}
+		return set
+	}
+	return nil
+}
+
+// firstQuotedString returns the contents of the first double-quoted string in s,
+// or "" when none is present. Escape sequences are not interpreted.
+func firstQuotedString(s string) string {
+	i := strings.IndexByte(s, '"')
+	if i < 0 {
+		return ""
+	}
+	j := strings.IndexByte(s[i+1:], '"')
+	if j < 0 {
+		return ""
+	}
+	return s[i+1 : i+1+j]
 }
 
 // completionCandidates returns a sorted, deduplicated list of candidate labels
@@ -161,27 +432,6 @@ func completionCandidates(kind ContextKind, linePrefix string, ledger *ast.Ledge
 			for _, d := range ledger.All() {
 				for _, link := range linksOf(d) {
 					seen[link] = struct{}{}
-				}
-			}
-		}
-
-	case ContextPayee:
-		if ledger != nil {
-			for _, d := range ledger.All() {
-				if tx, ok := d.(*ast.Transaction); ok && tx.Payee != "" {
-					seen[tx.Payee] = struct{}{}
-				}
-			}
-		}
-
-	case ContextNarration:
-		// TODO: planned narration priority — Group 1 (same Payee via findEnclosingTransaction),
-		// Group 2 (same Account), Group 3 (same File). Currently returns all distinct
-		// narrations unfiltered. SortText prefixes "0"/"1"/"2" pending.
-		if ledger != nil {
-			for _, d := range ledger.All() {
-				if tx, ok := d.(*ast.Transaction); ok && tx.Narration != "" {
-					seen[tx.Narration] = struct{}{}
 				}
 			}
 		}
@@ -253,8 +503,6 @@ func completionItemKind(kind ContextKind) protocol.CompletionItemKind {
 		return protocol.CompletionItemKindEnum
 	case ContextLink:
 		return protocol.CompletionItemKindReference
-	case ContextPayee, ContextNarration:
-		return protocol.CompletionItemKindValue
 	case ContextMetaKey:
 		return protocol.CompletionItemKindProperty
 	case ContextMetaValue:

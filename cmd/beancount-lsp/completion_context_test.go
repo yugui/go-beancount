@@ -117,6 +117,31 @@ func TestClassifyContext(t *testing.T) {
 	}
 }
 
+// Direct test: the disambiguation logic has independent value and exercising it
+// through handleCompletion would require a full server fixture per case.
+func TestDisambiguateFirstString(t *testing.T) {
+	tests := []struct {
+		name   string
+		suffix string
+		want   ContextKind
+	}{
+		// No following string: lone string may be payee or narration.
+		{"empty suffix", "", ContextPayeeOrNarration},
+		{"closing quote only", `"`, ContextPayeeOrNarration},
+		{"closing quote then space", `" `, ContextPayeeOrNarration},
+		// A second quoted string follows: first string is the payee.
+		{"second string follows", `" "narr"`, ContextPayee},
+		{"second opening quote started", `" "`, ContextPayee},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := disambiguateFirstString(tc.suffix); got != tc.want {
+				t.Errorf("disambiguateFirstString(%q) = %v, want %v", tc.suffix, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestContextKindString(t *testing.T) {
 	tests := []struct {
 		k    ContextKind
@@ -132,6 +157,7 @@ func TestContextKindString(t *testing.T) {
 		{ContextInString, "InString"},
 		{ContextPayee, "Payee"},
 		{ContextNarration, "Narration"},
+		{ContextPayeeOrNarration, "PayeeOrNarration"},
 		{ContextMetaKey, "MetaKey"},
 		{ContextMetaValue, "MetaValue"},
 		{ContextKind(99), "ContextKind(99)"},
