@@ -107,6 +107,49 @@ func TestCompletion_Account_OnPosting(t *testing.T) {
 	}
 }
 
+// TestCompletion_Account_TextEdit: an account token already typed up to a colon
+// (`Income:`) yields items whose TextEdit replaces the whole token, so a
+// colon-splitting client neither duplicates the prefix nor matches all accounts.
+func TestCompletion_Account_TextEdit(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2020-01-01 open Assets:A
+2020-01-01 open Assets:A:B
+2020-01-01 open Income:A
+2020-01-01 open Equity:Opening-Balances
+2020-01-04 * "test" "test"
+  Income:
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Line 5, char 9: cursor right after "  Income:".
+	list := awaitCompletion(t, client, docURI, 5, 9, 4)
+
+	wantRange := protocol.Range{
+		Start: protocol.Position{Line: 5, Character: 2}, // start of "Income"
+		End:   protocol.Position{Line: 5, Character: 9}, // cursor
+	}
+	for _, it := range list.Items {
+		if it.Kind != protocol.CompletionItemKindClass {
+			t.Errorf("Account_TextEdit: item %q kind = %v, want Class", it.Label, it.Kind)
+		}
+		if it.TextEdit == nil {
+			t.Errorf("Account_TextEdit: item %q has nil TextEdit", it.Label)
+			continue
+		}
+		if it.TextEdit.NewText != it.Label {
+			t.Errorf("Account_TextEdit: item %q TextEdit.NewText = %q, want label", it.Label, it.TextEdit.NewText)
+		}
+		if it.TextEdit.Range != wantRange {
+			t.Errorf("Account_TextEdit: item %q TextEdit.Range = %+v, want %+v", it.Label, it.TextEdit.Range, wantRange)
+		}
+		if it.FilterText != it.Label {
+			t.Errorf("Account_TextEdit: item %q FilterText = %q, want label", it.Label, it.FilterText)
+		}
+	}
+}
+
 // TestCompletion_Currency_AfterAmount: Commodity USD and EUR; cursor after
 // amount in a posting returns both currencies.
 func TestCompletion_Currency_AfterAmount(t *testing.T) {
