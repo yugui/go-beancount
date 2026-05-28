@@ -609,3 +609,51 @@ func TestComplexWorkflow(t *testing.T) {
 		t.Errorf("id = %q, want %q", got, "tx001")
 	}
 }
+
+// TestWithMeta_AllMetaBearingKinds guards withMeta against silently leaving a
+// directive type unhandled. Event, Price, Query, and Custom were previously
+// missing from the switch; this exercises every metadata-bearing kind and
+// asserts the replacement took effect without mutating the input.
+func TestWithMeta_AllMetaBearingKinds(t *testing.T) {
+	date := time.Date(2024, time.March, 15, 0, 0, 0, 0, time.UTC)
+	amt := ast.Amount{Number: *apd.New(1, 0), Currency: "USD"}
+	orig := ast.Metadata{Props: map[string]ast.MetaValue{"orig": {Kind: ast.MetaString, String: "old"}}}
+	cases := []struct {
+		name string
+		dir  ast.Directive
+	}{
+		{"Open", &ast.Open{Date: date, Account: "Assets:A", Meta: orig}},
+		{"Close", &ast.Close{Date: date, Account: "Assets:A", Meta: orig}},
+		{"Balance", &ast.Balance{Date: date, Account: "Assets:A", Amount: amt, Meta: orig}},
+		{"Pad", &ast.Pad{Date: date, Account: "Assets:A", PadAccount: "Equity:Opening", Meta: orig}},
+		{"Document", &ast.Document{Date: date, Account: "Assets:A", Path: "/p", Meta: orig}},
+		{"Note", &ast.Note{Date: date, Account: "Assets:A", Comment: "c", Meta: orig}},
+		{"Commodity", &ast.Commodity{Date: date, Currency: "USD", Meta: orig}},
+		{"Transaction", &ast.Transaction{Date: date, Flag: '*', Narration: "n", Meta: orig}},
+		{"Event", &ast.Event{Date: date, Name: "location", Value: "NYC", Meta: orig}},
+		{"Price", &ast.Price{Date: date, Commodity: "USD", Amount: amt, Meta: orig}},
+		{"Query", &ast.Query{Date: date, Name: "q", BQL: "SELECT *", Meta: orig}},
+		{"Custom", &ast.Custom{Date: date, TypeName: "t", Meta: orig}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			replacement := ast.Metadata{Props: map[string]ast.MetaValue{"new": {Kind: ast.MetaString, String: "v"}}}
+			got := withMeta(tc.dir, replacement)
+
+			if got == tc.dir {
+				t.Fatalf("withMeta returned the input unchanged (type unhandled)")
+			}
+			gotMeta := got.DirMeta()
+			if _, ok := gotMeta.Props["new"]; !ok {
+				t.Errorf("result missing replacement key %q", "new")
+			}
+			if _, ok := gotMeta.Props["orig"]; ok {
+				t.Errorf("result retained original metadata; want full replacement")
+			}
+			// Input must be untouched.
+			if _, ok := tc.dir.DirMeta().Props["new"]; ok {
+				t.Errorf("withMeta mutated the input directive")
+			}
+		})
+	}
+}

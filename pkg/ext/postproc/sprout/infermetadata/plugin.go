@@ -162,7 +162,7 @@ func groupByDirective(rules []rule) map[string][]rule {
 // either d (when no rule fires) or a freshly built directive carrying the
 // inferred metadata. Diagnostics surface YAML lookup failures.
 func applyRules(d ast.Directive, rules []rule, mappings map[string]map[string]any, baseDir string, plug *ast.Plugin) (ast.Directive, []ast.Diagnostic) {
-	props := metaOf(d).Props
+	props := d.DirMeta().Props
 	var diags []ast.Diagnostic
 	cloned := false
 
@@ -229,7 +229,7 @@ func sourceValue(d ast.Directive, source string, props map[string]ast.MetaValue)
 		}
 		return ast.MetaValue{Kind: ast.MetaCurrency, String: c.Currency}, true
 	case tokenAccount:
-		acct, ok := accountOf(d)
+		acct, ok := ast.AccountOf(d)
 		if !ok {
 			return ast.MetaValue{}, false
 		}
@@ -326,26 +326,6 @@ func directiveName(d ast.Directive) string {
 	return ""
 }
 
-// accountOf returns the account on the directive types that carry one and
-// whose __account__ source is documented to apply.
-func accountOf(d ast.Directive) (ast.Account, bool) {
-	switch x := d.(type) {
-	case *ast.Open:
-		return x.Account, true
-	case *ast.Close:
-		return x.Account, true
-	case *ast.Balance:
-		return x.Account, true
-	case *ast.Pad:
-		return x.Account, true
-	case *ast.Document:
-		return x.Account, true
-	case *ast.Note:
-		return x.Account, true
-	}
-	return "", false
-}
-
 // leafName returns the last colon-separated component of acct.
 func leafName(acct ast.Account) string {
 	s := string(acct)
@@ -355,31 +335,9 @@ func leafName(acct ast.Account) string {
 	return s
 }
 
-// metaOf returns the Metadata attached to d.
-func metaOf(d ast.Directive) ast.Metadata {
-	switch x := d.(type) {
-	case *ast.Open:
-		return x.Meta
-	case *ast.Close:
-		return x.Meta
-	case *ast.Balance:
-		return x.Meta
-	case *ast.Pad:
-		return x.Meta
-	case *ast.Document:
-		return x.Meta
-	case *ast.Note:
-		return x.Meta
-	case *ast.Commodity:
-		return x.Meta
-	case *ast.Transaction:
-		return x.Meta
-	}
-	return ast.Metadata{}
-}
-
 // withMeta returns a shallow copy of d with its Meta field replaced. The
-// input directive is never mutated.
+// input directive is never mutated. Header directives (Option, Plugin,
+// Include), which carry no metadata, are returned unchanged.
 func withMeta(d ast.Directive, meta ast.Metadata) ast.Directive {
 	switch x := d.(type) {
 	case *ast.Open:
@@ -411,6 +369,22 @@ func withMeta(d ast.Directive, meta ast.Metadata) ast.Directive {
 		c.Meta = meta
 		return &c
 	case *ast.Transaction:
+		c := *x
+		c.Meta = meta
+		return &c
+	case *ast.Event:
+		c := *x
+		c.Meta = meta
+		return &c
+	case *ast.Price:
+		c := *x
+		c.Meta = meta
+		return &c
+	case *ast.Query:
+		c := *x
+		c.Meta = meta
+		return &c
+	case *ast.Custom:
 		c := *x
 		c.Meta = meta
 		return &c
