@@ -64,6 +64,21 @@ func (s *Server) handleCompletion(ctx context.Context, reply jsonrpc2.Replier, r
 		}
 	}
 
+	// Account labels contain ':', which LSP clients treat as a word boundary.
+	// An explicit TextEdit spanning the whole account token makes the client
+	// both prefix-filter and replace it, instead of inserting after the colon.
+	var acctRange *protocol.Range
+	if kind == ContextAccount {
+		trimmed := strings.TrimRight(linePrefix, " \t")
+		if tok := trailingAccountToken(trimmed); tok != "" {
+			startByte := lineStart + len(trimmed) - len(tok)
+			acctRange = &protocol.Range{
+				Start: byteOffsetToLSP(startByte, src, lo),
+				End:   params.Position,
+			}
+		}
+	}
+
 	for _, c := range candidates {
 		item := protocol.CompletionItem{Label: c, Kind: compKind}
 		switch {
@@ -72,6 +87,9 @@ func (s *Server) handleCompletion(ctx context.Context, reply jsonrpc2.Replier, r
 		case kind == ContextMetaValue && inString && strings.HasPrefix(c, `"`) && strings.HasSuffix(c, `"`) && len(c) >= 2:
 			// strip surrounding quotes: user already typed the opening "
 			item.InsertText = c[1 : len(c)-1]
+		case kind == ContextAccount && acctRange != nil:
+			item.TextEdit = &protocol.TextEdit{Range: *acctRange, NewText: c}
+			item.FilterText = c
 		}
 		items = append(items, item)
 	}
