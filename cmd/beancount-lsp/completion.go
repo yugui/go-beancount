@@ -246,40 +246,6 @@ func completionItemKind(kind ContextKind) protocol.CompletionItemKind {
 	}
 }
 
-// metaOf returns the Metadata of a directive, or an empty Metadata for
-// directive types that carry no metadata (Option, Plugin, Include, etc.).
-func metaOf(d ast.Directive) ast.Metadata {
-	switch v := d.(type) {
-	case *ast.Open:
-		return v.Meta
-	case *ast.Close:
-		return v.Meta
-	case *ast.Commodity:
-		return v.Meta
-	case *ast.Transaction:
-		return v.Meta
-	case *ast.Balance:
-		return v.Meta
-	case *ast.Pad:
-		return v.Meta
-	case *ast.Note:
-		return v.Meta
-	case *ast.Document:
-		return v.Meta
-	case *ast.Event:
-		return v.Meta
-	case *ast.Price:
-		return v.Meta
-	case *ast.Custom:
-		return v.Meta
-	case *ast.Query:
-		return v.Meta
-	}
-	// Non-metadata-bearing types (Option, Plugin, Include). New metadata-bearing
-	// directive types must be added to the switch above.
-	return ast.Metadata{}
-}
-
 // collectMetadataKeys collects metadata key names across all directives
 // (including transaction postings) in the ledger, sorted by
 // frequency-descending with alphabetical tiebreak.
@@ -289,7 +255,7 @@ func collectMetadataKeys(ledger *ast.Ledger) []string {
 	}
 	counts := map[string]int{}
 	for _, d := range ledger.All() {
-		for k := range metaOf(d).Props {
+		for k := range d.DirMeta().Props {
 			counts[k]++
 		}
 		if tx, ok := d.(*ast.Transaction); ok {
@@ -321,7 +287,7 @@ func collectMetadataValues(ledger *ast.Ledger, currentKey string) []string {
 		}
 	}
 	for _, d := range ledger.All() {
-		collect(metaOf(d))
+		collect(d.DirMeta())
 		if tx, ok := d.(*ast.Transaction); ok {
 			for _, p := range tx.Postings {
 				collect(p.Meta)

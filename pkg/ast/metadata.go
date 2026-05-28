@@ -107,6 +107,24 @@ func (m Metadata) Without(keys ...string) Metadata {
 	return out
 }
 
+// accountBearer is implemented by the directive types that reference a single
+// account (Open, Close, Pad, Note, Document, Balance). It is the closed set
+// backing AccountOf.
+type accountBearer interface {
+	directiveAccount() Account
+}
+
+// AccountOf returns the account a directive references and true, or the zero
+// Account and false for directive types that do not carry one (Transaction,
+// which holds per-posting accounts, and the account-less directives such as
+// Commodity, Price, Event, Query, Custom, and the header directives).
+func AccountOf(d Directive) (Account, bool) {
+	if ab, ok := d.(accountBearer); ok {
+		return ab.directiveAccount(), true
+	}
+	return "", false
+}
+
 // StripMetaKeys returns d with all keys in keys removed from its metadata
 // (and, for *Transaction, from every posting's metadata). When keys is empty
 // or none of the listed keys are present, d is returned unchanged — no

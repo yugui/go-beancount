@@ -322,10 +322,7 @@ func metaMatch(a, b ast.Directive, eqKeys []string) bool {
 	if len(eqKeys) == 0 {
 		return false
 	}
-	ma, mb := metadataOf(a), metadataOf(b)
-	if ma == nil || mb == nil {
-		return false
-	}
+	ma, mb := a.DirMeta(), b.DirMeta()
 	for _, k := range eqKeys {
 		va, oka := ma.Props[k]
 		vb, okb := mb.Props[k]
@@ -337,36 +334,4 @@ func metaMatch(a, b ast.Directive, eqKeys []string) bool {
 		}
 	}
 	return false
-}
-
-// metadataOf returns the metadata pointer of a directive that carries
-// metadata, or nil for directive types that do not.
-func metadataOf(d ast.Directive) *ast.Metadata {
-	switch v := d.(type) {
-	case *ast.Open:
-		return &v.Meta
-	case *ast.Close:
-		return &v.Meta
-	case *ast.Commodity:
-		return &v.Meta
-	case *ast.Balance:
-		return &v.Meta
-	case *ast.Pad:
-		return &v.Meta
-	case *ast.Note:
-		return &v.Meta
-	case *ast.Document:
-		return &v.Meta
-	case *ast.Price:
-		return &v.Meta
-	case *ast.Event:
-		return &v.Meta
-	case *ast.Query:
-		return &v.Meta
-	case *ast.Custom:
-		return &v.Meta
-	case *ast.Transaction:
-		return &v.Meta
-	}
-	return nil
 }

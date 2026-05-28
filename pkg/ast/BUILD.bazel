@@ -40,6 +40,7 @@ go_test(
         "clone_test.go",
         "cost_holder_test.go",
         "cost_test.go",
+        "directive_accessor_test.go",
         "ledger_test.go",
         "load_test.go",
         "lower_integration_test.go",

@@ -121,7 +121,11 @@ func nonEmpty(config string) []string {
 func buildLeafSet(dirs []ast.Directive, accountPrefix string) map[ast.Account]struct{} {
 	referenced := make(map[ast.Account]struct{})
 	for _, d := range dirs {
-		if acct, ok := accountOf(d); ok {
+		// Pad is intentionally excluded from leaf scoping here.
+		if _, isPad := d.(*ast.Pad); isPad {
+			continue
+		}
+		if acct, ok := ast.AccountOf(d); ok {
 			referenced[acct] = struct{}{}
 		}
 	}
@@ -149,23 +153,6 @@ func buildLeafSet(dirs []ast.Directive, accountPrefix string) map[ast.Account]st
 		leaves[acct] = struct{}{}
 	}
 	return leaves
-}
-
-// accountOf returns the account for account-bearing directives.
-func accountOf(d ast.Directive) (ast.Account, bool) {
-	switch x := d.(type) {
-	case *ast.Open:
-		return x.Account, true
-	case *ast.Close:
-		return x.Account, true
-	case *ast.Balance:
-		return x.Account, true
-	case *ast.Note:
-		return x.Account, true
-	case *ast.Document:
-		return x.Account, true
-	}
-	return "", false
 }
 
 // checkDirective returns diagnostics for d if it matches directiveName and is
