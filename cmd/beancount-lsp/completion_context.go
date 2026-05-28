@@ -33,6 +33,11 @@ const (
 	// ContextNarration means the cursor is inside the narration string of a
 	// transaction header (the second quoted string).
 	ContextNarration
+	// ContextPayeeOrNarration means the cursor is inside the first quoted string
+	// of a transaction header and no second string follows, so the value may
+	// become either the payee (if a second string is added) or the narration (a
+	// lone string is the narration). Both candidate sets are offered.
+	ContextPayeeOrNarration
 	// ContextMetaKey means the cursor is on an indented metadata key being typed.
 	ContextMetaKey
 	// ContextMetaValue means the cursor is on the value side of a metadata line
@@ -63,6 +68,8 @@ func (k ContextKind) String() string {
 		return "Payee"
 	case ContextNarration:
 		return "Narration"
+	case ContextPayeeOrNarration:
+		return "PayeeOrNarration"
 	case ContextMetaKey:
 		return "MetaKey"
 	case ContextMetaValue:
@@ -293,6 +300,22 @@ var headerKeywords = map[string]bool{
 
 func isKeyword(s string) bool {
 	return dateDirectiveKeywords[s] || headerKeywords[s]
+}
+
+// disambiguateFirstString refines a ContextPayee classification using the line
+// suffix (cursor to end of line). When a second quoted string already follows
+// the cursor's string, the first string is unambiguously the payee, so
+// ContextPayee is returned. Otherwise the lone string may become either payee
+// or narration, so ContextPayeeOrNarration is returned.
+//
+// The suffix's first quote closes the current string; a second quote opens a
+// following string, so two or more quotes in the suffix mean a second string
+// exists.
+func disambiguateFirstString(suffix string) ContextKind {
+	if strings.Count(suffix, `"`) >= 2 {
+		return ContextPayee
+	}
+	return ContextPayeeOrNarration
 }
 
 // metaKeyFromLine returns the metadata key name from a ContextMetaValue line

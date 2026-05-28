@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -67,6 +69,15 @@ func labelSet(items []protocol.CompletionItem) []string {
 		out[i] = it.Label
 	}
 	slices.Sort(out)
+	return out
+}
+
+// orderedLabels returns item labels in their original (ranked) order.
+func orderedLabels(items []protocol.CompletionItem) []string {
+	out := make([]string, len(items))
+	for i, it := range items {
+		out[i] = it.Label
+	}
 	return out
 }
 
@@ -374,8 +385,61 @@ option "title" "Foo bar
 	}
 }
 
-// TestCompletion_Payee: ledger with payees "Acme" and "Beta"; cursor at first
-// quoted string of a transaction header returns both payees.
+// TestCompletion_FirstString_Ambiguous: cursor in the first quoted string with
+// no second string yet. The value may become payee or narration, so both
+// candidate sets are offered, each tagged in Detail.
+func TestCompletion_FirstString_Ambiguous(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Acme" "Lunch"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Beta" "Dinner"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	// New header line: cursor in first string, no second string — ambiguous.
+	editedSrc := src + "2024-02-01 * \"\n"
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_FirstString_Ambiguous: didOpen: %v", err)
+	}
+
+	// Line 8 (0-indexed), char 14 — cursor after the opening quote.
+	list := awaitCompletion(t, client, docURI, 8, 14, 4)
+
+	for _, want := range []string{"Acme", "Beta", "Lunch", "Dinner"} {
+		if !containsLabel(list.Items, want) {
+			t.Errorf("TestCompletion_FirstString_Ambiguous: missing %q; got %v", want, labelSet(list.Items))
+		}
+	}
+	detail := map[string]string{}
+	for _, it := range list.Items {
+		if it.Kind != protocol.CompletionItemKindValue {
+			t.Errorf("TestCompletion_FirstString_Ambiguous: item %q kind = %v, want Value", it.Label, it.Kind)
+		}
+		if it.InsertText != it.Label {
+			t.Errorf("TestCompletion_FirstString_Ambiguous: item %q InsertText = %q, want bare label", it.Label, it.InsertText)
+		}
+		detail[it.Label] = it.Detail
+	}
+	if detail["Acme"] != "payee" {
+		t.Errorf("TestCompletion_FirstString_Ambiguous: Acme Detail = %q, want \"payee\"", detail["Acme"])
+	}
+	if detail["Lunch"] != "narration" {
+		t.Errorf("TestCompletion_FirstString_Ambiguous: Lunch Detail = %q, want \"narration\"", detail["Lunch"])
+	}
+}
+
+// TestCompletion_Payee: cursor in the first string with a second string already
+// present makes the first one unambiguously the payee; only payees are offered.
 func TestCompletion_Payee(t *testing.T) {
 	dir := t.TempDir()
 	const src = `2024-01-01 open Assets:Bank USD
@@ -392,22 +456,21 @@ func TestCompletion_Payee(t *testing.T) {
 	docURI := uri.File(rootFile)
 
 	ctx := context.Background()
-	// Push overlay with a new transaction header line: cursor in first string.
-	editedSrc := src + "2024-02-01 * \"\n"
+	// Empty first string, narration already present after it.
+	editedSrc := src + "2024-02-01 * \"\" \"x\"\n"
 	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
 		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
 	}); err != nil {
 		t.Fatalf("TestCompletion_Payee: didOpen: %v", err)
 	}
 
-	// Line 8 (0-indexed), char 14 — cursor after the opening quote.
+	// Line 8 (0-indexed), char 14 — cursor inside the empty first string.
 	list := awaitCompletion(t, client, docURI, 8, 14, 2)
 
-	if !containsLabel(list.Items, "Acme") {
-		t.Errorf("TestCompletion_Payee: missing 'Acme'; got %v", labelSet(list.Items))
-	}
-	if !containsLabel(list.Items, "Beta") {
-		t.Errorf("TestCompletion_Payee: missing 'Beta'; got %v", labelSet(list.Items))
+	got := labelSet(list.Items)
+	want := []string{"Acme", "Beta"}
+	if !slices.Equal(got, want) {
+		t.Errorf("TestCompletion_Payee: labels = %v, want %v", got, want)
 	}
 	for _, it := range list.Items {
 		if it.Kind != protocol.CompletionItemKindValue {
@@ -485,20 +548,138 @@ func TestCompletion_Payee_DeduplicatedAndSorted(t *testing.T) {
 	docURI := uri.File(rootFile)
 
 	ctx := context.Background()
-	editedSrc := src + "2024-02-01 * \"\n"
+	// Payee-only context (second string present); Acme occurs twice, Zebra once.
+	editedSrc := src + "2024-02-01 * \"\" \"x\"\n"
 	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
 		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
 	}); err != nil {
 		t.Fatalf("TestCompletion_Payee_DeduplicatedAndSorted: didOpen: %v", err)
 	}
 
-	// Line 11 (0-indexed), char 14.
+	// Line 11 (0-indexed), char 14 — cursor inside the empty first string.
 	list := awaitCompletion(t, client, docURI, 11, 14, 2)
 
-	got := labelSet(list.Items)
+	// Deduplicated and ordered by frequency-descending: Acme (2) before Zebra (1).
+	got := orderedLabels(list.Items)
 	want := []string{"Acme", "Zebra"}
 	if !slices.Equal(got, want) {
 		t.Errorf("TestCompletion_Payee_DeduplicatedAndSorted: labels = %v, want %v", got, want)
+	}
+}
+
+// TestCompletion_Narration_PayeeMatchRanked: narrations used with the payee
+// already on the line rank above other same-file narrations.
+func TestCompletion_Narration_PayeeMatchRanked(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Acme" "Lunch"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-01-16 * "Beta" "Coffee run"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+2024-01-17 * "Acme" "Dinner"
+  Assets:Bank  -5 USD
+  Expenses:Food  5 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	ctx := context.Background()
+	// New header with payee "Acme"; cursor inside an empty (closed) narration
+	// string so the in-progress narration is not itself a candidate.
+	editedSrc := src + "2024-02-01 * \"Acme\" \"\"\n"
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: docURI, Version: 2, Text: editedSrc},
+	}); err != nil {
+		t.Fatalf("TestCompletion_Narration_PayeeMatchRanked: didOpen: %v", err)
+	}
+
+	// Line 11 (0-indexed), char 21 — cursor between the empty narration quotes.
+	list := awaitCompletion(t, client, docURI, 11, 21, 3)
+
+	got := orderedLabels(list.Items)
+	// Group 0 (used with Acme): Dinner, Lunch; group 1 (same file): "Coffee run".
+	want := []string{"Dinner", "Lunch", "Coffee run"}
+	if !slices.Equal(got, want) {
+		t.Errorf("TestCompletion_Narration_PayeeMatchRanked: labels = %v, want %v", got, want)
+	}
+}
+
+// TestCompletion_Payee_SameFileRankedFirst: payees from the current file rank
+// above payees from a sibling file in the same directory.
+func TestCompletion_Payee_SameFileRankedFirst(t *testing.T) {
+	dir := t.TempDir()
+	const main = `include "sibling.beancount"
+2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Local" "n1"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+2024-02-01 * "" "edit"
+  Assets:Bank  -1 USD
+  Expenses:Food  1 USD
+`
+	const sibling = `2023-01-01 * "Neighbor" "n2"
+  Assets:Bank  -5 USD
+  Expenses:Food  5 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", main)
+	writeTempFile(t, dir, "sibling.beancount", sibling)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Line 6 (0-indexed) is `2024-02-01 * "" "edit"`; char 14 is inside the
+	// empty first string, with a second string present (payee-only context).
+	list := awaitCompletion(t, client, docURI, 6, 14, 2)
+
+	got := orderedLabels(list.Items)
+	want := []string{"Local", "Neighbor"}
+	if !slices.Equal(got, want) {
+		t.Errorf("TestCompletion_Payee_SameFileRankedFirst: labels = %v, want %v", got, want)
+	}
+}
+
+// TestCompletion_Payee_CooccurrenceRanked: a payee from outside the current file
+// and directory ranks above another such payee when it co-occurs with an account
+// already used in the transaction being edited.
+func TestCompletion_Payee_CooccurrenceRanked(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatalf("TestCompletion_Payee_CooccurrenceRanked: mkdir: %v", err)
+	}
+	const main = `include "sub/other.beancount"
+2024-01-01 open Assets:Bank USD
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Expenses:Food USD
+2024-01-01 open Expenses:Rent USD
+2024-02-01 * "" "edit"
+  Assets:Bank  -10 USD
+  Expenses:Food  10 USD
+`
+	const other = `2023-01-01 * "CoOccur" "n1"
+  Assets:Bank  -5 USD
+  Expenses:Rent  5 USD
+2023-01-02 * "FarAway" "n2"
+  Assets:Cash  -5 USD
+  Expenses:Rent  5 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", main)
+	writeTempFile(t, dir, "sub/other.beancount", other)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Line 5 (0-indexed) is `2024-02-01 * "" "edit"`; char 14 inside the empty
+	// first string (payee-only). The transaction's postings are Assets:Bank and
+	// Expenses:Food, so CoOccur (shares Assets:Bank) outranks FarAway.
+	list := awaitCompletion(t, client, docURI, 5, 14, 2)
+
+	got := orderedLabels(list.Items)
+	want := []string{"CoOccur", "FarAway"}
+	if !slices.Equal(got, want) {
+		t.Errorf("TestCompletion_Payee_CooccurrenceRanked: labels = %v, want %v", got, want)
 	}
 }
 
