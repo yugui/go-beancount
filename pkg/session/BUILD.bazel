@@ -1,0 +1,28 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "session",
+    srcs = [
+        "doc.go",
+        "session.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/session",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/loader",
+    ],
+)
+
+go_test(
+    name = "session_test",
+    srcs = [
+        "session_test.go",
+        "subscribe_test.go",
+    ],
+    embed = [":session"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/loader",
+    ],
+)

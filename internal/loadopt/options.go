@@ -15,6 +15,9 @@ type Options struct {
 	// VirtualFilename is the filename recorded in span positions for input
 	// that has no real file path. Defaults to DefaultVirtualFilename.
 	VirtualFilename string
+	// Overlay maps absolute paths to in-memory source bytes that shadow disk.
+	// See WithOverlay in pkg/ast for the full contract.
+	Overlay map[string][]byte
 }
 
 // Default returns Options with sensible defaults.

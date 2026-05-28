@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 
 	"github.com/yugui/go-beancount/internal/loadopt"
 	"github.com/yugui/go-beancount/pkg/syntax"
@@ -16,6 +17,7 @@ import (
 func Load(src string, opts ...LoadOption) (*Ledger, error) {
 	o := loadopt.Resolve(opts)
 	ld := newLoader()
+	ld.applyOverlay(o.Overlay)
 	ld.visited[o.VirtualFilename] = true
 	ld.loadCST(syntax.Parse(src), o.VirtualFilename, o.BaseDir)
 	return ld.finish(), nil
@@ -30,6 +32,7 @@ func LoadReader(r io.Reader, opts ...LoadOption) (*Ledger, error) {
 	}
 	o := loadopt.Resolve(opts)
 	ld := newLoader()
+	ld.applyOverlay(o.Overlay)
 	ld.visited[o.VirtualFilename] = true
 	ld.loadCST(cst, o.VirtualFilename, o.BaseDir)
 	return ld.finish(), nil
@@ -53,6 +56,7 @@ func LoadFile(path string, opts ...LoadOption) (*Ledger, error) {
 	o := loadopt.Resolve(append(defaults, opts...))
 
 	ld := newLoader()
+	ld.applyOverlay(o.Overlay)
 	ld.loadFile(absPath, o.VirtualFilename, o.BaseDir)
 	return ld.finish(), nil
 }
@@ -62,10 +66,52 @@ type loader struct {
 	files       []*File
 	directives  []Directive
 	diagnostics []Diagnostic
+	source      sourceReader
+	overlayKeys []string // sorted absolute paths present in the overlay
 }
 
 func newLoader() *loader {
-	return &loader{visited: make(map[string]bool)}
+	return &loader{
+		visited: make(map[string]bool),
+		source:  defaultSource,
+	}
+}
+
+// applyOverlay installs overlay as the source for ld, dropping non-absolute
+// keys with a Warning diagnostic each. A nil or empty overlay is a no-op.
+func (ld *loader) applyOverlay(overlay map[string][]byte) {
+	if len(overlay) == 0 {
+		return
+	}
+	var bad []string
+	var keys []string
+	for k := range overlay {
+		if !filepath.IsAbs(k) {
+			bad = append(bad, k)
+		} else {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(bad)
+	for _, k := range bad {
+		ld.diagnostics = append(ld.diagnostics, Diagnostic{
+			Code:     "overlay-non-absolute-key",
+			Severity: Warning,
+			Message:  fmt.Sprintf("overlay key %q is not an absolute path; ignored", k),
+		})
+	}
+	sort.Strings(keys)
+	ld.overlayKeys = keys
+	ld.source = overlaySource(overlay, defaultSource)
+}
+
+func overlaySource(overlay map[string][]byte, fallback sourceReader) sourceReader {
+	return sourceReaderFunc(func(p string) ([]byte, error) {
+		if b, ok := overlay[p]; ok {
+			return b, nil
+		}
+		return fallback.read(p)
+	})
 }
 
 func (ld *loader) finish() *Ledger {
@@ -81,10 +127,9 @@ func (ld *loader) finish() *Ledger {
 	return ledger
 }
 
-// loadFile parses absPath through syntax.ParseFile and merges the result
-// into the loader. filename is the cycle-detection key and span filename
-// (typically absPath but may be overridden); baseDir anchors the includes
-// contained in the loaded file.
+// loadFile reads absPath and merges the result into the loader. filename is
+// the cycle-detection key and span filename (typically absPath but may be
+// overridden); baseDir anchors the includes contained in the loaded file.
 func (ld *loader) loadFile(absPath, filename, baseDir string) {
 	if ld.visited[filename] {
 		ld.diagnostics = append(ld.diagnostics, Diagnostic{
@@ -94,7 +139,7 @@ func (ld *loader) loadFile(absPath, filename, baseDir string) {
 		return
 	}
 	ld.visited[filename] = true
-	cst, err := syntax.ParseFile(absPath)
+	data, err := ld.source.read(absPath)
 	if err != nil {
 		ld.diagnostics = append(ld.diagnostics, Diagnostic{
 			Message:  fmt.Sprintf("reading file %s: %v", absPath, err),
@@ -102,6 +147,7 @@ func (ld *loader) loadFile(absPath, filename, baseDir string) {
 		})
 		return
 	}
+	cst := syntax.Parse(string(data))
 	ld.loadCST(cst, filename, baseDir)
 }
 
@@ -150,7 +196,7 @@ func (ld *loader) handleInclude(inc *Include, baseDir string) {
 		ld.loadFile(incAbs, incAbs, filepath.Dir(incAbs))
 		return
 	}
-	matches, err := expandGlob(incAbs)
+	matches, err := expandGlob(incAbs, ld.overlayKeys)
 	if err != nil {
 		ld.diagnostics = append(ld.diagnostics, Diagnostic{
 			Span:     inc.Span,

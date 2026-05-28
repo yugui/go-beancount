@@ -1,0 +1,71 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "beancount-lsp_lib",
+    srcs = [
+        "completion.go",
+        "completion_context.go",
+        "debounce.go",
+        "definition.go",
+        "diagnostics.go",
+        "docsync.go",
+        "formatting.go",
+        "handlers.go",
+        "hover.go",
+        "locate.go",
+        "main.go",
+        "position.go",
+        "recover.go",
+        "server.go",
+        "symbol.go",
+        "watch.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/cmd/beancount-lsp",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/ext/postproc/sprout",
+        "//pkg/ext/postproc/std",
+        "//pkg/format",
+        "//pkg/session",
+        "//pkg/syntax",
+        "@dev_lsp_go_jsonrpc2//:jsonrpc2",
+        "@dev_lsp_go_protocol//:protocol",
+        "@dev_lsp_go_uri//:uri",
+    ],
+)
+
+go_binary(
+    name = "beancount-lsp",
+    embed = [":beancount-lsp_lib"],
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "beancount-lsp_test",
+    srcs = [
+        "completion_context_test.go",
+        "completion_test.go",
+        "definition_test.go",
+        "diagnostics_test.go",
+        "docsync_test.go",
+        "formatting_test.go",
+        "hover_test.go",
+        "locate_test.go",
+        "position_test.go",
+        "server_test.go",
+        "smoke_test.go",
+        "symbol_test.go",
+        "watch_test.go",
+    ],
+    embed = [":beancount-lsp_lib"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/session",
+        "//pkg/syntax",
+        "@com_github_google_go_cmp//cmp",
+        "@dev_lsp_go_jsonrpc2//:jsonrpc2",
+        "@dev_lsp_go_protocol//:protocol",
+        "@dev_lsp_go_uri//:uri",
+    ],
+)

@@ -13,3 +13,8 @@ func WithBaseDir(dir string) Option { return ast.WithBaseDir(dir) }
 // WithFilename sets the virtual filename recorded in span positions for
 // input that has no real file path.
 func WithFilename(name string) Option { return ast.WithFilename(name) }
+
+// WithOverlay supplies in-memory source bytes that take precedence over
+// disk for matching absolute paths. See [ast.WithOverlay] for the full
+// contract.
+func WithOverlay(overlay map[string][]byte) Option { return ast.WithOverlay(overlay) }
