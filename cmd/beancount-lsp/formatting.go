@@ -27,7 +27,7 @@ func (s *Server) handleFormatting(ctx context.Context, reply jsonrpc2.Replier, r
 	}
 
 	current := string(src)
-	formatted := format.Format(current)
+	formatted := format.Format(current, format.WithCommaGrouping(s.commaGrouping(ctx)))
 	if formatted == current {
 		return reply(ctx, []protocol.TextEdit{}, nil)
 	}
@@ -92,7 +92,7 @@ func (s *Server) handleRangeFormatting(ctx context.Context, reply jsonrpc2.Repli
 	_, editEnd := nodeByteRange(directives[last])
 
 	substring := string(src[editStart:editEnd])
-	formatted := format.Format(substring)
+	formatted := format.Format(substring, format.WithCommaGrouping(s.commaGrouping(ctx)))
 	if formatted == substring {
 		return reply(ctx, []protocol.TextEdit{}, nil)
 	}
@@ -107,6 +107,23 @@ func (s *Server) handleRangeFormatting(ctx context.Context, reply jsonrpc2.Repli
 		},
 	}
 	return reply(ctx, edits, nil)
+}
+
+// commaGrouping reports whether the active ledger enables render_commas.
+// Returns false when no session or snapshot is available, preserving the
+// default (no thousands separators).
+func (s *Server) commaGrouping(ctx context.Context) bool {
+	s.mu.Lock()
+	sess := s.session
+	s.mu.Unlock()
+	if sess == nil {
+		return false
+	}
+	ledger, err := sess.Snapshot(ctx)
+	if err != nil || ledger == nil {
+		return false
+	}
+	return ledger.Options.Bool("render_commas")
 }
 
 // topLevelDirectives returns the direct child nodes of file.Root that are

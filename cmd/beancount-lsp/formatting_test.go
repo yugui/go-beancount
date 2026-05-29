@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yugui/go-beancount/pkg/ast"
 	"go.lsp.dev/protocol"
 	"go.lsp.dev/uri"
 )
@@ -113,6 +114,86 @@ func TestFormatting_DocumentFormatting_Unformatted(t *testing.T) {
 	}
 	if e.NewText != want {
 		t.Errorf("handleFormatting: Unformatted: NewText =\n%q\nwant\n%q", e.NewText, want)
+	}
+}
+
+// loadLedger builds an *ast.Ledger from src, failing t on error.
+func loadLedger(t *testing.T, src string) *ast.Ledger {
+	t.Helper()
+	ledger, err := ast.Load(src)
+	if err != nil {
+		t.Fatalf("ast.Load: %v", err)
+	}
+	return ledger
+}
+
+// TestFormatting_RenderCommas verifies that whole-document formatting inserts
+// thousands separators when the ledger enables render_commas.
+func TestFormatting_RenderCommas(t *testing.T) {
+	client, stub := newFormattingServer(t)
+	docURI := uri.URI("file:///tmp/rc.beancount")
+
+	const src = `option "render_commas" "True"
+2020-01-02 balance Assets:A 1000 JPY
+`
+	stub.setSnapshot(loadLedger(t, src))
+	openDoc(t, client, docURI, src)
+	stub.awaitSet(t, 3*time.Second)
+
+	edits := callFormatting(t, client, docURI)
+	if len(edits) != 1 {
+		t.Fatalf("handleFormatting: RenderCommas: got %d edits, want 1", len(edits))
+	}
+	if !strings.Contains(edits[0].NewText, "1,000 JPY") {
+		t.Errorf("handleFormatting: RenderCommas: NewText =\n%q\nwant it to contain %q", edits[0].NewText, "1,000 JPY")
+	}
+}
+
+// TestFormatting_RenderCommasDisabled verifies that formatting leaves numbers
+// without separators when render_commas is unset (the default).
+func TestFormatting_RenderCommasDisabled(t *testing.T) {
+	client, stub := newFormattingServer(t)
+	docURI := uri.URI("file:///tmp/rc-off.beancount")
+
+	const src = "2020-01-02 balance Assets:A 1000 JPY\n"
+	stub.setSnapshot(loadLedger(t, src))
+	openDoc(t, client, docURI, src)
+	stub.awaitSet(t, 3*time.Second)
+
+	edits := callFormatting(t, client, docURI)
+	for _, e := range edits {
+		if strings.Contains(e.NewText, "1,000") {
+			t.Errorf("handleFormatting: RenderCommasDisabled: NewText =\n%q\nwant no commas", e.NewText)
+		}
+	}
+}
+
+// TestRangeFormatting_RenderCommas verifies that range formatting honors the
+// ledger's render_commas option even though the formatted substring excludes
+// the option directive.
+func TestRangeFormatting_RenderCommas(t *testing.T) {
+	client, stub := newFormattingServer(t)
+	docURI := uri.URI("file:///tmp/rc-range.beancount")
+
+	const src = `option "render_commas" "True"
+
+2020-01-02 balance Assets:A 1000 JPY
+`
+	stub.setSnapshot(loadLedger(t, src))
+	openDoc(t, client, docURI, src)
+	stub.awaitSet(t, 3*time.Second)
+
+	// Range covering the balance directive (line 2).
+	r := protocol.Range{
+		Start: protocol.Position{Line: 2, Character: 0},
+		End:   protocol.Position{Line: 2, Character: 36},
+	}
+	edits := callRangeFormatting(t, client, docURI, r)
+	if len(edits) != 1 {
+		t.Fatalf("handleRangeFormatting: RenderCommas: got %d edits, want 1", len(edits))
+	}
+	if !strings.Contains(edits[0].NewText, "1,000 JPY") {
+		t.Errorf("handleRangeFormatting: RenderCommas: NewText =\n%q\nwant it to contain %q", edits[0].NewText, "1,000 JPY")
 	}
 }
 

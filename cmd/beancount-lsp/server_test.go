@@ -26,6 +26,7 @@ type stubSession struct {
 	reloadCalls int
 	closed      bool
 	panicOnSet  bool
+	snapshot    *ast.Ledger
 
 	setCh     chan struct{}    // signalled on each SetOverlay call
 	clearCh   chan struct{}    // signalled on each ClearOverlay call
@@ -72,7 +73,15 @@ func (s *stubSession) ClearOverlay(absPath string) error {
 }
 
 func (s *stubSession) Snapshot(_ context.Context) (*ast.Ledger, error) {
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.snapshot, nil
+}
+
+func (s *stubSession) setSnapshot(ledger *ast.Ledger) {
+	s.mu.Lock()
+	s.snapshot = ledger
+	s.mu.Unlock()
 }
 
 func (s *stubSession) Reload(_ context.Context) (*ast.Ledger, error) {
