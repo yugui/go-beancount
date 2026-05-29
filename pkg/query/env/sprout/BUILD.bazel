@@ -1,0 +1,30 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "sprout",
+    srcs = [
+        "coalesce.go",
+        "doc.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/query/env/sprout",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/query/api",
+        "//pkg/query/env",
+        "//pkg/query/types",
+    ],
+)
+
+go_test(
+    name = "sprout_test",
+    srcs = ["coalesce_test.go"],
+    deps = [
+        ":sprout",
+        "//pkg/ast",
+        "//pkg/query",
+        "//pkg/query/api",
+        "//pkg/query/env",
+        "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

@@ -11,6 +11,7 @@ go_library(
         "//pkg/ext/postproc/std",
         "//pkg/loader",
         "//pkg/query",
+        "//pkg/query/env/sprout",
         "//pkg/query/env/std",
         "//pkg/query/types",
         "@com_github_mattn_go_runewidth//:go-runewidth",
