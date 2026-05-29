@@ -15,17 +15,20 @@ import (
 var pricePrecision = apd.BaseContext.WithPrecision(34)
 
 // postingRow is the handle the postings table yields: a transaction and an
-// index into its Postings. It is a struct rather than a bare tuple so the
-// deferred `balance` column can be added by enriching this handle with a
-// running-inventory field (computed by the Rows producer via
-// [inventory.Reducer].Walk) plus a `balance` Column reading it — without
-// changing [Table] or [Column].
+// index into its Postings.
 type postingRow struct {
 	txn *ast.Transaction
 	idx int
 }
 
 func (r postingRow) posting() *ast.Posting { return &r.txn.Postings[r.idx] }
+
+// RunningBalanceColumn is the name of the postings column whose value is the
+// cumulative inventory of the rows a query selects. Its value is supplied by
+// the executor over the predicate-passing rows in scan order (see
+// pkg/query/exec), not by the table accessor; a direct table read has no
+// running balance.
+const RunningBalanceColumn = "balance"
 
 // Postings returns the default virtual table: one row per posting of every
 // transaction in l, in the ledger's canonical order; non-transaction
@@ -62,6 +65,20 @@ func postingCol(name string, t types.Type, fn func(postingRow) types.Value) Colu
 			return fn(r.(postingRow))
 		},
 	}
+}
+
+// postingPosition builds the inventory Position a booked posting contributes:
+// its units plus the booked lot (nil for cash). ok is false when the posting
+// has no amount.
+func postingPosition(p *ast.Posting) (inventory.Position, bool) {
+	if p.Amount == nil {
+		return inventory.Position{}, false
+	}
+	var lot *inventory.Lot
+	if p.Cost != nil && p.Cost.IsBooked() {
+		lot = inventory.LotFromCost(p.Cost.(*ast.Cost))
+	}
+	return inventory.Position{Units: *p.Amount, Cost: lot}, true
 }
 
 var postingColumns = []Column{
@@ -153,15 +170,11 @@ var postingColumns = []Column{
 		return types.Null(types.String)
 	}),
 	postingCol("position", types.Position, func(r postingRow) types.Value {
-		p := r.posting()
-		if p.Amount == nil {
+		pos, ok := postingPosition(r.posting())
+		if !ok {
 			return types.Null(types.Position)
 		}
-		var lot *inventory.Lot
-		if p.Cost != nil && p.Cost.IsBooked() {
-			lot = inventory.LotFromCost(p.Cost.(*ast.Cost))
-		}
-		return types.NewPosition(inventory.Position{Units: *p.Amount, Cost: lot})
+		return types.NewPosition(pos)
 	}),
 	postingCol("weight", types.Amount, func(r postingRow) types.Value {
 		w, err := inventory.PostingWeight(r.posting())
@@ -178,6 +191,11 @@ var postingColumns = []Column{
 	// NULL); getitem handles missing keys.
 	postingCol("meta", types.DictType, func(r postingRow) types.Value {
 		return metaDict(r.posting().Meta)
+	}),
+	// balance's value is supplied by the executor over the selected rows (see
+	// RunningBalanceColumn); this placeholder returns NULL for direct reads.
+	postingCol(RunningBalanceColumn, types.Inventory, func(postingRow) types.Value {
+		return types.Null(types.Inventory)
 	}),
 }
 

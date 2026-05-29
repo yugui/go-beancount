@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/query/api"
 	"github.com/yugui/go-beancount/pkg/query/table"
 	"github.com/yugui/go-beancount/pkg/query/types"
@@ -10,10 +11,14 @@ import (
 // evaluation. row is the current input row (the representative row of a
 // group in aggregate mode). aggResults holds the finalized aggregate
 // values for the current group, indexed by aggregate slot; it is nil
-// outside aggregate mode.
+// outside aggregate mode. balance is the running inventory of the rows
+// selected so far (the executor folds each passing row into it before
+// evaluating expressions); it is nil unless the query reads the balance
+// column.
 type evalCtx struct {
 	row        table.Row
 	aggResults []types.Value
+	balance    *inventory.Inventory
 }
 
 // cexpr is a compiled, statically-typed expression. Type reports the
@@ -46,6 +51,17 @@ type literalExpr struct {
 
 func (e *literalExpr) Type() types.Type                   { return e.typ }
 func (e *literalExpr) eval(*evalCtx) (types.Value, error) { return e.val, nil }
+
+// balanceExpr resolves to the running balance: the cumulative inventory of the
+// rows selected so far, maintained by the executor in ctx.balance. Each eval
+// returns an independent snapshot.
+type balanceExpr struct{}
+
+func (balanceExpr) Type() types.Type { return types.Inventory }
+
+func (balanceExpr) eval(ctx *evalCtx) (types.Value, error) {
+	return types.NewInventory(ctx.balance), nil
+}
 
 // aggRefExpr resolves to the finalized result of one aggregate slot.
 type aggRefExpr struct {
