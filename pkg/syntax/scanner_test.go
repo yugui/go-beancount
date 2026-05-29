@@ -625,8 +625,8 @@ func TestAccountTokens(t *testing.T) {
 		{"Expenses:Communication:宅配便・運送", "Expenses:Communication:宅配便・運送"},
 		// U+00B7 MIDDLE DOT (also Other_ID_Continue).
 		{"Expenses:Cat·alan", "Expenses:Cat·alan"},
-		// scanUpperWord runs the account branch before isCurrency, so the
-		// removal of the 24-char cap on isCurrency must not perturb account
+		// scanUpperWord runs the account branch before IsCurrency, so the
+		// removal of the 24-char cap on IsCurrency must not perturb account
 		// recognition for components longer than 24 characters.
 		{"Assets:FakeAccountLongComponentName", "Assets:FakeAccountLongComponentName"},
 	}
@@ -693,7 +693,7 @@ func TestIdentTokens(t *testing.T) {
 		{"option", "option"},
 		{"pushtag", "pushtag"},
 		{"filename", "filename"},
-		// Length cap on isCurrency was removed; the only remaining gate at
+		// Length cap on IsCurrency was removed; the only remaining gate at
 		// length > 24 is the boundary rule that the first and last char must
 		// be in [A-Z0-9]. scanUpperWord is reached only when the first byte
 		// is uppercase, so the realisable boundary failure at the upper-word
@@ -1000,5 +1000,50 @@ func TestStarNotHeadingWithoutSpace(t *testing.T) {
 	tokens := collectTokens(input)
 	if tokens[0].Kind != STAR {
 		t.Errorf("first token = %v, want STAR", tokens[0].Kind)
+	}
+}
+
+func TestIsCurrency(t *testing.T) {
+	tests := []struct {
+		word string
+		want bool
+	}{
+		{"USD", true},
+		{"VWCE.DE", true},
+		{"AAPL", true},
+		{"X", true},
+		{"V1", true},
+		{"", false},
+		{"usd", false},  // must start with [A-Z0-9]
+		{"-USD", false}, // bad start
+		{"USD-", false}, // bad end
+		{"US D", false}, // space not allowed
+		{"US:D", false}, // colon not allowed
+	}
+	for _, tt := range tests {
+		if got := IsCurrency(tt.word); got != tt.want {
+			t.Errorf("IsCurrency(%q) = %v, want %v", tt.word, got, tt.want)
+		}
+	}
+}
+
+func TestIsTagLinkName(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"trip", true},
+		{"trip-2024", true},
+		{"a_b", true},
+		{"A", true},
+		{"", false},
+		{"trip 2024", false}, // space not allowed
+		{"trip#x", false},    // sigil not allowed in body
+		{"café", false},      // non-ASCII not allowed
+	}
+	for _, tt := range tests {
+		if got := IsTagLinkName(tt.name); got != tt.want {
+			t.Errorf("IsTagLinkName(%q) = %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }
