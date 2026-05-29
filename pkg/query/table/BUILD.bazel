@@ -1,0 +1,34 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "table",
+    srcs = [
+        "doc.go",
+        "entries.go",
+        "meta.go",
+        "postings.go",
+        "table.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/query/table",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/inventory",
+        "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "table_test",
+    srcs = [
+        "entries_test.go",
+        "postings_test.go",
+    ],
+    deps = [
+        ":table",
+        "//pkg/ast",
+        "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

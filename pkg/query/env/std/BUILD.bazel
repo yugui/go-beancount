@@ -1,0 +1,45 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "std",
+    srcs = [
+        "account.go",
+        "aggregate.go",
+        "date.go",
+        "doc.go",
+        "getitem.go",
+        "str.go",
+        "value.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/query/env/std",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/inventory",
+        "//pkg/query/api",
+        "//pkg/query/env",
+        "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "std_test",
+    srcs = [
+        "aggregate_internal_test.go",
+        "aggregate_test.go",
+        "getitem_internal_test.go",
+        "getitem_test.go",
+        "helpers_test.go",
+        "scalar_test.go",
+    ],
+    embed = [":std"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/inventory",
+        "//pkg/query",
+        "//pkg/query/api",
+        "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
