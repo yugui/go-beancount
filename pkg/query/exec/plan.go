@@ -48,6 +48,12 @@ type Compiled struct {
 	orderBy  []orderKey
 	distinct bool
 	limit    *int64
+
+	// usesBalance is set when a target or ORDER BY reads the running-balance
+	// column; balancePos is then the table's position accessor, whose value is
+	// folded into the running inventory for each selected row.
+	usesBalance bool
+	balancePos  func(table.Row) types.Value
 }
 
 // Columns returns the output schema fixed at compile time, available before

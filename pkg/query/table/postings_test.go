@@ -126,6 +126,7 @@ func TestPostingsColumnSchema(t *testing.T) {
 		{"weight", types.Amount},
 		{"price", types.Amount},
 		{"meta", types.DictType},
+		{"balance", types.Inventory},
 	}
 	if len(tb.Columns) != len(want) {
 		t.Fatalf("got %d columns, want %d", len(tb.Columns), len(want))
@@ -313,6 +314,23 @@ func TestPostingsTotalPriceDivision(t *testing.T) {
 	}
 	if pr.Currency != "USD" || pr.Number.Text('f') != "5" {
 		t.Errorf("@@ per-unit price = %s %s, want 5 USD", pr.Number.Text('f'), pr.Currency)
+	}
+}
+
+// TestPostingsBalanceIsExecutorSupplied documents that the running balance is
+// not a table-level value: the column accessor is a typed-NULL placeholder, and
+// the cumulative inventory over the selected rows is computed by the executor
+// (see pkg/query/exec and the query-level tests).
+func TestPostingsBalanceIsExecutorSupplied(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(stockTxn(t))
+	tb := table.Postings(l)
+
+	for i, r := range collectRows(tb) {
+		v := valueOf(t, tb, r, table.RunningBalanceColumn)
+		if v.Type() != types.Inventory || !v.IsNull() {
+			t.Errorf("table-level balance: row %d = %v (type %v, null=%v), want a NULL Inventory placeholder", i, v, v.Type(), v.IsNull())
+		}
 	}
 }
 

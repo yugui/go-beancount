@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/query/api"
 	"github.com/yugui/go-beancount/pkg/query/table"
 	"github.com/yugui/go-beancount/pkg/query/types"
@@ -26,7 +27,10 @@ import (
 // its own goroutine, then merge: aggregate partials via Accumulator.Merge
 // (the law Add-then-Merge ≡ Add-all makes this exact), and scalar outputs by
 // a stable concat. DISTINCT, ORDER BY, and LIMIT then run on the merged rows
-// exactly as below. Nothing downstream of this scan needs to change.
+// exactly as below. Nothing downstream of this scan needs to change. The one
+// caveat is the running balance: it is scan-order-dependent (each selected row
+// folds into a single inventory), so a sharded executor must preserve input
+// order when reconstructing the balance values.
 func (c *Compiled) Run(ctx context.Context) ([][]types.Value, error) {
 	var (
 		rows [][]types.Value
@@ -51,7 +55,7 @@ func (c *Compiled) Run(ctx context.Context) ([][]types.Value, error) {
 // runScalar projects each passing row. It returns the output rows and their
 // parallel ORDER BY sort keys.
 func (c *Compiled) runScalar(ctx context.Context) (rows, keys [][]types.Value, err error) {
-	ectx := &evalCtx{}
+	ectx := c.newEvalCtx()
 	for row := range c.tbl.Rows() {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -63,6 +67,9 @@ func (c *Compiled) runScalar(ctx context.Context) (rows, keys [][]types.Value, e
 		}
 		if !pass {
 			continue
+		}
+		if err := c.accumulateBalance(ectx); err != nil {
+			return nil, nil, err
 		}
 		out, err := evalRow(c.targets, ectx)
 		if err != nil {
@@ -93,7 +100,7 @@ func (c *Compiled) runAggregate(ctx context.Context) (rows, keys [][]types.Value
 	groups := map[string]*group{}
 	var order []string
 
-	ectx := &evalCtx{}
+	ectx := c.newEvalCtx()
 	for row := range c.tbl.Rows() {
 		if err := ctx.Err(); err != nil {
 			return nil, nil, err
@@ -105,6 +112,9 @@ func (c *Compiled) runAggregate(ctx context.Context) (rows, keys [][]types.Value
 		}
 		if !pass {
 			continue
+		}
+		if err := c.accumulateBalance(ectx); err != nil {
+			return nil, nil, err
 		}
 
 		keyVals, err := evalRow(c.groupBy, ectx)
@@ -180,6 +190,34 @@ func (c *Compiled) addToSlots(accs []api.Accumulator, ectx *evalCtx) error {
 		if err := accs[i].Add(args); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// newEvalCtx allocates a fresh per-Run evaluation context, including the
+// running-balance inventory when the query reads the balance column. All state
+// is local to one Run, so concurrent Runs over one plan never share it
+// (Decision 6).
+func (c *Compiled) newEvalCtx() *evalCtx {
+	ectx := &evalCtx{}
+	if c.usesBalance {
+		ectx.balance = inventory.NewInventory()
+	}
+	return ectx
+}
+
+// accumulateBalance folds the current (already predicate-passing) row's
+// position into the running balance, so a balanceExpr evaluated for this row
+// sees the cumulative inventory of the selected rows up to and including it.
+// It is a no-op unless the query reads the balance column, and returns a
+// non-nil error only on an apd arithmetic failure (unreachable from booked
+// input, but surfaced rather than silently corrupting the running total).
+func (c *Compiled) accumulateBalance(ectx *evalCtx) error {
+	if !c.usesBalance || c.balancePos == nil {
+		return nil
+	}
+	if pos, ok := types.AsPosition(c.balancePos(ectx.row)); ok {
+		return ectx.balance.Add(pos)
 	}
 	return nil
 }

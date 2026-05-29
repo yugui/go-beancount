@@ -89,6 +89,13 @@ func Compile(sel *parser.Select, ledger *ast.Ledger) (*Compiled, error) {
 	}
 
 	plan.slots = c.slots
+	if c.usesBalance {
+		plan.usesBalance = true
+		// nil on a table with no position column (never for postings).
+		if posCol, ok := c.tbl.Column("position"); ok {
+			plan.balancePos = posCol.Accessor
+		}
+	}
 	return plan, nil
 }
 
@@ -114,10 +121,12 @@ func selectTable(sel *parser.Select, ledger *ast.Ledger) (*table.Table, parser.E
 }
 
 // compiler carries the selected table and the ordered aggregate-slot list
-// accumulated while compiling targets and ORDER BY items.
+// accumulated while compiling targets and ORDER BY items. usesBalance records
+// whether any compiled expression read the running-balance column.
 type compiler struct {
-	tbl   *table.Table
-	slots []aggSlot
+	tbl         *table.Table
+	slots       []aggSlot
+	usesBalance bool
 }
 
 // compilePredicate compiles the AND of the FROM filter and WHERE (omitting
@@ -165,8 +174,13 @@ func (c *compiler) compileGroupBy(exprs []parser.Expr, plan *Compiled) error {
 func (c *compiler) compileTargets(sel *parser.Select, plan *Compiled) error {
 	if sel.Star {
 		for _, col := range c.tbl.Columns {
+			var target cexpr = &columnExpr{col: col}
+			if strings.EqualFold(col.Name, table.RunningBalanceColumn) {
+				c.usesBalance = true
+				target = balanceExpr{}
+			}
 			plan.cols = append(plan.cols, OutColumn{Name: col.Name, Type: col.Type})
-			plan.targets = append(plan.targets, &columnExpr{col: col})
+			plan.targets = append(plan.targets, target)
 		}
 		return nil
 	}
@@ -255,6 +269,11 @@ func ungroupedColumn(ce cexpr, grouped map[string]bool) string {
 			return x.col.Name
 		}
 		return ""
+	case balanceExpr:
+		if !grouped[table.RunningBalanceColumn] {
+			return table.RunningBalanceColumn
+		}
+		return ""
 	case *scalarExpr:
 		return firstUngrouped(x.args, grouped)
 	case *arithExpr:
@@ -306,6 +325,10 @@ func (c *compiler) compileExpr(e parser.Expr, aggOK bool) (cexpr, error) {
 		col, ok := c.tbl.Column(x.Name)
 		if !ok {
 			return nil, errf(x.Position, "unknown column %q", x.Name)
+		}
+		if strings.EqualFold(col.Name, table.RunningBalanceColumn) {
+			c.usesBalance = true
+			return balanceExpr{}, nil
 		}
 		return &columnExpr{col: col}, nil
 	case *parser.IntLit:

@@ -221,6 +221,94 @@ func TestMetaSugar(t *testing.T) {
 	}
 }
 
+// TestBalanceCumulativeOverSelectedRows pins the documented register
+// semantics: balance is the cumulative inventory of the rows the query SELECTS
+// (those passing FROM/WHERE), in scan order, inclusive of the current row — not
+// the full-stream global inventory. Filtering to Expenses:Food yields a running
+// total over just those rows (20, then 25), so the intervening -20 cash posting
+// does not reset or contribute to it.
+func TestBalanceCumulativeOverSelectedRows(t *testing.T) {
+	res := mustQuery(t, "SELECT account, balance WHERE account = 'Expenses:Food'")
+	bcol := column(t, res, "balance")
+	if res.Columns[bcol].Type != types.Inventory {
+		t.Fatalf("balance column type = %v, want Inventory", res.Columns[bcol].Type)
+	}
+	wantFood := []string{"(20 USD)", "(25 USD)"}
+	if len(res.Rows) != len(wantFood) {
+		t.Fatalf("WHERE account='Expenses:Food': rows = %d, want %d", len(res.Rows), len(wantFood))
+	}
+	for i, w := range wantFood {
+		if got := cell(res, i, bcol).Format(); got != w {
+			t.Errorf("balance (WHERE account='Expenses:Food'): row %d = %s, want %s", i, got, w)
+		}
+	}
+
+	res = mustQuery(t, "SELECT account, balance WHERE account = 'Assets:Cash'")
+	bcol = column(t, res, "balance")
+	wantCash := []string{"(-20 USD)", "(-25 USD)", "(75 USD)"}
+	if len(res.Rows) != len(wantCash) {
+		t.Fatalf("cash rows = %d, want %d", len(res.Rows), len(wantCash))
+	}
+	for i, w := range wantCash {
+		if got := cell(res, i, bcol).Format(); got != w {
+			t.Errorf("balance (WHERE account='Assets:Cash'): row %d = %s, want %s", i, got, w)
+		}
+	}
+}
+
+// TestBalanceMultiCurrencyRegister reproduces the bug-report scenario: a
+// multi-currency account statement. balance must show only the selected
+// (Assets:Cash) rows' running inventory, posting-by-posting, never the lots
+// held in the filtered-out Assets:A / Assets:B accounts.
+func TestBalanceMultiCurrencyRegister(t *testing.T) {
+	mkAmt := func(n, cur string) *ast.Amount { return &ast.Amount{Number: dec(t, n), Currency: cur} }
+	l := &ast.Ledger{}
+	l.Insert(&ast.Transaction{
+		Date: date(1970, 1, 1), Flag: '*', Narration: "txn",
+		Postings: []ast.Posting{
+			{Account: "Assets:A", Amount: mkAmt("10", "A")},
+			{Account: "Assets:Cash", Amount: mkAmt("-100", "JPY")},
+		},
+	})
+	l.Insert(&ast.Transaction{
+		Date: date(1970, 1, 1), Flag: '*', Narration: "txn",
+		Postings: []ast.Posting{
+			{Account: "Assets:B", Amount: mkAmt("10", "B")},
+			{Account: "Assets:Cash", Amount: mkAmt("-1.00", "USD")},
+		},
+	})
+	l.Insert(&ast.Transaction{
+		Date: date(1970, 1, 2), Flag: '*', Narration: "sell",
+		Postings: []ast.Posting{
+			{Account: "Assets:A", Amount: mkAmt("-5", "A")},
+			{Account: "Assets:B", Amount: mkAmt("-5", "B")},
+			{Account: "Assets:Cash", Amount: mkAmt("150", "JPY")},
+			{Account: "Assets:Cash", Amount: mkAmt("0.50", "USD")},
+		},
+	})
+
+	res, err := query.Query(context.Background(),
+		`SELECT date, account, position, balance WHERE account = "Assets:Cash"`, l)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	bcol := column(t, res, "balance")
+	want := []string{
+		"(-100 JPY)",
+		"(-100 JPY, -1.00 USD)",
+		"(50 JPY, -1.00 USD)",
+		"(50 JPY, -0.50 USD)",
+	}
+	if len(res.Rows) != len(want) {
+		t.Fatalf("rows = %d, want %d", len(res.Rows), len(want))
+	}
+	for i, w := range want {
+		if got := cell(res, i, bcol).Format(); got != w {
+			t.Errorf("register balance: row %d = %s, want %s", i, got, w)
+		}
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

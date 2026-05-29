@@ -26,7 +26,8 @@ immutable ledger is a first-class, tested requirement**, not an afterthought
 ### Lean subset (shipped)
 `SELECT [DISTINCT] (<targets>|*) [FROM <table-name>|<filter-expr>] [WHERE <expr>]
 [GROUP BY ...] [ORDER BY ... ASC|DESC] [LIMIT n]` over two virtual tables
-(`postings` default, `entries`); a full value/type system with explicit NULL;
+(`postings` default, `entries`), including the `postings` `balance`
+running-inventory column; a full value/type system with explicit NULL;
 arithmetic, comparison, regex `~`, 3-valued boolean logic, `IN` over lists and
 sets; a polymorphic, extensible function registry with a built-in library
 (date/string/account/extractor scalars, `getitem`, and
@@ -56,18 +57,27 @@ so the deferred `goplug` loader and the `std` library register against the thin
 ## 3. Canonical reference — why the boundary is where it is
 
 The old `beancount.github.io` BQL doc is **superseded**; where descriptions
-conflict, `github.com/beancount/beanquery` is canonical. Four canonical facts
+conflict, `github.com/beancount/beanquery` is canonical. The one deliberate
+exception is the `balance` column (fact 2 below): there the documented BQL
+behavior and the original `bean-query` are authoritative, because the modern
+`beanquery` binary diverges from its own documentation. Four canonical facts
 shaped this design and justify what was deferred:
 
 1. **FROM-expr ≡ WHERE.** beanquery compiles a FROM *expression* against the
    *same* table columns as WHERE and ANDs them into one row predicate
    (`c_where = EvalAnd([c_from_expr, c_where])`). There is **no** entry-vs-posting
    two-level namespace. → Implemented in `exec.selectTable` + `compilePredicate`.
-2. **`balance` is filter-agnostic.** The running inventory is accumulated over
-   the *full prepared entry stream* in the table's iteration, never reset, with
-   no knowledge of WHERE/FROM; the executor filters output rows afterward. So a
-   FROM/WHERE clause never resets a running balance. → Drives the deferred
-   `balance` design (§7.1).
+2. **`balance` is the cumulative inventory of the *selected* rows.** Per the BQL
+   doc, `balance` renders "the cumulative balance of the selected postings rows
+   … based on the previous selected rows", and the original `bean-query` folds
+   each posting into the running inventory *inside* the `if c_where` block — so
+   it accumulates only over rows passing FROM/WHERE, in scan order, inclusive of
+   the current row. It is therefore **filter-dependent** (a single-account
+   filter yields a per-account-looking register). The modern `beanquery` binary
+   instead accumulates over the full pre-filter stream (a global inventory); we
+   do **not** follow that. Because "selected" is only known after filtering,
+   this is computed in the executor's row scan, not the table. → Realized by the
+   shipped `balance` column (§6; §7.1).
 3. **Entry-stream scoping = OPEN/CLOSE/CLEAR**, applied via
    `table.evolve(...)` → `summarize` *before* row generation — this, not the
    FROM expression, defines a sub-ledger. → Deferred with `balance` (§7.1).
@@ -132,10 +142,11 @@ function overloads (`env.Resolve`) → rewrite `meta('k')` to `getitem(meta,'k')
 columns. Produces an immutable `*Compiled`. Errors are positioned, never panics.
 
 **Run** (`Compiled.Run`): scan `Table.Rows()` → predicate filter (only TRUE
-passes; NULL/FALSE excluded) → either scalar projection or group+aggregate
-(one accumulator per slot per group, first-seen group order) → DISTINCT
-(true value-equality via `Compare`, NULL==NULL) → stable ORDER BY (NULL-last
-asc, `Desc` negates) → LIMIT. `ctx` is checked once per input row.
+passes; NULL/FALSE excluded) → fold the passing row's `position` into the
+running balance when the query reads `balance` (§3.2) → either scalar projection
+or group+aggregate (one accumulator per slot per group, first-seen group order)
+→ DISTINCT (true value-equality via `Compare`, NULL==NULL) → stable ORDER BY
+(NULL-last asc, `Desc` negates) → LIMIT. `ctx` is checked once per input row.
 
 The **single parallel-executor insertion point** is the input-row scan in
 `run.go`, documented there (§7.3).
@@ -155,6 +166,18 @@ The **single parallel-executor insertion point** is the input-row scan in
   NULL if units are zero/absent. **`cost_number`** uses `ast.PerUnitCost`
   (handles both booked `*ast.Cost` and `*ast.CostSpec`), not the literal
   `GetPerUnit().Number`, so it stays consistent with the other cost columns.
+- **`balance` is the cumulative inventory of the *selected* rows** (canonical
+  §3.2): the executor folds each predicate-passing row's `position` into one
+  running inventory with `inventory.Inventory.Add`, in input-scan order,
+  inclusive of the current row, and a `balanceExpr` reads a snapshot. It is
+  **filter-dependent** (a single-account WHERE yields that account's register;
+  no filter accumulates over everything), **not** per-account and **not** the
+  full-stream global inventory the modern `beanquery` binary produces.
+  Implementation: `balance` is a declared postings column with a NULL
+  placeholder accessor (the value is executor-supplied); the compiler rewrites a
+  reference to it into `balanceExpr` and records the position accessor to fold.
+  `ORDER BY`/`DISTINCT`/`LIMIT` run on rows whose balance was already computed in
+  scan order. `ectx.balance` is per-`Run` local state, preserving Decision 6.
 - **NULL-literal typing**: a bare `NULL` has static type `types.Invalid`,
   treated as compatible with any operand; the result takes the sibling operand's
   type. This and `getitem` are the only dynamically-typed paths.
@@ -187,19 +210,25 @@ The **single parallel-executor insertion point** is the input-row scan in
 Each item below is deferred *by design*, with the concrete seam already in place
 so it lands without reworking the core. These are not vague TODOs.
 
-### 7.1 `balance` running-inventory column + OPEN/CLOSE/CLEAR scoping
-Land these **together** — OPEN/CLOSE/CLEAR is the entry-stream scoping that makes
-`balance` meaningful (canonical fact §3.2–3.3).
-- **Attach point**: `table.postingRow` is deliberately a struct (not a tuple).
-  Add a running-inventory field to it; have `Postings`' `Rows` producer compute
-  the cumulative inventory by driving `inventory.Reducer.Walk` over the full
-  prepared stream as it yields rows; add a `balance` (`Inventory`) Column whose
-  pure accessor reads that field. **No change to `Table`/`Column`.**
-- **Filter-agnostic**: accumulate over the full stream regardless of WHERE/FROM;
-  the executor already filters output rows afterward (§3.2).
+### 7.1 OPEN/CLOSE/CLEAR entry-stream scoping
+The `balance` running-inventory column — the first half of the original §7.1 —
+**shipped**. It is the cumulative inventory of the *selected* rows, computed in
+the executor's row scan after the predicate filter (see §3.2 and §6 for the
+resolved semantics): `balance` is a declared postings column whose value is
+supplied by `balanceExpr`/`Compiled.accumulateBalance`, not the table accessor.
+The earlier hints here — to drive `inventory.Reducer.Walk`, and (in the first
+shipped attempt) to accumulate a global pre-filter inventory in the table
+producer — were both **superseded**: the former is per-account, the latter
+matched only the modern `beanquery` binary, which contradicts the BQL doc.
+
+What remains deferred is the entry-stream **scoping** that the original item
+bundled with `balance` (canonical fact §3.3):
 - **Scoping**: implement OPEN/CLOSE/CLEAR as a pre-pass that summarizes/opens
   the directive stream before row generation (beanquery's `table.evolve` →
-  `summarize`), not as a FROM expression.
+  `summarize`), not as a FROM expression. This needs FROM-clause grammar
+  (`OPEN ON <date>` / `CLOSE ON <date>` / `CLEAR`), a summarize/clamp/
+  close-to-equity pre-pass, and compiler plumbing to pass the dates to the table
+  constructor.
 
 ### 7.2 Price / valuation (`value`, `convert`, `getprice`) + `pass_context`
 - **Seam**: `api.PassContextFlavor` already exists. `env.validate` currently
@@ -235,9 +264,9 @@ Land these **together** — OPEN/CLOSE/CLEAR is the entry-stream scoping that ma
   `Column`s + a lazy `Rows` over `ast.Ledger.All()`); the compiler's
   `tableCatalog` gains one entry.
 - **Adding a column** = a new `Column` with a pure accessor over the row handle.
-- Known deferred columns: on `postings` — `balance` (§7.1), `value`/`convert`
-  (§7.2), `entry`, `id`, `location`, `description`, `other_accounts`,
-  `accounts`, `posting_flag`; on `entries` — `id`, `description`, `accounts`.
+- Known deferred columns: on `postings` — `value`/`convert` (§7.2), `entry`,
+  `id`, `location`, `description`, `other_accounts`, `accounts`, `posting_flag`;
+  on `entries` — `id`, `description`, `accounts`. (`balance` shipped — §7.1, §6.)
 - A **merged posting/transaction `meta`** variant (§6) is a column-level change.
 
 ## 8. Excluded (initially)
