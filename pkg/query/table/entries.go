@@ -1,0 +1,165 @@
+package table
+
+import (
+	"iter"
+	"time"
+
+	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/query/types"
+)
+
+// Entries returns the virtual table over the full directive stream: one row
+// per directive in l, in the ledger's canonical order. Each row handle is
+// the [ast.Directive] itself; a column a directive type does not carry
+// yields a typed NULL. The returned table is immutable and safe for
+// concurrent read (see the package doc); it holds l by reference and never
+// mutates it.
+func Entries(l *ast.Ledger) *Table {
+	return &Table{
+		Name:    "entries",
+		Columns: entryColumns,
+		Rows: func() iter.Seq[Row] {
+			return func(yield func(Row) bool) {
+				for _, d := range l.All() {
+					if !yield(d) {
+						return
+					}
+				}
+			}
+		},
+	}
+}
+
+func entryCol(name string, t types.Type, fn func(ast.Directive) types.Value) Column {
+	return Column{
+		Name: name,
+		Type: t,
+		Accessor: func(r Row) types.Value {
+			return fn(r.(ast.Directive))
+		},
+	}
+}
+
+var entryColumns = []Column{
+	entryCol("type", types.String, func(d ast.Directive) types.Value {
+		return types.NewString(directiveTypeName(d))
+	}),
+	entryCol("date", types.Date, func(d ast.Directive) types.Value {
+		return nullableDate(d.DirDate())
+	}),
+	entryCol("year", types.Int, func(d ast.Directive) types.Value {
+		return datePart(d.DirDate(), func(t time.Time) int { return t.Year() })
+	}),
+	entryCol("month", types.Int, func(d ast.Directive) types.Value {
+		return datePart(d.DirDate(), func(t time.Time) int { return int(t.Month()) })
+	}),
+	entryCol("day", types.Int, func(d ast.Directive) types.Value {
+		return datePart(d.DirDate(), func(t time.Time) int { return t.Day() })
+	}),
+	entryCol("filename", types.String, func(d ast.Directive) types.Value {
+		return spanFilename(d.DirSpan())
+	}),
+	entryCol("lineno", types.Int, func(d ast.Directive) types.Value {
+		return spanLineno(d.DirSpan())
+	}),
+	entryCol("flag", types.String, func(d ast.Directive) types.Value {
+		if txn, ok := d.(*ast.Transaction); ok && txn.Flag != 0 {
+			return flagString(txn.Flag)
+		}
+		return types.Null(types.String)
+	}),
+	entryCol("payee", types.String, func(d ast.Directive) types.Value {
+		if txn, ok := d.(*ast.Transaction); ok {
+			return nullableString(txn.Payee)
+		}
+		return types.Null(types.String)
+	}),
+	entryCol("narration", types.String, func(d ast.Directive) types.Value {
+		if txn, ok := d.(*ast.Transaction); ok {
+			return types.NewString(txn.Narration)
+		}
+		return types.Null(types.String)
+	}),
+	entryCol("tags", types.SetType, func(d ast.Directive) types.Value {
+		if tags, ok := directiveTags(d); ok {
+			return types.NewSet(tags...)
+		}
+		return types.Null(types.SetType)
+	}),
+	entryCol("links", types.SetType, func(d ast.Directive) types.Value {
+		if links, ok := directiveLinks(d); ok {
+			return types.NewSet(links...)
+		}
+		return types.Null(types.SetType)
+	}),
+	entryCol("meta", types.DictType, func(d ast.Directive) types.Value {
+		return metaDict(d.DirMeta())
+	}),
+}
+
+// directiveTypeName returns the lowercase BQL type name for a directive.
+func directiveTypeName(d ast.Directive) string {
+	switch d.(type) {
+	case *ast.Transaction:
+		return "transaction"
+	case *ast.Open:
+		return "open"
+	case *ast.Close:
+		return "close"
+	case *ast.Balance:
+		return "balance"
+	case *ast.Pad:
+		return "pad"
+	case *ast.Price:
+		return "price"
+	case *ast.Note:
+		return "note"
+	case *ast.Document:
+		return "document"
+	case *ast.Commodity:
+		return "commodity"
+	case *ast.Event:
+		return "event"
+	case *ast.Query:
+		return "query"
+	case *ast.Custom:
+		return "custom"
+	case *ast.Option:
+		return "option"
+	case *ast.Plugin:
+		return "plugin"
+	case *ast.Include:
+		return "include"
+	default:
+		return "directive"
+	}
+}
+
+// directiveTags returns the directive's tags and ok=true for the types that
+// carry tags (Transaction, Note, Document); ok=false for types with no tags
+// concept.
+func directiveTags(d ast.Directive) ([]string, bool) {
+	switch v := d.(type) {
+	case *ast.Transaction:
+		return v.Tags, true
+	case *ast.Note:
+		return v.Tags, true
+	case *ast.Document:
+		return v.Tags, true
+	default:
+		return nil, false
+	}
+}
+
+func directiveLinks(d ast.Directive) ([]string, bool) {
+	switch v := d.(type) {
+	case *ast.Transaction:
+		return v.Links, true
+	case *ast.Note:
+		return v.Links, true
+	case *ast.Document:
+		return v.Links, true
+	default:
+		return nil, false
+	}
+}
