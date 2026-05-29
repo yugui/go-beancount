@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "inspect",
+    srcs = ["inspect.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/inventory/inspect",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/inventory",
+    ],
+)
+
+go_test(
+    name = "inspect_test",
+    srcs = ["inspect_test.go"],
+    deps = [
+        ":inspect",
+        "//pkg/ast",
+        "//pkg/inventory",
+        "//pkg/loader",
+    ],
+)
