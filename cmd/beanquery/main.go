@@ -37,9 +37,16 @@ import (
 	"github.com/yugui/go-beancount/pkg/query"
 	"github.com/yugui/go-beancount/pkg/query/types"
 
-	// Activate the built-in query functions (date parts, string ops,
-	// aggregators, getitem, ...). The engine registers nothing on its
-	// own, so this blank import is load-bearing.
+	// Register the built-in ledger post-processors so that plugin
+	// directives in the loaded ledger resolve while loader.LoadFile runs
+	// the booking/validation pipeline. std is the ported beancount plugin
+	// library; sprout is the ported beansprout plugin library.
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout"
+	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std"
+
+	// Activate the built-in BQL query functions (date parts, string ops,
+	// aggregators, getitem, ...). The query engine registers nothing on
+	// its own, so this blank import is load-bearing.
 	_ "github.com/yugui/go-beancount/pkg/query/env/std"
 )
 
