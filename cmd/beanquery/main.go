@@ -44,9 +44,10 @@ import (
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/sprout"
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std"
 
-	// Activate the built-in BQL query functions (date parts, string ops,
-	// aggregators, getitem, ...). The query engine registers nothing on
-	// its own, so this blank import is load-bearing.
+	// Activate the built-in BQL query functions; the engine registers
+	// none on its own, so these blank imports are load-bearing. std is
+	// the beanquery-parity library, sprout the non-standard extensions.
+	_ "github.com/yugui/go-beancount/pkg/query/env/sprout"
 	_ "github.com/yugui/go-beancount/pkg/query/env/std"
 )
 
