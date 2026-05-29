@@ -174,6 +174,29 @@ func waitFor(t *testing.T, ch <-chan struct{}, d time.Duration) {
 	}
 }
 
+// awaitServerExit blocks until the server has processed an exit notification
+// (handleExit sets exited under s.mu). Lifecycle tests call this after sending
+// exit, while the connection is still open, so handleExit runs and records the
+// final exit code before newTestPair's cleanup closes the pipe — otherwise the
+// connection teardown can race ahead of exit processing and leave exitCode at
+// its default.
+func awaitServerExit(t *testing.T, srv *Server) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		srv.mu.Lock()
+		exited := srv.exited
+		srv.mu.Unlock()
+		if exited {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for server to process exit")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // --- Tests ---
 
 func TestInitialize_ReturnsExpectedCapabilities(t *testing.T) {
@@ -284,6 +307,7 @@ func TestLifecycle_Happy(t *testing.T) {
 		// connection closing is expected on exit
 		_ = err
 	}
+	awaitServerExit(t, srv)
 }
 
 func TestExit_WithoutShutdown_ExitCode1(t *testing.T) {
@@ -307,6 +331,7 @@ func TestExit_WithoutShutdown_ExitCode1(t *testing.T) {
 		t.Fatalf("initialize: %v", err)
 	}
 	_ = client.notify(ctx, "exit", nil)
+	awaitServerExit(t, srv)
 }
 
 func TestRequestAfterShutdown_InvalidRequest(t *testing.T) {
