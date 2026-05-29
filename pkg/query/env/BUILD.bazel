@@ -1,0 +1,29 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "env",
+    srcs = [
+        "doc.go",
+        "registry.go",
+        "resolve.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/query/env",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/query/api",
+        "//pkg/query/types",
+    ],
+)
+
+go_test(
+    name = "env_test",
+    srcs = [
+        "registry_test.go",
+        "resolve_test.go",
+    ],
+    deps = [
+        ":env",
+        "//pkg/query/api",
+        "//pkg/query/types",
+    ],
+)
