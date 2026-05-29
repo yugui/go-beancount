@@ -18,10 +18,10 @@ import (
 // handleHover handles textDocument/hover. Returns Markdown content describing
 // the symbol at the cursor: account metadata + open date for ACCOUNT tokens;
 // commodity metadata + latest price-on-or-before context-date for CURRENCY
-// tokens. Returns nil result for other token kinds.
-//
-// TODO: extend account hover to include balance as of context date once
-// pkg/inventory exposes a suitable accumulation API.
+// tokens. In addition, when the cursor sits on a directive with an inventory
+// effect (a transaction, a pad, or a balance/close assertion), the directive's
+// before/after effect on per-account inventory is appended. Returns nil when
+// neither applies.
 func (s *Server) handleHover(ctx context.Context, reply jsonrpc2.Replier, raw json.RawMessage) error {
 	var params protocol.HoverParams
 	if err := json.Unmarshal(raw, &params); err != nil {
@@ -39,9 +39,6 @@ func (s *Server) handleHover(ctx context.Context, reply jsonrpc2.Replier, raw js
 
 	file := syntax.Parse(string(src))
 	loc := LocateAt(file, offset)
-	if loc.Token == nil {
-		return reply(ctx, nil, nil)
-	}
 
 	s.mu.Lock()
 	sess := s.session
@@ -60,13 +57,13 @@ func (s *Server) handleHover(ctx context.Context, reply jsonrpc2.Replier, raw js
 	}
 
 	var markdown string
-	switch loc.Token.Kind {
-	case syntax.ACCOUNT:
+	switch {
+	case loc.Token != nil && loc.Token.Kind == syntax.ACCOUNT:
 		markdown = s.hoverAccount(loc.Token.Raw, ledger)
-	case syntax.CURRENCY:
+	case loc.Token != nil && loc.Token.Kind == syntax.CURRENCY:
 		markdown = s.hoverCurrency(loc.Token.Raw, ledger, s.contextDateFor(loc))
 	default:
-		return reply(ctx, nil, nil)
+		markdown = s.hoverInventory(ledger, docURI.Filename(), offset)
 	}
 
 	if markdown == "" {

@@ -436,3 +436,119 @@ func TestHover_ContextDate_FromDirective(t *testing.T) {
 		t.Errorf("handleHover: ContextDate_FromDirective: directive date 2024-12-01 missing from hover, got:\n%s", md)
 	}
 }
+
+// TestHover_InventoryEffect_Transaction: hovering the transaction header (its
+// date) shows the before/after inventory effect for every touched account.
+func TestHover_InventoryEffect_Transaction(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Expenses:Food USD
+2024-01-15 * "Dinner"
+  Assets:Bank  -20 USD
+  Expenses:Food  20 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newHoverServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Line 2 char 2: on the transaction date token.
+	h := awaitHover(t, client, docURI, 2, 2)
+	if h == nil {
+		t.Fatal("handleHover: InventoryEffect_Transaction: got nil, want hover result")
+	}
+	md := h.Contents.Value
+	for _, want := range []string{"Inventory effect", "Assets:Bank", "Expenses:Food", "after", "-20 USD", "20 USD"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("handleHover: InventoryEffect_Transaction: missing %q in:\n%s", want, md)
+		}
+	}
+}
+
+// TestHover_InventoryEffect_Balance: hovering a balance assertion shows the
+// actual state and the asserted amount for comparison.
+func TestHover_InventoryEffect_Balance(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Bank USD
+2024-01-01 open Equity:Open USD
+2024-01-10 * "deposit"
+  Assets:Bank  100 USD
+  Equity:Open  -100 USD
+2024-02-01 balance Assets:Bank 100 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newHoverServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Line 5 char 2: on the balance directive's date token.
+	h := awaitHover(t, client, docURI, 5, 2)
+	if h == nil {
+		t.Fatal("handleHover: InventoryEffect_Balance: got nil, want hover result")
+	}
+	md := h.Contents.Value
+	for _, want := range []string{"Balance assertion", "actual:", "asserted:", "100 USD"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("handleHover: InventoryEffect_Balance: missing %q in:\n%s", want, md)
+		}
+	}
+}
+
+// TestHover_InventoryEffect_NoneForOpen: hovering an open directive's keyword
+// produces no inventory effect (and the account-token branch is not reached).
+func TestHover_InventoryEffect_NoneForOpen(t *testing.T) {
+	dir := t.TempDir()
+	const src = "2024-01-01 open Assets:Bank USD\n"
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newHoverServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Char 2: the date token of the open directive (not an account/currency).
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		h := callHover(t, client, docURI, 0, 2)
+		if h != nil {
+			t.Errorf("handleHover: InventoryEffect_NoneForOpen: got hover on open date, want nil:\n%s", h.Contents.Value)
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestHover_InventoryEffect_BookedPostings: hovering a sale transaction shows
+// the resolved booking outcome at the head — the reduced lot, the realized
+// gain, and the inferred auto-posting.
+func TestHover_InventoryEffect_BookedPostings(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Stock STOCK
+2024-01-01 open Assets:Cash USD
+2024-01-01 open Equity:Open USD
+2024-01-01 open Income:Gains USD
+2024-01-02 * "fund"
+  Assets:Cash  1000 USD
+  Equity:Open  -1000 USD
+2024-01-05 * "buy"
+  Assets:Stock  10 STOCK {10 USD}
+  Assets:Cash  -100 USD
+2024-01-10 * "sell"
+  Assets:Stock  -10 STOCK {10 USD} @ 15 USD
+  Assets:Cash  150 USD
+  Income:Gains
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newHoverServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Line 10 char 2: the "sell" transaction's date token.
+	h := awaitHover(t, client, docURI, 10, 2)
+	if h == nil {
+		t.Fatal("handleHover: InventoryEffect_BookedPostings: got nil, want hover result")
+	}
+	md := h.Contents.Value
+	for _, want := range []string{"Booked postings", "{10 USD", "realized gain 50 USD"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("handleHover: InventoryEffect_BookedPostings: missing %q in:\n%s", want, md)
+		}
+	}
+}
