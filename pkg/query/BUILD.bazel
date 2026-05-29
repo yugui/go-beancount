@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "query",
+    srcs = [
+        "doc.go",
+        "query.go",
+        "result.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/query",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/query/exec",
+        "//pkg/query/parser",
+        "//pkg/query/types",
+    ],
+)
+
+go_test(
+    name = "query_test",
+    srcs = [
+        "aggregate_test.go",
+        "concurrency_test.go",
+        "errors_test.go",
+        "helpers_test.go",
+        "query_test.go",
+    ],
+    deps = [
+        ":query",
+        "//pkg/ast",
+        "//pkg/inventory",
+        "//pkg/query/api",
+        "//pkg/query/env",
+        "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

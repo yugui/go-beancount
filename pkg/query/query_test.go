@@ -1,0 +1,251 @@
+package query_test
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/query"
+	"github.com/yugui/go-beancount/pkg/query/types"
+)
+
+func mustQuery(t *testing.T, q string) query.Result {
+	t.Helper()
+	res, err := query.Query(context.Background(), q, sampleLedger(t))
+	if err != nil {
+		t.Fatalf("Query(%q): %v", q, err)
+	}
+	return res
+}
+
+func colNames(res query.Result) []string {
+	names := make([]string, len(res.Columns))
+	for i, c := range res.Columns {
+		names[i] = c.Name
+	}
+	return names
+}
+
+// column returns the index of the named output column.
+func column(t *testing.T, res query.Result, name string) int {
+	t.Helper()
+	for i, c := range res.Columns {
+		if c.Name == name {
+			return i
+		}
+	}
+	t.Fatalf("no output column %q (have %v)", name, colNames(res))
+	return -1
+}
+
+func cell(res query.Result, row, col int) types.Value { return res.Rows[row][col] }
+
+func TestSelectStar(t *testing.T) {
+	res := mustQuery(t, "SELECT * FROM postings")
+	if len(res.Rows) != 6 {
+		t.Fatalf("rows = %d, want 6", len(res.Rows))
+	}
+	// Schema mirrors the postings table column list, starting with type/date.
+	if res.Columns[0].Name != "type" || res.Columns[1].Name != "date" {
+		t.Fatalf("unexpected leading columns: %v", colNames(res))
+	}
+	if got := len(res.Columns); got != len(res.Rows[0]) {
+		t.Fatalf("row width %d != column count %d", len(res.Rows[0]), got)
+	}
+}
+
+func TestProjectionAliasAndBareName(t *testing.T) {
+	res := mustQuery(t, "SELECT account, number AS amt FROM postings")
+	if want := []string{"account", "amt"}; !equalStrings(colNames(res), want) {
+		t.Fatalf("columns = %v, want %v", colNames(res), want)
+	}
+	if res.Columns[0].Type != types.String || res.Columns[1].Type != types.Decimal {
+		t.Fatalf("unexpected column types: %+v", res.Columns)
+	}
+}
+
+func TestWhereNumericComparison(t *testing.T) {
+	res := mustQuery(t, "SELECT account WHERE number > 10")
+	// Only the +20 and +100 postings exceed 10.
+	if len(res.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(res.Rows))
+	}
+}
+
+func TestWhereStringEquality(t *testing.T) {
+	res := mustQuery(t, "SELECT account WHERE account = 'Assets:Cash'")
+	if len(res.Rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(res.Rows))
+	}
+}
+
+func TestWhereRegexMatch(t *testing.T) {
+	res := mustQuery(t, "SELECT account WHERE account ~ '^Expenses'")
+	if len(res.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(res.Rows))
+	}
+}
+
+func TestWhereBooleanLogic(t *testing.T) {
+	res := mustQuery(t, "SELECT account WHERE number > 0 AND NOT account ~ 'Income'")
+	if len(res.Rows) != 3 {
+		t.Fatalf("rows = %d, want 3 (positive non-income postings)", len(res.Rows))
+	}
+	res = mustQuery(t, "SELECT account WHERE number > 50 OR account = 'Income:Salary'")
+	if len(res.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(res.Rows))
+	}
+}
+
+func TestWhereInList(t *testing.T) {
+	res := mustQuery(t, "SELECT account WHERE account IN ('Income:Salary', 'Expenses:Food')")
+	if len(res.Rows) != 3 {
+		t.Fatalf("rows = %d, want 3", len(res.Rows))
+	}
+}
+
+func TestWhereInSet(t *testing.T) {
+	res := mustQuery(t, "SELECT narration WHERE 'food' IN tags")
+	// Two transactions are tagged "food", 2 postings each = 4 rows.
+	if len(res.Rows) != 4 {
+		t.Fatalf("rows = %d, want 4", len(res.Rows))
+	}
+}
+
+func TestFromExprEqualsWhere(t *testing.T) {
+	l := sampleLedger(t)
+	fromRes, err := query.Query(context.Background(), "SELECT account, number FROM year >= 2021", l)
+	if err != nil {
+		t.Fatalf("FROM query: %v", err)
+	}
+	whereRes, err := query.Query(context.Background(), "SELECT account, number WHERE year >= 2021", l)
+	if err != nil {
+		t.Fatalf("WHERE query: %v", err)
+	}
+	assertResultsEqual(t, fromRes, whereRes)
+}
+
+func TestFromExprAndWhereCombine(t *testing.T) {
+	res := mustQuery(t, "SELECT account FROM year >= 2021 WHERE number > 0")
+	// 2021 coffee +5 and 2022 salary +100 are the positive postings on/after 2021.
+	if len(res.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(res.Rows))
+	}
+}
+
+func TestFromTableReferences(t *testing.T) {
+	postings, err := query.Query(context.Background(), "SELECT account FROM postings", sampleLedger(t))
+	if err != nil {
+		t.Fatalf("FROM postings: %v", err)
+	}
+	if len(postings.Rows) != 6 {
+		t.Fatalf("postings rows = %d, want 6", len(postings.Rows))
+	}
+
+	entries, err := query.Query(context.Background(), "SELECT type FROM entries", sampleLedger(t))
+	if err != nil {
+		t.Fatalf("FROM entries: %v", err)
+	}
+	if len(entries.Rows) != 3 {
+		t.Fatalf("entries rows = %d, want 3 (one per directive)", len(entries.Rows))
+	}
+}
+
+func TestNullPropagation(t *testing.T) {
+	// payee is NULL on the salary-less postings... actually all txns have a
+	// payee here; use cost_number which is NULL on every posting (no costs).
+	res := mustQuery(t, "SELECT account WHERE cost_number > 0")
+	if len(res.Rows) != 0 {
+		t.Fatalf("rows = %d, want 0 (NULL > 0 is never TRUE)", len(res.Rows))
+	}
+	// A comparison with a NULL operand yields NULL, excluded by WHERE.
+	res = mustQuery(t, "SELECT account WHERE cost_number = cost_number")
+	if len(res.Rows) != 0 {
+		t.Fatalf("rows = %d, want 0 (NULL = NULL is NULL)", len(res.Rows))
+	}
+}
+
+func TestRegexBadPatternRuntimeError(t *testing.T) {
+	l := sampleLedger(t)
+	// Non-literal pattern forces per-row compilation; an invalid pattern is a
+	// runtime error, not a panic. account is never NULL so eval reaches the
+	// pattern compile.
+	_, err := query.Query(context.Background(), "SELECT account WHERE account ~ payee", l)
+	if err != nil {
+		t.Fatalf("valid non-literal pattern errored: %v", err)
+	}
+
+	// A literal invalid pattern is caught at compile time.
+	_, cerr := query.Compile("SELECT account WHERE account ~ '['", l)
+	if cerr == nil {
+		t.Fatal("compiling an invalid literal pattern did not error")
+	}
+}
+
+func TestRegexBadPatternFromColumn(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(&ast.Transaction{
+		Date:      date(2020, 1, 1),
+		Flag:      '*',
+		Narration: "[", // invalid regex
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &ast.Amount{Number: dec(t, "1"), Currency: "USD"}},
+		},
+	})
+	res, err := query.Query(context.Background(), "SELECT account WHERE account ~ narration", l)
+	if err == nil {
+		t.Fatalf("expected runtime regex error, got %d rows", len(res.Rows))
+	}
+	if !strings.Contains(err.Error(), "regular expression") {
+		t.Fatalf("error = %v, want a regex compile error", err)
+	}
+}
+
+func TestMetaSugar(t *testing.T) {
+	res := mustQuery(t, "SELECT account, meta('category') AS cat WHERE account = 'Expenses:Food'")
+	catCol := column(t, res, "cat")
+	var present, null int
+	for _, row := range res.Rows {
+		if row[catCol].IsNull() {
+			null++
+		} else {
+			present++
+			if s, _ := types.AsString(row[catCol]); s != "groceries" {
+				t.Fatalf("category = %q, want groceries", s)
+			}
+		}
+	}
+	if present != 1 || null != 1 {
+		t.Fatalf("present=%d null=%d, want 1 and 1 (only the grocery posting has the key)", present, null)
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func assertResultsEqual(t *testing.T, a, b query.Result) {
+	t.Helper()
+	if !equalStrings(colNames(a), colNames(b)) {
+		t.Fatalf("columns differ: %v vs %v", colNames(a), colNames(b))
+	}
+	if len(a.Rows) != len(b.Rows) {
+		t.Fatalf("row counts differ: %d vs %d", len(a.Rows), len(b.Rows))
+	}
+	for i := range a.Rows {
+		for j := range a.Rows[i] {
+			if a.Rows[i][j].Compare(b.Rows[i][j]) != 0 {
+				t.Fatalf("row %d col %d differ: %v vs %v", i, j, a.Rows[i][j], b.Rows[i][j])
+			}
+		}
+	}
+}

@@ -1,0 +1,24 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "exec",
+    srcs = [
+        "compile.go",
+        "doc.go",
+        "eval.go",
+        "operators.go",
+        "plan.go",
+        "run.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/query/exec",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/query/api",
+        "//pkg/query/env",
+        "//pkg/query/parser",
+        "//pkg/query/table",
+        "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
