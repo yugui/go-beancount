@@ -11,6 +11,20 @@ import (
 	"go.lsp.dev/uri"
 )
 
+// serverCapabilitiesExt extends protocol.ServerCapabilities with
+// inlayHintProvider, which go.lsp.dev/protocol v0.12.0 (LSP 3.16) omits.
+type serverCapabilitiesExt struct {
+	protocol.ServerCapabilities
+	InlayHintProvider bool `json:"inlayHintProvider,omitempty"`
+}
+
+// initializeResultExt mirrors protocol.InitializeResult but carries the
+// extended capabilities so inlayHintProvider reaches the wire.
+type initializeResultExt struct {
+	Capabilities serverCapabilitiesExt `json:"capabilities"`
+	ServerInfo   *protocol.ServerInfo  `json:"serverInfo,omitempty"`
+}
+
 // handleInitialize handles the LSP initialize request.
 func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, raw json.RawMessage) error {
 	s.mu.Lock()
@@ -42,40 +56,46 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 	s.logger.Printf("initialized root=%s", root)
 	s.startSubscriber()
 
-	result := &protocol.InitializeResult{
+	result := &initializeResultExt{
 		ServerInfo: &protocol.ServerInfo{
 			Name:    "beancount-lsp",
 			Version: "0.0.0",
 		},
-		Capabilities: protocol.ServerCapabilities{
-			TextDocumentSync: &protocol.TextDocumentSyncOptions{
-				OpenClose: true,
-				Change:    protocol.TextDocumentSyncKindIncremental,
-				Save:      &protocol.SaveOptions{IncludeText: false},
-			},
-			HoverProvider:                   true,
-			DocumentFormattingProvider:      true,
-			DocumentRangeFormattingProvider: true,
-			DocumentSymbolProvider:          true,
-			DefinitionProvider:              true,
-			RenameProvider:                  &protocol.RenameOptions{PrepareProvider: true},
-			CompletionProvider: &protocol.CompletionOptions{
-				// Trigger characters cover lexical positions where the user
-				// has just committed to a specific completion context and
-				// will not otherwise hit a word-boundary that the client
-				// auto-triggers on:
-				//   `:` — account path separator
-				//   `#` — tag introducer
-				//   `^` — link introducer
-				//   `"` — start of payee/narration or metadata string
-				// `*` and `!` (transaction flags) remain excluded: they
-				// open no string scope, and triggering on them would
-				// misfire whenever they appear inside arithmetic or
-				// number-flag mixes. classifyContext returns no
-				// candidates for ContextInString / ContextUnknown, so a
-				// stray `"` (e.g. inside option/plugin strings) silently
-				// produces an empty list rather than wrong suggestions.
-				TriggerCharacters: []string{":", "#", "^", "\""},
+		Capabilities: serverCapabilitiesExt{
+			// inlayHintProvider has no field in go.lsp.dev/protocol v0.12.0
+			// (LSP 3.16); the wrapper marshals it alongside the typed
+			// capabilities. See serverCapabilitiesExt.
+			InlayHintProvider: true,
+			ServerCapabilities: protocol.ServerCapabilities{
+				TextDocumentSync: &protocol.TextDocumentSyncOptions{
+					OpenClose: true,
+					Change:    protocol.TextDocumentSyncKindIncremental,
+					Save:      &protocol.SaveOptions{IncludeText: false},
+				},
+				HoverProvider:                   true,
+				DocumentFormattingProvider:      true,
+				DocumentRangeFormattingProvider: true,
+				DocumentSymbolProvider:          true,
+				DefinitionProvider:              true,
+				RenameProvider:                  &protocol.RenameOptions{PrepareProvider: true},
+				CompletionProvider: &protocol.CompletionOptions{
+					// Trigger characters cover lexical positions where the user
+					// has just committed to a specific completion context and
+					// will not otherwise hit a word-boundary that the client
+					// auto-triggers on:
+					//   `:` — account path separator
+					//   `#` — tag introducer
+					//   `^` — link introducer
+					//   `"` — start of payee/narration or metadata string
+					// `*` and `!` (transaction flags) remain excluded: they
+					// open no string scope, and triggering on them would
+					// misfire whenever they appear inside arithmetic or
+					// number-flag mixes. classifyContext returns no
+					// candidates for ContextInString / ContextUnknown, so a
+					// stray `"` (e.g. inside option/plugin strings) silently
+					// produces an empty list rather than wrong suggestions.
+					TriggerCharacters: []string{":", "#", "^", "\""},
+				},
 			},
 		},
 	}

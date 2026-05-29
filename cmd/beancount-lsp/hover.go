@@ -147,22 +147,13 @@ func (s *Server) hoverAccount(account string, ledger *ast.Ledger) string {
 // are not synthesized (Beancount Price semantics are directional).
 func (s *Server) hoverCurrency(currency string, ledger *ast.Ledger, contextDate time.Time) string {
 	var commodity *ast.Commodity
-	var latestPrice *ast.Price
-
 	for _, d := range ledger.All() {
-		switch v := d.(type) {
-		case *ast.Commodity:
-			if v.Currency == currency && commodity == nil {
-				commodity = v
-			}
-		case *ast.Price:
-			if v.Commodity == currency && !v.Date.After(contextDate) {
-				if latestPrice == nil || !v.Date.Before(latestPrice.Date) {
-					latestPrice = v
-				}
-			}
+		if c, ok := d.(*ast.Commodity); ok && c.Currency == currency {
+			commodity = c
+			break
 		}
 	}
+	latestPrice := latestPriceOnOrBefore(ledger, currency, contextDate)
 
 	if commodity == nil && latestPrice == nil {
 		return ""
@@ -190,6 +181,25 @@ func (s *Server) hoverCurrency(currency string, ledger *ast.Ledger, contextDate 
 	}
 
 	return sb.String()
+}
+
+// latestPriceOnOrBefore returns the most recent Price directive for currency
+// dated on or before contextDate, or nil if none exists. Only base-side
+// matches are considered; quote-side inverses are not synthesized (Beancount
+// Price semantics are directional). Ties favor the later directive in ledger
+// iteration order.
+func latestPriceOnOrBefore(ledger *ast.Ledger, currency string, contextDate time.Time) *ast.Price {
+	var latest *ast.Price
+	for _, d := range ledger.All() {
+		p, ok := d.(*ast.Price)
+		if !ok || p.Commodity != currency || p.Date.After(contextDate) {
+			continue
+		}
+		if latest == nil || !p.Date.Before(latest.Date) {
+			latest = p
+		}
+	}
+	return latest
 }
 
 // fmtMetadata returns sorted "key: value" lines for m's properties.

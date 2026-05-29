@@ -83,6 +83,8 @@ func dispatch(ctx context.Context, s *Server, reply jsonrpc2.Replier, req jsonrp
 		return s.handleDefinition(ctx, reply, raw)
 	case "textDocument/hover":
 		return s.handleHover(ctx, reply, raw)
+	case "textDocument/inlayHint":
+		return s.handleInlayHint(ctx, reply, raw)
 	case "textDocument/completion":
 		return s.handleCompletion(ctx, reply, raw)
 	case "textDocument/prepareRename":
