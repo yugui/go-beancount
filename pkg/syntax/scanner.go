@@ -372,9 +372,9 @@ func isOtherIDContinue(r rune) bool {
 	return false
 }
 
-// isCurrency reports whether word matches the currency pattern:
+// IsCurrency reports whether word matches the currency pattern:
 // 1+ chars, all [A-Z0-9'._-], starts and ends with [A-Z0-9].
-func isCurrency(word string) bool {
+func IsCurrency(word string) bool {
 	if len(word) == 0 {
 		return false
 	}
@@ -389,6 +389,21 @@ func isCurrency(word string) bool {
 	for i := 1; i < len(word)-1; i++ {
 		ch := word[i]
 		if !((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '\'' || ch == '.' || ch == '_' || ch == '-') {
+			return false
+		}
+	}
+	return true
+}
+
+// IsTagLinkName reports whether name is a valid tag or link body — the text
+// following the '#' or '^' sigil. A valid name is one or more characters, each
+// in [A-Za-z0-9_-], matching what the scanner accepts for TAG and LINK tokens.
+func IsTagLinkName(name string) bool {
+	if len(name) == 0 {
+		return false
+	}
+	for i := 0; i < len(name); i++ {
+		if !isTagLinkChar(name[i]) {
 			return false
 		}
 	}
@@ -442,7 +457,7 @@ func (s *scanner) scanUpperWord() Token {
 	}
 
 	// Check if it's a currency
-	if isCurrency(word) {
+	if IsCurrency(word) {
 		return Token{Kind: CURRENCY, Pos: pos, Raw: s.src[pos:s.offset]}
 	}
 

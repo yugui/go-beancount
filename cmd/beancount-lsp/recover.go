@@ -85,6 +85,10 @@ func dispatch(ctx context.Context, s *Server, reply jsonrpc2.Replier, req jsonrp
 		return s.handleHover(ctx, reply, raw)
 	case "textDocument/completion":
 		return s.handleCompletion(ctx, reply, raw)
+	case "textDocument/prepareRename":
+		return s.handlePrepareRename(ctx, reply, raw)
+	case "textDocument/rename":
+		return s.handleRename(ctx, reply, raw)
 	case "workspace/didChangeWatchedFiles":
 		return s.handleDidChangeWatchedFiles(ctx, reply, raw)
 	default:
