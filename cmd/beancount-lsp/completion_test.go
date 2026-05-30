@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -1004,5 +1005,56 @@ func TestCompletion_EmptyLedger(t *testing.T) {
 
 	if len(list.Items) != 0 {
 		t.Errorf("handleCompletion: EmptyLedger: got %d items, want 0: %v", len(list.Items), labelSet(list.Items))
+	}
+}
+
+// lowerHexEscapes lowercases the hex digits of every %XX percent-escape in u,
+// mimicking clients (e.g. Neovim) that emit lowercase percent-encoding where
+// uri.File emits uppercase.
+func lowerHexEscapes(u uri.URI) uri.URI {
+	re := regexp.MustCompile(`%[0-9A-Fa-f]{2}`)
+	return uri.URI(re.ReplaceAllStringFunc(string(u), strings.ToLower))
+}
+
+// TestCompletion_Account_MultibytePath: an opened document whose path contains
+// multibyte characters is keyed by its decoded filesystem path, so account
+// completion uses the live buffer even when the client's URI uses lowercase
+// percent-escapes that differ byte-for-byte from uri.File's uppercase form.
+// The included file on disk lacks the posting line present in the buffer; if the
+// server fell back to disk content, completion would see no posting and return
+// nothing.
+func TestCompletion_Account_MultibytePath(t *testing.T) {
+	dir := t.TempDir()
+	const rootSrc = `2020-01-01 open Assets:A
+2020-01-01 open Assets:A:B
+include "ビーンカウント/test.beancount"
+`
+	rootFile := writeTempFile(t, dir, "lsp.beancount", rootSrc)
+	if err := os.MkdirAll(filepath.Join(dir, "ビーンカウント"), 0o755); err != nil {
+		t.Fatalf("TestCompletion_Account_MultibytePath: mkdir: %v", err)
+	}
+	writeTempFile(t, dir, filepath.Join("ビーンカウント", "test.beancount"), "2020-01-05 * \"\"\n")
+
+	client := newCompletionServer(t, rootFile)
+
+	testPath := filepath.Join(dir, "ビーンカウント", "test.beancount")
+	lowURI := lowerHexEscapes(uri.File(testPath))
+	if string(lowURI) == string(uri.File(testPath)) {
+		t.Fatalf("expected multibyte path to produce percent-escapes")
+	}
+
+	ctx := context.Background()
+	// Buffer diverges from disk: it carries the posting prefix line.
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: lowURI, Version: 1, Text: "2020-01-05 * \"\"\n  Asse\n"},
+	}); err != nil {
+		t.Fatalf("TestCompletion_Account_MultibytePath: didOpen: %v", err)
+	}
+
+	// Line 1, char 6 — end of "  Asse".
+	list := awaitCompletion(t, client, lowURI, 1, 6, 2)
+
+	if !containsLabel(list.Items, "Assets:A") || !containsLabel(list.Items, "Assets:A:B") {
+		t.Fatalf("labels = %v, want Assets:A and Assets:A:B", labelSet(list.Items))
 	}
 }
