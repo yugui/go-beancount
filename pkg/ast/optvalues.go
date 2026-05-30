@@ -175,6 +175,37 @@ func (v *OptionValues) String(key string) string {
 	return s.defaultValue.(string)
 }
 
+// EquityAccount returns the equity-rooted account named by key, joined
+// under name_equity. The registered defaults for keys like
+// account_previous_balances, account_previous_earnings, and
+// account_current_earnings hold the portion below name_equity (e.g.
+// "Opening-Balances", "Earnings:Previous") and must be combined with
+// name_equity to form the actual posting target.
+//
+// For the default options this yields:
+//
+//	EquityAccount("account_previous_balances")  → "Equity:Opening-Balances"
+//	EquityAccount("account_previous_earnings")  → "Equity:Earnings:Previous"
+//	EquityAccount("account_current_earnings")   → "Equity:Earnings:Current"
+//
+// Mirrors beancount's options.account.join used by get_previous_accounts
+// and get_current_accounts. If either side is empty the non-empty side
+// is returned alone; if both are empty the result is the empty account.
+func (v *OptionValues) EquityAccount(key string) Account {
+	leaf := v.String(key)
+	equity := v.String("name_equity")
+	switch {
+	case leaf == "" && equity == "":
+		return Account("")
+	case leaf == "":
+		return Account(equity)
+	case equity == "":
+		return Account(leaf)
+	default:
+		return Account(equity + ":" + leaf)
+	}
+}
+
 // Bool returns the bool value for key.
 func (v *OptionValues) Bool(key string) bool {
 	s := v.lookupSpec(key)

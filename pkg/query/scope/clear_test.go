@@ -62,8 +62,8 @@ func TestClearSynthesizesIncomeExpenseClearings(t *testing.T) {
 	if got := food.Postings[0].Amount.Number.String(); got != "-100" {
 		t.Errorf("Expenses:Food acct leg = %s, want -100", got)
 	}
-	if food.Postings[1].Account != "Earnings:Current" {
-		t.Errorf("Expenses:Food routing = %q, want Earnings:Current", food.Postings[1].Account)
+	if food.Postings[1].Account != "Equity:Earnings:Current" {
+		t.Errorf("Expenses:Food routing = %q, want Equity:Earnings:Current", food.Postings[1].Account)
 	}
 	if got := food.Postings[1].Amount.Number.String(); got != "100" {
 		t.Errorf("Expenses:Food routing leg = %s, want 100", got)
@@ -173,10 +173,10 @@ func TestClearWithOpenUsesLastEntryDate(t *testing.T) {
 	})
 
 	clearings := findClearings(t, got)
-	// Earnings:Previous is rooted in Equity (account_previous_earnings's
-	// default is Earnings:Previous), so it must NOT be cleared.
-	if _, ok := clearings["Earnings:Previous"]; ok {
-		t.Errorf("Earnings:Previous was cleared; equity must not be cleared")
+	// Equity:Earnings:Previous (account_previous_earnings under name_equity)
+	// is rooted in Equity, so it must NOT be cleared.
+	if _, ok := clearings["Equity:Earnings:Previous"]; ok {
+		t.Errorf("Equity:Earnings:Previous was cleared; equity must not be cleared")
 	}
 
 	// Income:Salary has post-D activity (the 2022-06-15 txn) so CLEAR
@@ -274,10 +274,12 @@ func TestClearCustomNameIncome(t *testing.T) {
 }
 
 // TestClearCustomAccountCurrentEarnings verifies the routing account follows
-// account_current_earnings.
+// account_current_earnings, joined under name_equity. The option value
+// stores the portion below name_equity (a leaf, possibly multi-segment),
+// matching beancount's options.get_current_accounts convention.
 func TestClearCustomAccountCurrentEarnings(t *testing.T) {
 	opts := parseOptionsFromKV(t, map[string]string{
-		"account_current_earnings": "Equity:Pnl",
+		"account_current_earnings": "Pnl",
 	})
 	l := &ast.Ledger{Options: opts}
 	l.InsertAll([]ast.Directive{
@@ -297,7 +299,7 @@ func TestClearCustomAccountCurrentEarnings(t *testing.T) {
 		t.Fatal("Income:Salary clearing missing")
 	}
 	if route := salary.Postings[1].Account; route != "Equity:Pnl" {
-		t.Errorf("routing = %q, want Equity:Pnl (custom account_current_earnings)", route)
+		t.Errorf("routing = %q, want Equity:Pnl (custom account_current_earnings under default name_equity)", route)
 	}
 }
 

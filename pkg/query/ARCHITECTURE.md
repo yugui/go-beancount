@@ -245,7 +245,13 @@ pipeline:
   income/expense openings do not post the source account (its running total
   resets across the boundary, matching beanquery `summarize`) — the
   cumulative balance transfers to `account_previous_earnings` with the
-  opposing leg on `account_previous_balances`. `Open`
+  opposing leg on `account_previous_balances`. The equity targets
+  (`account_previous_balances`, `account_previous_earnings`,
+  `account_current_earnings`) follow beancount's convention: the option
+  value is the portion below `name_equity`, joined via
+  `OptionValues.EquityAccount` so the defaults yield
+  `Equity:Opening-Balances`, `Equity:Earnings:Previous`, and
+  `Equity:Earnings:Current`. `Open`
   directives dated `< D` are preserved; the kept tail is the original directive
   stream dated `>= D` (bounded above by `CLOSE` when set). `CLEAR` walks the
   OPEN- and CLOSE-shaped stream, accumulates per-account inventories for

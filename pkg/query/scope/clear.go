@@ -57,7 +57,7 @@ func clearTail(l *ast.Ledger, s Spec, kept []ast.Directive) iter.Seq2[int, ast.D
 	}
 	slices.Sort(accounts)
 
-	routing := ast.Account(l.Options.String("account_current_earnings"))
+	routing := l.Options.EquityAccount("account_current_earnings")
 	clearings := make([]ast.Directive, 0, len(accounts))
 	for _, a := range accounts {
 		clearings = append(clearings, synthesizeClearingTxn(a, routing, invMap[a], boundary))

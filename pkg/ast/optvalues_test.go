@@ -276,6 +276,55 @@ func TestDefaultRegistryKeys(t *testing.T) {
 	}
 }
 
+func TestOptionValuesEquityAccount(t *testing.T) {
+	t.Run("defaults", func(t *testing.T) {
+		v := NewOptionValues()
+		cases := []struct {
+			key  string
+			want Account
+		}{
+			{"account_previous_balances", "Equity:Opening-Balances"},
+			{"account_previous_earnings", "Equity:Earnings:Previous"},
+			{"account_previous_conversions", "Equity:Conversions:Previous"},
+			{"account_current_earnings", "Equity:Earnings:Current"},
+			{"account_current_conversions", "Equity:Conversions:Current"},
+			{"account_unrealized_gains", "Equity:Earnings:Unrealized"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.key, func(t *testing.T) {
+				if got := v.EquityAccount(tc.key); got != tc.want {
+					t.Errorf("EquityAccount(%q) = %q, want %q", tc.key, got, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("custom_name_equity", func(t *testing.T) {
+		l := &Ledger{}
+		l.Insert(&Option{Key: "name_equity", Value: "Capital"})
+		v, _ := ParseOptions(l)
+		if got := v.EquityAccount("account_previous_balances"); got != "Capital:Opening-Balances" {
+			t.Errorf("EquityAccount = %q, want Capital:Opening-Balances", got)
+		}
+	})
+
+	t.Run("empty_leaf_returns_equity_root", func(t *testing.T) {
+		l := &Ledger{}
+		l.Insert(&Option{Key: "account_rounding", Value: ""})
+		v, _ := ParseOptions(l)
+		if got := v.EquityAccount("account_rounding"); got != "Equity" {
+			t.Errorf("EquityAccount(empty leaf) = %q, want Equity", got)
+		}
+	})
+
+	t.Run("nil_receiver_uses_registry_defaults", func(t *testing.T) {
+		var v *OptionValues
+		if got := v.EquityAccount("account_previous_balances"); got != "Equity:Opening-Balances" {
+			t.Errorf("EquityAccount on nil = %q, want Equity:Opening-Balances", got)
+		}
+	})
+}
+
 func TestOptionValuesNilSafeAccessors(t *testing.T) {
 	var v *OptionValues
 

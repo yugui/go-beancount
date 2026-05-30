@@ -346,10 +346,10 @@ func TestOpenOnPostingsSyntheticOpenings(t *testing.T) {
 	}
 
 	want := map[string]string{
-		"Assets:Cash":       "75",
-		"Income:Salary":     "-100",
-		"Opening-Balances":  "0",
-		"Earnings:Previous": "25",
+		"Assets:Cash":              "75",
+		"Income:Salary":            "-100",
+		"Equity:Opening-Balances":  "0",
+		"Equity:Earnings:Previous": "25",
 	}
 	if len(totals) != len(want) {
 		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
@@ -448,10 +448,10 @@ func TestClearZeroesIncomeAndExpenseTotals(t *testing.T) {
 	//   Assets:Cash = 75 (untouched)
 	//   Earnings:Current carries the original balances: +25 + (-100) = -75
 	want := map[string]string{
-		"Assets:Cash":      "75",
-		"Expenses:Food":    "0",
-		"Income:Salary":    "0",
-		"Earnings:Current": "-75",
+		"Assets:Cash":             "75",
+		"Expenses:Food":           "0",
+		"Income:Salary":           "0",
+		"Equity:Earnings:Current": "-75",
 	}
 	if len(totals) != len(want) {
 		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
@@ -493,9 +493,9 @@ func TestClearWithCloseUsesCloseMinusOneDay(t *testing.T) {
 		totals[acct] = d.String()
 	}
 	want := map[string]string{
-		"Assets:Cash":      "-25",
-		"Expenses:Food":    "0",
-		"Earnings:Current": "25",
+		"Assets:Cash":             "-25",
+		"Expenses:Food":           "0",
+		"Equity:Earnings:Current": "25",
 	}
 	if len(totals) != len(want) {
 		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
@@ -534,8 +534,8 @@ func TestClearWithOpenZeroesIncomeAndExpense(t *testing.T) {
 			t.Errorf("%s total after OPEN+CLEAR = %s, want 0", acct, total)
 		}
 	}
-	if _, ok := totals["Earnings:Current"]; !ok {
-		t.Errorf("Earnings:Current missing from results")
+	if _, ok := totals["Equity:Earnings:Current"]; !ok {
+		t.Errorf("Equity:Earnings:Current missing from results")
 	}
 }
 
@@ -591,16 +591,16 @@ func TestOpenResetsIncomeAccountAcrossBoundary(t *testing.T) {
 		totals[acct] = d.String()
 	}
 	// Expected (matches beanquery):
-	//   Assets:A          =  10 (opening) + 100 (period)            = 110
-	//   Income:A          =        -100  (period only; pre-D reset) = -100
-	//   Earnings:Previous =   -10        (pre-D Income transfer)    = -10
-	//   Opening-Balances  =  -10 (Assets opening pair)
-	//                       + 10 (Income transfer's opposing leg)   = 0
+	//   Assets:A                 =  10 (opening) + 100 (period)            = 110
+	//   Income:A                 =        -100  (period only; pre-D reset) = -100
+	//   Equity:Earnings:Previous =   -10        (pre-D Income transfer)    = -10
+	//   Equity:Opening-Balances  =  -10 (Assets opening pair)
+	//                              + 10 (Income transfer's opposing leg)   = 0
 	want := map[string]string{
-		"Assets:A":          "110",
-		"Income:A":          "-100",
-		"Earnings:Previous": "-10",
-		"Opening-Balances":  "0",
+		"Assets:A":                 "110",
+		"Income:A":                 "-100",
+		"Equity:Earnings:Previous": "-10",
+		"Equity:Opening-Balances":  "0",
 	}
 	if len(totals) != len(want) {
 		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
