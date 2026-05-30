@@ -115,7 +115,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 			return diags
 		}
 		if !within {
-			residual = append(residual, cur)
+			residual = append(residual, sums[cur].Text('f')+" "+cur)
 		}
 	}
 
@@ -126,7 +126,7 @@ func (v *transactionBalances) ProcessEntry(d ast.Directive) []ast.Diagnostic {
 		diags = append(diags, ast.Diagnostic{
 			Code:    string(validation.CodeUnbalancedTransaction),
 			Span:    txn.Span,
-			Message: fmt.Sprintf("transaction does not balance: non-zero residual in %s", strings.Join(residual, ", ")),
+			Message: fmt.Sprintf("transaction does not balance: non-zero residual %s", strings.Join(residual, ", ")),
 		})
 	}
 	return diags

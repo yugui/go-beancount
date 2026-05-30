@@ -233,7 +233,7 @@ func TestPlugin_UnbalancedTransaction(t *testing.T) {
 	want := []ast.Diagnostic{{
 		Code:     "unbalanced-transaction",
 		Span:     txnSpan,
-		Message:  `transaction does not balance: non-zero residual in USD`,
+		Message:  `transaction does not balance: non-zero residual 10 USD`,
 		Severity: ast.Error,
 	}}
 	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
