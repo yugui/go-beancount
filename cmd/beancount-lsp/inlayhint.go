@@ -84,17 +84,18 @@ func (s *Server) handleInlayHint(ctx context.Context, reply jsonrpc2.Replier, ra
 	return reply(ctx, hints, nil)
 }
 
-// collectInlayHints assembles all inlay hints for the directives that originate
-// in absFile. booked is the booking-resolved ledger (auto amounts filled, cost
-// specs resolved); src/lo are the current source bytes and line table for
-// absFile. Omission detection re-lowers src (unbooked) so the original
-// nil-ness of amounts and cost-spec fields is observable, then correlates to
-// booked postings by source span.
+// collectInlayHints assembles all inlay hints for absFile. booked is the
+// booking-resolved ledger (auto amounts filled, cost specs resolved); src/lo
+// are the current source bytes and line table. Currency tokens are annotated
+// with their commodity's display name; postings are annotated with inferred
+// amounts and resolved costs, detected by re-lowering src (unbooked) so the
+// original nil-ness of amounts and cost-spec fields stays observable and
+// correlating to booked postings by source span.
 func collectInlayHints(absFile string, booked *ast.Ledger, src []byte, lo lineOffsets) []inlayHint {
-	unbooked := ast.Lower(absFile, syntax.Parse(string(src)))
-	omit := indexOmissions(unbooked)
+	cst := syntax.Parse(string(src))
+	omit := indexOmissions(ast.Lower(absFile, cst))
 
-	hints := commodityHints(absFile, booked, src, lo)
+	hints := currencyNameHints(cst, commodityNameOverrides(booked), src, lo)
 	hints = append(hints, postingHints(absFile, booked, omit, src, lo)...)
 	return hints
 }
@@ -159,31 +160,62 @@ func costFieldsOmitted(c ast.CostHolder) bool {
 	return spec.Date == nil
 }
 
-// commodityHints emits one hint per commodity directive in absFile: its display
-// name plus the price as of the directive's own date when one is recorded.
-func commodityHints(absFile string, booked *ast.Ledger, src []byte, lo lineOffsets) []inlayHint {
-	var hints []inlayHint
-	for _, d := range booked.All() {
+// commodityNameOverrides maps a currency to its commodity's display name, but
+// only when a "name" metadata is set to something other than the currency code
+// itself. Currencies without a meaningful name are omitted so that hints never
+// redundantly repeat the code already on screen.
+func commodityNameOverrides(ledger *ast.Ledger) map[string]string {
+	m := make(map[string]string)
+	for _, d := range ledger.All() {
 		c, ok := d.(*ast.Commodity)
-		if !ok || c.Span.Start.Filename != absFile {
+		if !ok {
 			continue
 		}
-		label := commodityDisplayName(c)
-		if price := latestPriceOnOrBefore(booked, c.Currency, c.Date); price != nil {
-			label = fmt.Sprintf("%s · %s %s @%s",
-				label,
-				price.Amount.Number.String(), price.Amount.Currency,
-				price.Date.Format("2006-01-02"),
-			)
+		if name := commodityDisplayName(c); name != c.Currency {
+			m[c.Currency] = name
 		}
-		hints = append(hints, inlayHint{
-			Position:    lineEndPosition(c.Span, src, lo),
-			Label:       label,
-			Kind:        inlayHintKindType,
-			PaddingLeft: true,
-		})
+	}
+	return m
+}
+
+// currencyNameHints emits a display-name hint after every CURRENCY token whose
+// commodity has a name override. Tokens inside a commodity directive are
+// skipped: that declaration introduces the name and is not itself annotated.
+func currencyNameHints(file *syntax.File, names map[string]string, src []byte, lo lineOffsets) []inlayHint {
+	if len(names) == 0 || file == nil || file.Root == nil {
+		return nil
+	}
+	var hints []inlayHint
+	for _, child := range file.Root.Children {
+		if child.Node == nil || child.Node.Kind == syntax.CommodityDirective {
+			continue
+		}
+		collectCurrencyHints(child.Node, names, src, lo, &hints)
 	}
 	return hints
+}
+
+func collectCurrencyHints(n *syntax.Node, names map[string]string, src []byte, lo lineOffsets, out *[]inlayHint) {
+	for _, c := range n.Children {
+		switch {
+		case c.Token != nil:
+			if c.Token.Kind != syntax.CURRENCY {
+				continue
+			}
+			name, ok := names[c.Token.Raw]
+			if !ok {
+				continue
+			}
+			*out = append(*out, inlayHint{
+				Position:    byteOffsetToLSP(c.Token.End(), src, lo),
+				Label:       name,
+				Kind:        inlayHintKindType,
+				PaddingLeft: true,
+			})
+		case c.Node != nil:
+			collectCurrencyHints(c.Node, names, src, lo, out)
+		}
+	}
 }
 
 // postingHints emits inferred-amount and resolved-cost hints for postings whose

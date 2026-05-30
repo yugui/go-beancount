@@ -65,51 +65,84 @@ func hintsOnLine(hints []inlayHint, line uint32) []string {
 	return out
 }
 
-func TestInlayHint_Commodity_NameAndPrice(t *testing.T) {
+// The commodity name hint appears wherever the currency is used as a
+// Currency, not on the commodity directive itself.
+func TestInlayHint_CommodityName_AtUsage(t *testing.T) {
 	dir := t.TempDir()
 	const src = `2024-03-15 commodity AAPL
   name: "Apple Inc."
+2024-01-01 open Assets:Stock
 2024-03-15 price AAPL 195.00 USD
 `
 	rootFile := writeTempFile(t, dir, "main.beancount", src)
 	client := newHoverServer(t, rootFile)
 
 	hints := awaitInlayHints(t, client, uri.File(rootFile), allRange)
-	got := hintsOnLine(hints, 0)
-	want := "Apple Inc. · 195.00 USD @2024-03-15"
-	if len(got) != 1 || got[0] != want {
-		t.Fatalf("commodity hint on line 0 = %q, want [%q]", got, want)
+
+	// No hint on the commodity directive (line 0) nor its metadata (line 1).
+	if got := hintsOnLine(hints, 0); len(got) != 0 {
+		t.Errorf("commodity directive line should carry no name hint, got %q", got)
+	}
+	// The currency usage in the price directive (line 3) is annotated.
+	if got := hintsOnLine(hints, 3); len(got) != 1 || got[0] != "Apple Inc." {
+		t.Fatalf("currency-usage hint on line 3 = %q, want [\"Apple Inc.\"]", got)
 	}
 }
 
-func TestInlayHint_Commodity_NoNameUsesCurrency(t *testing.T) {
+// A currency whose name is absent (or equal to the code) gets no hint, to
+// avoid echoing the code already on screen.
+func TestInlayHint_CommodityName_NoNameNoHint(t *testing.T) {
 	dir := t.TempDir()
 	const src = `2024-03-15 commodity AAPL
 2024-03-15 price AAPL 195.00 USD
 `
 	rootFile := writeTempFile(t, dir, "main.beancount", src)
 	client := newHoverServer(t, rootFile)
+	docURI := uri.File(rootFile)
 
-	hints := awaitInlayHints(t, client, uri.File(rootFile), allRange)
-	got := hintsOnLine(hints, 0)
-	want := "AAPL · 195.00 USD @2024-03-15"
-	if len(got) != 1 || got[0] != want {
-		t.Fatalf("commodity hint on line 0 = %q, want [%q]", got, want)
+	// Warm up the snapshot, then assert no name hints appear anywhere.
+	_ = awaitInlayHints(t, client, docURI, allRange)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		for _, h := range callInlayHint(t, client, docURI, allRange) {
+			if h.Label == "AAPL" {
+				t.Fatalf("unnamed commodity should produce no name hint, got %q", h.Label)
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-func TestInlayHint_Commodity_NoPriceNameOnly(t *testing.T) {
+// The hint anchors immediately after the currency token, not at line end.
+func TestInlayHint_CommodityName_PositionAfterToken(t *testing.T) {
 	dir := t.TempDir()
+	// "  Assets:Stock  10 AAPL @ 200.00 USD" — AAPL ends mid-line.
 	const src = `2024-03-15 commodity AAPL
   name: "Apple Inc."
+2024-01-01 open Assets:Stock
+2024-01-01 open Assets:Cash
+2024-03-15 * "Buy"
+  Assets:Stock  10 AAPL @ 200.00 USD
+  Assets:Cash
 `
 	rootFile := writeTempFile(t, dir, "main.beancount", src)
 	client := newHoverServer(t, rootFile)
 
 	hints := awaitInlayHints(t, client, uri.File(rootFile), allRange)
-	got := hintsOnLine(hints, 0)
-	if len(got) != 1 || got[0] != "Apple Inc." {
-		t.Fatalf("commodity hint on line 0 = %q, want [\"Apple Inc.\"]", got)
+	var found *inlayHint
+	for i := range hints {
+		if hints[i].Label == "Apple Inc." {
+			found = &hints[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected an \"Apple Inc.\" hint, got %+v", hints)
+	}
+	// "  Assets:Stock  10 AAPL" → AAPL ends at character 23 on line 5.
+	if found.Position.Line != 5 || found.Position.Character != 23 {
+		t.Errorf("name hint at line %d char %d, want line 5 char 23",
+			found.Position.Line, found.Position.Character)
 	}
 }
 
@@ -199,33 +232,35 @@ func TestInlayHint_RangeFilter(t *testing.T) {
 	dir := t.TempDir()
 	var sb strings.Builder
 	sb.WriteString("2024-03-15 commodity AAA\n")      // line 0
-	sb.WriteString("2024-03-15 price AAA 1.00 USD\n") // line 1
+	sb.WriteString("  name: \"Alpha\"\n")             // line 1
+	sb.WriteString("2024-03-15 commodity BBB\n")      // line 2
+	sb.WriteString("  name: \"Beta\"\n")              // line 3
+	sb.WriteString("2024-03-15 price AAA 1.00 USD\n") // line 4 — AAA usage
 	for i := 0; i < 40; i++ {
 		sb.WriteString(";\n")
 	}
-	sb.WriteString("2024-03-15 commodity BBB\n")      // line 42
-	sb.WriteString("2024-03-15 price BBB 2.00 USD\n") // line 43
+	sb.WriteString("2024-03-15 price BBB 2.00 USD\n") // line 45 — BBB usage
 	rootFile := writeTempFile(t, dir, "main.beancount", sb.String())
 	client := newHoverServer(t, rootFile)
 	docURI := uri.File(rootFile)
 
-	// Warm up: ensure the snapshot is ready and both commodities have hints.
+	// Warm up: ensure the snapshot is ready and both usages have hints.
 	all := awaitInlayHints(t, client, docURI, allRange)
-	if len(hintsOnLine(all, 0)) == 0 || len(hintsOnLine(all, 42)) == 0 {
-		t.Fatalf("expected hints on lines 0 and 42, got %+v", all)
+	if len(hintsOnLine(all, 4)) == 0 || len(hintsOnLine(all, 45)) == 0 {
+		t.Fatalf("expected name hints on lines 4 and 45, got %+v", all)
 	}
 
-	// Constrain to the first commodity only.
+	// Constrain to the first usage only.
 	rng := protocol.Range{
-		Start: protocol.Position{Line: 0, Character: 0},
-		End:   protocol.Position{Line: 1, Character: 0},
+		Start: protocol.Position{Line: 4, Character: 0},
+		End:   protocol.Position{Line: 5, Character: 0},
 	}
 	hints := callInlayHint(t, client, docURI, rng)
-	if len(hintsOnLine(hints, 0)) != 1 {
-		t.Errorf("range-filtered hints missing line 0: %+v", hints)
+	if len(hintsOnLine(hints, 4)) != 1 {
+		t.Errorf("range-filtered hints missing line 4: %+v", hints)
 	}
-	if got := hintsOnLine(hints, 42); len(got) != 0 {
-		t.Errorf("range filter leaked line 42 hint: %q", got)
+	if got := hintsOnLine(hints, 45); len(got) != 0 {
+		t.Errorf("range filter leaked line 45 hint: %q", got)
 	}
 }
 
