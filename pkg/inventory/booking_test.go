@@ -528,6 +528,11 @@ func TestBookOne_ReduceWithTotalPrice_RealizedGain(t *testing.T) {
 	if step.SalePricePer == nil || step.SalePricePer.Cmp(&wantSP) != 0 {
 		t.Errorf("SalePricePer = %v, want 110", step.SalePricePer)
 	}
+	// Exact total→per-unit price division must carry the ideal exponent,
+	// not apd's 34-digit padding (550/5 = 110, not 110.000…0).
+	if s := step.SalePricePer.Text('f'); s != "110" {
+		t.Errorf("SalePricePer.Text('f') = %s, want 110 (unpadded)", s)
+	}
 	wantGain := decimalVal(t, "50")
 	if step.RealizedGain == nil || step.RealizedGain.Cmp(&wantGain) != 0 {
 		t.Errorf("RealizedGain = %v, want 50", step.RealizedGain)

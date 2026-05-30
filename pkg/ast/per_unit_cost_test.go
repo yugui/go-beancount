@@ -223,6 +223,56 @@ func TestPostingPerUnitCost(t *testing.T) {
 	}
 }
 
+// TestPerUnitCost_ExactDivisionExponent pins the *exponent* of an exact
+// total→per-unit quotient, which the value-based cmp.Diff in
+// TestPostingPerUnitCost cannot observe. apd's Quo pads exact quotients to the
+// context precision (564.2000…0, 100.000…0); the canonical per-unit cost must
+// instead carry the General Decimal Arithmetic ideal exponent, matching
+// upstream beancount and keeping booked lots / weights / LSP rendering clean.
+func TestPerUnitCost_ExactDivisionExponent(t *testing.T) {
+	cases := []struct {
+		name              string
+		total, units, cur string
+		want              string // Text('f')
+	}{
+		{"fractional-ideal", "5642", "10", "USD", "564.2"},
+		{"integer-ideal", "500", "5", "USD", "100"},
+		{"negative-units-magnitude", "500", "-5", "USD", "100"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Posting{
+				Amount: amount(t, tc.units, "HOOL"),
+				Cost:   &CostSpec{Total: decPtr(t, tc.total), Currency: tc.cur},
+			}
+			got, err := p.PerUnitCost()
+			if err != nil {
+				t.Fatalf("PerUnitCost() error: %v", err)
+			}
+			if s := got.Number.Text('f'); s != tc.want {
+				t.Errorf("PerUnitCost().Number = %s, want %s", s, tc.want)
+			}
+		})
+	}
+}
+
+// TestPerUnitCost_InexactDivisionUnchanged confirms the exact-quotient
+// normalization does not touch a non-terminating quotient: 1/3 must stay at
+// full 34-digit precision, the inexact branch the booking layer relies on.
+func TestPerUnitCost_InexactDivisionUnchanged(t *testing.T) {
+	p := &Posting{
+		Amount: amount(t, "3", "STOCK"),
+		Cost:   &CostSpec{Total: decPtr(t, "1"), Currency: "JPY"},
+	}
+	got, err := p.PerUnitCost()
+	if err != nil {
+		t.Fatalf("PerUnitCost() error: %v", err)
+	}
+	if s := got.Number.Text('f'); s != "0.3333333333333333333333333333333333" {
+		t.Errorf("PerUnitCost().Number = %s, want 34-digit 0.333…", s)
+	}
+}
+
 func TestPerUnitCost_NilHolder(t *testing.T) {
 	got, err := PerUnitCost(nil, amount(t, "10", "HOOL"))
 	if err != nil {

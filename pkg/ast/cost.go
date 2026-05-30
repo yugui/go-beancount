@@ -343,8 +343,8 @@ func PerUnitCost(c CostHolder, units *Amount) (*Amount, error) {
 	if absUnits.Sign() == 0 {
 		return nil, fmt.Errorf("PerUnitCost: total-form cost with zero units; per-unit cost is undefined")
 	}
-	quo := new(apd.Decimal)
-	if _, err := quoContext.Quo(quo, spec.Total, absUnits); err != nil {
+	quo, err := QuoNormalized(quoContext, spec.Total, absUnits)
+	if err != nil {
 		return nil, fmt.Errorf("PerUnitCost: divide total by units: %w", err)
 	}
 	if spec.PerUnit == nil {

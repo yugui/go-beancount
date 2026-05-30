@@ -241,10 +241,9 @@ func evalArithExpr(n *syntax.Node) (apd.Decimal, *Diagnostic) {
 		case syntax.STAR:
 			_, err = arithCtx.Mul(&result, &left, &right)
 		case syntax.SLASH:
-			var cond apd.Condition
-			cond, err = arithCtx.Quo(&result, &left, &right)
-			if err == nil && !cond.Inexact() {
-				normalizeExactQuotient(&result, &left, &right)
+			var quo *apd.Decimal
+			if quo, err = QuoNormalized(arithCtx, &left, &right); err == nil {
+				result.Set(quo)
 			}
 		default:
 			return apd.Decimal{}, &Diagnostic{
@@ -270,22 +269,40 @@ func evalArithExpr(n *syntax.Node) (apd.Decimal, *Diagnostic) {
 	}
 }
 
-// normalizeExactQuotient rewrites an exact quotient q = x/y to the exponent
-// beancount/Python decimal produces: the General Decimal Arithmetic ideal
-// exponent (x.Exponent - y.Exponent), without dropping fractional digits the
-// value genuinely needs. apd's Quo pads exact quotients to the context
-// precision (e.g. 10000.00/2 -> 5000.000...0, 34 digits); leaving that
-// inflated exponent in place is display noise and corrupts the per-currency
-// tolerance pkg/validation/tolerance infers from the exponent. Padding only
-// ever adds trailing zeros, so the rewrite is exact.
-func normalizeExactQuotient(q, x, y *apd.Decimal) {
-	idealExp := x.Exponent - y.Exponent
-	if _, _, err := arithCtx.Reduce(q, q); err != nil {
-		return
+// QuoNormalized divides dividend by divisor using ctx and rewrites an exact
+// quotient to the exponent beancount/Python decimal produces: the General
+// Decimal Arithmetic ideal exponent (dividend.Exponent - divisor.Exponent),
+// without dropping fractional digits the value genuinely needs. apd's Quo pads
+// exact quotients to ctx's precision (e.g. 10000.00/2 -> 5000.000...0, 34
+// digits); leaving that inflated exponent in place is display noise and
+// corrupts the per-currency tolerance pkg/validation/tolerance infers from the
+// exponent.
+//
+// An inexact quotient (a non-terminating expansion like 10/3) has no shorter
+// exact form, so it is returned at ctx's full precision unchanged. The returned
+// Decimal is freshly allocated. The error is non-nil only if ctx rejects the
+// divide, reduce, or quantize — for division this includes divide-by-zero;
+// the trailing reduce/quantize cannot fail on a quotient ctx already produced
+// within precision.
+func QuoNormalized(ctx *apd.Context, dividend, divisor *apd.Decimal) (*apd.Decimal, error) {
+	q := new(apd.Decimal)
+	cond, err := ctx.Quo(q, dividend, divisor)
+	if err != nil {
+		return nil, err
+	}
+	if cond.Inexact() {
+		return q, nil
+	}
+	idealExp := dividend.Exponent - divisor.Exponent
+	if _, _, err := ctx.Reduce(q, q); err != nil {
+		return nil, err
 	}
 	if q.Exponent > idealExp {
-		_, _ = arithCtx.Quantize(q, q, idealExp)
+		if _, err := ctx.Quantize(q, q, idealExp); err != nil {
+			return nil, err
+		}
 	}
+	return q, nil
 }
 
 // parseNumberToken parses a NUMBER token into apd.Decimal. NUMBER tokens
