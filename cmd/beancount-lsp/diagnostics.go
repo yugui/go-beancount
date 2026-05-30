@@ -38,7 +38,7 @@ func (s *Server) startSubscriber() {
 	go func() {
 		defer close(done)
 		defer gcancel()
-		pub := &diagPublisher{prev: make(map[uri.URI]struct{})}
+		pub := &diagPublisher{prev: make(map[string]uri.URI)}
 		for ledger := range sub {
 			pub.publish(gctx, s, ledger)
 		}
@@ -46,21 +46,40 @@ func (s *Server) startSubscriber() {
 }
 
 // diagPublisher tracks which files had diagnostics on the previous publish
-// cycle so it can send empty-array clears for resolved files.
+// cycle so it can send empty-array clears for resolved files. Files are keyed
+// by their decoded filesystem path; the value is the URI last published for
+// that path, so a clear targets the exact URI the editor saw.
 type diagPublisher struct {
-	prev map[uri.URI]struct{}
+	prev map[string]uri.URI
 }
 
 // publish groups ledger diagnostics by file and emits publishDiagnostics
 // notifications. All open documents receive a notification on every cycle:
 // files with errors get their diagnostics; all others receive an empty array
 // (which clears any previously shown errors in the editor).
+//
+// The notification URI for an open document is the editor's original URI, not
+// a path-re-encoded one: percent-encoding case (lowercase %e3 vs uppercase
+// %E3) varies by client, and a mismatched URI is treated by the editor as a
+// different file, so diagnostics for multibyte paths would otherwise be
+// delivered to a phantom file while the real buffer is spuriously cleared.
 func (p *diagPublisher) publish(ctx context.Context, s *Server, ledger *ast.Ledger) {
 	s.mu.Lock()
 	conn := s.conn
 	s.mu.Unlock()
 	if conn == nil {
 		return
+	}
+
+	openURIs := make(map[string]uri.URI)
+	for _, u := range s.docs.uris() {
+		openURIs[u.Filename()] = u
+	}
+	uriFor := func(path string) uri.URI {
+		if u, ok := openURIs[path]; ok {
+			return u
+		}
+		return uri.File(path)
 	}
 
 	byFile := make(map[string][]ast.Diagnostic)
@@ -77,11 +96,11 @@ func (p *diagPublisher) publish(ctx context.Context, s *Server, ledger *ast.Ledg
 		byFile[f] = append(byFile[f], d)
 	}
 
-	current := make(map[uri.URI]struct{})
+	current := make(map[string]uri.URI)
 
 	for filename, diags := range byFile {
-		u := uri.File(filename)
-		current[u] = struct{}{}
+		u := uriFor(filename)
+		current[filename] = u
 
 		src := s.sourceBytesFor(filename)
 		lo := computeLineOffsets(src)
@@ -95,16 +114,16 @@ func (p *diagPublisher) publish(ctx context.Context, s *Server, ledger *ast.Ledg
 	}
 
 	// clear open files with no errors
-	for _, u := range s.docs.uris() {
-		if _, ok := current[u]; !ok {
-			current[u] = struct{}{}
+	for path, u := range openURIs {
+		if _, ok := current[path]; !ok {
+			current[path] = u
 			s.sendPublish(ctx, conn, u, []protocol.Diagnostic{})
 		}
 	}
 
 	// clear previously-diagnosed, now-clean files
-	for u := range p.prev {
-		if _, ok := current[u]; !ok {
+	for path, u := range p.prev {
+		if _, ok := current[path]; !ok {
 			s.sendPublish(ctx, conn, u, []protocol.Diagnostic{})
 		}
 	}
