@@ -38,15 +38,30 @@ func TestClassifyContext(t *testing.T) {
 		// Currency token after date + open (pure uppercase comes first in open/close) → ContextCurrency
 		{"2024-01-01 open Assets:Bank USD", ContextCurrency},
 
-		// Partially typed account after open (no colon yet) → ContextAccount
-		// trailingAccountToken matches and reCurrencyToken also matches "Asset",
-		// but the token has no colon (accountTokenWithColon is false), so it falls through to ContextCurrency.
-		// This is the documented acceptable false-negative for early typing.
-		{"2024-01-01 open Asset", ContextCurrency},
+		// Partially typed account after open (no colon yet) → ContextAccount.
+		// The per-directive arg-kind table places ContextAccount at open's
+		// first positional argument, so even a colon-less prefix surfaces
+		// account candidates instead of being misread as a currency.
+		{"2024-01-01 open Asset", ContextAccount},
+		{"2024-01-01 open A", ContextAccount},
 
-		// Currency after balance/price (fallback path, pure uppercase, no colon) → ContextCurrency
+		// Currency after balance/price (3rd positional arg) → ContextCurrency
 		{"2024-01-01 balance Assets:Bank 100 US", ContextCurrency},
 		{"2024-01-01 price USD 1.0 EU", ContextCurrency},
+
+		// First positional arg of balance/pad/note/document is an account.
+		// Colon-less single-letter prefixes must still classify as Account so
+		// that account candidates are offered, matching the open/close case.
+		{"2024-01-01 balance A", ContextAccount},
+		{"2024-01-01 balance Assets:A", ContextAccount},
+		{"2024-01-01 pad A Equity:B", ContextAccount},
+		{"2024-01-01 pad Assets:A E", ContextAccount},
+		{"2024-01-01 note Assets:A", ContextAccount},
+		{"2024-01-01 document Assets:A", ContextAccount},
+
+		// commodity / price first argument is a currency.
+		{"2024-01-01 commodity U", ContextCurrency},
+		{"2024-01-01 price U", ContextCurrency},
 
 		// Posting account (indented, contains colon) → ContextAccount
 		{"  Assets:Bank", ContextAccount},

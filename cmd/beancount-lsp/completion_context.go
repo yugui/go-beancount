@@ -160,7 +160,7 @@ func classifyContext(linePrefix string) ContextKind {
 		}
 
 		fields := strings.Fields(afterDate)
-		isOpenOrClose := len(fields) >= 2 && (fields[0] == "open" || fields[0] == "close")
+		endsInSpace := len(afterDate) > 0 && (afterDate[len(afterDate)-1] == ' ' || afterDate[len(afterDate)-1] == '\t')
 		switch {
 		case len(fields) == 1 && isFlag(fields[0]):
 			return ContextFlag
@@ -172,14 +172,33 @@ func classifyContext(linePrefix string) ContextKind {
 			// returning ContextKeyword lets the client prefix-filter against
 			// the full directive list.
 			return ContextKeyword
-		case isOpenOrClose && reCurrencyToken.MatchString(trimmed):
-			// narrowest first: pure uppercase token is a currency identifier
-			return ContextCurrency
-		case isOpenOrClose && accountTokenWithColon(trimmed):
-			return ContextAccount
-		case isOpenOrClose && trailingAccountToken(trimmed) != "":
-			// mixed-case token, no colon yet — ambiguous; currency is safer than account
-			return ContextCurrency
+		}
+
+		// Per-directive arg-kind dispatch: when the keyword is known and the
+		// cursor sits on its Nth positional argument, return the kind that
+		// argument expects. This is what makes `balance A`, `pad A`, etc. ask
+		// for account candidates instead of falling through to the currency
+		// heuristic.
+		argPos := len(fields) - 1
+		if endsInSpace {
+			argPos = len(fields)
+		}
+		if argPos >= 1 && len(fields) > 0 {
+			if tbl, ok := dateDirectiveArgKinds[fields[0]]; ok && argPos-1 < len(tbl) {
+				switch tbl[argPos-1] {
+				case ContextAccount:
+					if endsInSpace || trailingAccountToken(trimmed) != "" {
+						return ContextAccount
+					}
+				case ContextCurrency:
+					if endsInSpace || reCurrencyToken.MatchString(trimmed) {
+						return ContextCurrency
+					}
+				}
+			}
+		}
+
+		switch {
 		case (len(fields) == 1 || !isFlag(fields[0])) && accountTokenWithColon(trimmed):
 			// date + non-flag token, cursor on account-like token
 			return ContextAccount
@@ -291,6 +310,23 @@ var dateDirectiveKeywords = map[string]bool{
 	"open": true, "close": true, "commodity": true, "balance": true,
 	"pad": true, "note": true, "document": true, "event": true,
 	"query": true, "price": true, "txn": true,
+}
+
+// dateDirectiveArgKinds maps a date-led directive keyword to the ContextKind
+// expected at each positional argument (index 0 = first argument after the
+// keyword). ContextUnknown marks slots that have no completion source of their
+// own (Number, or a string literal handled by the quote-counting path earlier
+// in classifyContext). Directives whose arguments are all strings (event,
+// query) are omitted: the odd-quote / Payee logic dispatches them first.
+var dateDirectiveArgKinds = map[string][]ContextKind{
+	"open":      {ContextAccount, ContextCurrency},
+	"close":     {ContextAccount},
+	"balance":   {ContextAccount, ContextUnknown, ContextCurrency},
+	"pad":       {ContextAccount, ContextAccount},
+	"note":      {ContextAccount},
+	"document":  {ContextAccount},
+	"commodity": {ContextCurrency},
+	"price":     {ContextCurrency, ContextUnknown, ContextCurrency},
 }
 
 var headerKeywords = map[string]bool{
