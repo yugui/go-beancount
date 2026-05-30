@@ -2,6 +2,7 @@ package exec
 
 import (
 	"fmt"
+	"iter"
 	"regexp"
 	"strings"
 
@@ -9,17 +10,16 @@ import (
 	"github.com/yugui/go-beancount/pkg/query/api"
 	"github.com/yugui/go-beancount/pkg/query/env"
 	"github.com/yugui/go-beancount/pkg/query/parser"
+	"github.com/yugui/go-beancount/pkg/query/scope"
 	"github.com/yugui/go-beancount/pkg/query/table"
 	"github.com/yugui/go-beancount/pkg/query/types"
 )
 
-// tableCatalog maps a (case-insensitive) table name to its constructor over
-// a ledger. A bare-identifier FROM whose name is a key here is a table
-// reference; any other bare identifier is a single-column filter expression
-// over the default postings table (Decision 7).
-var tableCatalog = map[string]func(*ast.Ledger) *table.Table{
-	"postings": table.Postings,
-	"entries":  table.Entries,
+// tableCatalog maps a (case-insensitive) BQL table name to its constructor
+// over a directive factory. Keys are lowercase.
+var tableCatalog = map[string]func(string, func() iter.Seq2[int, ast.Directive]) *table.Table{
+	"postings": table.PostingsOver,
+	"entries":  table.EntriesOver,
 }
 
 // compileError reports a compile-time failure, carrying the source position
@@ -103,24 +103,27 @@ func Compile(sel *parser.Select, ledger *ast.Ledger) (*Compiled, error) {
 // FROM filter expression (nil when FROM is absent or is a table reference).
 func selectTable(sel *parser.Select, ledger *ast.Ledger) (*table.Table, parser.Expr, error) {
 	from := sel.From
+	var spec scope.Spec
 	if from != nil && from.Scoping != nil {
 		sc := from.Scoping
 		if sc.Open != nil {
 			return nil, nil, errf(sc.Pos, "OPEN ON scoping not yet implemented")
 		}
-		if sc.Close != nil {
-			return nil, nil, errf(sc.Pos, "CLOSE ON scoping not yet implemented")
-		}
 		if sc.Clear {
 			return nil, nil, errf(sc.Pos, "CLEAR scoping not yet implemented")
 		}
-	}
-	if from != nil && from.IsBareName {
-		if ctor, ok := tableCatalog[strings.ToLower(from.Name)]; ok {
-			return ctor(ledger), nil, nil
+		if sc.Close != nil {
+			spec.Close = *sc.Close
 		}
 	}
-	tbl := tableCatalog["postings"](ledger)
+
+	source := func() iter.Seq2[int, ast.Directive] { return scope.View(ledger, spec) }
+	if from != nil && from.IsBareName {
+		if ctor, ok := tableCatalog[strings.ToLower(from.Name)]; ok {
+			return ctor(strings.ToLower(from.Name), source), nil, nil
+		}
+	}
+	tbl := tableCatalog["postings"]("postings", source)
 	if from == nil {
 		return tbl, nil, nil
 	}

@@ -309,6 +309,51 @@ func TestBalanceMultiCurrencyRegister(t *testing.T) {
 	}
 }
 
+// TestCloseOnPostings verifies that CLOSE ON D drops postings with dates on or
+// after D from the postings table (strict less-than boundary).
+func TestCloseOnPostings(t *testing.T) {
+	// sampleLedger: 2020-01-15 (2 postings), 2021-06-01 (2), 2022-03-10 (2).
+	cases := []struct {
+		name string
+		q    string
+		want int
+	}{
+		{"before all entries", "SELECT account, number FROM postings CLOSE ON 2021-01-01", 2},
+		{"between entries", "SELECT account, number FROM postings CLOSE ON 2022-01-01", 4},
+		{"strict equality boundary", "SELECT account, number FROM postings CLOSE ON 2020-01-15", 0},
+		{"after all entries", "SELECT account, number FROM postings CLOSE ON 2030-01-01", 6},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := mustQuery(t, tc.q)
+			if len(res.Rows) != tc.want {
+				t.Fatalf("rows = %d, want %d", len(res.Rows), tc.want)
+			}
+		})
+	}
+}
+
+// TestCloseOnEntries verifies that CLOSE ON D drops entries dated on or after D
+// from the entries table.
+func TestCloseOnEntries(t *testing.T) {
+	// sampleLedger has 3 transactions; CLOSE ON 2022-01-01 drops the 2022-03-10 one.
+	res := mustQuery(t, "SELECT type FROM entries CLOSE ON 2022-01-01")
+	if len(res.Rows) != 2 {
+		t.Fatalf("CLOSE ON entries: rows = %d, want 2", len(res.Rows))
+	}
+}
+
+// TestCloseOnWithWhere verifies that CLOSE ON and WHERE combine correctly: a
+// row must pass both the date boundary and the WHERE predicate.
+func TestCloseOnWithWhere(t *testing.T) {
+	// CLOSE ON 2022-01-01 (4 postings from 2020 and 2021),
+	// then WHERE account = 'Assets:Cash' (one per transaction = 2 rows).
+	res := mustQuery(t, "SELECT account, number FROM postings CLOSE ON 2022-01-01 WHERE account = 'Assets:Cash'")
+	if len(res.Rows) != 2 {
+		t.Fatalf("CLOSE ON + WHERE: rows = %d, want 2", len(res.Rows))
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

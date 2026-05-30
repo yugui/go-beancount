@@ -18,6 +18,7 @@ go_library(
         "//pkg/query/api",
         "//pkg/query/env",
         "//pkg/query/parser",
+        "//pkg/query/scope",
         "//pkg/query/table",
         "//pkg/query/types",
         "@com_github_cockroachdb_apd_v3//:apd",
