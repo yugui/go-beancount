@@ -1428,6 +1428,59 @@ func TestLower_Arithmetic_ExactDivThenMul(t *testing.T) {
 	}
 }
 
+// TestLower_Arithmetic_ExactDivisionKeepsIdealExponent pins the precision of
+// an exact quotient: 10,000.00 / 2 must lower to 5000.00 (two fractional
+// digits, matching upstream bean-doctor and the operands' precision), not
+// apd's full 34-digit padding of an exact division. The exponent is the
+// observable contract here — it feeds both display and the per-currency
+// tolerance inference — so the assertion is on Text('f'), not Cmp.
+func TestLower_Arithmetic_ExactDivisionKeepsIdealExponent(t *testing.T) {
+	src := "2024-01-01 * \"div\"\n  Assets:A   10,000.00 / 2 USD\n  Assets:B  -5000.00 USD\n"
+	cst := syntax.Parse(src)
+	f := ast.Lower("test.beancount", cst)
+	if len(f.Diagnostics) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+	}
+	txn, ok := f.Directives[0].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+	}
+	got := txn.Postings[0].Amount.Number.Text('f')
+	if got != "5000.00" {
+		t.Errorf("Posting[0].Amount.Number = %s, want 5000.00", got)
+	}
+}
+
+// TestLower_Arithmetic_ExactDivisionFewerDigits covers exact quotients whose
+// natural precision is at or below the ideal exponent, so no fractional
+// padding is added: 10/2 = 5 (integer), 7/2 = 3.5 (one fractional digit).
+func TestLower_Arithmetic_ExactDivisionFewerDigits(t *testing.T) {
+	cases := []struct {
+		name, expr, want string
+	}{
+		{"integer-result", "10 / 2", "5"},
+		{"one-fractional-digit", "7 / 2", "3.5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "2024-01-01 * \"div\"\n  Assets:A  " + tc.expr + " USD\n  Assets:B  -1 USD\n"
+			cst := syntax.Parse(src)
+			f := ast.Lower("test.beancount", cst)
+			if len(f.Diagnostics) > 0 {
+				t.Fatalf("unexpected diagnostics: %v", f.Diagnostics)
+			}
+			txn, ok := f.Directives[0].(*ast.Transaction)
+			if !ok {
+				t.Fatalf("directive is %T, want *ast.Transaction", f.Directives[0])
+			}
+			got := txn.Postings[0].Amount.Number.Text('f')
+			if got != tc.want {
+				t.Errorf("amount = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestLower_Arithmetic_InexactDivisionTruncates verifies that a division
 // with a non-terminating decimal expansion (10/3) lowers without error,
 // producing a value truncated to apd's 34-digit precision. Truncation at

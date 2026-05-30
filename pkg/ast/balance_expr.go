@@ -241,7 +241,11 @@ func evalArithExpr(n *syntax.Node) (apd.Decimal, *Diagnostic) {
 		case syntax.STAR:
 			_, err = arithCtx.Mul(&result, &left, &right)
 		case syntax.SLASH:
-			_, err = arithCtx.Quo(&result, &left, &right)
+			var cond apd.Condition
+			cond, err = arithCtx.Quo(&result, &left, &right)
+			if err == nil && !cond.Inexact() {
+				normalizeExactQuotient(&result, &left, &right)
+			}
 		default:
 			return apd.Decimal{}, &Diagnostic{
 				Span:     spanOfNode(n),
@@ -263,6 +267,24 @@ func evalArithExpr(n *syntax.Node) (apd.Decimal, *Diagnostic) {
 		Span:     spanOfNode(n),
 		Message:  "malformed arithmetic expression",
 		Severity: Error,
+	}
+}
+
+// normalizeExactQuotient rewrites an exact quotient q = x/y to the exponent
+// beancount/Python decimal produces: the General Decimal Arithmetic ideal
+// exponent (x.Exponent - y.Exponent), without dropping fractional digits the
+// value genuinely needs. apd's Quo pads exact quotients to the context
+// precision (e.g. 10000.00/2 -> 5000.000...0, 34 digits); leaving that
+// inflated exponent in place is display noise and corrupts the per-currency
+// tolerance pkg/validation/tolerance infers from the exponent. Padding only
+// ever adds trailing zeros, so the rewrite is exact.
+func normalizeExactQuotient(q, x, y *apd.Decimal) {
+	idealExp := x.Exponent - y.Exponent
+	if _, _, err := arithCtx.Reduce(q, q); err != nil {
+		return
+	}
+	if q.Exponent > idealExp {
+		_, _ = arithCtx.Quantize(q, q, idealExp)
 	}
 }
 
