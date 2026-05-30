@@ -12,6 +12,16 @@
 //   - [Entries]: one row per directive over the full directive stream;
 //     columns a directive type does not carry yield typed NULL.
 //
+// # Scoped views
+//
+// [PostingsOver] and [EntriesOver] are the seam for entry-stream scoping
+// (OPEN ON / CLOSE ON / CLEAR). They accept an arbitrary directive-source
+// factory so a caller may supply a [pkg/query/scope.View] result — or any
+// other filtered iterator — in place of the full ledger. [Postings] and
+// [Entries] are thin wrappers. Column accessors work unchanged on
+// synthesized directives; filename and lineno yield typed NULL when the
+// directive has no source span.
+//
 // # Read-only concurrency
 //
 // A [Table] is immutable after construction. [Table.Rows] returns a fresh

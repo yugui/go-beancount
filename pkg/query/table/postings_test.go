@@ -1,6 +1,7 @@
 package table_test
 
 import (
+	"iter"
 	"sync"
 	"testing"
 	"time"
@@ -389,6 +390,98 @@ func TestConcurrentReadIsRaceFree(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// TestPostingsOverSyntheticDirective verifies PostingsOver with a hand-built
+// iterator factory yielding a zero-Span synthetic transaction: filename and
+// lineno return typed NULL, and all other accessors return non-NULL values.
+func TestPostingsOverSyntheticDirective(t *testing.T) {
+	d := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	synth := &ast.Transaction{
+		// zero Span
+		Date:      d,
+		Flag:      '*',
+		Narration: "Opening balance for 'Assets:Cash'",
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Cash",
+				Amount:  &ast.Amount{Number: dec(t, "100"), Currency: "USD"},
+			},
+		},
+	}
+
+	var calls int
+	factory := func() iter.Seq2[int, ast.Directive] {
+		calls++
+		return func(yield func(int, ast.Directive) bool) {
+			yield(0, synth)
+		}
+	}
+
+	tb := table.PostingsOver("scoped-postings", factory)
+	if tb.Name != "scoped-postings" {
+		t.Errorf("table name = %q, want scoped-postings", tb.Name)
+	}
+
+	rows := collectRows(tb)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1", len(rows))
+	}
+	r := rows[0]
+
+	// zero Span → filename and lineno are typed NULL.
+	fn := valueOf(t, tb, r, "filename")
+	if fn.Type() != types.String || !fn.IsNull() {
+		t.Errorf("filename = %v (null=%v), want typed-NULL String", fn.Format(), fn.IsNull())
+	}
+	ln := valueOf(t, tb, r, "lineno")
+	if ln.Type() != types.Int || !ln.IsNull() {
+		t.Errorf("lineno = %v (null=%v), want typed-NULL Int", ln.Format(), ln.IsNull())
+	}
+
+	assertString(t, valueOf(t, tb, r, "type"), "transaction")
+	assertDate(t, valueOf(t, tb, r, "date"), d)
+	assertInt(t, valueOf(t, tb, r, "year"), 2024)
+	assertInt(t, valueOf(t, tb, r, "month"), 6)
+	assertInt(t, valueOf(t, tb, r, "day"), 1)
+	assertString(t, valueOf(t, tb, r, "flag"), "*")
+	assertString(t, valueOf(t, tb, r, "narration"), "Opening balance for 'Assets:Cash'")
+	assertString(t, valueOf(t, tb, r, "account"), "Assets:Cash")
+	assertDecimal(t, valueOf(t, tb, r, "number"), "100")
+	assertString(t, valueOf(t, tb, r, "currency"), "USD")
+
+	// Re-runnable: factory is re-invoked on each Rows() call.
+	collectRows(tb)
+	if calls != 2 {
+		t.Errorf("factory called %d times after two Rows() calls, want 2", calls)
+	}
+}
+
+// TestPostingsOverSkipsNonTransactions verifies that non-transaction directives
+// yielded by the factory are filtered out, matching the behaviour of [Postings].
+func TestPostingsOverSkipsNonTransactions(t *testing.T) {
+	d := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	txn := &ast.Transaction{
+		Date: d,
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &ast.Amount{Number: dec(t, "1"), Currency: "USD"}},
+		},
+	}
+	open := &ast.Open{Date: d, Account: "Assets:Cash"}
+
+	tb := table.PostingsOver("scoped-postings", func() iter.Seq2[int, ast.Directive] {
+		return func(yield func(int, ast.Directive) bool) {
+			yield(0, open)
+			yield(1, txn)
+		}
+	})
+
+	rows := collectRows(tb)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1 (Open directive must be skipped)", len(rows))
+	}
+	assertString(t, valueOf(t, tb, rows[0], "type"), "transaction")
 }
 
 func TestColumnLookupCaseInsensitive(t *testing.T) {

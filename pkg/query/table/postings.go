@@ -30,18 +30,22 @@ func (r postingRow) posting() *ast.Posting { return &r.txn.Postings[r.idx] }
 // running balance.
 const RunningBalanceColumn = "balance"
 
-// Postings returns the default virtual table: one row per posting of every
-// transaction in l, in the ledger's canonical order; non-transaction
-// directives are skipped. The returned table is immutable and safe for
-// concurrent read (see the package doc); it holds l by reference and never
-// mutates it.
-func Postings(l *ast.Ledger) *Table {
+// PostingsOver returns a virtual table with the given name: one row per posting
+// of every transaction yielded by all, in the sequence order that all produces;
+// non-transaction directives are skipped. all is called once per [Table.Rows]
+// invocation, producing a fresh iterator each time. The returned table is
+// immutable and safe for concurrent read (see the package doc).
+//
+// Use this constructor when the directive source is a scoped view (e.g. a
+// [pkg/query/scope.View] result) rather than the full ledger. Callers that hold
+// an [*ast.Ledger] should use [Postings].
+func PostingsOver(name string, all func() iter.Seq2[int, ast.Directive]) *Table {
 	return &Table{
-		Name:    "postings",
+		Name:    name,
 		Columns: postingColumns,
 		Rows: func() iter.Seq[Row] {
 			return func(yield func(Row) bool) {
-				for _, d := range l.All() {
+				for _, d := range all() {
 					txn, ok := d.(*ast.Transaction)
 					if !ok {
 						continue
@@ -55,6 +59,15 @@ func Postings(l *ast.Ledger) *Table {
 			}
 		},
 	}
+}
+
+// Postings returns the default virtual table: one row per posting of every
+// transaction in l, in the ledger's canonical order; non-transaction
+// directives are skipped. The returned table is immutable and safe for
+// concurrent read (see the package doc); it holds l by reference and never
+// mutates it.
+func Postings(l *ast.Ledger) *Table {
+	return PostingsOver("postings", l.All)
 }
 
 func postingCol(name string, t types.Type, fn func(postingRow) types.Value) Column {

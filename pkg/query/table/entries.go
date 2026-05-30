@@ -8,19 +8,23 @@ import (
 	"github.com/yugui/go-beancount/pkg/query/types"
 )
 
-// Entries returns the virtual table over the full directive stream: one row
-// per directive in l, in the ledger's canonical order. Each row handle is
-// the [ast.Directive] itself; a column a directive type does not carry
-// yields a typed NULL. The returned table is immutable and safe for
-// concurrent read (see the package doc); it holds l by reference and never
-// mutates it.
-func Entries(l *ast.Ledger) *Table {
+// EntriesOver returns a virtual table with the given name: one row per
+// directive yielded by all, in the sequence order that all produces. Each row
+// handle is the [ast.Directive] itself; a column a directive type does not
+// carry yields a typed NULL. all is called once per [Table.Rows] invocation,
+// producing a fresh iterator each time. The returned table is immutable and
+// safe for concurrent read (see the package doc).
+//
+// Use this constructor when the directive source is a scoped view (e.g. a
+// [pkg/query/scope.View] result) rather than the full ledger. Callers that
+// hold an [*ast.Ledger] should use [Entries].
+func EntriesOver(name string, all func() iter.Seq2[int, ast.Directive]) *Table {
 	return &Table{
-		Name:    "entries",
+		Name:    name,
 		Columns: entryColumns,
 		Rows: func() iter.Seq[Row] {
 			return func(yield func(Row) bool) {
-				for _, d := range l.All() {
+				for _, d := range all() {
 					if !yield(d) {
 						return
 					}
@@ -28,6 +32,16 @@ func Entries(l *ast.Ledger) *Table {
 			}
 		},
 	}
+}
+
+// Entries returns the virtual table over the full directive stream: one row
+// per directive in l, in the ledger's canonical order. Each row handle is
+// the [ast.Directive] itself; a column a directive type does not carry
+// yields a typed NULL. The returned table is immutable and safe for
+// concurrent read (see the package doc); it holds l by reference and never
+// mutates it.
+func Entries(l *ast.Ledger) *Table {
+	return EntriesOver("entries", l.All)
 }
 
 func entryCol(name string, t types.Type, fn func(ast.Directive) types.Value) Column {
