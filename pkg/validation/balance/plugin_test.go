@@ -119,7 +119,7 @@ func TestPlugin_BalanceMismatch(t *testing.T) {
 	want := []ast.Diagnostic{{
 		Code:     string(validation.CodeBalanceMismatch),
 		Span:     balSpan,
-		Message:  "balance assertion failed: account Assets:Cash: expected 101.00 USD, got 100.00 USD",
+		Message:  "balance assertion failed: account Assets:Cash: expected 101.00 USD, got 100.00 USD (off by 1.00 USD)",
 		Severity: ast.Error,
 	}}
 	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
@@ -239,7 +239,7 @@ func TestPlugin_BalanceOnUnopenedAccount_NoError(t *testing.T) {
 		want := []ast.Diagnostic{{
 			Code:     string(validation.CodeBalanceMismatch),
 			Span:     bal.Span,
-			Message:  "balance assertion failed: account Assets:Cash: expected 100 USD, got 0 USD",
+			Message:  "balance assertion failed: account Assets:Cash: expected 100 USD, got 0 USD (off by 100 USD)",
 			Severity: ast.Error,
 		}}
 		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
@@ -338,7 +338,7 @@ func TestPlugin_AutoPostingNotBookedReports(t *testing.T) {
 		{
 			Code:     string(validation.CodeBalanceMismatch),
 			Span:     bal.Span,
-			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD",
+			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD (off by -100 USD)",
 			Severity: ast.Error,
 		},
 	}
@@ -401,7 +401,7 @@ func TestPlugin_AutoPostingMultiCurrencyReports(t *testing.T) {
 		{
 			Code:     string(validation.CodeBalanceMismatch),
 			Span:     balUSD.Span,
-			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD",
+			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD (off by -100 USD)",
 			Severity: ast.Error,
 		},
 	}
@@ -469,7 +469,7 @@ func TestPlugin_MultipleAutoPostingsReport(t *testing.T) {
 		{
 			Code:     string(validation.CodeBalanceMismatch),
 			Span:     balCashNonZero.Span,
-			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD",
+			Message:  "balance assertion failed: account Assets:Cash: expected -100 USD, got 0 USD (off by -100 USD)",
 			Severity: ast.Error,
 		},
 	}
@@ -632,7 +632,7 @@ func TestPlugin_ToleranceMultiplierZero(t *testing.T) {
 	want := []ast.Diagnostic{{
 		Code:     string(validation.CodeBalanceMismatch),
 		Span:     balSpan,
-		Message:  "balance assertion failed: account Assets:Cash: expected 100.00 USD, got 100.004 USD",
+		Message:  "balance assertion failed: account Assets:Cash: expected 100.00 USD, got 100.004 USD (off by -0.004 USD)",
 		Severity: ast.Error,
 	}}
 	if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
@@ -781,7 +781,7 @@ func TestPlugin_BalanceAssertionDoubledFactor(t *testing.T) {
 		want := []ast.Diagnostic{{
 			Code:     string(validation.CodeBalanceMismatch),
 			Span:     balSpan,
-			Message:  "balance assertion failed: account Assets:Position: expected -17.775 LONGCCY, got -17.7770 LONGCCY",
+			Message:  "balance assertion failed: account Assets:Position: expected -17.775 LONGCCY, got -17.7770 LONGCCY (off by 0.0020 LONGCCY)",
 			Severity: ast.Error,
 		}}
 		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
@@ -851,7 +851,7 @@ func TestPlugin_ExplicitToleranceZero(t *testing.T) {
 		want := []ast.Diagnostic{{
 			Code:     string(validation.CodeBalanceMismatch),
 			Span:     balSpan,
-			Message:  "balance assertion failed: account Assets:Cash: expected 100.000 USD, got 100.001 USD",
+			Message:  "balance assertion failed: account Assets:Cash: expected 100.000 USD, got 100.001 USD (off by -0.001 USD)",
 			Severity: ast.Error,
 		}}
 		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
@@ -948,7 +948,7 @@ func TestPlugin_MultiCurrencyIsolation(t *testing.T) {
 		want := []ast.Diagnostic{{
 			Code:     string(validation.CodeBalanceMismatch),
 			Span:     balSpanEUR,
-			Message:  "balance assertion failed: account Assets:Cash: expected 999 EUR, got 50 EUR",
+			Message:  "balance assertion failed: account Assets:Cash: expected 999 EUR, got 50 EUR (off by 949 EUR)",
 			Severity: ast.Error,
 		}}
 		if diff := cmp.Diff(want, res.Diagnostics); diff != "" {
@@ -1195,7 +1195,7 @@ func TestPlugin_DuplicateBalanceAssertion(t *testing.T) {
 			{
 				Code:     string(validation.CodeBalanceMismatch),
 				Span:     bal2Span,
-				Message:  "balance assertion failed: account Assets:A: expected 101 USD, got 100 USD",
+				Message:  "balance assertion failed: account Assets:A: expected 101 USD, got 100 USD (off by 1 USD)",
 				Severity: ast.Error,
 			},
 			{

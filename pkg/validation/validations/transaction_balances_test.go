@@ -80,7 +80,7 @@ func TestTransactionBalances_UnbalancedSingleCurrency(t *testing.T) {
 	want := []ast.Diagnostic{{
 		Code:     string(validation.CodeUnbalancedTransaction),
 		Span:     span,
-		Message:  `transaction does not balance: non-zero residual in USD`,
+		Message:  `transaction does not balance: non-zero residual -1 USD`,
 		Severity: ast.Error,
 	}}
 	if diff := cmp.Diff(want, v.ProcessEntry(txn)); diff != "" {
@@ -149,7 +149,7 @@ func TestTransactionBalances_AutoPostingNotBookedReports(t *testing.T) {
 		{
 			Code:     string(validation.CodeUnbalancedTransaction),
 			Span:     txnSpan,
-			Message:  `transaction does not balance: non-zero residual in USD`,
+			Message:  `transaction does not balance: non-zero residual 100 USD`,
 			Severity: ast.Error,
 		},
 	}
@@ -210,7 +210,7 @@ func TestTransactionBalances_MultiCurrencyAutoPostingIsUnbalanced(t *testing.T) 
 		{
 			Code:     string(validation.CodeUnbalancedTransaction),
 			Span:     txnSpan,
-			Message:  `transaction does not balance: non-zero residual in EUR, USD`,
+			Message:  `transaction does not balance: non-zero residual 50 EUR, 100 USD`,
 			Severity: ast.Error,
 		},
 	}

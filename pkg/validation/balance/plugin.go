@@ -243,11 +243,13 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *as
 			Code: string(validation.CodeBalanceMismatch),
 			Span: b.Span,
 			Message: fmt.Sprintf(
-				"balance assertion failed: account %s: expected %s %s, got %s %s",
+				"balance assertion failed: account %s: expected %s %s, got %s %s (off by %s %s)",
 				b.Account,
 				expected.Text('f'),
 				b.Amount.Currency,
 				actual.Text('f'),
+				b.Amount.Currency,
+				diff.Text('f'),
 				b.Amount.Currency,
 			),
 		})
