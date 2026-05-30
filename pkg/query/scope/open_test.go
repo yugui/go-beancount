@@ -2,6 +2,7 @@ package scope_test
 
 import (
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/cockroachdb/apd/v3"
@@ -81,7 +82,10 @@ func amt(t *testing.T, n, cur string) *ast.Amount {
 }
 
 // findOpenings extracts synthesized opening-balance transactions, keyed by
-// the source account name they cover (the first posting's Account).
+// the source account name they cover. The source account is parsed from the
+// transaction's narration ("Opening balance for '<acct>'") because the
+// first posting's Account is the source account for asset/liability legs
+// but the equity routing account for income/expense legs.
 func findOpenings(t *testing.T, ds []ast.Directive) map[ast.Account]*ast.Transaction {
 	t.Helper()
 	out := map[ast.Account]*ast.Transaction{}
@@ -100,9 +104,22 @@ func findOpenings(t *testing.T, ds []ast.Directive) map[ast.Account]*ast.Transac
 		if len(txn.Postings) == 0 {
 			t.Fatalf("synthesized opening has no postings")
 		}
-		out[txn.Postings[0].Account] = txn
+		acct, ok := openingSourceAccount(txn.Narration)
+		if !ok {
+			t.Fatalf("synthesized opening has malformed narration: %q", txn.Narration)
+		}
+		out[acct] = txn
 	}
 	return out
+}
+
+func openingSourceAccount(narration string) (ast.Account, bool) {
+	const prefix = "Opening balance for '"
+	const suffix = "'"
+	if !strings.HasPrefix(narration, prefix) || !strings.HasSuffix(narration, suffix) {
+		return "", false
+	}
+	return ast.Account(narration[len(prefix) : len(narration)-len(suffix)]), true
 }
 
 func TestOpenSynthesizesOpeningBalances(t *testing.T) {
@@ -114,7 +131,7 @@ func TestOpenSynthesizesOpeningBalances(t *testing.T) {
 		t.Fatalf("openings = %d, want 3 (Assets:Cash, Income:Salary, Expenses:Food)", len(openings))
 	}
 
-	checkOpening := func(acct ast.Account, wantUnits, wantRoute string) {
+	checkAssetLiabilityOpening := func(acct ast.Account, wantUnits, wantRoute string) {
 		txn, ok := openings[acct]
 		if !ok {
 			t.Fatalf("no synthesized opening for %s", acct)
@@ -139,17 +156,64 @@ func TestOpenSynthesizesOpeningBalances(t *testing.T) {
 		if debit.Account != ast.Account(wantRoute) {
 			t.Errorf("%s: route = %s, want %s", acct, debit.Account, wantRoute)
 		}
-		var sum apd.Decimal
-		if _, err := apd.BaseContext.Add(&sum, &credit.Amount.Number, &debit.Amount.Number); err != nil {
+		assertBalanced(t, txn)
+	}
+	// Income/expense accounts must not be posted by the synthesized opening
+	// (their running balance resets across D). The cumulative pre-D balance
+	// transfers to account_previous_earnings, paired with
+	// account_previous_balances.
+	checkIncomeExpenseOpening := func(acct ast.Account, wantTransfer string) {
+		txn, ok := openings[acct]
+		if !ok {
+			t.Fatalf("no synthesized opening for %s", acct)
+		}
+		if !txn.Date.Equal(date(2022, 1, 1)) {
+			t.Errorf("%s: date = %v, want 2022-01-01", acct, txn.Date)
+		}
+		if len(txn.Postings) != 2 {
+			t.Fatalf("%s: postings = %d, want 2", acct, len(txn.Postings))
+		}
+		earnings, balances := txn.Postings[0], txn.Postings[1]
+		if earnings.Account != "Earnings:Previous" {
+			t.Errorf("%s: first leg = %q, want Earnings:Previous", acct, earnings.Account)
+		}
+		if got := earnings.Amount.Number.String(); got != wantTransfer {
+			t.Errorf("%s: Earnings:Previous units = %s, want %s", acct, got, wantTransfer)
+		}
+		if balances.Account != "Opening-Balances" {
+			t.Errorf("%s: second leg = %q, want Opening-Balances", acct, balances.Account)
+		}
+		for _, p := range txn.Postings {
+			if p.Account == acct {
+				t.Errorf("%s: income/expense account must not appear in its own opening (got posting %+v)", acct, p)
+			}
+		}
+		assertBalanced(t, txn)
+	}
+	checkAssetLiabilityOpening("Assets:Cash", "900", "Opening-Balances")
+	checkIncomeExpenseOpening("Expenses:Food", "100")
+	checkIncomeExpenseOpening("Income:Salary", "-1000")
+}
+
+func assertBalanced(t *testing.T, txn *ast.Transaction) {
+	t.Helper()
+	perCur := map[string]*apd.Decimal{}
+	for _, p := range txn.Postings {
+		cur := p.Amount.Currency
+		sum, ok := perCur[cur]
+		if !ok {
+			sum = new(apd.Decimal)
+			perCur[cur] = sum
+		}
+		if _, err := apd.BaseContext.Add(sum, sum, &p.Amount.Number); err != nil {
 			t.Fatalf("apd Add: %v", err)
 		}
+	}
+	for cur, sum := range perCur {
 		if sum.Sign() != 0 {
-			t.Errorf("%s: credit + debit = %s, want zero", acct, sum.String())
+			t.Errorf("transaction not balanced in %s: sum = %s", cur, sum.String())
 		}
 	}
-	checkOpening("Assets:Cash", "900", "Opening-Balances")
-	checkOpening("Expenses:Food", "100", "Earnings:Previous")
-	checkOpening("Income:Salary", "-1000", "Earnings:Previous")
 }
 
 func TestOpenPreservesPreOpenDirectives(t *testing.T) {
@@ -283,8 +347,13 @@ func TestOpenClassifyHonorsCustomNameIncome(t *testing.T) {
 	if !ok {
 		t.Fatalf("no opening for Revenue:Sales; have %d openings", len(openings))
 	}
-	if route := revenue.Postings[1].Account; route != "Earnings:Previous" {
-		t.Errorf("Revenue:Sales routed to %q, want Earnings:Previous (custom name_income)", route)
+	// Custom name_income routes Revenue:Sales' cumulative balance into
+	// Earnings:Previous; the income account itself is not posted.
+	if route := revenue.Postings[0].Account; route != "Earnings:Previous" {
+		t.Errorf("Revenue:Sales transfer leg = %q, want Earnings:Previous (custom name_income)", route)
+	}
+	if pair := revenue.Postings[1].Account; pair != "Opening-Balances" {
+		t.Errorf("Revenue:Sales balancing leg = %q, want Opening-Balances", pair)
 	}
 }
 
@@ -299,7 +368,11 @@ func TestOpenSynthesisIsLexicographic(t *testing.T) {
 			continue
 		}
 		if v, ok := txn.Meta.Props[scope.SyntheticMetaKey]; ok && v.String == "opening" {
-			order = append(order, txn.Postings[0].Account)
+			acct, ok := openingSourceAccount(txn.Narration)
+			if !ok {
+				t.Fatalf("malformed opening narration: %q", txn.Narration)
+			}
+			order = append(order, acct)
 		}
 	}
 	sorted := slices.Clone(order)

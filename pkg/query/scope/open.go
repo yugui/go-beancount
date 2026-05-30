@@ -66,10 +66,11 @@ func openSummarize(l *ast.Ledger, s Spec) iter.Seq2[int, ast.Directive] {
 	}
 	slices.Sort(accounts)
 
+	openingBalances := ast.Account(l.Options.String("account_previous_balances"))
 	openings := make([]ast.Directive, 0, len(accounts))
 	for _, a := range accounts {
-		routing, _ := classifyAccount(a, l.Options)
-		openings = append(openings, synthesizeOpeningTxn(a, routing, invMap[a], openDate))
+		routing, isIE := classifyAccount(a, l.Options)
+		openings = append(openings, synthesizeOpeningTxn(a, routing, isIE, openingBalances, invMap[a], openDate))
 	}
 
 	return func(yield func(int, ast.Directive) bool) {
@@ -137,10 +138,17 @@ func classifyAccount(acct ast.Account, opts *ast.OptionValues) (routing ast.Acco
 }
 
 // synthesizeOpeningTxn builds the opening-balance transaction for one
-// account: a posting pair per inventory position, preserving the booked
-// Cost lot on the account side so subsequent reductions still match. The
-// returned transaction is balanced.
-func synthesizeOpeningTxn(acct, routing ast.Account, inv *inventory.Inventory, date time.Time) *ast.Transaction {
+// account. For asset/liability accounts (isIncomeOrExpense=false) each
+// inventory position emits a posting on the account itself, preserving
+// the booked Cost lot so subsequent reductions still match, paired with
+// account_previous_balances. For income/expense accounts
+// (isIncomeOrExpense=true) the account itself is not posted: its
+// cumulative pre-D balance is transferred to account_previous_earnings,
+// with the opposing side booked to account_previous_balances. The income
+// or expense account's running total therefore resets to zero across the
+// boundary, matching beanquery's summarize semantics. The returned
+// transaction is balanced.
+func synthesizeOpeningTxn(acct, routing ast.Account, isIncomeOrExpense bool, openingBalances ast.Account, inv *inventory.Inventory, date time.Time) *ast.Transaction {
 	txn := &ast.Transaction{
 		Date:      date,
 		Flag:      '*',
@@ -155,6 +163,14 @@ func synthesizeOpeningTxn(acct, routing ast.Account, inv *inventory.Inventory, d
 		units := p.Units.Clone()
 		negated := p.Units.Clone()
 		negated.Number.Negative = !negated.Number.Negative
+
+		if isIncomeOrExpense {
+			txn.Postings = append(txn.Postings,
+				ast.Posting{Account: routing, Amount: units},
+				ast.Posting{Account: openingBalances, Amount: negated},
+			)
+			continue
+		}
 
 		acctPosting := ast.Posting{Account: acct, Amount: units}
 		if p.Cost != nil {

@@ -239,9 +239,13 @@ pipeline:
   `DirDate() >= D` (strict `<`, matching beanquery's `summarize.truncate`).
   `OPEN ON D` walks pre-D postings into per-account `inventory.Inventory`,
   classifies each account via `Account.Root()` against `name_income` /
-  `name_expenses` (routing income/expense to `account_previous_earnings`,
-  others to `account_previous_balances`), and emits one synthesized
-  `*ast.Transaction` per non-empty account at D in lexicographic order. `Open`
+  `name_expenses`, and emits one synthesized `*ast.Transaction` per
+  non-empty account at D in lexicographic order. Asset/liability openings
+  post the source account itself paired with `account_previous_balances`;
+  income/expense openings do not post the source account (its running total
+  resets across the boundary, matching beanquery `summarize`) — the
+  cumulative balance transfers to `account_previous_earnings` with the
+  opposing leg on `account_previous_balances`. `Open`
   directives dated `< D` are preserved; the kept tail is the original directive
   stream dated `>= D` (bounded above by `CLOSE` when set). `CLEAR` walks the
   OPEN- and CLOSE-shaped stream, accumulates per-account inventories for

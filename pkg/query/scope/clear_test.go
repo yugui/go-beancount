@@ -160,9 +160,11 @@ func TestClearWithCloseUsesCloseMinusOneDay(t *testing.T) {
 }
 
 // TestClearWithOpenUsesLastEntryDate verifies CLEAR + OPEN: boundary derives
-// from the last directive in the kept-tail stream (synthesized opening txns
-// are included in the walk, but their non-income/expense routing legs are
-// ignored).
+// from the last directive in the kept-tail stream, and CLEAR ignores both
+// the OPEN-synthesized equity legs (Earnings:Previous, Opening-Balances)
+// and any income/expense account whose pre-D balance was already
+// transferred to Earnings:Previous by OPEN and that has no further
+// post-D activity.
 func TestClearWithOpenUsesLastEntryDate(t *testing.T) {
 	l := multiYearLedger(t, nil)
 	got := collectView(l, scope.Spec{
@@ -177,13 +179,15 @@ func TestClearWithOpenUsesLastEntryDate(t *testing.T) {
 		t.Errorf("Earnings:Previous was cleared; equity must not be cleared")
 	}
 
-	// Both income and expense get clearings: their pre-D balance comes via
-	// synthesized openings, and the post-D 2022-06-15 txn adds to Income:Salary.
+	// Income:Salary has post-D activity (the 2022-06-15 txn) so CLEAR
+	// produces a clearing for it. Expenses:Food has no post-D activity;
+	// OPEN already transferred its pre-D balance to Earnings:Previous and
+	// left the account itself unposted, so CLEAR has nothing to clear.
 	if _, ok := clearings["Income:Salary"]; !ok {
 		t.Errorf("Income:Salary clearing missing")
 	}
-	if _, ok := clearings["Expenses:Food"]; !ok {
-		t.Errorf("Expenses:Food clearing missing")
+	if _, ok := clearings["Expenses:Food"]; ok {
+		t.Errorf("Expenses:Food was cleared; OPEN reset its balance and no post-D activity exists")
 	}
 
 	// Boundary date = last entry's DirDate, which is the 2022-06-15 post-D txn.
@@ -195,8 +199,10 @@ func TestClearWithOpenUsesLastEntryDate(t *testing.T) {
 }
 
 // TestClearWithOpenAndCloseCombination exercises the three-way combination.
-// Boundary = Close − 1; income/expense balances over the OPEN-summarized,
-// CLOSE-bounded stream get cleared.
+// Boundary = Close − 1. Income/expense balances accumulated by post-OPEN,
+// pre-CLOSE activity get cleared; OPEN already absorbed pre-OPEN
+// income/expense balances into Earnings:Previous, so they are not
+// re-cleared.
 func TestClearWithOpenAndCloseCombination(t *testing.T) {
 	l := multiYearLedger(t, nil)
 	got := collectView(l, scope.Spec{
@@ -211,17 +217,22 @@ func TestClearWithOpenAndCloseCombination(t *testing.T) {
 			t.Errorf("clearing date = %v, want 2021-12-31 (Close − 1)", txn.Date)
 		}
 	}
-	// Income:Salary pre-OPEN balance is -1000 USD (one 2020-06-01 txn);
-	// kept-window has no income/expense activity between [2021-01-01, 2022-01-01)
-	// other than the 2021-03-01 groceries posting on Expenses:Food (+100 USD).
-	// Earnings:Previous (the OPEN routing equity) is not income/expense and is
-	// not cleared.
-	salary, ok := clearings["Income:Salary"]
-	if !ok {
-		t.Fatal("Income:Salary clearing missing")
+	// Income:Salary's pre-OPEN balance (-1000 USD from 2020-06-01) was
+	// transferred to Earnings:Previous by OPEN, and the kept window holds
+	// no further Income:Salary activity, so CLEAR has nothing to clear.
+	// Expenses:Food picks up its only kept-window posting (2021-03-01,
+	// +100 USD) and is cleared.
+	if _, ok := clearings["Income:Salary"]; ok {
+		t.Errorf("Income:Salary was cleared; OPEN already reset it and no further activity occurred in [OPEN, CLOSE)")
 	}
-	if got := salary.Postings[0].Amount.Number.String(); got != "1000" {
-		t.Errorf("Income:Salary acct leg = %s, want 1000", got)
+	food, ok := clearings["Expenses:Food"]
+	if !ok {
+		t.Fatal("Expenses:Food clearing missing")
+	}
+	// CLEAR negates the +100 USD on the account leg and routes +100 USD to
+	// account_current_earnings.
+	if got := food.Postings[0].Amount.Number.String(); got != "-100" {
+		t.Errorf("Expenses:Food acct leg = %s, want -100", got)
 	}
 }
 

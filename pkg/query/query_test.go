@@ -310,7 +310,31 @@ func TestBalanceMultiCurrencyRegister(t *testing.T) {
 }
 
 // TestOpenOnPostingsSyntheticOpenings verifies OPEN ON D folds pre-D
-// postings into synthesized opening transactions per account.
+// postings into synthesized opening transactions per account: asset and
+// liability accounts carry the cumulative balance themselves (paired with
+// account_previous_balances), while income and expense accounts are reset
+// across D — their cumulative balance is transferred to
+// account_previous_earnings and the opposing leg lands on
+// account_previous_balances.
+//
+// sampleLedger pre-2022 totals:
+//
+//	Assets:Cash   = -25 USD
+//	Expenses:Food = +25 USD
+//	Income:Salary =   0 USD (no pre-D activity, omitted)
+//
+// 2022-03-10 (post-D) contributes Assets:Cash +100 USD / Income:Salary -100 USD.
+//
+// Resulting per-account sums:
+//
+//	Assets:Cash       = -25 + 100         = 75
+//	Income:Salary     =        -100       = -100
+//	Earnings:Previous = +25 (transfer)    = 25
+//	Opening-Balances  = +25 (Assets pair) + -25 (Expenses pair) = 0
+//
+// Expenses:Food does not appear in the result because the opening leaves
+// the income/expense account itself unposted and there is no post-D
+// activity on it.
 func TestOpenOnPostingsSyntheticOpenings(t *testing.T) {
 	res := mustQuery(t,
 		"SELECT account, sum(number) AS total FROM postings OPEN ON 2022-01-01 GROUP BY account ORDER BY account")
@@ -323,10 +347,9 @@ func TestOpenOnPostingsSyntheticOpenings(t *testing.T) {
 
 	want := map[string]string{
 		"Assets:Cash":       "75",
-		"Expenses:Food":     "25",
 		"Income:Salary":     "-100",
-		"Opening-Balances":  "25",
-		"Earnings:Previous": "-25",
+		"Opening-Balances":  "0",
+		"Earnings:Previous": "25",
 	}
 	if len(totals) != len(want) {
 		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
@@ -497,16 +520,95 @@ func TestClearWithOpenZeroesIncomeAndExpense(t *testing.T) {
 		d, _ := types.AsDecimal(row[1])
 		totals[acct] = d.String()
 	}
-	// Every income/expense account (in sampleLedger: Expenses:Food and
-	// Income:Salary) sums to zero after CLEAR.
-	if totals["Expenses:Food"] != "0" {
-		t.Errorf("Expenses:Food total after OPEN+CLEAR = %s, want 0", totals["Expenses:Food"])
-	}
-	if totals["Income:Salary"] != "0" {
-		t.Errorf("Income:Salary total after OPEN+CLEAR = %s, want 0", totals["Income:Salary"])
+	// After OPEN ON D + CLEAR no income/expense balance leaks across either
+	// boundary: any income/expense account that appears in the result sums
+	// to zero. Income:Salary appears (it has post-D activity that CLEAR
+	// then zeros). Expenses:Food does not appear at all — OPEN leaves the
+	// income/expense account itself unposted and there is no post-D
+	// expense activity for CLEAR to transfer.
+	for acct, total := range totals {
+		if !strings.HasPrefix(acct, "Income:") && !strings.HasPrefix(acct, "Expenses:") {
+			continue
+		}
+		if total != "0" {
+			t.Errorf("%s total after OPEN+CLEAR = %s, want 0", acct, total)
+		}
 	}
 	if _, ok := totals["Earnings:Current"]; !ok {
 		t.Errorf("Earnings:Current missing from results")
+	}
+}
+
+// TestOpenResetsIncomeAccountAcrossBoundary is a regression test for the
+// per-account opening shape: an income/expense account's pre-D balance
+// must NOT remain on the account itself across OPEN ON D. The cumulative
+// pre-D income/expense balance transfers to account_previous_earnings,
+// and the account itself resets to zero so only postings dated >= D
+// contribute to the period's totals. This matches beanquery's summarize
+// semantics on the same fixture.
+//
+// Fixture: one yearly Assets/Income pair for 2020, 2021, 2022. With
+// OPEN ON 2021-01-01 and CLOSE ON 2022-01-01 only the 2021 transaction
+// is in the period; the 2020 pre-D activity (Assets +10 / Income -10)
+// is summarized into the opening, the 2022 transaction is dropped.
+func TestOpenResetsIncomeAccountAcrossBoundary(t *testing.T) {
+	l := &ast.Ledger{}
+	l.InsertAll([]ast.Directive{
+		&ast.Open{Date: date(2020, 1, 1), Account: "Assets:A"},
+		&ast.Open{Date: date(2020, 1, 1), Account: "Income:A"},
+		&ast.Transaction{
+			Date: date(2020, 6, 1), Flag: '*', Narration: "y2020",
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &ast.Amount{Number: dec(t, "10"), Currency: "JPY"}},
+				{Account: "Income:A", Amount: &ast.Amount{Number: dec(t, "-10"), Currency: "JPY"}},
+			},
+		},
+		&ast.Transaction{
+			Date: date(2021, 6, 1), Flag: '*', Narration: "y2021",
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &ast.Amount{Number: dec(t, "100"), Currency: "JPY"}},
+				{Account: "Income:A", Amount: &ast.Amount{Number: dec(t, "-100"), Currency: "JPY"}},
+			},
+		},
+		&ast.Transaction{
+			Date: date(2022, 6, 1), Flag: '*', Narration: "y2022",
+			Postings: []ast.Posting{
+				{Account: "Assets:A", Amount: &ast.Amount{Number: dec(t, "1000"), Currency: "JPY"}},
+				{Account: "Income:A", Amount: &ast.Amount{Number: dec(t, "-1000"), Currency: "JPY"}},
+			},
+		},
+	})
+
+	res, err := query.Query(context.Background(),
+		"SELECT account, sum(number) AS total FROM postings OPEN ON 2021-01-01 CLOSE ON 2022-01-01 GROUP BY account ORDER BY account", l)
+	if err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	totals := map[string]string{}
+	for _, row := range res.Rows {
+		acct, _ := types.AsString(row[0])
+		d, _ := types.AsDecimal(row[1])
+		totals[acct] = d.String()
+	}
+	// Expected (matches beanquery):
+	//   Assets:A          =  10 (opening) + 100 (period)            = 110
+	//   Income:A          =        -100  (period only; pre-D reset) = -100
+	//   Earnings:Previous =   -10        (pre-D Income transfer)    = -10
+	//   Opening-Balances  =  -10 (Assets opening pair)
+	//                       + 10 (Income transfer's opposing leg)   = 0
+	want := map[string]string{
+		"Assets:A":          "110",
+		"Income:A":          "-100",
+		"Earnings:Previous": "-10",
+		"Opening-Balances":  "0",
+	}
+	if len(totals) != len(want) {
+		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
+	}
+	for k, v := range want {
+		if totals[k] != v {
+			t.Errorf("sum(number) for %s = %s, want %s", k, totals[k], v)
+		}
 	}
 }
 
