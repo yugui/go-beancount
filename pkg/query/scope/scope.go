@@ -34,15 +34,25 @@ type Spec struct {
 // When s is the zero Spec, View returns l.All() directly with no
 // additional allocation or wrapping.
 //
+// OPEN ON D (s.Open non-zero): the stream is replaced by Open directives
+// dated < D, followed by synthesized opening-balance transactions dated D,
+// followed by the original directives dated >= D. Income and expense
+// balances are routed to account_previous_earnings; other accounts to
+// account_previous_balances. When CLOSE is also set, the post-D tail is
+// bounded by CLOSE. See openSummarize.
+//
 // CLOSE ON D (s.Close non-zero): directives with DirDate() >= s.Close are
 // dropped. The predicate is strict less-than, matching beanquery's
 // summarize.truncate semantics.
 //
-// OPEN ON and CLEAR are not yet implemented (Steps 5 and 6); they must be
-// rejected at compile time before reaching View.
+// CLEAR is not yet implemented (Step 6); it must be rejected at compile
+// time before reaching View.
 func View(l *ast.Ledger, s Spec) iter.Seq2[int, ast.Directive] {
 	if s == (Spec{}) {
 		return l.All()
+	}
+	if !s.Open.IsZero() {
+		return openSummarize(l, s)
 	}
 	return func(yield func(int, ast.Directive) bool) {
 		idx := 0

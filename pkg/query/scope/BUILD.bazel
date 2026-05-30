@@ -4,18 +4,26 @@ go_library(
     name = "scope",
     srcs = [
         "doc.go",
+        "open.go",
         "scope.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/query/scope",
     visibility = ["//visibility:public"],
-    deps = ["//pkg/ast"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/inventory",
+    ],
 )
 
 go_test(
     name = "scope_test",
-    srcs = ["scope_test.go"],
+    srcs = [
+        "open_test.go",
+        "scope_test.go",
+    ],
     deps = [
         ":scope",
         "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )

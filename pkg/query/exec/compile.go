@@ -106,11 +106,11 @@ func selectTable(sel *parser.Select, ledger *ast.Ledger) (*table.Table, parser.E
 	var spec scope.Spec
 	if from != nil && from.Scoping != nil {
 		sc := from.Scoping
-		if sc.Open != nil {
-			return nil, nil, errf(sc.Pos, "OPEN ON scoping not yet implemented")
-		}
 		if sc.Clear {
 			return nil, nil, errf(sc.Pos, "CLEAR scoping not yet implemented")
+		}
+		if sc.Open != nil {
+			spec.Open = *sc.Open
 		}
 		if sc.Close != nil {
 			spec.Close = *sc.Close

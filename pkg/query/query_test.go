@@ -309,6 +309,54 @@ func TestBalanceMultiCurrencyRegister(t *testing.T) {
 	}
 }
 
+// TestOpenOnPostingsSyntheticOpenings verifies OPEN ON D folds pre-D
+// postings into synthesized opening transactions per account.
+func TestOpenOnPostingsSyntheticOpenings(t *testing.T) {
+	res := mustQuery(t,
+		"SELECT account, sum(number) AS total FROM postings OPEN ON 2022-01-01 GROUP BY account ORDER BY account")
+	totals := map[string]string{}
+	for _, row := range res.Rows {
+		acct, _ := types.AsString(row[0])
+		d, _ := types.AsDecimal(row[1])
+		totals[acct] = d.String()
+	}
+
+	want := map[string]string{
+		"Assets:Cash":       "75",
+		"Expenses:Food":     "25",
+		"Income:Salary":     "-100",
+		"Opening-Balances":  "25",
+		"Earnings:Previous": "-25",
+	}
+	if len(totals) != len(want) {
+		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
+	}
+	for k, v := range want {
+		if totals[k] != v {
+			t.Errorf("TestOpenOnPostingsSyntheticOpenings: sum(number) for %s = %s, want %s", k, totals[k], v)
+		}
+	}
+}
+
+// TestOpenOnEntriesShowsSyntheticNarrations confirms that synthesized
+// opening-balance transactions surface on the entries table with their
+// scope-set narration.
+func TestOpenOnEntriesShowsSyntheticNarrations(t *testing.T) {
+	res := mustQuery(t,
+		"SELECT narration FROM entries OPEN ON 2022-01-01 WHERE type = 'transaction' ORDER BY narration")
+
+	var openingsSeen int
+	for _, row := range res.Rows {
+		n, _ := types.AsString(row[0])
+		if strings.HasPrefix(n, "Opening balance for '") {
+			openingsSeen++
+		}
+	}
+	if openingsSeen != 2 {
+		t.Fatalf("opening narrations = %d, want 2 (Assets:Cash, Expenses:Food)", openingsSeen)
+	}
+}
+
 // TestCloseOnPostings verifies that CLOSE ON D drops postings with dates on or
 // after D from the postings table (strict less-than boundary).
 func TestCloseOnPostings(t *testing.T) {
