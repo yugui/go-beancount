@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "scope",
     srcs = [
+        "clear.go",
         "doc.go",
         "open.go",
         "scope.go",
@@ -18,11 +19,13 @@ go_library(
 go_test(
     name = "scope_test",
     srcs = [
+        "clear_internal_test.go",
+        "clear_test.go",
         "open_test.go",
         "scope_test.go",
     ],
+    embed = [":scope"],
     deps = [
-        ":scope",
         "//pkg/ast",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],

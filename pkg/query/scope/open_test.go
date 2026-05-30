@@ -585,6 +585,9 @@ func TestOpenReplayable(t *testing.T) {
 		b = append(b, d)
 	}
 
+	if len(a) == 0 {
+		t.Fatal("empty first iteration")
+	}
 	if len(a) != len(b) {
 		t.Fatalf("first len %d, second len %d", len(a), len(b))
 	}

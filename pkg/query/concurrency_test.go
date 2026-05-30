@@ -28,6 +28,10 @@ func TestConcurrentRun(t *testing.T) {
 			"OPEN ON scoping",
 			"SELECT account, sum(number) AS total FROM postings OPEN ON 2022-01-01 GROUP BY account ORDER BY total DESC",
 		},
+		{
+			"CLEAR scoping",
+			"SELECT account, sum(number) AS total FROM postings OPEN ON 2022-01-01 CLEAR GROUP BY account ORDER BY total DESC",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

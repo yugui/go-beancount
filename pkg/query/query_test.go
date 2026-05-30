@@ -402,6 +402,114 @@ func TestCloseOnWithWhere(t *testing.T) {
 	}
 }
 
+// TestClearZeroesIncomeAndExpenseTotals verifies CLEAR transfers income+expense
+// balances to Earnings:Current: sum(number) per income/expense account is zero,
+// and Earnings:Current carries the offset.
+func TestClearZeroesIncomeAndExpenseTotals(t *testing.T) {
+	res := mustQuery(t,
+		"SELECT account, sum(number) AS total FROM postings CLEAR GROUP BY account ORDER BY account")
+	totals := map[string]string{}
+	for _, row := range res.Rows {
+		acct, _ := types.AsString(row[0])
+		d, _ := types.AsDecimal(row[1])
+		totals[acct] = d.String()
+	}
+
+	// sampleLedger:
+	//   Expenses:Food sum = 20 + 5 = 25
+	//   Income:Salary sum = -100
+	//   Assets:Cash sum = -20 - 5 + 100 = 75
+	// After CLEAR:
+	//   Expenses:Food = 0 (cleared: -25 leg cancels the +25 balance)
+	//   Income:Salary = 0 (cleared: +100 leg cancels the -100 balance)
+	//   Assets:Cash = 75 (untouched)
+	//   Earnings:Current carries the original balances: +25 + (-100) = -75
+	want := map[string]string{
+		"Assets:Cash":      "75",
+		"Expenses:Food":    "0",
+		"Income:Salary":    "0",
+		"Earnings:Current": "-75",
+	}
+	if len(totals) != len(want) {
+		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
+	}
+	for k, v := range want {
+		if totals[k] != v {
+			t.Errorf("sum(number) for %s = %s, want %s", k, totals[k], v)
+		}
+	}
+}
+
+// TestClearOnEntriesShowsClearingNarrations verifies that synthesized clearing
+// transactions surface on the entries table, identifiable by their metadata.
+func TestClearOnEntriesShowsClearingNarrations(t *testing.T) {
+	res := mustQuery(t,
+		"SELECT narration FROM entries CLEAR WHERE meta('__synthetic__') = 'clearing'")
+
+	// sampleLedger has Income:Salary and Expenses:Food postings, so two
+	// clearing transactions are synthesized.
+	if len(res.Rows) != 2 {
+		t.Fatalf("clearing rows = %d, want 2 (Income:Salary, Expenses:Food)", len(res.Rows))
+	}
+}
+
+// TestClearWithCloseUsesCloseMinusOneDay verifies CLOSE + CLEAR through the
+// facade: clearings reflect only the pre-CLOSE balance and are dated
+// (Close − 1).
+func TestClearWithCloseUsesCloseMinusOneDay(t *testing.T) {
+	// CLOSE ON 2022-01-01 keeps the 2020 and 2021 postings only.
+	// Expenses:Food pre-2022 = 20 + 5 = 25; Income:Salary pre-2022 = 0;
+	// so only Expenses:Food gets a clearing. Earnings:Current carries +25
+	// (the routing leg carries the original balance).
+	res := mustQuery(t,
+		"SELECT account, sum(number) AS total FROM postings CLOSE ON 2022-01-01 CLEAR GROUP BY account ORDER BY account")
+	totals := map[string]string{}
+	for _, row := range res.Rows {
+		acct, _ := types.AsString(row[0])
+		d, _ := types.AsDecimal(row[1])
+		totals[acct] = d.String()
+	}
+	want := map[string]string{
+		"Assets:Cash":      "-25",
+		"Expenses:Food":    "0",
+		"Earnings:Current": "25",
+	}
+	if len(totals) != len(want) {
+		t.Fatalf("groups = %d, want %d (got %v)", len(totals), len(want), totals)
+	}
+	for k, v := range want {
+		if totals[k] != v {
+			t.Errorf("sum(number) for %s = %s, want %s", k, totals[k], v)
+		}
+	}
+}
+
+// TestClearWithOpenZeroesIncomeAndExpense verifies OPEN + CLEAR: the
+// OPEN-summarized stream (synthesized openings on income/expense + post-D
+// activity) is then cleared, yielding zero sums on every income/expense
+// account.
+func TestClearWithOpenZeroesIncomeAndExpense(t *testing.T) {
+	res := mustQuery(t,
+		"SELECT account, sum(number) AS total FROM postings OPEN ON 2022-01-01 CLEAR GROUP BY account ORDER BY account")
+	totals := map[string]string{}
+	for _, row := range res.Rows {
+		acct, _ := types.AsString(row[0])
+		d, _ := types.AsDecimal(row[1])
+		totals[acct] = d.String()
+	}
+	// Every income/expense account (in sampleLedger: Expenses:Food and
+	// Income:Salary) sums to zero after CLEAR.
+	if totals["Expenses:Food"] != "0" {
+		t.Errorf("Expenses:Food total after OPEN+CLEAR = %s, want 0", totals["Expenses:Food"])
+	}
+	if totals["Income:Salary"] != "0" {
+		t.Errorf("Income:Salary total after OPEN+CLEAR = %s, want 0", totals["Income:Salary"])
+	}
+	if _, ok := totals["Earnings:Current"]; !ok {
+		t.Errorf("Earnings:Current missing from results")
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

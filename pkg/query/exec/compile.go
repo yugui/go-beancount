@@ -106,15 +106,13 @@ func selectTable(sel *parser.Select, ledger *ast.Ledger) (*table.Table, parser.E
 	var spec scope.Spec
 	if from != nil && from.Scoping != nil {
 		sc := from.Scoping
-		if sc.Clear {
-			return nil, nil, errf(sc.Pos, "CLEAR scoping not yet implemented")
-		}
 		if sc.Open != nil {
 			spec.Open = *sc.Open
 		}
 		if sc.Close != nil {
 			spec.Close = *sc.Close
 		}
+		spec.Clear = sc.Clear
 	}
 
 	source := func() iter.Seq2[int, ast.Directive] { return scope.View(ledger, spec) }

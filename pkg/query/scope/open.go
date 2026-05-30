@@ -13,7 +13,7 @@ import (
 // presence on a directive's metadata distinguishes scope-generated entries
 // (opening-balance transfers, clear transfers) from user-authored ones.
 // The value is the synthesis kind: "opening" for OPEN ON, "clearing" for
-// CLEAR (Step 6).
+// CLEAR.
 const SyntheticMetaKey = "__synthetic__"
 
 // openSummarize implements OPEN ON D, optionally bounded above by CLOSE.
