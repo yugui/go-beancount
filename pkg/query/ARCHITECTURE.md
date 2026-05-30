@@ -210,25 +210,81 @@ The **single parallel-executor insertion point** is the input-row scan in
 Each item below is deferred *by design*, with the concrete seam already in place
 so it lands without reworking the core. These are not vague TODOs.
 
-### 7.1 OPEN/CLOSE/CLEAR entry-stream scoping
-The `balance` running-inventory column — the first half of the original §7.1 —
-**shipped**. It is the cumulative inventory of the *selected* rows, computed in
-the executor's row scan after the predicate filter (see §3.2 and §6 for the
-resolved semantics): `balance` is a declared postings column whose value is
-supplied by `balanceExpr`/`Compiled.accumulateBalance`, not the table accessor.
-The earlier hints here — to drive `inventory.Reducer.Walk`, and (in the first
-shipped attempt) to accumulate a global pre-filter inventory in the table
-producer — were both **superseded**: the former is per-account, the latter
-matched only the modern `beanquery` binary, which contradicts the BQL doc.
+### 7.1 OPEN/CLOSE/CLEAR entry-stream scoping — shipped
+Both halves of the original §7.1 have landed: the `balance` running-inventory
+column **and** entry-stream scoping. `balance`'s resolved semantics are
+recorded in §6 (the precedent style for shipped decisions); scoping's
+resolved semantics live below alongside the seam where each piece lives,
+because the design splits naturally across four packages (parser → scope →
+table → exec) and is easier to read as one entry.
 
-What remains deferred is the entry-stream **scoping** that the original item
-bundled with `balance` (canonical fact §3.3):
-- **Scoping**: implement OPEN/CLOSE/CLEAR as a pre-pass that summarizes/opens
-  the directive stream before row generation (beanquery's `table.evolve` →
-  `summarize`), not as a FROM expression. This needs FROM-clause grammar
-  (`OPEN ON <date>` / `CLOSE ON <date>` / `CLEAR`), a summarize/clamp/
-  close-to-equity pre-pass, and compiler plumbing to pass the dates to the table
-  constructor.
+`balance` is the cumulative inventory of the *selected* rows, computed in the
+executor's row scan after the predicate filter (see §3.2 and §6): a declared
+postings column whose value is supplied by `balanceExpr` /
+`Compiled.accumulateBalance`, not the table accessor. The earlier hints here —
+to drive `inventory.Reducer.Walk`, and (in the first shipped attempt) to
+accumulate a global pre-filter inventory in the table producer — were both
+**superseded**: the former is per-account, the latter matched only the modern
+`beanquery` binary, which contradicts the BQL doc.
+
+Entry-stream scoping (canonical fact §3.3) is the parse-then-pre-pass-then-table
+pipeline:
+- **Grammar** (`pkg/query/parser`): `FROM [<expr>] [OPEN ON <date>] [CLOSE ON
+  <date>] [CLEAR]`, fixed order. The optional filter expression and any subset
+  of scoping clauses combine; positioned errors cover missing `ON`, missing
+  date, `CLEAR ON <date>`, duplicates, and empty FROM.
+- **Pre-pass** (`pkg/query/scope`): `Spec{Open, Close time.Time; Clear bool}`
+  and `View(*ast.Ledger, Spec) iter.Seq2[int, ast.Directive]`. Zero `Spec`
+  returns `l.All()` unchanged. `CLOSE ON D` drops directives with
+  `DirDate() >= D` (strict `<`, matching beanquery's `summarize.truncate`).
+  `OPEN ON D` walks pre-D postings into per-account `inventory.Inventory`,
+  classifies each account via `Account.Root()` against `name_income` /
+  `name_expenses`, and emits one synthesized `*ast.Transaction` per
+  non-empty account at D in lexicographic order. Asset/liability openings
+  post the source account itself paired with `account_previous_balances`;
+  income/expense openings do not post the source account (its running total
+  resets across the boundary, matching beanquery `summarize`) — the
+  cumulative balance transfers to `account_previous_earnings` with the
+  opposing leg on `account_previous_balances`. `Open`
+  directives dated `< D` are preserved; the kept tail is the original directive
+  stream dated `>= D` (bounded above by `CLOSE` when set). `CLEAR` walks the
+  OPEN- and CLOSE-shaped stream, accumulates per-account inventories for
+  income/expense roots only, and appends one balanced clearing transaction per
+  non-empty account, routing the original units to
+  `account_current_earnings`. Boundary date: `Close − 1 day` if set, else the
+  last kept directive's `DirDate()`, else `time.Now().UTC()` truncated to
+  midnight. Synthesized transactions carry `meta['__synthetic__'] = 'opening'`
+  or `'clearing'`.
+- **Table integration** (`pkg/query/table`): `PostingsOver` / `EntriesOver`
+  constructors accept a `func() iter.Seq2[int, ast.Directive]` factory;
+  existing `Postings(l)` / `Entries(l)` wrap `l.All`. No `scope.Spec` leaks
+  into `pkg/query/table`.
+- **Compiler plumbing** (`pkg/query/exec/compile.go`): `selectTable` builds
+  the `Spec` from `sel.From.Scoping`, wires `scope.View(ledger, spec)` as the
+  table's source, and the FROM filter expression continues to AND into the
+  row predicate independently — scoping reshapes the stream *before* the
+  predicate sees it.
+
+The pre-pass is a pure function of immutable inputs (Decision 6): `scope.View`
+allocates only per-call iterator state. OPEN-only materializes only the
+opening prefix (`preOpens`, `accounts`, `openings` slices); the post-D tail
+streams. CLEAR materializes the full intermediate stream because it walks twice
+(boundary detection + inventory accumulation). All materializations are
+per-Run, never shared. Synthesized transactions are real
+`*ast.Transaction` values with zero `Span`, so all existing column accessors
+work unchanged and `filename`/`lineno` render NULL via the established
+zero-`Span` path. The `balance` column folds them like any other row.
+
+Resolved boundary-day conventions (matches beanquery `summarize`):
+- `OPEN ON D` synthesized transactions are dated `D` (start of the kept window).
+- `CLOSE ON D` is strict `<` on `DirDate`.
+- `CLEAR` defaults to `Close − 1` when CLOSE bounds the stream; falls through
+  to the last kept entry's date else `time.Now().UTC()` truncated to midnight.
+- Income/expense classification respects `name_income` / `name_expenses`
+  (nil-safe via `OptionValues` registry defaults).
+- CLEAR groups by full account (leaf), not by income/expense root: one
+  synthesized transaction per non-empty income- or expense-rooted leaf account,
+  with per-currency posting pairs inside.
 
 ### 7.2 Price / valuation (`value`, `convert`, `getprice`) + `pass_context`
 - **Seam**: `api.PassContextFlavor` already exists. `env.validate` currently

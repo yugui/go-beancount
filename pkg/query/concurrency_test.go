@@ -12,41 +12,63 @@ import (
 // one shared immutable ledger, run from many goroutines, yields identical
 // results with no locking. Run under `go test -race`.
 func TestConcurrentRun(t *testing.T) {
-	l := sampleLedger(t)
-	c, err := query.Compile(
-		"SELECT account, sum(number) AS total GROUP BY account ORDER BY total DESC",
-		l,
-	)
-	if err != nil {
-		t.Fatalf("Compile: %v", err)
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{
+			"no scoping",
+			"SELECT account, sum(number) AS total GROUP BY account ORDER BY total DESC",
+		},
+		{
+			"CLOSE ON scoping",
+			"SELECT account, sum(number) AS total FROM postings CLOSE ON 2022-01-01 GROUP BY account ORDER BY total DESC",
+		},
+		{
+			"OPEN ON scoping",
+			"SELECT account, sum(number) AS total FROM postings OPEN ON 2022-01-01 GROUP BY account ORDER BY total DESC",
+		},
+		{
+			"CLEAR scoping",
+			"SELECT account, sum(number) AS total FROM postings OPEN ON 2022-01-01 CLEAR GROUP BY account ORDER BY total DESC",
+		},
 	}
-
-	want, err := c.Run(context.Background())
-	if err != nil {
-		t.Fatalf("baseline Run: %v", err)
-	}
-
-	const goroutines = 32
-	var wg sync.WaitGroup
-	errs := make(chan error, goroutines)
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			got, err := c.Run(context.Background())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := sampleLedger(t)
+			c, err := query.Compile(tc.query, l)
 			if err != nil {
-				errs <- err
-				return
+				t.Fatalf("Compile: %v", err)
 			}
-			if !sameResult(want, got) {
-				errs <- errMismatch
+
+			want, err := c.Run(context.Background())
+			if err != nil {
+				t.Fatalf("baseline Run: %v", err)
 			}
-		}()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Fatalf("concurrent Run diverged: %v", err)
+
+			const goroutines = 32
+			var wg sync.WaitGroup
+			errs := make(chan error, goroutines)
+			for i := 0; i < goroutines; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					got, err := c.Run(context.Background())
+					if err != nil {
+						errs <- err
+						return
+					}
+					if !sameResult(want, got) {
+						errs <- errMismatch
+					}
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				t.Fatalf("concurrent Run diverged: %v", err)
+			}
+		})
 	}
 }
 

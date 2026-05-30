@@ -58,7 +58,10 @@ func NewInventory() *Inventory {
 // where both lots are nil — has its Units number added to the
 // existing one in place; otherwise p is cloned and appended at the
 // tail. A merge whose sum is zero drops the slot so the inventory
-// does not accumulate empty placeholders.
+// does not accumulate empty placeholders. Returns an error only when
+// the underlying decimal addition overflows apd.BaseContext; positions
+// produced by the loader's booking pass (finite decimals of bounded
+// magnitude) cannot trigger that path.
 func (i *Inventory) Add(p Position) error {
 	commodity := p.Units.Currency
 	for idx := range i.positions {

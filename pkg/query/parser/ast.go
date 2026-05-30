@@ -53,12 +53,31 @@ type OrderItem struct {
 // names a table or is a single-column filter expression.
 type FromClause struct {
 	// Expr is the parsed FROM expression. When IsBareName it is a *ColumnRef.
+	// Nil when FROM carried no filter expression (e.g. "FROM OPEN ON D").
 	Expr Expr
 	// Name is the identifier text when IsBareName, otherwise "".
 	Name string
 	// IsBareName is true iff FROM was exactly one bare identifier.
 	IsBareName bool
-	Pos        Position
+	// Scoping is the optional OPEN/CLOSE/CLEAR suffix, nil when absent.
+	Scoping *Scoping
+	Pos     Position
+}
+
+// Scoping holds the optional entry-stream scoping directives that may follow
+// the filter expression in a FROM clause:
+//
+//	FROM [expr] [OPEN ON date] [CLOSE ON date] [CLEAR]
+//
+// A nil pointer on FromClause.Scoping means no scoping was specified. Within a
+// non-nil Scoping, nil Open or Close means that clause was absent; Clear
+// distinguishes "CLEAR present" from "CLEAR absent".
+type Scoping struct {
+	Open  *time.Time
+	Close *time.Time
+	Clear bool
+	// Pos is the position of the first scoping keyword (OPEN, CLOSE, or CLEAR).
+	Pos Position
 }
 
 // Expr is the sealed interface implemented by every expression node. Pos
