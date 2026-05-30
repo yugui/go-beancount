@@ -59,6 +59,9 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 			DocumentSymbolProvider:          true,
 			DefinitionProvider:              true,
 			RenameProvider:                  &protocol.RenameOptions{PrepareProvider: true},
+			CodeActionProvider: &protocol.CodeActionOptions{
+				CodeActionKinds: []protocol.CodeActionKind{protocol.RefactorRewrite},
+			},
 			CompletionProvider: &protocol.CompletionOptions{
 				// Trigger characters cover lexical positions where the user
 				// has just committed to a specific completion context and

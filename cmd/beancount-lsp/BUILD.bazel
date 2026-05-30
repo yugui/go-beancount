@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
 go_library(
     name = "beancount-lsp_lib",
     srcs = [
+        "codeaction.go",
         "completion.go",
         "completion_context.go",
         "debounce.go",
@@ -31,6 +32,7 @@ go_library(
         "//pkg/format",
         "//pkg/inventory",
         "//pkg/inventory/inspect",
+        "//pkg/printer",
         "//pkg/session",
         "//pkg/syntax",
         "@dev_lsp_go_jsonrpc2//:jsonrpc2",
@@ -48,6 +50,7 @@ go_binary(
 go_test(
     name = "beancount-lsp_test",
     srcs = [
+        "codeaction_test.go",
         "completion_context_test.go",
         "completion_test.go",
         "definition_test.go",
