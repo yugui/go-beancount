@@ -42,12 +42,30 @@ func renderTxnEffect(view inspect.View) string {
 			fmt.Fprintf(&sb, "- %s\n", formatBookedPosting(b))
 		}
 	}
+	currencies := bookedCurrencies(view.Booked)
 	for _, av := range view.Accounts {
 		fmt.Fprintf(&sb, "\n*%s*\n", av.Account)
-		fmt.Fprintf(&sb, "- before: %s\n", joinPositions(av.Before))
-		fmt.Fprintf(&sb, "- after: %s\n", joinPositions(av.After))
+		fmt.Fprintf(&sb, "- before: %s\n", joinPositions(av.Before, currencies))
+		fmt.Fprintf(&sb, "- after: %s\n", joinPositions(av.After, currencies))
 	}
 	return sb.String()
+}
+
+// bookedCurrencies is the set of unit currencies the transaction actually
+// moved, taken from its booked postings (auto-balanced legs included). A nil
+// result means "do not filter": it falls back to showing every lot rather than
+// hiding everything when no currency is known.
+func bookedCurrencies(booked []inventory.BookedPosting) map[string]bool {
+	set := map[string]bool{}
+	for _, b := range booked {
+		if b.Units.Currency != "" {
+			set[b.Units.Currency] = true
+		}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+	return set
 }
 
 func renderBalanceEffect(view inspect.View) string {
@@ -83,18 +101,26 @@ func actualLine(inv *inventory.Inventory) string {
 	if inv == nil {
 		return "(no prior transaction)"
 	}
-	return joinPositions(inv)
+	return joinPositions(inv, nil)
 }
 
 // joinPositions renders an inventory's positions on one line, or "(empty)" when
-// it is nil or holds nothing.
-func joinPositions(inv *inventory.Inventory) string {
+// it is nil, holds nothing, or holds nothing in currencies. A nil currencies
+// keeps every position; otherwise only positions whose unit currency is in the
+// set are shown.
+func joinPositions(inv *inventory.Inventory, currencies map[string]bool) string {
 	if inv == nil || inv.IsEmpty() {
 		return "(empty)"
 	}
 	var parts []string
 	for p := range inv.All() {
+		if currencies != nil && !currencies[p.Units.Currency] {
+			continue
+		}
 		parts = append(parts, formatPosition(p))
+	}
+	if len(parts) == 0 {
+		return "(empty)"
 	}
 	return strings.Join(parts, ", ")
 }

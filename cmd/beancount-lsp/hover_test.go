@@ -552,3 +552,37 @@ func TestHover_InventoryEffect_BookedPostings(t *testing.T) {
 		}
 	}
 }
+
+// TestHover_InventoryEffect_CurrencyFilter: hovering a transaction that moves
+// only one currency shows that currency's lots but omits unrelated lots that
+// merely share the same account.
+func TestHover_InventoryEffect_CurrencyFilter(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2024-01-01 open Assets:Cash USD
+2024-01-01 open Assets:Cash:Other EUR
+2024-01-01 open Equity:Open
+2024-01-02 * "seed both"
+  Assets:Cash  1000 USD
+  Assets:Cash  500 EUR
+  Equity:Open
+2024-01-10 * "spend usd"
+  Assets:Cash  -20 USD
+  Equity:Open  20 USD
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newHoverServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Line 8 char 2: the "spend usd" transaction's date token.
+	h := awaitHover(t, client, docURI, 8, 2)
+	if h == nil {
+		t.Fatal("handleHover: InventoryEffect_CurrencyFilter: got nil, want hover result")
+	}
+	md := h.Contents.Value
+	if !strings.Contains(md, "USD") {
+		t.Errorf("handleHover: InventoryEffect_CurrencyFilter: missing moved currency USD in:\n%s", md)
+	}
+	if strings.Contains(md, "EUR") {
+		t.Errorf("handleHover: InventoryEffect_CurrencyFilter: unrelated EUR lot shown in:\n%s", md)
+	}
+}
