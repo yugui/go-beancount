@@ -52,7 +52,7 @@ func openSummarize(l *ast.Ledger, s Spec) iter.Seq2[int, ast.Directive] {
 					inv = inventory.NewInventory()
 					invMap[p.Account] = inv
 				}
-				_ = inv.Add(pos) // inv.Add never fails for loader-booked positions
+				_ = inv.Add(pos)
 			}
 		}
 	}

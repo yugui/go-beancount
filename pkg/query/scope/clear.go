@@ -44,7 +44,7 @@ func clearTail(l *ast.Ledger, s Spec, kept []ast.Directive) iter.Seq2[int, ast.D
 				inv = inventory.NewInventory()
 				invMap[p.Account] = inv
 			}
-			_ = inv.Add(pos) // inv.Add never fails for loader-booked positions
+			_ = inv.Add(pos)
 		}
 	}
 
@@ -81,6 +81,9 @@ func clearTail(l *ast.Ledger, s Spec, kept []ast.Directive) iter.Seq2[int, ast.D
 }
 
 // clearBoundary resolves the boundary date for CLEAR (see clearTail).
+// The today() fallback is the only nondeterministic branch in scope;
+// callers reproducing test fixtures over an empty no-CLOSE ledger must
+// inject the boundary via Spec.Close.
 func clearBoundary(s Spec, kept []ast.Directive) time.Time {
 	if !s.Close.IsZero() {
 		return s.Close.AddDate(0, 0, -1)
