@@ -13,6 +13,22 @@ import (
 	"github.com/yugui/go-beancount/pkg/format"
 )
 
+// FprintPosting writes a single ast.Posting to w using the same indent /
+// alignment / display-context rules that [Fprint] applies inside a
+// transaction. txn is consulted only when option-driven alignment needs the
+// surrounding transaction; passing nil yields the default 2-space gap before
+// the amount.
+//
+// The output is exactly the lines that would appear in [Fprint] of a
+// transaction whose Postings is [posting] (the posting line plus any
+// indented metadata lines), with a trailing newline.
+func FprintPosting(w io.Writer, posting ast.Posting, txn *ast.Transaction, opts ...format.Option) error {
+	o := formatopt.Resolve(opts)
+	p := &printer{w: w, opts: o}
+	p.printPosting(posting, txn)
+	return p.err
+}
+
 // Fprint writes the beancount text representation of the given value to w.
 // The value can be ast.Directive (any concrete type), ast.File, ast.Ledger,
 // []ast.Directive, or ast.Amount.
