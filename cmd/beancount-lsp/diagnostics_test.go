@@ -278,6 +278,58 @@ func TestPublishDiagnostics_EmptyFilenameDiagnosticDropped(t *testing.T) {
 	}
 }
 
+// TestPublishDiagnostics_MultibytePathUsesClientURI guards against publishing a
+// multibyte-path document's diagnostics to a re-encoded URI. Editors send the
+// document URI with lowercase percent-escapes (%e3); uri.File re-encodes with
+// uppercase (%E3). Publishing to the uppercase URI would land on a phantom file
+// the editor ignores, while the lowercase open document would be spuriously
+// cleared. The diagnostic must reach the editor's original (lowercase) URI, and
+// that URI must not also receive an empty-array clear in the same cycle.
+func TestPublishDiagnostics_MultibytePathUsesClientURI(t *testing.T) {
+	stub := newStub()
+	srv := NewServer(WithSessionFactory(func(string) (SessionAPI, error) { return stub, nil }))
+	client, dc, _ := newDiagTestPair(t, srv)
+	ctx := context.Background()
+
+	if err := client.call(ctx, "initialize", initializeParams("file:///tmp"), nil); err != nil {
+		t.Fatalf("initialize: %v", err)
+	}
+
+	// The editor opens the file with lowercase-hex escapes; uri.File yields
+	// uppercase, so the two URI strings differ for the same path.
+	path := "/tmp/ビーンカウント/test.beancount"
+	clientURI := lowerHexEscapes(uri.File(path))
+	if clientURI == uri.File(path) {
+		t.Fatalf("expected lowercase URI to differ from uri.File(%q)", path)
+	}
+	if err := client.notify(ctx, "textDocument/didOpen", &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: clientURI, Version: 1, Text: "x\n"},
+	}); err != nil {
+		t.Fatalf("didOpen: %v", err)
+	}
+	stub.awaitSet(t, 3*time.Second)
+
+	sendLedger(stub, makeLedger(
+		ast.Diagnostic{Span: ast.Span{Start: ast.Position{Filename: path, Line: 1, Column: 1}}, Message: "boom"},
+	))
+	notifs := dc.await(t, 1, 3*time.Second)
+
+	var gotDiag bool
+	for _, n := range notifs {
+		if n.URI != clientURI {
+			t.Errorf("notification URI = %q, want client URI %q", n.URI, clientURI)
+		}
+		if len(n.Diagnostics) > 0 {
+			gotDiag = true
+		} else {
+			t.Errorf("unexpected empty-array clear for %q", n.URI)
+		}
+	}
+	if !gotDiag {
+		t.Error("no diagnostic delivered for the multibyte-path document")
+	}
+}
+
 func TestDidChange_Debounced(t *testing.T) {
 	stub := newStub()
 	const debounce = 200 * time.Millisecond
