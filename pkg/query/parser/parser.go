@@ -180,21 +180,137 @@ func (p *parser) parseTargetList() ([]Target, error) {
 	}
 }
 
+var scopingStarters = map[tokenKind]bool{
+	tokOpen:  true,
+	tokClose: true,
+	tokClear: true,
+}
+
+var clauseEnders = map[tokenKind]bool{
+	tokWhere: true,
+	tokGroup: true,
+	tokOrder: true,
+	tokLimit: true,
+	tokSemi:  true,
+	tokEOF:   true,
+}
+
 func (p *parser) parseFrom() (*FromClause, error) {
 	kw := p.tok
 	if err := p.advance(); err != nil {
 		return nil, err
 	}
-	expr, err := p.parseExpr()
-	if err != nil {
-		return nil, err
+
+	if clauseEnders[p.tok.kind] {
+		return nil, p.errf(p.tok.pos, "expected expression or scoping keyword after FROM, found %s", p.tok.kind)
 	}
-	from := &FromClause{Expr: expr, Pos: kw.pos}
-	if ref, ok := expr.(*ColumnRef); ok {
-		from.IsBareName = true
-		from.Name = ref.Name
+
+	from := &FromClause{Pos: kw.pos}
+
+	if !scopingStarters[p.tok.kind] {
+		expr, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		from.Expr = expr
+		if ref, ok := expr.(*ColumnRef); ok {
+			from.IsBareName = true
+			from.Name = ref.Name
+		}
 	}
+
+	if scopingStarters[p.tok.kind] {
+		scoping, err := p.parseScoping()
+		if err != nil {
+			return nil, err
+		}
+		from.Scoping = scoping
+	}
+
 	return from, nil
+}
+
+func (p *parser) parseScoping() (*Scoping, error) {
+	sc := &Scoping{Pos: p.tok.pos}
+
+	if p.tok.kind == tokOpen {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.tok.kind != tokOn {
+			return nil, p.errf(p.tok.pos, "expected ON after OPEN, found %s", p.tok.kind)
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		tm, err := p.parseDate("OPEN ON")
+		if err != nil {
+			return nil, err
+		}
+		sc.Open = &tm
+	}
+
+	if p.tok.kind == tokClose {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.tok.kind != tokOn {
+			return nil, p.errf(p.tok.pos, "expected ON after CLOSE, found %s", p.tok.kind)
+		}
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		tm, err := p.parseDate("CLOSE ON")
+		if err != nil {
+			return nil, err
+		}
+		sc.Close = &tm
+	}
+
+	if p.tok.kind == tokClear {
+		clearPos := p.tok.pos
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		if p.tok.kind == tokOn {
+			return nil, p.errf(clearPos, "unexpected ON after CLEAR")
+		}
+		sc.Clear = true
+	}
+
+	switch p.tok.kind {
+	case tokOpen:
+		if sc.Open != nil {
+			return nil, p.errf(p.tok.pos, "duplicate OPEN")
+		}
+		return nil, p.errf(p.tok.pos, "out-of-order OPEN (must precede CLOSE and CLEAR)")
+	case tokClose:
+		if sc.Close != nil {
+			return nil, p.errf(p.tok.pos, "duplicate CLOSE")
+		}
+		return nil, p.errf(p.tok.pos, "out-of-order CLOSE (must precede CLEAR)")
+	case tokClear:
+		return nil, p.errf(p.tok.pos, "duplicate CLEAR")
+	}
+
+	return sc, nil
+}
+
+// parseDate consumes a date literal token. ctx is a short label included in
+// error messages identifying the surrounding clause (e.g. "OPEN ON").
+func (p *parser) parseDate(ctx string) (time.Time, error) {
+	if p.tok.kind != tokDate {
+		return time.Time{}, p.errf(p.tok.pos, "expected date after %s, found %s", ctx, p.tok.kind)
+	}
+	dateTok := p.tok
+	if err := p.advance(); err != nil {
+		return time.Time{}, err
+	}
+	tm, err := time.Parse("2006-01-02", dateTok.text)
+	if err != nil {
+		return time.Time{}, p.errf(dateTok.pos, "invalid date literal %q", dateTok.text)
+	}
+	return tm, nil
 }
 
 func (p *parser) parseGroupBy() ([]Expr, error) {

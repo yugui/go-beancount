@@ -43,6 +43,10 @@ const (
 	tokTrue
 	tokFalse
 	tokNull
+	tokOpen
+	tokClose
+	tokClear
+	tokOn
 
 	// Operators and punctuation
 	tokLParen  // (
@@ -91,6 +95,10 @@ var tokenKindNames = [tokKindCount]string{
 	tokTrue:     "TRUE",
 	tokFalse:    "FALSE",
 	tokNull:     "NULL",
+	tokOpen:     "OPEN",
+	tokClose:    "CLOSE",
+	tokClear:    "CLEAR",
+	tokOn:       "ON",
 	tokLParen:   "(",
 	tokRParen:   ")",
 	tokComma:    ",",
@@ -139,6 +147,10 @@ var keywords = map[string]tokenKind{
 	"true":     tokTrue,
 	"false":    tokFalse,
 	"null":     tokNull,
+	"open":     tokOpen,
+	"close":    tokClose,
+	"clear":    tokClear,
+	"on":       tokOn,
 }
 
 // token is one lexical unit. Text is the exact source slice; for strings it
