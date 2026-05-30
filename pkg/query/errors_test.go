@@ -25,6 +25,10 @@ func TestCompileErrors(t *testing.T) {
 		{"non-boolean predicate", "SELECT account WHERE number", "boolean"},
 		{"non-boolean from", "SELECT account FROM number", "boolean"},
 		{"aggregate only in order by", "SELECT account FROM postings ORDER BY sum(number)", "must appear in GROUP BY"},
+		// Removed when scoping is wired through Compile in Step 4 / Steps 5-6.
+		{"open on not yet implemented", "SELECT account FROM postings OPEN ON 2022-01-01", "not yet implemented"},
+		{"close on not yet implemented", "SELECT account FROM postings CLOSE ON 2022-01-01", "not yet implemented"},
+		{"clear not yet implemented", "SELECT account FROM postings CLEAR", "not yet implemented"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

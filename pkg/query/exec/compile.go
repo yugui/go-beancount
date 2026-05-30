@@ -103,6 +103,18 @@ func Compile(sel *parser.Select, ledger *ast.Ledger) (*Compiled, error) {
 // FROM filter expression (nil when FROM is absent or is a table reference).
 func selectTable(sel *parser.Select, ledger *ast.Ledger) (*table.Table, parser.Expr, error) {
 	from := sel.From
+	if from != nil && from.Scoping != nil {
+		sc := from.Scoping
+		if sc.Open != nil {
+			return nil, nil, errf(sc.Pos, "OPEN ON scoping not yet implemented")
+		}
+		if sc.Close != nil {
+			return nil, nil, errf(sc.Pos, "CLOSE ON scoping not yet implemented")
+		}
+		if sc.Clear {
+			return nil, nil, errf(sc.Pos, "CLEAR scoping not yet implemented")
+		}
+	}
 	if from != nil && from.IsBareName {
 		if ctor, ok := tableCatalog[strings.ToLower(from.Name)]; ok {
 			return ctor(ledger), nil, nil

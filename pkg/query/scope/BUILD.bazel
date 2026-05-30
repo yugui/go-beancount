@@ -1,0 +1,21 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "scope",
+    srcs = [
+        "doc.go",
+        "scope.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/query/scope",
+    visibility = ["//visibility:public"],
+    deps = ["//pkg/ast"],
+)
+
+go_test(
+    name = "scope_test",
+    srcs = ["scope_test.go"],
+    deps = [
+        ":scope",
+        "//pkg/ast",
+    ],
+)
