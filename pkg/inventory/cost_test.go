@@ -239,6 +239,11 @@ func TestResolveLot(t *testing.T) {
 		if cost.Number.Cmp(&want) != 0 {
 			t.Errorf("Number = %s, want %s", cost.Number.String(), want.String())
 		}
+		// Exact total→per-unit division must carry the ideal exponent, not
+		// apd's 34-digit padding (500/5 = 100, not 100.000…0).
+		if s := cost.Number.Text('f'); s != "100" {
+			t.Errorf("Number.Text('f') = %s, want 100 (unpadded)", s)
+		}
 		if cost.Currency != "USD" {
 			t.Errorf("Currency = %q, want %q", cost.Currency, "USD")
 		}

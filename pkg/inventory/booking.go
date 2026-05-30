@@ -296,9 +296,10 @@ func fillRealizedGain(steps []ReductionStep, p *ast.Posting) error {
 			// avoid div-by-zero
 			return nil
 		}
-		salePricePer = new(apd.Decimal)
 		total := p.Price.Amount.Number
-		if _, err := quoContext.Quo(salePricePer, &total, absUnits); err != nil {
+		var err error
+		salePricePer, err = ast.QuoNormalized(quoContext, &total, absUnits)
+		if err != nil {
 			return fmt.Errorf("inventory.fillRealizedGain: divide total price: %w", err)
 		}
 	} else {

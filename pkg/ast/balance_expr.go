@@ -241,7 +241,10 @@ func evalArithExpr(n *syntax.Node) (apd.Decimal, *Diagnostic) {
 		case syntax.STAR:
 			_, err = arithCtx.Mul(&result, &left, &right)
 		case syntax.SLASH:
-			_, err = arithCtx.Quo(&result, &left, &right)
+			var quo *apd.Decimal
+			if quo, err = QuoNormalized(arithCtx, &left, &right); err == nil {
+				result.Set(quo)
+			}
 		default:
 			return apd.Decimal{}, &Diagnostic{
 				Span:     spanOfNode(n),
@@ -264,6 +267,42 @@ func evalArithExpr(n *syntax.Node) (apd.Decimal, *Diagnostic) {
 		Message:  "malformed arithmetic expression",
 		Severity: Error,
 	}
+}
+
+// QuoNormalized divides dividend by divisor using ctx and rewrites an exact
+// quotient to the exponent beancount/Python decimal produces: the General
+// Decimal Arithmetic ideal exponent (dividend.Exponent - divisor.Exponent),
+// without dropping fractional digits the value genuinely needs. apd's Quo pads
+// exact quotients to ctx's precision (e.g. 10000.00/2 -> 5000.000...0, 34
+// digits); leaving that inflated exponent in place is display noise and
+// corrupts the per-currency tolerance pkg/validation/tolerance infers from the
+// exponent.
+//
+// An inexact quotient (a non-terminating expansion like 10/3) has no shorter
+// exact form, so it is returned at ctx's full precision unchanged. The returned
+// Decimal is freshly allocated. The error is non-nil only if ctx rejects the
+// divide, reduce, or quantize — for division this includes divide-by-zero;
+// the trailing reduce/quantize cannot fail on a quotient ctx already produced
+// within precision.
+func QuoNormalized(ctx *apd.Context, dividend, divisor *apd.Decimal) (*apd.Decimal, error) {
+	q := new(apd.Decimal)
+	cond, err := ctx.Quo(q, dividend, divisor)
+	if err != nil {
+		return nil, err
+	}
+	if cond.Inexact() {
+		return q, nil
+	}
+	idealExp := dividend.Exponent - divisor.Exponent
+	if _, _, err := ctx.Reduce(q, q); err != nil {
+		return nil, err
+	}
+	if q.Exponent > idealExp {
+		if _, err := ctx.Quantize(q, q, idealExp); err != nil {
+			return nil, err
+		}
+	}
+	return q, nil
 }
 
 // parseNumberToken parses a NUMBER token into apd.Decimal. NUMBER tokens
