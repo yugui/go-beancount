@@ -157,8 +157,7 @@ func (s *Server) sendPublish(ctx context.Context, conn interface {
 // disk. Returns nil on disk read error (diagnostic will have zero Range but
 // will not be dropped).
 func (s *Server) sourceBytesFor(filename string) []byte {
-	u := uri.File(filename)
-	if content, ok := s.docs.get(u); ok {
+	if content, ok := s.docs.getByPath(filename); ok {
 		return content
 	}
 	b, err := os.ReadFile(filename)

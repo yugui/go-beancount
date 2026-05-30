@@ -10,32 +10,44 @@ import (
 	"go.lsp.dev/uri"
 )
 
-// document holds the in-memory state of an open text document.
+// document holds the in-memory state of an open text document. uri is the
+// original client URI, retained so outbound notifications echo it verbatim.
 type document struct {
+	uri     uri.URI
 	version int32
 	content []byte
 }
 
-// docStore is a concurrency-safe store of open documents keyed by URI.
+// docStore is a concurrency-safe store of open documents keyed by the document's
+// decoded filesystem path (uri.URI.Filename()). Keying by path rather than the
+// raw URI string makes lookups insensitive to percent-encoding differences
+// (e.g. lowercase vs uppercase hex) between the client's URI and a URI
+// re-encoded from a path.
 type docStore struct {
 	mu   sync.Mutex
-	docs map[uri.URI]*document
+	docs map[string]*document
 }
 
 func newDocStore() *docStore {
-	return &docStore{docs: make(map[uri.URI]*document)}
+	return &docStore{docs: make(map[string]*document)}
 }
 
 func (ds *docStore) set(u uri.URI, ver int32, content []byte) {
 	ds.mu.Lock()
-	ds.docs[u] = &document{version: ver, content: content}
+	ds.docs[u.Filename()] = &document{uri: u, version: ver, content: content}
 	ds.mu.Unlock()
 }
 
+// get returns the content stored for u, looked up by u.Filename().
 func (ds *docStore) get(u uri.URI) ([]byte, bool) {
+	return ds.getByPath(u.Filename())
+}
+
+// getByPath returns the content stored for the given decoded filesystem path.
+func (ds *docStore) getByPath(filename string) ([]byte, bool) {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
-	d, ok := ds.docs[u]
+	d, ok := ds.docs[filename]
 	if !ok {
 		return nil, false
 	}
@@ -44,17 +56,17 @@ func (ds *docStore) get(u uri.URI) ([]byte, bool) {
 
 func (ds *docStore) delete(u uri.URI) {
 	ds.mu.Lock()
-	delete(ds.docs, u)
+	delete(ds.docs, u.Filename())
 	ds.mu.Unlock()
 }
 
-// uris returns the URIs of all currently open documents.
+// uris returns the original client URIs of all currently open documents.
 func (ds *docStore) uris() []uri.URI {
 	ds.mu.Lock()
 	defer ds.mu.Unlock()
 	out := make([]uri.URI, 0, len(ds.docs))
-	for u := range ds.docs {
-		out = append(out, u)
+	for _, d := range ds.docs {
+		out = append(out, d.uri)
 	}
 	return out
 }
