@@ -66,7 +66,7 @@ func openSummarize(l *ast.Ledger, s Spec) iter.Seq2[int, ast.Directive] {
 	}
 	slices.Sort(accounts)
 
-	openingBalances := ast.Account(l.Options.String("account_previous_balances"))
+	openingBalances := l.Options.EquityAccount("account_previous_balances")
 	openings := make([]ast.Directive, 0, len(accounts))
 	for _, a := range accounts {
 		routing, isIE := classifyAccount(a, l.Options)
@@ -125,16 +125,19 @@ func postingPosition(p *ast.Posting) (inventory.Position, bool) {
 // classifyAccount routes acct's boundary balance to its equity
 // counterpart. Accounts under the income or expense root (per opts'
 // name_income/name_expenses) route to account_previous_earnings; all
-// others to account_previous_balances. opts is nil-safe and falls back
-// to registry defaults.
+// others to account_previous_balances. The returned account is rooted
+// under name_equity via OptionValues.EquityAccount, so the registered
+// leaf-only defaults ("Opening-Balances", "Earnings:Previous") become
+// "Equity:Opening-Balances", "Equity:Earnings:Previous" by default.
+// opts is nil-safe and falls back to registry defaults.
 func classifyAccount(acct ast.Account, opts *ast.OptionValues) (routing ast.Account, isIncomeOrExpense bool) {
 	root := string(acct.Root())
 	income := opts.String("name_income")
 	expenses := opts.String("name_expenses")
 	if root == income || root == expenses {
-		return ast.Account(opts.String("account_previous_earnings")), true
+		return opts.EquityAccount("account_previous_earnings"), true
 	}
-	return ast.Account(opts.String("account_previous_balances")), false
+	return opts.EquityAccount("account_previous_balances"), false
 }
 
 // synthesizeOpeningTxn builds the opening-balance transaction for one

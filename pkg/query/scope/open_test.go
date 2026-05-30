@@ -174,14 +174,14 @@ func TestOpenSynthesizesOpeningBalances(t *testing.T) {
 			t.Fatalf("%s: postings = %d, want 2", acct, len(txn.Postings))
 		}
 		earnings, balances := txn.Postings[0], txn.Postings[1]
-		if earnings.Account != "Earnings:Previous" {
-			t.Errorf("%s: first leg = %q, want Earnings:Previous", acct, earnings.Account)
+		if earnings.Account != "Equity:Earnings:Previous" {
+			t.Errorf("%s: first leg = %q, want Equity:Earnings:Previous", acct, earnings.Account)
 		}
 		if got := earnings.Amount.Number.String(); got != wantTransfer {
-			t.Errorf("%s: Earnings:Previous units = %s, want %s", acct, got, wantTransfer)
+			t.Errorf("%s: Equity:Earnings:Previous units = %s, want %s", acct, got, wantTransfer)
 		}
-		if balances.Account != "Opening-Balances" {
-			t.Errorf("%s: second leg = %q, want Opening-Balances", acct, balances.Account)
+		if balances.Account != "Equity:Opening-Balances" {
+			t.Errorf("%s: second leg = %q, want Equity:Opening-Balances", acct, balances.Account)
 		}
 		for _, p := range txn.Postings {
 			if p.Account == acct {
@@ -190,7 +190,7 @@ func TestOpenSynthesizesOpeningBalances(t *testing.T) {
 		}
 		assertBalanced(t, txn)
 	}
-	checkAssetLiabilityOpening("Assets:Cash", "900", "Opening-Balances")
+	checkAssetLiabilityOpening("Assets:Cash", "900", "Equity:Opening-Balances")
 	checkIncomeExpenseOpening("Expenses:Food", "100")
 	checkIncomeExpenseOpening("Income:Salary", "-1000")
 }
@@ -349,11 +349,11 @@ func TestOpenClassifyHonorsCustomNameIncome(t *testing.T) {
 	}
 	// Custom name_income routes Revenue:Sales' cumulative balance into
 	// Earnings:Previous; the income account itself is not posted.
-	if route := revenue.Postings[0].Account; route != "Earnings:Previous" {
-		t.Errorf("Revenue:Sales transfer leg = %q, want Earnings:Previous (custom name_income)", route)
+	if route := revenue.Postings[0].Account; route != "Equity:Earnings:Previous" {
+		t.Errorf("Revenue:Sales transfer leg = %q, want Equity:Earnings:Previous (custom name_income)", route)
 	}
-	if pair := revenue.Postings[1].Account; pair != "Opening-Balances" {
-		t.Errorf("Revenue:Sales balancing leg = %q, want Opening-Balances", pair)
+	if pair := revenue.Postings[1].Account; pair != "Equity:Opening-Balances" {
+		t.Errorf("Revenue:Sales balancing leg = %q, want Equity:Opening-Balances", pair)
 	}
 }
 
@@ -557,8 +557,8 @@ func TestOpenLiabilityRoutesToOpeningBalances(t *testing.T) {
 	})
 
 	txn := openingFor(t, l, scope.Spec{Open: date(2022, 1, 1)}, "Liabilities:CreditCard")
-	if route := txn.Postings[1].Account; route != "Opening-Balances" {
-		t.Errorf("Liabilities:CreditCard routed to %q, want Opening-Balances", route)
+	if route := txn.Postings[1].Account; route != "Equity:Opening-Balances" {
+		t.Errorf("Liabilities:CreditCard routed to %q, want Equity:Opening-Balances", route)
 	}
 }
 
