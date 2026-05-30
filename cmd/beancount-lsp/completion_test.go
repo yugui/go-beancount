@@ -119,6 +119,37 @@ func TestCompletion_Account_OnPosting(t *testing.T) {
 	}
 }
 
+// TestCompletion_Account_OnBalance: cursor on the partial account name of a
+// `balance` directive yields the opened accounts that share the prefix. Guards
+// the bug where the balance position was classified as a currency token,
+// returning currencies (USD) instead of accounts (Assets:A, Assets:A:B).
+func TestCompletion_Account_OnBalance(t *testing.T) {
+	dir := t.TempDir()
+	const src = `2020-01-01 open Assets:A
+2020-01-01 open Assets:A:B
+2020-01-01 open Income:A
+2020-01-01 commodity USD
+2020-01-05 balance A
+`
+	rootFile := writeTempFile(t, dir, "main.beancount", src)
+	client := newCompletionServer(t, rootFile)
+	docURI := uri.File(rootFile)
+
+	// Line 4 (0-based), char 20: cursor right after "2020-01-05 balance A".
+	list := awaitCompletion(t, client, docURI, 4, 20, 3)
+
+	want := []string{"Assets:A", "Assets:A:B", "Income:A"}
+	got := labelSet(list.Items)
+	if !slices.Equal(got, want) {
+		t.Errorf("handleCompletion: Account_OnBalance: labels = %v, want %v", got, want)
+	}
+	for _, it := range list.Items {
+		if it.Kind != protocol.CompletionItemKindClass {
+			t.Errorf("handleCompletion: Account_OnBalance: item %q kind = %v, want Class", it.Label, it.Kind)
+		}
+	}
+}
+
 // TestCompletion_Account_TextEdit: an account token already typed up to a colon
 // (`Income:`) yields items whose TextEdit replaces the whole token, so a
 // colon-splitting client neither duplicates the prefix nor matches all accounts.
