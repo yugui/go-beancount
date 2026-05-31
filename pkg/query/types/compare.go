@@ -22,8 +22,8 @@ import (
 //     Bool false<true; Int and Decimal numeric (Decimal via apd, exact);
 //     String lexicographic by bytes; Date chronological; Amount by
 //     (Currency, then Number); Position by (Commodity, then lot identity,
-//     then Units); Inventory by length then position-wise; Set and Dict
-//     per set.go and dict.go.
+//     then Units); Inventory by length then position-wise; Interval by
+//     (years, months, days); Set and Dict per set.go and dict.go.
 //
 // Entry is reserved and never constructed in this step; were it to appear,
 // all Entry values compare equal (rule 3 yields 0), so ordering an Entry
@@ -61,6 +61,15 @@ func compare(a, b Value) int {
 		return cmpPosition(x.p, b.(positionValue).p)
 	case inventoryValue:
 		return cmpInventory(x.inv, b.(inventoryValue).inv)
+	case intervalValue:
+		y := b.(intervalValue)
+		if c := cmpInt(x.years, y.years); c != 0 {
+			return c
+		}
+		if c := cmpInt(x.months, y.months); c != 0 {
+			return c
+		}
+		return cmpInt(x.days, y.days)
 	case Set:
 		return x.compareTo(b.(Set))
 	case Dict:

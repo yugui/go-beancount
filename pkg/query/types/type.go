@@ -27,6 +27,8 @@ const (
 	Amount
 	Position
 	Inventory
+	// Interval is a calendar offset of (years, months, days).
+	Interval
 	SetType
 	DictType
 	// Entry is reserved for a future directive-as-value variant. It holds
@@ -64,6 +66,8 @@ func (t Type) String() string {
 		return "position"
 	case Inventory:
 		return "inventory"
+	case Interval:
+		return "interval"
 	case SetType:
 		return "set"
 	case DictType:

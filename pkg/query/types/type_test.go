@@ -17,6 +17,7 @@ func TestTypeString(t *testing.T) {
 		types.Amount:    "amount",
 		types.Position:  "position",
 		types.Inventory: "inventory",
+		types.Interval:  "interval",
 		types.SetType:   "set",
 		types.DictType:  "dict",
 		types.Entry:     "entry",
@@ -32,8 +33,8 @@ func TestTypeString(t *testing.T) {
 func TestTypeOrdinalOrdering(t *testing.T) {
 	ascending := []types.Type{
 		types.Bool, types.Int, types.Decimal, types.String, types.Date,
-		types.Amount, types.Position, types.Inventory, types.SetType,
-		types.DictType, types.Entry,
+		types.Amount, types.Position, types.Inventory, types.Interval,
+		types.SetType, types.DictType, types.Entry,
 	}
 	for i := 0; i+1 < len(ascending); i++ {
 		if !(ascending[i] < ascending[i+1]) {
