@@ -110,6 +110,13 @@ var entryColumns = []Column{
 	entryCol("meta", types.DictType, func(d ast.Directive) types.Value {
 		return metaval.Dict(d.DirMeta())
 	}),
+	// both equal directive meta — no posting concept here
+	entryCol("entry_meta", types.DictType, func(d ast.Directive) types.Value {
+		return metaval.Dict(d.DirMeta())
+	}),
+	entryCol("any_meta", types.DictType, func(d ast.Directive) types.Value {
+		return metaval.Dict(d.DirMeta())
+	}),
 }
 
 // directiveTypeName returns the lowercase BQL type name for a directive.

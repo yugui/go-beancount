@@ -59,6 +59,13 @@ func init() {
 		Flavor: api.ScalarFlavor,
 		Scalar: api.Pure(getitemScalar),
 	})
+	env.Register(api.Function{
+		Name:   "getitem",
+		In:     []types.Type{types.DictType, types.String, types.String},
+		Out:    types.String,
+		Flavor: api.ScalarFlavor,
+		Scalar: api.Pure(getitemScalar),
+	})
 }
 
 type countAcc struct{ n int64 }
@@ -118,7 +125,8 @@ func (a *sumPositionAcc) Merge(o api.Accumulator) error {
 func (a *sumPositionAcc) Result() (types.Value, error) { return types.NewInventory(a.inv), nil }
 
 // getitemScalar reads a key from a dict; a missing key or NULL dict yields a
-// typed NULL string.
+// typed NULL string. The optional third argument is returned when the dict is
+// present but the key is absent.
 func getitemScalar(args []types.Value) (types.Value, error) {
 	d, ok := types.AsDict(args[0])
 	if !ok {
@@ -128,11 +136,13 @@ func getitemScalar(args []types.Value) (types.Value, error) {
 	if !ok {
 		return types.Null(types.String), nil
 	}
-	v, ok := d.Get(key)
-	if !ok {
-		return types.Null(types.String), nil
+	if v, found := d.Get(key); found {
+		return v, nil
 	}
-	return v, nil
+	if len(args) == 3 {
+		return args[2], nil
+	}
+	return types.Null(types.String), nil
 }
 
 func dec(t *testing.T, s string) apd.Decimal {

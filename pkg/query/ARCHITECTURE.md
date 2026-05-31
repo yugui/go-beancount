@@ -149,7 +149,8 @@ column is where to look before touching it.
 AND-merge FROM-filter and WHERE into one Bool predicate over the table columns →
 compile GROUP BY / targets / ORDER BY into typed `cexpr` trees → resolve column
 refs against `Table.Column` (case-insensitive), operators (type-checked), and
-function overloads (`env.Resolve`) → rewrite `meta('k')` to `getitem(meta,'k')`
+function overloads (`env.Resolve`) → rewrite `meta`/`entry_meta`/`any_meta`
+sugar `fn('k')` to `getitem(<col>,'k')`
 → classify aggregate slots, reject misplaced/nested aggregates and ungrouped
 columns. Produces an immutable `*Compiled`. Errors are positioned, never panics.
 
@@ -167,8 +168,15 @@ The **single parallel-executor insertion point** is the input-row scan in
 
 - **`meta` on `postings` is posting-only** (not merged with the parent
   transaction). The `meta` column is always a (possibly empty) Dict, never
-  NULL; `getitem` returns NULL on a missing key or NULL dict. A merged variant
-  is a future option (§7.5).
+  NULL; `getitem` returns NULL on a missing key or NULL dict. Two companion
+  columns expose the enclosing entry's metadata and the merged view
+  (§7.5, shipped): `entry_meta` (the parent transaction's own meta) and
+  `any_meta` (transaction meta overlaid by the posting's meta, posting wins on
+  conflict). Both are always Dicts (never NULL). On the `entries` table, all
+  three columns equal the directive's own metadata — there is no posting
+  concept there. The compiler sugar (`meta('k')`, `entry_meta('k')`,
+  `any_meta('k')`) rewrites each to `getitem(<that column>, 'k'[, default])`
+  via a shared `metaSugarColumns` map.
 - **`payee` empty → NULL; `narration` always String** (even if empty). On
   `entries`, `flag`/`payee`/`narration` are NULL for non-Transaction directives.
 - **`flag` (postings)** = posting flag if set, else transaction flag; NULL if 0.
@@ -384,8 +392,11 @@ PassContext rejection; the executor calls every scalar one way.
 - Known deferred columns: on `postings` — `entry`, `id`, `location`,
   `description`, `other_accounts`, `accounts`, `posting_flag`; on `entries` —
   `id`, `description`, `accounts`. (`balance` shipped — §7.1, §6;
-  `value`/`convert` shipped as functions, not columns — §7.2.)
-- A **merged posting/transaction `meta`** variant (§6) is a column-level change.
+  `value`/`convert` shipped as functions, not columns — §7.2;
+  `entry_meta`/`any_meta` shipped — §6.)
+- The **merged posting/transaction `meta`** variant is shipped as `any_meta`
+  (posting over transaction), and the transaction-only view as `entry_meta`
+  (see §6). No further column-level meta work is deferred.
 
 ## 8. Excluded (initially)
 

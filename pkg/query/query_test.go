@@ -12,11 +12,7 @@ import (
 
 func mustQuery(t *testing.T, q string) query.Result {
 	t.Helper()
-	res, err := query.Query(context.Background(), q, sampleLedger(t))
-	if err != nil {
-		t.Fatalf("Query(%q): %v", q, err)
-	}
-	return res
+	return mustQueryOn(t, q, sampleLedger(t))
 }
 
 func colNames(res query.Result) []string {
@@ -610,6 +606,217 @@ func TestOpenResetsIncomeAccountAcrossBoundary(t *testing.T) {
 			t.Errorf("sum(number) for %s = %s, want %s", k, totals[k], v)
 		}
 	}
+}
+
+// metaLedger builds a ledger with one transaction that carries transaction-level
+// metadata and one posting with overlapping + distinct posting-level metadata.
+// Transaction meta: txn_key="txn_val", shared_key="txn_shared"
+// Posting meta:     post_key="post_val", shared_key="post_wins"
+func metaLedger(t *testing.T) *ast.Ledger {
+	t.Helper()
+	l := &ast.Ledger{}
+	l.Insert(&ast.Transaction{
+		Date:      date(2024, 1, 1),
+		Flag:      '*',
+		Narration: "meta test",
+		Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+			"txn_key":    {Kind: ast.MetaString, String: "txn_val"},
+			"shared_key": {Kind: ast.MetaString, String: "txn_shared"},
+		}},
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Cash",
+				Amount:  &ast.Amount{Number: dec(t, "10"), Currency: "USD"},
+				Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+					"post_key":   {Kind: ast.MetaString, String: "post_val"},
+					"shared_key": {Kind: ast.MetaString, String: "post_wins"},
+				}},
+			},
+		},
+	})
+	return l
+}
+
+// TestEntryMetaSugar verifies that entry_meta('k') resolves the parent
+// transaction's metadata, not the posting's own.
+func TestEntryMetaSugar(t *testing.T) {
+	l := metaLedger(t)
+	cases := []struct {
+		key     string
+		want    string
+		wantNUL bool
+	}{
+		{key: "txn_key", want: "txn_val"},
+		{key: "post_key", wantNUL: true},
+		{key: "shared_key", want: "txn_shared"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			res := mustQueryOn(t, "SELECT entry_meta('"+tc.key+"') AS v", l)
+			if len(res.Rows) != 1 {
+				t.Fatalf("rows = %d, want 1", len(res.Rows))
+			}
+			v := cell(res, 0, column(t, res, "v"))
+			if tc.wantNUL {
+				if !v.IsNull() {
+					t.Errorf("entry_meta(%q) = %v, want NULL", tc.key, v.Format())
+				}
+				return
+			}
+			s, ok := types.AsString(v)
+			if !ok || s != tc.want {
+				t.Errorf("entry_meta(%q) = %v, want %q", tc.key, v.Format(), tc.want)
+			}
+		})
+	}
+}
+
+// TestAnyMetaSugar verifies that any_meta('k') returns the merged metadata with
+// the posting winning on conflict.
+func TestAnyMetaSugar(t *testing.T) {
+	l := metaLedger(t)
+	cases := []struct {
+		key     string
+		want    string
+		wantNUL bool
+	}{
+		{key: "txn_key", want: "txn_val"},
+		{key: "post_key", want: "post_val"},
+		{key: "shared_key", want: "post_wins"}, // posting wins
+		{key: "nosuchkey", wantNUL: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			res := mustQueryOn(t, "SELECT any_meta('"+tc.key+"') AS v", l)
+			if len(res.Rows) != 1 {
+				t.Fatalf("rows = %d, want 1", len(res.Rows))
+			}
+			v := cell(res, 0, column(t, res, "v"))
+			if tc.wantNUL {
+				if !v.IsNull() {
+					t.Errorf("any_meta(%q) = %v, want NULL", tc.key, v.Format())
+				}
+				return
+			}
+			s, ok := types.AsString(v)
+			if !ok || s != tc.want {
+				t.Errorf("any_meta(%q) = %v, want %q", tc.key, v.Format(), tc.want)
+			}
+		})
+	}
+}
+
+// TestMetaFamilyDictColumns verifies that SELECT entry_meta, any_meta FROM
+// postings returns non-NULL Dict values directly.
+func TestMetaFamilyDictColumns(t *testing.T) {
+	l := metaLedger(t)
+	res := mustQueryOn(t, "SELECT entry_meta, any_meta FROM postings", l)
+	if len(res.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(res.Rows))
+	}
+	em := res.Rows[0][column(t, res, "entry_meta")]
+	am := res.Rows[0][column(t, res, "any_meta")]
+
+	ed, ok := types.AsDict(em)
+	if !ok || em.IsNull() {
+		t.Fatalf("entry_meta is NULL or not a Dict: %v", em.Format())
+	}
+	if _, ok := ed.Get("txn_key"); !ok {
+		t.Errorf("entry_meta Dict missing txn_key")
+	}
+	if _, ok := ed.Get("post_key"); ok {
+		t.Errorf("entry_meta Dict must not contain post_key (posting-only key)")
+	}
+
+	ad, ok := types.AsDict(am)
+	if !ok || am.IsNull() {
+		t.Fatalf("any_meta is NULL or not a Dict: %v", am.Format())
+	}
+	if _, ok := ad.Get("txn_key"); !ok {
+		t.Errorf("any_meta Dict missing txn_key")
+	}
+	if _, ok := ad.Get("post_key"); !ok {
+		t.Errorf("any_meta Dict missing post_key")
+	}
+	sv, _ := ad.Get("shared_key")
+	if s, ok := types.AsString(sv); !ok || s != "post_wins" {
+		t.Errorf("any_meta Dict shared_key = %v, want post_wins", sv.Format())
+	}
+}
+
+// TestEntryMetaOnEntriesTable verifies that on the entries table entry_meta and
+// any_meta both equal the directive's own metadata.
+func TestEntryMetaOnEntriesTable(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(&ast.Note{
+		Date:    date(2024, 1, 1),
+		Account: "Assets:Cash",
+		Comment: "n",
+		Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+			"note_key": {Kind: ast.MetaString, String: "note_val"},
+		}},
+	})
+
+	// On entries, meta/entry_meta/any_meta are all the directive's own meta.
+	for _, col := range []string{"meta", "entry_meta", "any_meta"} {
+		q := "SELECT " + col + "('note_key') AS v FROM entries"
+		res, err := query.Query(context.Background(), q, l)
+		if err != nil {
+			t.Fatalf("%s query: %v", col, err)
+		}
+		if len(res.Rows) != 1 {
+			t.Fatalf("%s: rows = %d, want 1", col, len(res.Rows))
+		}
+		vcol := column(t, res, "v")
+		s, ok := types.AsString(cell(res, 0, vcol))
+		if !ok || s != "note_val" {
+			t.Errorf("%s('note_key') = %v, want note_val", col, cell(res, 0, vcol).Format())
+		}
+	}
+}
+
+// TestMetaSugarDefaultArg verifies that the 2-arg sugar form entry_meta('k','dflt')
+// returns the default when the key is absent.
+func TestMetaSugarDefaultArg(t *testing.T) {
+	l := metaLedger(t)
+
+	res := mustQueryOn(t, "SELECT entry_meta('nosuchkey', 'fallback') AS v", l)
+	vcol := column(t, res, "v")
+	s, ok := types.AsString(cell(res, 0, vcol))
+	if !ok || s != "fallback" {
+		t.Errorf("entry_meta('nosuchkey','fallback') = %v, want fallback", cell(res, 0, vcol).Format())
+	}
+
+	res2 := mustQueryOn(t, "SELECT any_meta('nosuchkey', 'fallback') AS v", l)
+	vcol2 := column(t, res2, "v")
+	s2, ok2 := types.AsString(cell(res2, 0, vcol2))
+	if !ok2 || s2 != "fallback" {
+		t.Errorf("any_meta('nosuchkey','fallback') = %v, want fallback", cell(res2, 0, vcol2).Format())
+	}
+}
+
+// TestMetaSugarBoundary confirms that a near-miss name like xmeta('k') is
+// treated as an unknown function (normal resolution error), not mistakenly
+// captured by the meta sugar rewrite path.
+func TestMetaSugarBoundary(t *testing.T) {
+	l := metaLedger(t)
+	_, err := query.Query(context.Background(), "SELECT xmeta('k') AS v", l)
+	if err == nil {
+		t.Fatal("expected error for unknown function xmeta, got nil")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "no xmeta column") {
+		t.Errorf("error mentions column, want function-resolution error: %v", err)
+	}
+}
+
+func mustQueryOn(t *testing.T, q string, l *ast.Ledger) query.Result {
+	t.Helper()
+	res, err := query.Query(context.Background(), q, l)
+	if err != nil {
+		t.Fatalf("Query(%q): %v", q, err)
+	}
+	return res
 }
 
 func equalStrings(a, b []string) bool {

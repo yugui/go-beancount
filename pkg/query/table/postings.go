@@ -200,17 +200,35 @@ var postingColumns = []Column{
 	postingCol("price", types.Amount, func(r postingRow) types.Value {
 		return perUnitPrice(r.posting())
 	}),
-	// meta is the POSTING's own metadata only — deliberately NOT merged
-	// with the parent transaction's. Always a Dict, possibly empty (never
-	// NULL); getitem handles missing keys.
+	// posting meta only — not merged with parent txn
 	postingCol("meta", types.DictType, func(r postingRow) types.Value {
 		return metaval.Dict(r.posting().Meta)
+	}),
+	// parent transaction meta
+	postingCol("entry_meta", types.DictType, func(r postingRow) types.Value {
+		return metaval.Dict(r.txn.Meta)
+	}),
+	// txn meta merged with posting meta; posting wins
+	postingCol("any_meta", types.DictType, func(r postingRow) types.Value {
+		return mergedMeta(r.txn.Meta, r.posting().Meta)
 	}),
 	// balance's value is supplied by the executor over the selected rows (see
 	// RunningBalanceColumn); this placeholder returns NULL for direct reads.
 	postingCol(RunningBalanceColumn, types.Inventory, func(postingRow) types.Value {
 		return types.Null(types.Inventory)
 	}),
+}
+
+// mergedMeta builds a Dict from base overlaid by overlay; overlay wins on conflict.
+func mergedMeta(base, overlay ast.Metadata) types.Value {
+	out := make(map[string]types.Value, len(base.Props)+len(overlay.Props))
+	for k, mv := range base.Props {
+		out[k] = metaval.Value(mv)
+	}
+	for k, mv := range overlay.Props {
+		out[k] = metaval.Value(mv)
+	}
+	return types.NewDict(out)
 }
 
 // perUnitPrice returns the per-unit price from a posting's annotation, or a

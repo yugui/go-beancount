@@ -546,11 +546,19 @@ func (c *compiler) compileIn(x *parser.In, aggOK bool) (cexpr, error) {
 	return &inSetExpr{x: left, set: right}, nil
 }
 
-// compileCall handles scalar and aggregate function calls and the meta()
-// sugar.
+// metaSugarColumns is the set of function names (lowercase) rewritten as
+// getitem(<col>, key[, default]) sugar; the column name equals the function name.
+var metaSugarColumns = map[string]struct{}{
+	"meta":       {},
+	"entry_meta": {},
+	"any_meta":   {},
+}
+
+// compileCall handles scalar and aggregate function calls and the meta-family
+// sugar (meta, entry_meta, any_meta).
 func (c *compiler) compileCall(x *parser.FuncCall, aggOK bool) (cexpr, error) {
-	if strings.EqualFold(x.Name, "meta") {
-		return c.compileMeta(x, aggOK)
+	if _, ok := metaSugarColumns[strings.ToLower(x.Name)]; ok {
+		return c.compileMeta(x, strings.ToLower(x.Name), aggOK)
 	}
 
 	argExprs := make([]cexpr, len(x.Args))
@@ -584,14 +592,12 @@ func (c *compiler) compileCall(x *parser.FuncCall, aggOK bool) (cexpr, error) {
 	return &scalarExpr{fn: fn.Scalar, args: argExprs, out: fn.Out}, nil
 }
 
-// compileMeta rewrites meta('key'[, default]) into getitem(meta, key[,
-// default]) by prepending the table's meta column as the first argument and
-// resolving getitem via env (Decision A2). The rewrite is documented in
-// doc.go.
-func (c *compiler) compileMeta(x *parser.FuncCall, aggOK bool) (cexpr, error) {
-	col, ok := c.tbl.Column("meta")
+// compileMeta rewrites <metaFn>('key'[, default]) into getitem(<col>, key[, default]);
+// colName is one of "meta", "entry_meta", "any_meta".
+func (c *compiler) compileMeta(x *parser.FuncCall, colName string, aggOK bool) (cexpr, error) {
+	col, ok := c.tbl.Column(colName)
 	if !ok {
-		return nil, errf(x.Position, "table %q has no meta column", c.tbl.Name)
+		return nil, errf(x.Position, "table %q has no %s column", c.tbl.Name, colName)
 	}
 	args := make([]cexpr, 0, len(x.Args)+1)
 	argTypes := make([]types.Type, 0, len(x.Args)+1)

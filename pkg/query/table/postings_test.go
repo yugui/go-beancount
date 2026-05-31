@@ -127,6 +127,8 @@ func TestPostingsColumnSchema(t *testing.T) {
 		{"weight", types.Amount},
 		{"price", types.Amount},
 		{"meta", types.DictType},
+		{"entry_meta", types.DictType},
+		{"any_meta", types.DictType},
 		{"balance", types.Inventory},
 	}
 	if len(tb.Columns) != len(want) {
@@ -482,6 +484,52 @@ func TestPostingsOverSkipsNonTransactions(t *testing.T) {
 		t.Fatalf("got %d rows, want 1 (Open directive must be skipped)", len(rows))
 	}
 	assertString(t, valueOf(t, tb, rows[0], "type"), "transaction")
+}
+
+// TestAnyMetaNonAliasing verifies that any_meta returns an independent copy:
+// mutating the source transaction and posting Meta.Props maps after reading
+// any_meta does not alter the previously returned Dict.
+func TestAnyMetaNonAliasing(t *testing.T) {
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		Flag: '*',
+		Meta: ast.Metadata{Props: map[string]ast.MetaValue{"tkey": {Kind: ast.MetaString, String: "tval"}}},
+		Postings: []ast.Posting{
+			{
+				Account: "Assets:Cash",
+				Amount:  &ast.Amount{Number: dec(t, "1"), Currency: "USD"},
+				Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"pkey": {Kind: ast.MetaString, String: "pval"}}},
+			},
+		},
+	}
+	l := &ast.Ledger{}
+	l.Insert(txn)
+	tb := table.Postings(l)
+
+	rows := collectRows(tb)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	v := valueOf(t, tb, rows[0], "any_meta")
+	d, ok := types.AsDict(v)
+	if !ok {
+		t.Fatalf("any_meta not a Dict: %v", v)
+	}
+
+	// Mutate source maps; the returned Dict must be unaffected.
+	txn.Meta.Props["tkey"] = ast.MetaValue{Kind: ast.MetaString, String: "mutated"}
+	txn.Postings[0].Meta.Props["pkey"] = ast.MetaValue{Kind: ast.MetaString, String: "mutated"}
+
+	if got, _ := d.Get("tkey"); got.IsNull() {
+		t.Fatalf("any_meta lost tkey after source mutation")
+	} else if s, _ := types.AsString(got); s != "tval" {
+		t.Errorf("any_meta[tkey] = %q after mutation, want original %q", s, "tval")
+	}
+	if got, _ := d.Get("pkey"); got.IsNull() {
+		t.Fatalf("any_meta lost pkey after source mutation")
+	} else if s, _ := types.AsString(got); s != "pval" {
+		t.Errorf("any_meta[pkey] = %q after mutation, want original %q", s, "pval")
+	}
 }
 
 func TestColumnLookupCaseInsensitive(t *testing.T) {
