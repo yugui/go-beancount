@@ -6,6 +6,7 @@ import (
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
+	"github.com/yugui/go-beancount/pkg/query/metaval"
 	"github.com/yugui/go-beancount/pkg/query/types"
 )
 
@@ -203,7 +204,7 @@ var postingColumns = []Column{
 	// with the parent transaction's. Always a Dict, possibly empty (never
 	// NULL); getitem handles missing keys.
 	postingCol("meta", types.DictType, func(r postingRow) types.Value {
-		return metaDict(r.posting().Meta)
+		return metaval.Dict(r.posting().Meta)
 	}),
 	// balance's value is supplied by the executor over the selected rows (see
 	// RunningBalanceColumn); this placeholder returns NULL for direct reads.

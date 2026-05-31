@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/query/metaval"
 	"github.com/yugui/go-beancount/pkg/query/types"
 )
 
@@ -107,7 +108,7 @@ var entryColumns = []Column{
 		return types.Null(types.SetType)
 	}),
 	entryCol("meta", types.DictType, func(d ast.Directive) types.Value {
-		return metaDict(d.DirMeta())
+		return metaval.Dict(d.DirMeta())
 	}),
 }
 

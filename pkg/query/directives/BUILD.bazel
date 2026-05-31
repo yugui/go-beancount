@@ -1,0 +1,22 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "directives",
+    srcs = ["directives.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/query/directives",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/query/metaval",
+        "//pkg/query/types",
+    ],
+)
+
+go_test(
+    name = "directives_test",
+    srcs = ["directives_test.go"],
+    deps = [
+        ":directives",
+        "//pkg/ast",
+    ],
+)
