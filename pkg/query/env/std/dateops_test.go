@@ -62,6 +62,99 @@ func TestDateDiff(t *testing.T) {
 	}
 }
 
+func TestInterval(t *testing.T) {
+	l := scalarLedger(t)
+	cases := []struct{ expr, want string }{
+		{"interval('5 day')", "5 days"},
+		{"interval('1 day')", "1 day"},
+		{"interval('-1 day')", "-1 day"},
+		{"interval('3 month')", "3 months"},
+		{"interval('3 months')", "3 months"}, // plural tolerated on input
+		{"interval('1 year')", "1 year"},
+		{"interval('+2 years')", "2 years"},
+	}
+	for _, c := range cases {
+		v := mustQuery(t, l, "SELECT "+c.expr+" AS v FROM postings LIMIT 1").Rows[0][0]
+		if v.Type() != types.Interval || v.Format() != c.want {
+			t.Errorf("%s = %v, want %s interval", c.expr, v, c.want)
+		}
+	}
+
+	// Non-matching input yields NULL.
+	for _, expr := range []string{
+		"interval('1 week')",   // unsupported unit
+		"interval('1 decade')", // unsupported unit
+		"interval('abc')",
+		"interval('')",
+		"interval('1month')",   // no whitespace
+		"interval('1.5 days')", // non-integer
+	} {
+		v := mustQuery(t, l, "SELECT "+expr+" AS v FROM postings LIMIT 1").Rows[0][0]
+		if !v.IsNull() {
+			t.Errorf("%s = %v, want NULL", expr, v)
+		}
+	}
+
+	// NULL propagation: a NULL string argument short-circuits to a typed NULL
+	// (registerStrict). Driven through the resolved overload since the postings
+	// table exposes no convenient NULL String column.
+	fn, err := env.Resolve("interval", []types.Type{types.String})
+	if err != nil {
+		t.Fatalf("Resolve(interval): %v", err)
+	}
+	v, err := fn.Scalar(price.NewQueryContext(nil), []types.Value{types.Null(types.String)})
+	if err != nil {
+		t.Fatalf("interval(NULL): %v", err)
+	}
+	if !v.IsNull() {
+		t.Errorf("interval(NULL) = %v, want NULL", v)
+	}
+}
+
+// TestDateBin covers both stride kinds and, critically, the dateutil
+// end-of-month clamp accumulating across iteration steps.
+func TestDateBin(t *testing.T) {
+	l := scalarLedger(t)
+	cases := []struct{ expr, want string }{
+		{"date_bin(interval('1 month'), date(2021,3,15), date(2021,1,1))", "2021-03-01"},
+		// Clamp accumulation: origin Jan31 iterates Jan31->Feb28->Mar28->Apr28,
+		// so Mar31 falls in the Mar28 bin (dateutil end-of-month clamp).
+		{"date_bin(interval('1 month'), date(2021,3,31), date(2021,1,31))", "2021-03-28"},
+		{"date_bin(interval('1 year'), date(2023,6,1), date(2020,1,1))", "2023-01-01"},
+		{"date_bin(interval('1 month'), date(2020,12,15), date(2021,1,1))", "2020-12-01"}, // backward
+		{"date_bin(interval('2 day'), date(2021,1,6), date(2021,1,1))", "2021-01-05"},
+		// floor toward -inf: diff -1 day, floor(-1/2)*2 = -2.
+		{"date_bin(interval('2 day'), date(2020,12,31), date(2021,1,1))", "2020-12-30"},
+		// String overload parity.
+		{"date_bin('1 month', date(2021,3,15), date(2021,1,1))", "2021-03-01"},
+	}
+	for _, c := range cases {
+		v := mustQuery(t, l, "SELECT "+c.expr+" AS v FROM postings LIMIT 1").Rows[0][0]
+		if v.Type() != types.Date || v.Format() != c.want {
+			t.Errorf("%s = %v, want %s date", c.expr, v, c.want)
+		}
+	}
+
+	// Non-positive strides and a bad stride string yield NULL.
+	for _, expr := range []string{
+		"date_bin(interval('0 day'), date(2021,1,1), date(2021,1,1))",
+		"date_bin(interval('-1 month'), date(2021,5,1), date(2021,1,1))",
+		"date_bin('xyz', date(2021,3,15), date(2021,1,1))",
+	} {
+		v := mustQuery(t, l, "SELECT "+expr+" AS v FROM postings LIMIT 1").Rows[0][0]
+		if !v.IsNull() {
+			t.Errorf("%s = %v, want NULL", expr, v)
+		}
+	}
+
+	// NULL propagation: a NULL date argument yields NULL.
+	res := mustQuery(t, l,
+		"SELECT date_bin(interval('1 month'), cost_date, date(2021,1,1)) AS v FROM postings WHERE account = 'Assets:Cash'")
+	if !res.Rows[0][0].IsNull() {
+		t.Errorf("date_bin(_, NULL, _) = %v, want NULL", res.Rows[0][0])
+	}
+}
+
 func TestParseDate(t *testing.T) {
 	l := scalarLedger(t)
 
