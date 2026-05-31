@@ -30,10 +30,10 @@ func init() {
 	}
 }
 
-// coalesce returns a scalar that yields its first non-NULL argument, or a
-// typed NULL of out when every argument is NULL. All arguments share type
-// out, so each is returned as-is.
-func coalesce(out types.Type) api.Scalar {
+// coalesce returns a context-free implementation that yields its first
+// non-NULL argument, or a typed NULL of out when every argument is NULL. All
+// arguments share type out, so each is returned as-is.
+func coalesce(out types.Type) func([]types.Value) (types.Value, error) {
 	return func(args []types.Value) (types.Value, error) {
 		for _, a := range args {
 			if !a.IsNull() {
@@ -44,12 +44,12 @@ func coalesce(out types.Type) api.Scalar {
 	}
 }
 
-func registerScalar(name string, in []types.Type, out types.Type, fn api.Scalar) {
+func registerScalar(name string, in []types.Type, out types.Type, fn func([]types.Value) (types.Value, error)) {
 	env.Register(api.Function{
 		Name:   name,
 		In:     in,
 		Out:    out,
 		Flavor: api.ScalarFlavor,
-		Scalar: fn,
+		Scalar: api.Pure(fn),
 	})
 }

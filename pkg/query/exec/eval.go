@@ -3,6 +3,7 @@ package exec
 import (
 	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/query/api"
+	"github.com/yugui/go-beancount/pkg/query/price"
 	"github.com/yugui/go-beancount/pkg/query/table"
 	"github.com/yugui/go-beancount/pkg/query/types"
 )
@@ -14,11 +15,13 @@ import (
 // outside aggregate mode. balance is the running inventory of the rows
 // selected so far (the executor folds each passing row into it before
 // evaluating expressions); it is nil unless the query reads the balance
-// column.
+// column. qctx is the query-wide, immutable context shared across all rows of
+// one Run.
 type evalCtx struct {
 	row        table.Row
 	aggResults []types.Value
 	balance    *inventory.Inventory
+	qctx       *price.QueryContext
 }
 
 // cexpr is a compiled, statically-typed expression. Type reports the
@@ -93,5 +96,5 @@ func (e *scalarExpr) eval(ctx *evalCtx) (types.Value, error) {
 		}
 		vals[i] = v
 	}
-	return e.fn(vals)
+	return e.fn(ctx.qctx, vals)
 }

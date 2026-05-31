@@ -41,7 +41,8 @@ See §7 (deferred, with hints) and §8 (excluded).
 | Package | Role |
 |---|---|
 | `pkg/query/types` | Sealed `Value` interface, `Type` enum, NULL model, total-order `Compare`, `Set`/`Dict` containers. |
-| `pkg/query/api` | Thin function descriptor: `Function`, `Flavor`, `Scalar`, `Accumulator`, `NewAccumulator`. Depends only on `types` (+ast/inventory via types). |
+| `pkg/query/price` | Immutable, lazily-built price `Map` (nearest-on-or-before, one-hop inverse) + `QueryContext` (the query-wide read-only bundle injected into scalars). Leaf; imports `ast`+`apd`. |
+| `pkg/query/api` | Thin function descriptor: `Function`, `Flavor`, `Scalar` (takes the `price.QueryContext`), `Pure`, `Accumulator`, `NewAccumulator`. Depends only on `types` and `price` (both leaf; neither is `env`). |
 | `pkg/query/env` | Global registry (`Register`, panic-on-conflict) + compile-time overload `Resolve`. |
 | `pkg/query/env/std` | Built-in function library; self-registers in `init()`; activated by a blank import. |
 | `pkg/query/parser` | Hand-written scanner + recursive-descent parser → untyped `*Select` AST. No CST/trivia. |
@@ -86,9 +87,11 @@ shaped this design and justify what was deferred:
    `getitem(dict, key[, default])`. And **`pass_context` functions** inject a
    query-wide, **init-time, immutable** context (price map, open/close maps,
    options) once — *not* a per-row entry handle. → We expose `meta` as a Dict
-   column, make `meta('k')` compiler sugar for `getitem`, and reserve a
-   `PassContextFlavor` seam for the deferred price/directive functions (§7.2),
-   which keeps per-row evaluation pure and therefore concurrency-safe.
+   column, make `meta('k')` compiler sugar for `getitem`, and inject that
+   immutable context into every `api.Scalar` as a `price.QueryContext`; the
+   price/valuation functions (§7.2) read it, and context-free scalars ignore it
+   via `api.Pure`. Because the context is built once and shared read-only,
+   per-row evaluation stays pure and therefore concurrency-safe.
 
 ## 4. Cross-cutting invariants (and where enforced)
 
@@ -103,9 +106,13 @@ column is where to look before touching it.
    (`table.Column.Type`); `exec` types expressions bottom-up; `env.Resolve`
    binds one overload (exact > fewest-widenings; widening set = `Int→Decimal`).
    No per-row resolution.
-3. **Two hot-path flavors: scalar + aggregator**, plus a reserved
-   `PassContextFlavor` (`api.Flavor`). `env.validate` *rejects* PassContext
-   today — see §7.2 for the one-line relaxation that re-enables it.
+3. **Two flavors: scalar + aggregator** (`api.Flavor`), matching the two
+   genuine execution modes (per-row vs per-group). Whether a scalar reads the
+   query-wide context is an *orthogonal* property, not a flavor: every
+   `api.Scalar` receives a `*price.QueryContext`, and a context-free function
+   is adapted with `api.Pure` (which ignores it). The price/valuation functions
+   (§7.2) consult it; everything else uses `Pure`. Enforced in `api/function.go`
+   and `env/registry.go`.
 4. **Mergeable aggregator contract** `Add`/`Merge`/`Result` with the law
    "Add-then-Merge ≡ Add-all" (`api.Accumulator`). The lean executor uses one
    accumulator per group and **never calls `Merge`** (verified: no `.Merge(`
@@ -129,7 +136,9 @@ column is where to look before touching it.
 8. **Hand-written recursive-descent parser, no CST/trivia; typed plan over a
    lazy `Table`/`RowSource`.** Buffering happens only at GROUP BY / ORDER BY /
    DISTINCT (`exec/run.go`).
-9. **Subpackage layout** as in §2; keep `api` thin and free of `env`.
+9. **Subpackage layout** as in §2; keep `api` thin and free of `env`. `api`
+   depends on `types` and `price` (both leaf packages, neither is `env`), so
+   the "free of env" guarantee for plugins/`std` is unchanged.
 
 ## 5. Pipeline
 
@@ -292,17 +301,34 @@ Resolved boundary-day conventions (matches beanquery `summarize`):
   synthesized transaction per non-empty income- or expense-rooted leaf account,
   with per-currency posting pairs inside.
 
-### 7.2 Price / valuation (`value`, `convert`, `getprice`) + `pass_context`
-- **Seam**: `api.PassContextFlavor` already exists. `env.validate` currently
-  rejects it ("uses reserved PassContextFlavor"); relaxing that check is the
-  enabling change. Give the descriptor a context-aware implementation field
-  (e.g. `func(ctx *QueryContext, args []types.Value) (types.Value, error)`),
-  where `QueryContext` is a **query-wide, init-time, immutable** bundle
-  (price map, open/close directive maps, options) built once at `Compile`/`Run`
-  start and shared read-only — *not* a per-row entry handle (canonical §3.4).
-  Because it is immutable and built once, it preserves Decision 6 concurrency.
-- Plumb the price map from the loaded ledger (prices live in the directive
-  stream); `value`/`convert`/`getprice` then read it from the context.
+### 7.2 Price / valuation (`value`, `convert`, `getprice`) — shipped
+Shipped. The original `PassContextFlavor` reservation was **superseded**: the
+flavor axis is for the two real execution modes (scalar/aggregator), and
+context-dependence is orthogonal to it. So instead of a third flavor, the
+single `api.Scalar` signature now receives the context —
+`func(ctx *price.QueryContext, args []types.Value) (types.Value, error)` — and
+context-free functions are adapted with `api.Pure` (the registrant's
+responsibility). This removes the compiler's context branch and the registry's
+PassContext rejection; the executor calls every scalar one way.
+
+- **Context** (`pkg/query/price`): `QueryContext{Prices *Map}` is the
+  query-wide, init-time, **immutable** bundle (canonical §3.4), built once in
+  `exec.Compile` from the ledger, stored on `Compiled`, and threaded into
+  `evalCtx.qctx` per Run. The `Map` is **lazily built** (one `sync.Once` on
+  first lookup): a query that calls no price function never scans for prices.
+  Immutable-after-build + built-once preserves Decision 6 — `concurrency`
+  tests run a price query from 32 goroutines under `-race`.
+- **Price map semantics**: indexes `*ast.Price` as forward (`Commodity` →
+  `Amount.Currency` at `Amount.Number`) and provides nearest-on-or-before-date
+  lookup, latest when no date, and a **one-hop inverse** (`1/rate`, divided at
+  precision 34); `base == quote` is 1. **No multi-hop transitive conversion.**
+- **Functions** (`env/std/price.go`): `getprice(base,quote[,date]) → Decimal`
+  (currencies upper-cased); `convert(Amount|Position,cur[,date]) → Amount`,
+  `convert(Inventory,cur[,date]) → Inventory`; `value(Position[,date]) → Amount`
+  (units → cost currency at market), `value(Inventory[,date]) → Inventory`.
+  Default date is **latest** (no per-row entry date — keeps evaluation pure).
+  A missing rate or NULL argument yields the declared `Out` type's typed NULL;
+  Inventory conversions **pass through** unconvertible positions unchanged.
 
 ### 7.3 Intra-query parallel executor
 - **Seam**: the input-row scan in `exec/run.go` (documented there). Partition
@@ -326,9 +352,10 @@ Resolved boundary-day conventions (matches beanquery `summarize`):
   `Column`s + a lazy `Rows` over `ast.Ledger.All()`); the compiler's
   `tableCatalog` gains one entry.
 - **Adding a column** = a new `Column` with a pure accessor over the row handle.
-- Known deferred columns: on `postings` — `value`/`convert` (§7.2), `entry`,
-  `id`, `location`, `description`, `other_accounts`, `accounts`, `posting_flag`;
-  on `entries` — `id`, `description`, `accounts`. (`balance` shipped — §7.1, §6.)
+- Known deferred columns: on `postings` — `entry`, `id`, `location`,
+  `description`, `other_accounts`, `accounts`, `posting_flag`; on `entries` —
+  `id`, `description`, `accounts`. (`balance` shipped — §7.1, §6;
+  `value`/`convert` shipped as functions, not columns — §7.2.)
 - A **merged posting/transaction `meta`** variant (§6) is a column-level change.
 
 ## 8. Excluded (initially)

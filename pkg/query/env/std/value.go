@@ -57,13 +57,13 @@ func init() {
 	})
 }
 
-func registerScalar(name string, in []types.Type, out types.Type, fn api.Scalar) {
+func registerScalar(name string, in []types.Type, out types.Type, fn func([]types.Value) (types.Value, error)) {
 	env.Register(api.Function{
 		Name:   name,
 		In:     in,
 		Out:    out,
 		Flavor: api.ScalarFlavor,
-		Scalar: fn,
+		Scalar: api.Pure(fn),
 	})
 }
 

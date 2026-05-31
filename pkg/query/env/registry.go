@@ -69,8 +69,6 @@ func validate(fn api.Function) error {
 		if fn.Scalar != nil {
 			return fmt.Errorf("function %q is an aggregator but also sets a Scalar", fn.Name)
 		}
-	case api.PassContextFlavor:
-		return fmt.Errorf("function %q uses reserved PassContextFlavor, which the lean engine does not register", fn.Name)
 	default:
 		return fmt.Errorf("function %q has unknown flavor %d", fn.Name, fn.Flavor)
 	}

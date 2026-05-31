@@ -45,7 +45,7 @@ func TestCoalesceFirstNonNull(t *testing.T) {
 		}
 		args[arity-1] = types.NewString("found")
 
-		got, err := fn(args)
+		got, err := fn(nil, args)
 		if err != nil {
 			t.Fatalf("arity %d: %v", arity, err)
 		}
@@ -59,7 +59,7 @@ func TestCoalesceFirstNonNull(t *testing.T) {
 // when later arguments are also non-NULL.
 func TestCoalesceEarlierWins(t *testing.T) {
 	fn := mustResolve(t, "coalesce", types.Int, types.Int, types.Int)
-	got, err := fn([]types.Value{
+	got, err := fn(nil, []types.Value{
 		types.Null(types.Int), types.NewInt(7), types.NewInt(9),
 	})
 	if err != nil {
@@ -78,7 +78,7 @@ func TestCoalesceAllNullTypedNull(t *testing.T) {
 		types.Bool, types.Date, types.SetType, types.DictType,
 	} {
 		fn := mustResolve(t, "coalesce", ty, ty)
-		got, err := fn([]types.Value{types.Null(ty), types.Null(ty)})
+		got, err := fn(nil, []types.Value{types.Null(ty), types.Null(ty)})
 		if err != nil {
 			t.Fatalf("type %v: %v", ty, err)
 		}

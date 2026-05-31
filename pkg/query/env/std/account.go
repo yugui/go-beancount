@@ -32,12 +32,12 @@ func registerAccountScalar(name string, fn func(ast.Account) types.Value) {
 		In:     []types.Type{types.String},
 		Out:    types.String,
 		Flavor: api.ScalarFlavor,
-		Scalar: func(args []types.Value) (types.Value, error) {
+		Scalar: api.Pure(func(args []types.Value) (types.Value, error) {
 			s, ok := types.AsString(args[0])
 			if !ok {
 				return types.Null(types.String), nil
 			}
 			return fn(ast.Account(s)), nil
-		},
+		}),
 	})
 }

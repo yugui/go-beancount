@@ -57,7 +57,7 @@ func init() {
 		In:     []types.Type{types.DictType, types.String},
 		Out:    types.String,
 		Flavor: api.ScalarFlavor,
-		Scalar: getitemScalar,
+		Scalar: api.Pure(getitemScalar),
 	})
 }
 

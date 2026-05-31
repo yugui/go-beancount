@@ -19,7 +19,7 @@ func scalarFn(name string, in []types.Type, out types.Type) api.Function {
 		In:     in,
 		Out:    out,
 		Flavor: api.ScalarFlavor,
-		Scalar: func([]types.Value) (types.Value, error) { return types.Null(out), nil },
+		Scalar: api.Pure(func([]types.Value) (types.Value, error) { return types.Null(out), nil }),
 	}
 }
 
@@ -94,7 +94,7 @@ func TestRegister_MalformedDescriptorPanics(t *testing.T) {
 		"scalar with aggregator": {
 			Name: "TestRegister_Malformed_b", In: []types.Type{types.Int}, Out: types.Int,
 			Flavor:     api.ScalarFlavor,
-			Scalar:     func([]types.Value) (types.Value, error) { return nil, nil },
+			Scalar:     api.Pure(func([]types.Value) (types.Value, error) { return nil, nil }),
 			Aggregator: func() api.Accumulator { return nil },
 		},
 		"aggregator without impl": {
@@ -104,12 +104,12 @@ func TestRegister_MalformedDescriptorPanics(t *testing.T) {
 		"aggregator with scalar": {
 			Name: "TestRegister_Malformed_d", In: []types.Type{types.Int}, Out: types.Int,
 			Flavor:     api.AggregatorFlavor,
-			Scalar:     func([]types.Value) (types.Value, error) { return nil, nil },
+			Scalar:     api.Pure(func([]types.Value) (types.Value, error) { return nil, nil }),
 			Aggregator: func() api.Accumulator { return nil },
 		},
-		"reserved pass_context": {
+		"unknown flavor": {
 			Name: "TestRegister_Malformed_e", In: []types.Type{types.Int}, Out: types.Int,
-			Flavor: api.PassContextFlavor,
+			Flavor: api.Flavor(99),
 		},
 	}
 	for name, fn := range cases {

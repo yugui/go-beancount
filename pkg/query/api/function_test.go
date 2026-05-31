@@ -103,20 +103,42 @@ func TestFunction_DescribesScalarOverload(t *testing.T) {
 		In:     []types.Type{types.Int},
 		Out:    types.Int,
 		Flavor: api.ScalarFlavor,
-		Scalar: func(args []types.Value) (types.Value, error) {
+		Scalar: api.Pure(func(args []types.Value) (types.Value, error) {
 			n, ok := types.AsInt(args[0])
 			if !ok {
 				return nil, fmt.Errorf("neg: arg is not an int")
 			}
 			return types.NewInt(-n), nil
-		},
+		}),
 	}
 
-	got, err := fn.Scalar([]types.Value{types.NewInt(7)})
+	got, err := fn.Scalar(nil, []types.Value{types.NewInt(7)})
 	if err != nil {
 		t.Fatalf("Scalar: %v", err)
 	}
 	if n, _ := types.AsInt(got); n != -7 {
 		t.Errorf("neg(7) = %v, want -7", got)
+	}
+}
+
+// TestPure_IgnoresContext verifies the [api.Pure] adapter forwards args to the
+// wrapped implementation and ignores the context, so a context-free function
+// is safe to call with a nil context.
+func TestPure_IgnoresContext(t *testing.T) {
+	calls := 0
+	s := api.Pure(func(args []types.Value) (types.Value, error) {
+		calls++
+		return args[0], nil
+	})
+
+	got, err := s(nil, []types.Value{types.NewInt(42)})
+	if err != nil {
+		t.Fatalf("Pure scalar: %v", err)
+	}
+	if n, _ := types.AsInt(got); n != 42 {
+		t.Errorf("Pure forwarded arg = %v, want 42", got)
+	}
+	if calls != 1 {
+		t.Errorf("wrapped function called %d times, want 1", calls)
 	}
 }

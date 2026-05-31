@@ -10,6 +10,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/query/api"
 	"github.com/yugui/go-beancount/pkg/query/env"
 	"github.com/yugui/go-beancount/pkg/query/parser"
+	"github.com/yugui/go-beancount/pkg/query/price"
 	"github.com/yugui/go-beancount/pkg/query/scope"
 	"github.com/yugui/go-beancount/pkg/query/table"
 	"github.com/yugui/go-beancount/pkg/query/types"
@@ -57,7 +58,7 @@ func Compile(sel *parser.Select, ledger *ast.Ledger) (*Compiled, error) {
 		return nil, err
 	}
 
-	c := &compiler{tbl: tbl}
+	c := &compiler{tbl: tbl, qctx: price.NewQueryContext(ledger)}
 
 	predicate, err := c.compilePredicate(fromFilter, sel.Where)
 	if err != nil {
@@ -69,6 +70,7 @@ func Compile(sel *parser.Select, ledger *ast.Ledger) (*Compiled, error) {
 		predicate: predicate,
 		distinct:  sel.Distinct,
 		limit:     sel.Limit,
+		qctx:      c.qctx,
 	}
 
 	if err := c.compileGroupBy(sel.GroupBy, plan); err != nil {
@@ -140,6 +142,7 @@ type compiler struct {
 	tbl         *table.Table
 	slots       []aggSlot
 	usesBalance bool
+	qctx        *price.QueryContext
 }
 
 // compilePredicate compiles the AND of the FROM filter and WHERE (omitting
