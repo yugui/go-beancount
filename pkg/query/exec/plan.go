@@ -2,6 +2,7 @@ package exec
 
 import (
 	"github.com/yugui/go-beancount/pkg/query/api"
+	"github.com/yugui/go-beancount/pkg/query/price"
 	"github.com/yugui/go-beancount/pkg/query/table"
 	"github.com/yugui/go-beancount/pkg/query/types"
 )
@@ -54,6 +55,10 @@ type Compiled struct {
 	// folded into the running inventory for each selected row.
 	usesBalance bool
 	balancePos  func(table.Row) types.Value
+
+	// qctx is the query-wide, immutable context built once from the ledger at
+	// Compile and shared read-only by every Run (Decision 6).
+	qctx *price.QueryContext
 }
 
 // Columns returns the output schema fixed at compile time, available before

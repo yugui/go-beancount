@@ -199,7 +199,7 @@ func (c *Compiled) addToSlots(accs []api.Accumulator, ectx *evalCtx) error {
 // is local to one Run, so concurrent Runs over one plan never share it
 // (Decision 6).
 func (c *Compiled) newEvalCtx() *evalCtx {
-	ectx := &evalCtx{}
+	ectx := &evalCtx{qctx: c.qctx}
 	if c.usesBalance {
 		ectx.balance = inventory.NewInventory()
 	}

@@ -38,12 +38,12 @@ func registerDateScalar(name string, out types.Type, fn func(time.Time) types.Va
 		In:     []types.Type{types.Date},
 		Out:    out,
 		Flavor: api.ScalarFlavor,
-		Scalar: func(args []types.Value) (types.Value, error) {
+		Scalar: api.Pure(func(args []types.Value) (types.Value, error) {
 			d, ok := types.AsDate(args[0])
 			if !ok {
 				return types.Null(out), nil
 			}
 			return fn(d), nil
-		},
+		}),
 	})
 }

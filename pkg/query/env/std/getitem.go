@@ -12,14 +12,14 @@ func init() {
 		In:     []types.Type{types.DictType, types.String},
 		Out:    types.Invalid,
 		Flavor: api.ScalarFlavor,
-		Scalar: getitem,
+		Scalar: api.Pure(getitem),
 	})
 	env.Register(api.Function{
 		Name:   "getitem",
 		In:     []types.Type{types.DictType, types.String, types.String},
 		Out:    types.Invalid,
 		Flavor: api.ScalarFlavor,
-		Scalar: getitem,
+		Scalar: api.Pure(getitem),
 	})
 }
 

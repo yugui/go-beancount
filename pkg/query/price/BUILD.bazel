@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "price",
+    srcs = [
+        "context.go",
+        "price.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/query/price",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "price_test",
+    srcs = ["price_test.go"],
+    deps = [
+        ":price",
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)

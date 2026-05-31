@@ -25,14 +25,14 @@ func init() {
 		In:     []types.Type{types.String, types.Int, types.Int},
 		Out:    types.String,
 		Flavor: api.ScalarFlavor,
-		Scalar: substr,
+		Scalar: api.Pure(substr),
 	})
 	env.Register(api.Function{
 		Name:   "grep",
 		In:     []types.Type{types.String, types.String},
 		Out:    types.String,
 		Flavor: api.ScalarFlavor,
-		Scalar: grep,
+		Scalar: api.Pure(grep),
 	})
 }
 
@@ -44,13 +44,13 @@ func registerStringScalar(name string, out types.Type, fn func(string) types.Val
 		In:     []types.Type{types.String},
 		Out:    out,
 		Flavor: api.ScalarFlavor,
-		Scalar: func(args []types.Value) (types.Value, error) {
+		Scalar: api.Pure(func(args []types.Value) (types.Value, error) {
 			s, ok := types.AsString(args[0])
 			if !ok {
 				return types.Null(out), nil
 			}
 			return fn(s), nil
-		},
+		}),
 	})
 }
 
