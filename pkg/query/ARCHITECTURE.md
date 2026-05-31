@@ -387,12 +387,24 @@ PassContext rejection; the executor calls every scalar one way.
   is purely additive. **Measure first** — there is no first-deliverable consumer
   that needs it; `cmd/beanquery` doubles as the benchmark harness.
 
-### 7.4 `goplug` dynamic loading of query functions
-- **Seam**: mirror `pkg/ext/goplug`. A `.so` exports a `Manifest` + an
-  `InitPlugin func() error` that calls `env.Register` with `api.Function`
-  descriptors. `api` is types-only, so a plugin compiles against `api` + `env`
-  with no runner dependency. Use the dual-registration convention (upstream
-  name + Go import path). No first-deliverable consumer; build when needed.
+### 7.4 `goplug` dynamic loading of query functions — shipped
+The seam resolved to **reuse** of `pkg/ext/goplug`, not a parallel loader:
+`goplug.Load` is registry-agnostic (it only opens the `.so`, checks the
+`Manifest`/`APIVersion`, and calls `InitPlugin func() error`), so a query
+plugin's `InitPlugin` calls `env.Register` with `api.Function` descriptors
+exactly as `cmd/beanprice` and `cmd/beanimport` already drive `goplug` into
+their own registries. Because `api` is types-only, a plugin compiles against
+`api` + `env` with no runner dependency. The dual-registration convention
+(upstream name + Go import path) still applies to plugins that want it.
+
+The first consumer is `cmd/beanquery`'s `-plugin` flag (repeatable). It loads
+each `.so` once, before `loader.LoadFile`, which makes the loader serve **both**
+extension points through one flag: a plugin may register query functions
+(`env.Register`) and/or ledger postprocessors (`pkg/ext/postproc.Register`),
+and the order guarantees both stages — postproc inside `LoadFile`, query
+functions inside `query.Query` — see the registration in time. The end-to-end
+path is exercised by `cmd/beanquery/testdata/queryfunc` (a `.so` fixture that
+registers one scalar) and the Bazel-gated plugin test in `cmd/beanquery`.
 
 ### 7.5 Remaining beanquery tables and columns
 - **Adding a table** = a new constructor like `table.Postings`/`Entries` (typed

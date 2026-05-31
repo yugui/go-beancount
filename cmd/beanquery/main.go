@@ -18,6 +18,14 @@
 // the engine has no registered functions and any sum(...)/year(...)
 // query fails to compile.
 //
+// Out-of-tree extensions load via one or more -plugin flags. Each names
+// a Go plugin .so (see pkg/ext/goplug); beanquery opens it before the
+// ledger is loaded, so the plugin's InitPlugin can register both BQL
+// query functions (via pkg/query/env.Register) and ledger
+// postprocessors (via pkg/ext/postproc.Register). The loader is
+// registry-agnostic: which registries a plugin touches is the plugin's
+// choice, so a single flag covers both extension points.
+//
 // Run "beanquery -h" for the flag set and the exit-code table.
 package main
 
@@ -33,6 +41,7 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/ext/goplug"
 	"github.com/yugui/go-beancount/pkg/loader"
 	"github.com/yugui/go-beancount/pkg/query"
 	"github.com/yugui/go-beancount/pkg/query/types"
@@ -55,6 +64,14 @@ func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
 }
 
+// stringSlice accumulates repeated occurrences of a flag. It backs
+// -plugin so the flag can be given more than once; each value is a
+// distinct .so path, loaded in the order the flags appear.
+type stringSlice []string
+
+func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+
 // run is the testable entry point; args is os.Args[1:]. It returns a
 // process exit code:
 //
@@ -70,6 +87,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cmd := flag.NewFlagSet("beanquery", flag.ContinueOnError)
 	cmd.SetOutput(stderr)
 	cmd.Usage = func() { printUsage(stderr, cmd) }
+	var plugins stringSlice
+	cmd.Var(&plugins, "plugin", "load a Go plugin .so registering query functions and/or postprocessors (repeatable)")
 	if err := cmd.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -91,6 +110,17 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if _, err := os.Stat(path); err != nil {
 		fmt.Fprintf(stderr, "beanquery: %v\n", err)
 		return 2
+	}
+
+	// Load extension plugins before the ledger so their registrations are
+	// in place for both stages that consume them: postprocessors run
+	// inside loader.LoadFile, and query functions resolve during
+	// query.Query.
+	for _, p := range plugins {
+		if err := goplug.Load(p); err != nil {
+			fmt.Fprintf(stderr, "beanquery: plugin load failed: %v\n", err)
+			return 2
+		}
 	}
 
 	ledger, err := loader.LoadFile(ctx, path)
@@ -208,6 +238,9 @@ func printUsage(w io.Writer, cmd *flag.FlagSet) {
 	fmt.Fprintln(w, "Run a BQL query over a beancount ledger and print an aligned")
 	fmt.Fprintln(w, "text table to stdout. The query is a single positional argument,")
 	fmt.Fprintln(w, "so quote it on the shell. Ledger diagnostics go to stderr.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Use -plugin to load out-of-tree Go plugin .so files; a plugin may")
+	fmt.Fprintln(w, "register custom query functions, ledger postprocessors, or both.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
 	cmd.PrintDefaults()

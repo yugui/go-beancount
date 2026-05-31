@@ -7,6 +7,7 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/ast",
+        "//pkg/ext/goplug",
         "//pkg/ext/postproc/sprout",
         "//pkg/ext/postproc/std",
         "//pkg/loader",
@@ -24,8 +25,17 @@ go_binary(
     visibility = ["//visibility:public"],
 )
 
+# The queryfunc .so fixture is added on platforms that support Go
+# plugins; on others the data dep is dropped and the plugin integration
+# test self-skips at runtime via the same GOOS check pkg/ext/goplug uses.
 go_test(
     name = "beanquery_test",
     srcs = ["main_test.go"],
+    data = select({
+        "@platforms//os:linux": ["//cmd/beanquery/testdata/queryfunc"],
+        "@platforms//os:macos": ["//cmd/beanquery/testdata/queryfunc"],
+        "@platforms//os:freebsd": ["//cmd/beanquery/testdata/queryfunc"],
+        "//conditions:default": [],
+    }),
     embed = [":beanquery_lib"],
 )

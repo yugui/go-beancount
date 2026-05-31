@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -226,6 +227,85 @@ func TestRun_HelpExitsZero(t *testing.T) {
 	for _, want := range []string{"Usage: beanquery", "EXIT CODES", "EXAMPLES"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("help missing %q; got:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestRun_PluginLoadFailure(t *testing.T) {
+	// A path that does not exist is the cheapest goplug.Load failure we
+	// can produce without a real .so on disk.
+	missing := filepath.Join(t.TempDir(), "missing.so")
+	path := writeLedger(t, sampleLedger)
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{
+		"-plugin", missing,
+		path,
+		"SELECT account",
+	}, &stdout, &stderr)
+	if got != 2 {
+		t.Errorf("run(missing-plugin) = %d, want 2; stderr: %q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "plugin load failed") {
+		t.Errorf("stderr = %q, want it to mention 'plugin load failed'", stderr.String())
+	}
+}
+
+// pluginSupportedGOOS lists the operating systems where Go's plugin
+// package is documented to work. The plugin integration test skips on
+// anything else; this matches the goplug package's own gating.
+var pluginSupportedGOOS = map[string]bool{
+	"linux":   true,
+	"freebsd": true,
+	"darwin":  true,
+}
+
+// queryFuncPath returns the runfiles path of the pre-built queryfunc .so
+// fixture. The plugin is produced by
+// //cmd/beanquery/testdata/queryfunc:queryfunc in Bazel and materialised
+// into the test binary's runfiles. Outside Bazel — e.g. raw `go test` —
+// the file is absent and the test self-skips.
+func queryFuncPath(t *testing.T) string {
+	t.Helper()
+	if !pluginSupportedGOOS[runtime.GOOS] {
+		t.Skipf("beanquery: Go plugins are not supported on GOOS=%s", runtime.GOOS)
+	}
+	srcDir := os.Getenv("TEST_SRCDIR")
+	workspace := os.Getenv("TEST_WORKSPACE")
+	if srcDir == "" || workspace == "" {
+		t.Skipf("beanquery: no TEST_SRCDIR/TEST_WORKSPACE set (run via `bazel test //cmd/beanquery:beanquery_test`)")
+	}
+	path := filepath.Join(srcDir, workspace, "cmd", "beanquery", "testdata", "queryfunc", "queryfunc.so")
+	if _, err := os.Stat(path); err != nil {
+		t.Skipf("beanquery: queryfunc.so not found at %s: %v", path, err)
+	}
+	return path
+}
+
+// TestPlugin_QueryFunc_LoadsAndRuns verifies the -plugin flag drives the
+// goplug.Load -> InitPlugin -> env.Register chain end to end for BQL
+// query functions: a successful round-trip is visible in stdout, and
+// without the load the same query would fail to compile (unknown
+// function), exiting 1.
+//
+// This test runs only under Bazel, where the .so is built with the
+// matching toolchain; under raw `go test` the runfile is missing and the
+// test self-skips.
+func TestPlugin_QueryFunc_LoadsAndRuns(t *testing.T) {
+	soPath := queryFuncPath(t)
+	path := writeLedger(t, sampleLedger)
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{
+		"-plugin", soPath,
+		path,
+		`SELECT fixture_marker(account) AS marked WHERE account = "Assets:Cash" ORDER BY date LIMIT 1`,
+	}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("run(-plugin queryfunc) = %d, want 0; stderr: %q\nstdout: %q", got, stderr.String(), stdout.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{"marked", "FIXTURE-Assets:Cash"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q; got:\n%s", want, out)
 		}
 	}
 }
