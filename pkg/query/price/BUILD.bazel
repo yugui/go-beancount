@@ -10,6 +10,7 @@ go_library(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/ast",
+        "//pkg/query/directives",
         "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )

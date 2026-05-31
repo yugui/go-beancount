@@ -30,7 +30,10 @@ immutable ledger is a first-class, tested requirement**, not an afterthought
 running-inventory column; a full value/type system with explicit NULL;
 arithmetic, comparison, regex `~`, 3-valued boolean logic, `IN` over lists and
 sets; a polymorphic, extensible function registry with a built-in library
-(date/string/account/extractor scalars, `getitem`, and
+(date/string/account/extractor scalars, `getitem`,
+directive-context scalars (`open_date`, `close_date`, `open_meta`,
+`currency_meta`/`commodity_meta`, `account_sortkey`, `has_account`, `possign`),
+price/valuation scalars (`getprice`, `convert`, `value`), and
 count/sum/min/max/first/last aggregators); and the `beanquery` CLI.
 
 ### Deferred / excluded
@@ -146,7 +149,8 @@ column is where to look before touching it.
 AND-merge FROM-filter and WHERE into one Bool predicate over the table columns →
 compile GROUP BY / targets / ORDER BY into typed `cexpr` trees → resolve column
 refs against `Table.Column` (case-insensitive), operators (type-checked), and
-function overloads (`env.Resolve`) → rewrite `meta('k')` to `getitem(meta,'k')`
+function overloads (`env.Resolve`) → rewrite `meta`/`entry_meta`/`any_meta`
+sugar `fn('k')` to `getitem(<col>,'k')`
 → classify aggregate slots, reject misplaced/nested aggregates and ungrouped
 columns. Produces an immutable `*Compiled`. Errors are positioned, never panics.
 
@@ -164,8 +168,15 @@ The **single parallel-executor insertion point** is the input-row scan in
 
 - **`meta` on `postings` is posting-only** (not merged with the parent
   transaction). The `meta` column is always a (possibly empty) Dict, never
-  NULL; `getitem` returns NULL on a missing key or NULL dict. A merged variant
-  is a future option (§7.5).
+  NULL; `getitem` returns NULL on a missing key or NULL dict. Two companion
+  columns expose the enclosing entry's metadata and the merged view
+  (§7.5, shipped): `entry_meta` (the parent transaction's own meta) and
+  `any_meta` (transaction meta overlaid by the posting's meta, posting wins on
+  conflict). Both are always Dicts (never NULL). On the `entries` table, all
+  three columns equal the directive's own metadata — there is no posting
+  concept there. The compiler sugar (`meta('k')`, `entry_meta('k')`,
+  `any_meta('k')`) rewrites each to `getitem(<that column>, 'k'[, default])`
+  via a shared `metaSugarColumns` map.
 - **`payee` empty → NULL; `narration` always String** (even if empty). On
   `entries`, `flag`/`payee`/`narration` are NULL for non-Transaction directives.
 - **`flag` (postings)** = posting flag if set, else transaction flag; NULL if 0.
@@ -204,11 +215,17 @@ The **single parallel-executor insertion point** is the input-row scan in
 - **`Set`/`Dict` ordering** in `Compare` is deterministic and total
   (lexicographic over sorted elements / keyed pairs); it is internal and need
   not match beanquery byte-for-byte.
-- **Date-function divergences from beanquery (flagged to revisit)**:
-  `weekday(date)` returns the English weekday name (upstream: an int index);
-  `quarter(date)` returns int 1..4 (upstream: `"YYYY-Qn"`); `yearmonth(date)`
-  returns `"YYYY-MM"` (upstream: a month-truncated date). Chosen for lean
-  pragmatism; revisit for parity when a consumer needs it.
+- **Date-function return types — original-plan mistake, parity is the goal**:
+  the initial plan recorded `weekday`/`quarter`/`yearmonth` return types that
+  diverge from upstream beanquery (English weekday name / int 1..4 / `"YYYY-MM"`
+  string), framing the divergence as a deliberate lean choice. That was a
+  mistake. The intended correction (a later slice, not yet implemented): align
+  the std scalars to upstream — `weekday → int index`, `quarter → "YYYY-Qn"`
+  string, `yearmonth → month-truncated date`. The convenient variants (English
+  weekday name, int quarter 1..4, `"YYYY-MM"` string) will be re-provided as
+  separately-named functions registered in the sprout library
+  (`pkg/query/env/sprout`), so users keep them without polluting the
+  upstream-parity std names.
 - **Aggregate-mixing check** runs over the *compiled* tree (aggregate calls
   already replaced by slot refs), matching group keys by bare column name.
   Limitation: `GROUP BY year(date)` does not cover a bare `date` in a target;
@@ -330,6 +347,26 @@ PassContext rejection; the executor calls every scalar one way.
   A missing rate or NULL argument yields the declared `Out` type's typed NULL;
   Inventory conversions **pass through** unconvertible positions unchanged.
 
+### 7.2.1 Directive-context functions — shipped
+`open_date`, `close_date`, `open_meta`, `currency_meta`/`commodity_meta`,
+`account_sortkey`, `has_account`, `possign` — the second consumer of the
+`price.QueryContext` seam. All register as context-reading `api.Scalar` in
+`env/std/context.go` (same shape as the price functions; no new flavor).
+
+- **Infrastructure** (`pkg/query/directives`): `Index` is an immutable,
+  lazily-built (one `sync.Once`) map of account→`*ast.Open`, account→`*ast.Close`,
+  currency→`*ast.Commodity`, plus account-type classification driven by the
+  ledger's `name_*` options. `price.QueryContext` gained a `Dirs *directives.Index`
+  field; `NewQueryContext` wires both maps from the same ledger. Metadata is
+  surfaced as `types.Dict` via the shared `pkg/query/metaval` helper.
+- **NULL discipline**: a NULL or non-string argument → typed NULL of the
+  declared Out (except `has_account`, which yields `false` — never NULL — on
+  a missing account or NULL argument, matching beanquery semantics).
+- **`possign` sign convention**: +1 (Assets/Expenses) leaves the value
+  unchanged; −1 (Liabilities/Equity/Income) negates the number component
+  (Amount/Position/Inventory) while preserving cost lots and currencies; 0
+  (unknown root) passes the value through unchanged, same as +1.
+
 ### 7.3 Intra-query parallel executor
 - **Seam**: the input-row scan in `exec/run.go` (documented there). Partition
   the scan → per-shard filter/project, or per-group accumulators per shard →
@@ -355,8 +392,11 @@ PassContext rejection; the executor calls every scalar one way.
 - Known deferred columns: on `postings` — `entry`, `id`, `location`,
   `description`, `other_accounts`, `accounts`, `posting_flag`; on `entries` —
   `id`, `description`, `accounts`. (`balance` shipped — §7.1, §6;
-  `value`/`convert` shipped as functions, not columns — §7.2.)
-- A **merged posting/transaction `meta`** variant (§6) is a column-level change.
+  `value`/`convert` shipped as functions, not columns — §7.2;
+  `entry_meta`/`any_meta` shipped — §6.)
+- The **merged posting/transaction `meta`** variant is shipped as `any_meta`
+  (posting over transaction), and the transaction-only view as `entry_meta`
+  (see §6). No further column-level meta work is deferred.
 
 ## 8. Excluded (initially)
 

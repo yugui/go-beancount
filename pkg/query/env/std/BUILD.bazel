@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "account.go",
         "aggregate.go",
+        "context.go",
         "date.go",
         "doc.go",
         "getitem.go",
@@ -30,6 +31,7 @@ go_test(
     srcs = [
         "aggregate_internal_test.go",
         "aggregate_test.go",
+        "context_test.go",
         "getitem_internal_test.go",
         "getitem_test.go",
         "helpers_test.go",

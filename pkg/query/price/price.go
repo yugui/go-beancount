@@ -1,8 +1,9 @@
 // Package price provides the immutable, query-wide context that BQL
 // price/valuation functions read. Its central type [Map] indexes a ledger's
 // Price directives for nearest-on-or-before-date lookup, and [QueryContext]
-// bundles that map (and, in future, other init-time directive maps) into the
-// read-only context injected into scalar function evaluation.
+// bundles that map together with the directives index (Dirs) and any future
+// init-time directive maps into the read-only context injected into scalar
+// function evaluation.
 package price
 
 import (

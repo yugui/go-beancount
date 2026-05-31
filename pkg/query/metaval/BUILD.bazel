@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "metaval",
+    srcs = ["metaval.go"],
+    importpath = "github.com/yugui/go-beancount/pkg/query/metaval",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/query/types",
+    ],
+)
+
+go_test(
+    name = "metaval_test",
+    srcs = ["metaval_test.go"],
+    deps = [
+        ":metaval",
+        "//pkg/ast",
+        "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
