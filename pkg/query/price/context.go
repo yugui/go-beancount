@@ -1,6 +1,8 @@
 package price
 
 import (
+	"time"
+
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/query/directives"
 )
@@ -17,13 +19,25 @@ import (
 type QueryContext struct {
 	Prices *Map
 	Dirs   *directives.Index
+
+	// Now is the single wall-clock instant the query observes. Every
+	// now-dependent scalar (today) reads this one value, so results stay
+	// consistent within a query even across a midnight boundary.
+	Now time.Time
 }
 
-// NewQueryContext builds the context for a query over ledger. Both the price
-// map and the directive index are constructed lazily on first use, so this
-// call is cheap regardless of ledger size. A nil ledger (or nil
-// ledger.Options) is safe.
+// NewQueryContext builds the context for a query over ledger, observing the
+// current wall-clock time. Both the price map and the directive index are
+// constructed lazily on first use, so this call is cheap regardless of ledger
+// size. A nil ledger (or nil ledger.Options) is safe.
 func NewQueryContext(ledger *ast.Ledger) *QueryContext {
+	return NewQueryContextAt(ledger, time.Now())
+}
+
+// NewQueryContextAt is [NewQueryContext] with the query's observed "now"
+// pinned to the given instant. It lets callers make now-dependent scalars
+// such as today deterministic.
+func NewQueryContextAt(ledger *ast.Ledger, now time.Time) *QueryContext {
 	var opts *ast.OptionValues
 	if ledger != nil {
 		opts = ledger.Options
@@ -31,5 +45,6 @@ func NewQueryContext(ledger *ast.Ledger) *QueryContext {
 	return &QueryContext{
 		Prices: NewMap(ledger),
 		Dirs:   directives.NewIndex(ledger, opts),
+		Now:    now,
 	}
 }
