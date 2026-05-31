@@ -80,12 +80,23 @@ func Resolve(name string, argTypes []types.Type) (api.Function, error) {
 	}
 }
 
-// wideningCost reports the number of widenings needed for args to satisfy
-// params, and whether each argument matches or widens to its parameter.
+// anyMatchPenalty is the cost charged for binding an argument to a
+// [types.Any] parameter slot. It dominates any realistic number of
+// widenings, so a candidate that matches via widening always outranks one
+// that matches only because a slot is Any. Among Any candidates, fewer Any
+// slots still win.
+const anyMatchPenalty = 1 << 20
+
+// wideningCost reports the cost for args to satisfy params, and whether each
+// argument matches its parameter. A parameter equal to the argument costs
+// nothing; an Int->Decimal widening costs one; a [types.Any] parameter
+// accepts any argument (including an untyped NULL) for [anyMatchPenalty].
 // params and args have equal length.
 func wideningCost(params, args []types.Type) (cost int, ok bool) {
 	for i, want := range params {
 		switch {
+		case want == types.Any:
+			cost += anyMatchPenalty
 		case args[i] == want:
 		case canWiden(args[i], want):
 			cost++

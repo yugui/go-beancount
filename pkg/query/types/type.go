@@ -33,6 +33,13 @@ const (
 	// a stable ordinal and a String form but is not constructed in the
 	// lean engine.
 	Entry
+
+	// Any is a parameter-only marker: it never tags a constructed value,
+	// only a function overload's input slot that accepts an argument of
+	// any kind (including an untyped NULL literal). The overload resolver
+	// treats an Any slot as a last-resort match, losing to any exact or
+	// widening candidate. It mirrors upstream beanquery's types.Any.
+	Any
 )
 
 // String returns the lowercase kind name for diagnostics. It returns
@@ -63,6 +70,8 @@ func (t Type) String() string {
 		return "dict"
 	case Entry:
 		return "entry"
+	case Any:
+		return "any"
 	default:
 		return "type(" + strconv.Itoa(int(t)) + ")"
 	}
