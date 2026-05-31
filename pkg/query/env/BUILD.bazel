@@ -19,6 +19,7 @@ go_test(
     name = "env_test",
     srcs = [
         "registry_test.go",
+        "resolve_any_test.go",
         "resolve_test.go",
     ],
     deps = [

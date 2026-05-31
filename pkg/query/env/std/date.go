@@ -20,13 +20,13 @@ func init() {
 		return types.NewInt(int64(t.Day()))
 	})
 	registerDateScalar("weekday", types.String, func(t time.Time) types.Value {
-		return types.NewString(t.Weekday().String())
+		return types.NewString(t.Format("Mon"))
 	})
-	registerDateScalar("quarter", types.Int, func(t time.Time) types.Value {
-		return types.NewInt(int64((int(t.Month())-1)/3 + 1))
+	registerDateScalar("quarter", types.String, func(t time.Time) types.Value {
+		return types.NewString(fmt.Sprintf("%04d-Q%d", t.Year(), (int(t.Month())-1)/3+1))
 	})
-	registerDateScalar("yearmonth", types.String, func(t time.Time) types.Value {
-		return types.NewString(fmt.Sprintf("%04d-%02d", t.Year(), int(t.Month())))
+	registerDateScalar("yearmonth", types.Date, func(t time.Time) types.Value {
+		return types.NewDate(time.Date(t.Year(), t.Month(), 1, 0, 0, 0, 0, t.Location()))
 	})
 }
 
