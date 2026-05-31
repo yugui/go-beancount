@@ -30,7 +30,10 @@ immutable ledger is a first-class, tested requirement**, not an afterthought
 running-inventory column; a full value/type system with explicit NULL;
 arithmetic, comparison, regex `~`, 3-valued boolean logic, `IN` over lists and
 sets; a polymorphic, extensible function registry with a built-in library
-(date/string/account/extractor scalars, `getitem`, and
+(date/string/account/extractor scalars, `getitem`,
+directive-context scalars (`open_date`, `close_date`, `open_meta`,
+`currency_meta`/`commodity_meta`, `account_sortkey`, `has_account`, `possign`),
+price/valuation scalars (`getprice`, `convert`, `value`), and
 count/sum/min/max/first/last aggregators); and the `beanquery` CLI.
 
 ### Deferred / excluded
@@ -335,6 +338,26 @@ PassContext rejection; the executor calls every scalar one way.
   Default date is **latest** (no per-row entry date — keeps evaluation pure).
   A missing rate or NULL argument yields the declared `Out` type's typed NULL;
   Inventory conversions **pass through** unconvertible positions unchanged.
+
+### 7.2.1 Directive-context functions — shipped
+`open_date`, `close_date`, `open_meta`, `currency_meta`/`commodity_meta`,
+`account_sortkey`, `has_account`, `possign` — the second consumer of the
+`price.QueryContext` seam. All register as context-reading `api.Scalar` in
+`env/std/context.go` (same shape as the price functions; no new flavor).
+
+- **Infrastructure** (`pkg/query/directives`): `Index` is an immutable,
+  lazily-built (one `sync.Once`) map of account→`*ast.Open`, account→`*ast.Close`,
+  currency→`*ast.Commodity`, plus account-type classification driven by the
+  ledger's `name_*` options. `price.QueryContext` gained a `Dirs *directives.Index`
+  field; `NewQueryContext` wires both maps from the same ledger. Metadata is
+  surfaced as `types.Dict` via the shared `pkg/query/metaval` helper.
+- **NULL discipline**: a NULL or non-string argument → typed NULL of the
+  declared Out (except `has_account`, which yields `false` — never NULL — on
+  a missing account or NULL argument, matching beanquery semantics).
+- **`possign` sign convention**: +1 (Assets/Expenses) leaves the value
+  unchanged; −1 (Liabilities/Equity/Income) negates the number component
+  (Amount/Position/Inventory) while preserving cost lots and currencies; 0
+  (unknown root) passes the value through unchanged, same as +1.
 
 ### 7.3 Intra-query parallel executor
 - **Seam**: the input-row scan in `exec/run.go` (documented there). Partition
