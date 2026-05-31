@@ -22,12 +22,23 @@ import (
 //     Bool false<true; Int and Decimal numeric (Decimal via apd, exact);
 //     String lexicographic by bytes; Date chronological; Amount by
 //     (Currency, then Number); Position by (Commodity, then lot identity,
-//     then Units); Inventory by length then position-wise; Interval by
-//     (years, months, days); Set and Dict per set.go and dict.go.
+//     then Units); Inventory by length then position-wise; Interval
+//     structurally by (years, months, days) — see the note below; Set and
+//     Dict per set.go and dict.go.
 //
 // Entry is reserved and never constructed in this step; were it to appear,
 // all Entry values compare equal (rule 3 yields 0), so ordering an Entry
 // column is effectively unsupported. This is noted on [Type] Entry.
+//
+// Interval's order is STRUCTURAL, not a duration order. It distinguishes
+// distinct (years, months, days) tuples — so equality, DISTINCT, and GROUP BY
+// behave correctly — and is stable, but it does NOT rank calendar durations:
+// interval "700 days" sorts below interval "1 year" though it is longer.
+// Because no meaningful total duration order exists, the ordering operators
+// (< <= > >=), ORDER BY, and the min/max/first/last aggregates reject Interval
+// at compile time (see exec/compile.go and env/std/aggregate.go). Only = and
+// != reach this function for Interval operands, and only the zero/non-zero
+// result is observed.
 func compare(a, b Value) int {
 	an, bn := a.IsNull(), b.IsNull()
 	if an || bn {

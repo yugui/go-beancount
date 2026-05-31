@@ -2,6 +2,7 @@ package std_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +153,48 @@ func TestDateBin(t *testing.T) {
 		"SELECT date_bin(interval('1 month'), cost_date, date(2021,1,1)) AS v FROM postings WHERE account = 'Assets:Cash'")
 	if !res.Rows[0][0].IsNull() {
 		t.Errorf("date_bin(_, NULL, _) = %v, want NULL", res.Rows[0][0])
+	}
+}
+
+// TestIntervalNotOrdered locks the Option-C decision: interval has no
+// meaningful duration order, so the ordering operators, ORDER BY, and the
+// min/max aggregates reject an interval operand at compile time.
+func TestIntervalNotOrdered(t *testing.T) {
+	l := scalarLedger(t)
+	cases := []struct{ q, want string }{
+		{"SELECT interval('1 day') < interval('2 day') FROM postings", "not ordered"},
+		{"SELECT interval('2 day') >= interval('1 day') FROM postings", "not ordered"},
+		{"SELECT account FROM postings ORDER BY interval('1 day')", "not ordered"},
+		{"SELECT min(interval('1 day')) FROM postings", "no matching overload"},
+	}
+	for _, c := range cases {
+		_, err := query.Query(context.Background(), c.q, l)
+		if err == nil {
+			t.Errorf("%s: want error containing %q, got nil", c.q, c.want)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: error = %q, want substring %q", c.q, err.Error(), c.want)
+		}
+	}
+}
+
+// TestIntervalEquality confirms interval still supports = and != even though it
+// is not ordered. Equality is structural on (years, months, days), so
+// interval('12 month') does not equal interval('1 year').
+func TestIntervalEquality(t *testing.T) {
+	l := scalarLedger(t)
+	cases := []struct{ expr, want string }{
+		{"interval('1 day') = interval('1 day')", "true"},
+		{"interval('1 day') = interval('2 day')", "false"},
+		{"interval('1 day') != interval('2 day')", "true"},
+		{"interval('12 month') = interval('1 year')", "false"},
+	}
+	for _, c := range cases {
+		v := mustQuery(t, l, "SELECT "+c.expr+" AS v FROM postings LIMIT 1").Rows[0][0]
+		if v.Type() != types.Bool || v.Format() != c.want {
+			t.Errorf("%s = %v, want %s", c.expr, v, c.want)
+		}
 	}
 }
 
