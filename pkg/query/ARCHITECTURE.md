@@ -237,6 +237,15 @@ The **single parallel-executor insertion point** is the input-row scan in
 Each item below is deferred *by design*, with the concrete seam already in place
 so it lands without reworking the core. These are not vague TODOs.
 
+### 7.0 interval / date_bin — need a relativedelta-style value type
+Upstream beanquery's `interval(str)` returns a `relativedelta`, and `date_bin`
+takes one to bucket dates by a calendar stride. Both are out of scope until the
+type system grows a value kind for a calendar offset (years/months/days), which
+`types.Type` does not yet have. The rest of the cast/numeric/date/string/
+inventory parity work landed without it; add the new kind here, then register
+`interval` and the two `date_bin` overloads alongside the other date functions
+in `pkg/query/env/std/dateops.go`.
+
 ### 7.1 OPEN/CLOSE/CLEAR entry-stream scoping — shipped
 Both halves of the original §7.1 have landed: the `balance` running-inventory
 column **and** entry-stream scoping. `balance`'s resolved semantics are

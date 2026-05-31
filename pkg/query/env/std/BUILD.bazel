@@ -17,6 +17,7 @@ go_library(
         "str.go",
         "str_ext.go",
         "value.go",
+        "value_ext.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/query/env/std",
     visibility = ["//visibility:public"],
@@ -46,6 +47,7 @@ go_test(
         "price_test.go",
         "scalar_test.go",
         "str_ext_test.go",
+        "value_ext_test.go",
     ],
     embed = [":std"],
     deps = [
