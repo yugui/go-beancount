@@ -197,6 +197,23 @@ func TestRun_ErrorDiagnostic_BlocksQuery(t *testing.T) {
 	}
 }
 
+// TestRun_BadPlugin_ExitsTwo verifies that a -plugin path that cannot load
+// is a setup failure (exit 2) and that the failing path is named on stderr.
+// A nonexistent .so fails in goplug.Load on every platform, so this needs no
+// real plugin fixture.
+func TestRun_BadPlugin_ExitsTwo(t *testing.T) {
+	path := writeLedger(t, sampleLedger)
+	missing := filepath.Join(t.TempDir(), "missing.so")
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{"-plugin", missing, path, "SELECT account"}, &stdout, &stderr)
+	if got != 2 {
+		t.Errorf("run(bad plugin) = %d, want 2; stderr: %q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), missing) {
+		t.Errorf("stderr = %q, want it to name %q", stderr.String(), missing)
+	}
+}
+
 func TestRun_BadFlag_ExitsTwo(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	got := run(context.Background(), []string{"--no-such-flag"}, &stdout, &stderr)

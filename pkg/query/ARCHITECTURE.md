@@ -55,8 +55,9 @@ See §7 (deferred, with hints) and §8 (excluded).
 | `cmd/beanquery` | CLI: loader → query → aligned table. Glue only. |
 
 The `api`-vs-`env` split mirrors `pkg/ext/postproc/api`-vs-`postproc` exactly,
-so the deferred `goplug` loader and the `std` library register against the thin
-`api` + `env` surface with no rework (§7.4).
+so the `std` library and out-of-tree `goplug` plugins register against the thin
+`api` + `env` surface with no rework — the same `pkg/ext/goplug` loader serves
+both post-processors and query functions (§7.4, shipped).
 
 ## 3. Canonical reference — why the boundary is where it is
 
@@ -435,12 +436,33 @@ PassContext rejection; the executor calls every scalar one way.
   is purely additive. **Measure first** — there is no first-deliverable consumer
   that needs it; `cmd/beanquery` doubles as the benchmark harness.
 
-### 7.4 `goplug` dynamic loading of query functions
-- **Seam**: mirror `pkg/ext/goplug`. A `.so` exports a `Manifest` + an
-  `InitPlugin func() error` that calls `env.Register` with `api.Function`
-  descriptors. `api` is types-only, so a plugin compiles against `api` + `env`
-  with no runner dependency. Use the dual-registration convention (upstream
-  name + Go import path). No first-deliverable consumer; build when needed.
+### 7.4 `goplug` dynamic loading of query functions — shipped
+Shipped, by **reusing the existing `pkg/ext/goplug`** rather than building a
+parallel `pkg/query/goplug`. The earlier hint to "mirror `pkg/ext/goplug`"
+was superseded once it was clear that loader is registry-agnostic: `goplug.Load`
+only verifies the `Manifest` and invokes `InitPlugin func() error`; *what* the
+plugin registers is its own concern. A query-function plugin therefore exports
+the same `Manifest` + `InitPlugin` and, inside `InitPlugin`, calls
+`pkg/query/env.Register` with `api.Function` descriptors. Because `api` depends
+only on `types`+`price` (both leaf), the plugin compiles against `api` + `env`
+with no executor/runner dependency. A plugin may register query functions,
+post-processors, or both from one `InitPlugin`. The dual-registration
+convention (upstream name + Go import path) carries over.
+
+- **CLI wiring** (`cmd/beanquery`): mirrors `cmd/beancheck`. `goplugflag.Var`
+  registers the repeatable `-plugin` flag (seeded from `BEANCOUNT_PLUGINS`),
+  and `goplug.LoadAll(paths)` runs **before** `loader.LoadFile` so both
+  post-processor directives and query functions are registered before the
+  ledger loads and the query compiles. A load failure maps to the CLI's
+  exit-2 (setup-failure) category, not exit-1 (invalid ledger content). The
+  registries' existing `sync.RWMutex` (env) makes the after-`main`
+  registration safe.
+- **Test fixture**: `cmd/beanquery/testdata/queryfn` is a `linkmode=plugin`
+  `.so` registering the niladic scalar `plugin_answer() → 42`; the
+  `testhelpers`-tagged `beanquery_plugin_test` loads it via `-plugin` and
+  asserts `SELECT plugin_answer()` renders `42`, proving the seam end to end
+  on plugin-capable platforms (constrained via
+  `PLUGIN_COMPATIBLE_PLATFORMS`, skipped elsewhere).
 
 ### 7.5 Remaining beanquery tables and columns
 - **Adding a table** = a new constructor like `table.Postings`/`Entries` (typed

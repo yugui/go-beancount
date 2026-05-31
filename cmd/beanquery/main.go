@@ -18,6 +18,14 @@
 // the engine has no registered functions and any sum(...)/year(...)
 // query fails to compile.
 //
+// Out-of-tree query functions and ledger post-processors are loaded from
+// goplug .so files named by the repeatable -plugin flag and by the
+// BEANCOUNT_PLUGINS environment variable (a path-list-separated list, like
+// PATH). A plugin's InitPlugin registers query functions via
+// pkg/query/env.Register so that queries naming them compile, and/or
+// post-processors via pkg/ext/postproc.Register so that plugin directives
+// naming them resolve.
+//
 // Run "beanquery -h" for the flag set and the exit-code table.
 package main
 
@@ -33,6 +41,8 @@ import (
 	"github.com/mattn/go-runewidth"
 
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/ext/goplug"
+	"github.com/yugui/go-beancount/pkg/ext/goplug/goplugflag"
 	"github.com/yugui/go-beancount/pkg/loader"
 	"github.com/yugui/go-beancount/pkg/query"
 	"github.com/yugui/go-beancount/pkg/query/types"
@@ -64,12 +74,14 @@ func main() {
 //	   in which case the query is not run) OR a query parse/compile/run
 //	   error.
 //	2  CLI failure: bad flags, the wrong number of positional
-//	   arguments, or a ledger file that could not be loaded
-//	   (missing/unreadable, I/O error, context cancellation).
+//	   arguments, a ledger file that could not be loaded
+//	   (missing/unreadable, I/O error, context cancellation), or a
+//	   goplug plugin that failed to load.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cmd := flag.NewFlagSet("beanquery", flag.ContinueOnError)
 	cmd.SetOutput(stderr)
 	cmd.Usage = func() { printUsage(stderr, cmd) }
+	pluginPaths := goplugflag.Var(cmd)
 	if err := cmd.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -89,6 +101,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	// branch below. A file that is not even openable is a CLI failure,
 	// so map it to exit 2 with a pre-flight check.
 	if _, err := os.Stat(path); err != nil {
+		fmt.Fprintf(stderr, "beanquery: %v\n", err)
+		return 2
+	}
+
+	// Register out-of-tree query functions and post-processors before the
+	// ledger loads and the query compiles. A load failure is a setup
+	// failure, not invalid ledger content, so it maps to exit 2.
+	if err := goplug.LoadAll(*pluginPaths); err != nil {
 		fmt.Fprintf(stderr, "beanquery: %v\n", err)
 		return 2
 	}
@@ -208,6 +228,10 @@ func printUsage(w io.Writer, cmd *flag.FlagSet) {
 	fmt.Fprintln(w, "Run a BQL query over a beancount ledger and print an aligned")
 	fmt.Fprintln(w, "text table to stdout. The query is a single positional argument,")
 	fmt.Fprintln(w, "so quote it on the shell. Ledger diagnostics go to stderr.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Out-of-tree query functions and post-processors load from -plugin PATH")
+	fmt.Fprintln(w, "(repeatable) and the BEANCOUNT_PLUGINS environment variable (a")
+	fmt.Fprintln(w, "path-list-separated list).")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags:")
 	cmd.PrintDefaults()

@@ -1,4 +1,11 @@
+# beanquery_plugin_test and its testdata fixture need linkmode=plugin,
+# platform constraints, and a build tag that gazelle's generator does not
+# produce. Ignore keeps gazelle from dropping the hand-authored targets;
+# deps below are maintained by hand.
+# gazelle:ignore
+
 load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("//pkg/ext/goplug:fixture_constraints.bzl", "PLUGIN_COMPATIBLE_PLATFORMS")
 
 go_library(
     name = "beanquery_lib",
@@ -7,6 +14,8 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/ast",
+        "//pkg/ext/goplug",
+        "//pkg/ext/goplug/goplugflag",
         "//pkg/ext/postproc/sprout",
         "//pkg/ext/postproc/std",
         "//pkg/loader",
@@ -28,4 +37,16 @@ go_test(
     name = "beanquery_test",
     srcs = ["main_test.go"],
     embed = [":beanquery_lib"],
+)
+
+go_test(
+    name = "beanquery_plugin_test",
+    srcs = [
+        "main_test.go",
+        "plugin_test.go",
+    ],
+    data = ["//cmd/beanquery/testdata/queryfn"],
+    embed = [":beanquery_lib"],
+    gotags = ["testhelpers"],
+    target_compatible_with = PLUGIN_COMPATIBLE_PLATFORMS,
 )

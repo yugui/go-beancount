@@ -63,8 +63,9 @@ type Manifest struct {
 
 	// Name identifies the plugin for operator diagnostics. Required —
 	// Load rejects an empty Name. By convention this matches the name
-	// the plugin registers itself under via postproc.Register
-	// (typically a Go fully-qualified package path).
+	// the plugin registers itself under via its target registry (e.g.
+	// postproc.Register or pkg/query/env.Register), typically a Go
+	// fully-qualified package path.
 	Name string
 
 	// Version is the plugin's own release identifier (e.g. "v1.2.3",
@@ -75,9 +76,12 @@ type Manifest struct {
 
 // Load opens the Go plugin at path, verifies its [Manifest], looks up
 // the exported InitPlugin function, and invokes it. InitPlugin is
-// responsible for calling
-// [github.com/yugui/go-beancount/pkg/ext/postproc.Register] for each
-// [api.Plugin] it wants to make available to the runner.
+// responsible for registering whatever the plugin provides with the
+// relevant host registry — a post-processor via
+// [github.com/yugui/go-beancount/pkg/ext/postproc.Register], a BQL query
+// function via [github.com/yugui/go-beancount/pkg/query/env.Register], or
+// both. goplug itself is registry-agnostic: it only enforces the Manifest
+// and InitPlugin contract.
 //
 // Load returns an error when the file cannot be opened, the required
 // symbols are missing or have unexpected types, the Manifest is
@@ -89,11 +93,11 @@ type Manifest struct {
 // ErrManifestMissing, etc.) so callers can classify failures with
 // [errors.Is] without parsing the message string.
 //
-// Load is not safe to call concurrently with itself or with
-// postproc.Register. [plugin.Open] caches loaded files by path, so
-// invoking Load twice on the same path will re-run InitPlugin and
-// typically panic via postproc.Register's duplicate-name check —
-// matching the established contract for init-time registration.
+// Load is not safe to call concurrently with itself or with the host
+// registries InitPlugin writes to. [plugin.Open] caches loaded files by
+// path, so invoking Load twice on the same path will re-run InitPlugin and
+// typically panic via a registry's duplicate-name check — matching the
+// established contract for init-time registration.
 func Load(path string) error {
 	p, err := plugin.Open(path)
 	if err != nil {
@@ -132,15 +136,15 @@ func Load(path string) error {
 // LoadAll loads each path via [Load], skipping any path already seen so a
 // path that appears more than once is loaded only once. Deduplication is
 // required, not cosmetic: Load panics when the same path is loaded twice
-// (plugin.Open caches the file and the second InitPlugin re-runs
-// postproc.Register, tripping its duplicate-name check). The first occurrence
-// of a path wins and load order follows paths.
+// (plugin.Open caches the file and the second InitPlugin re-runs its
+// registration, tripping the target registry's duplicate-name check). The
+// first occurrence of a path wins and load order follows paths.
 //
 // LoadAll attempts every (deduplicated) path even after a failure, so one bad
 // path does not suppress the rest, and returns the joined error of all
 // failures via [errors.Join] (nil when every path loaded). It inherits Load's
-// concurrency contract: do not call it concurrently with itself, Load, or
-// postproc.Register.
+// concurrency contract: do not call it concurrently with itself, Load, or the
+// host registries InitPlugin writes to.
 func LoadAll(paths []string) error {
 	seen := make(map[string]struct{}, len(paths))
 	var errs []error
