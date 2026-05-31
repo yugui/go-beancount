@@ -15,7 +15,10 @@ go_binary(
     out = "ok.so",
     target_compatible_with = PLUGIN_COMPATIBLE_PLATFORMS,
     testonly = True,
-    visibility = ["//pkg/ext/goplug:__pkg__"],
+    visibility = [
+        "//cmd/beancount-lsp:__pkg__",
+        "//pkg/ext/goplug:__pkg__",
+    ],
     deps = [
         "//pkg/ast",
         "//pkg/ext/goplug",

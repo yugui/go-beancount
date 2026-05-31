@@ -24,6 +24,7 @@ import (
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/goplug"
+	"github.com/yugui/go-beancount/pkg/ext/goplug/goplugflag"
 	"github.com/yugui/go-beancount/pkg/loader"
 	"github.com/yugui/go-beancount/pkg/quote"
 	"github.com/yugui/go-beancount/pkg/quote/api"
@@ -77,13 +78,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Plugin loading. Failures here are CLI-level (exit 2) — the
-	// operator named a path that does not load.
-	for _, p := range flags.plugins {
-		if err := goplug.Load(p); err != nil {
-			fmt.Fprintf(stderr, "beanprice: plugin load failed: %v\n", err)
-			return 2
-		}
+	// Plugin loading. Failures here are CLI-level (exit 2).
+	if err := goplug.LoadAll(flags.plugins); err != nil {
+		fmt.Fprintf(stderr, "beanprice: %v\n", err)
+		return 2
 	}
 
 	// Assemble requests from --ledger walk and inline --source flags.
@@ -172,14 +170,13 @@ func parseFlags(args []string, stderr io.Writer) (*resolvedFlags, error) {
 		ledgers     stringSlice
 		commodities stringSlice
 		sources     stringSlice
-		plugins     stringSlice
 	)
 	cmd := flag.NewFlagSet("beanprice", flag.ContinueOnError)
 	cmd.SetOutput(stderr)
 	cmd.Var(&ledgers, "ledger", "ledger file to walk for Commodity price meta (repeatable)")
 	cmd.Var(&commodities, "commodity", "filter --ledger walk to commodity CODE (repeatable)")
 	cmd.Var(&sources, "source", "inline price request COMMODITY=CCY:source/SYM[,source/SYM]* (repeatable)")
-	cmd.Var(&plugins, "plugin", "load goplug .so quoter from PATH (repeatable)")
+	plugins := goplugflag.Var(cmd)
 	cmd.StringVar(&r.metaKey, "meta-key", r.metaKey, "meta key on Commodity directives that holds the price spec")
 	cmd.StringVar(&r.date, "date", "", "fetch the price as of YYYY-MM-DD (mode At)")
 	cmd.StringVar(&r.rng, "range", "", "fetch the half-open range START..END as YYYY-MM-DD..YYYY-MM-DD (mode Range)")
@@ -197,7 +194,7 @@ func parseFlags(args []string, stderr io.Writer) (*resolvedFlags, error) {
 	r.ledgers = []string(ledgers)
 	r.commodities = []string(commodities)
 	r.sources = []string(sources)
-	r.plugins = []string(plugins)
+	r.plugins = *plugins
 	return r, nil
 }
 
@@ -455,6 +452,11 @@ func printUsage(w io.Writer, cmd *flag.FlagSet) {
 	fmt.Fprintln(w, "  Multi-value flags (--ledger, --commodity, --source, --plugin) repeat")
 	fmt.Fprintln(w, "  rather than comma-split: the comma is reserved for the fallback chain")
 	fmt.Fprintln(w, "  inside a single meta value.")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "PLUGINS")
+	fmt.Fprintln(w, "  Out-of-tree quoters load from --plugin PATH (repeatable) and from the")
+	fmt.Fprintln(w, "  BEANCOUNT_PLUGINS environment variable (a path-list-separated list, like")
+	fmt.Fprintln(w, "  PATH). A path that does not load is a CLI failure (exit 2).")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "EXIT CODES")
 	fmt.Fprintln(w, "  0  success; no Error diagnostics, no fetch error")

@@ -27,6 +27,8 @@ go_library(
     visibility = ["//visibility:private"],
     deps = [
         "//pkg/ast",
+        "//pkg/ext/goplug",
+        "//pkg/ext/goplug/goplugflag",
         "//pkg/ext/postproc/sprout",
         "//pkg/ext/postproc/std",
         "//pkg/format",
@@ -59,6 +61,8 @@ go_test(
         "formatting_test.go",
         "hover_test.go",
         "locate_test.go",
+        "plugins_fixture_test.go",
+        "plugins_test.go",
         "position_test.go",
         "rename_test.go",
         "server_test.go",
@@ -66,9 +70,22 @@ go_test(
         "symbol_test.go",
         "watch_test.go",
     ],
+    # The ok .so fixture is added on platforms that support Go plugins; on
+    # others the data dep is dropped and the plugin integration test self-skips
+    # at runtime via the same GOOS check pkg/ext/goplug uses.
+    data = select({
+        "@platforms//os:linux": ["//pkg/ext/goplug/testdata/ok"],
+        "@platforms//os:macos": ["//pkg/ext/goplug/testdata/ok"],
+        "@platforms//os:freebsd": ["//pkg/ext/goplug/testdata/ok"],
+        "//conditions:default": [],
+    }),
     embed = [":beancount-lsp_lib"],
+    # testhelpers exposes postproc.ResetForTest and compiles
+    # plugins_fixture_test.go, which probes the registry after loading the .so.
+    gotags = ["testhelpers"],
     deps = [
         "//pkg/ast",
+        "//pkg/ext/postproc",
         "//pkg/session",
         "//pkg/syntax",
         "@com_github_google_go_cmp//cmp",

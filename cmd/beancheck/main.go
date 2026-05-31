@@ -6,9 +6,15 @@
 //
 //	beancheck [flags] <file>
 //
+// Out-of-tree postprocessors are loaded from goplug .so files named by the
+// repeatable -plugin flag and by the BEANCOUNT_PLUGINS environment variable
+// (a path-list-separated list, like PATH), so that plugin directives naming
+// them resolve instead of reporting plugin-not-registered.
+//
 // beancheck exits 0 when the ledger is clean, 1 when the ledger has errors
 // (or warnings under -strict), and 2 when beancheck itself cannot run (bad
-// arguments, IO failure outside the ledger, flag parse error).
+// arguments, IO failure outside the ledger, plugin load failure, flag parse
+// error).
 package main
 
 import (
@@ -20,6 +26,8 @@ import (
 	"sort"
 
 	"github.com/yugui/go-beancount/pkg/ast"
+	"github.com/yugui/go-beancount/pkg/ext/goplug"
+	"github.com/yugui/go-beancount/pkg/ext/goplug/goplugflag"
 	"github.com/yugui/go-beancount/pkg/loader"
 
 	// Side-effect: register every plugin shipped under
@@ -34,7 +42,10 @@ import (
 	_ "github.com/yugui/go-beancount/pkg/ext/postproc/std"
 )
 
-var strict = flag.Bool("strict", false, "treat warnings as errors")
+var (
+	strict      = flag.Bool("strict", false, "treat warnings as errors")
+	pluginPaths = goplugflag.Var(flag.CommandLine)
+)
 
 func usage() {
 	out := flag.CommandLine.Output()
@@ -45,6 +56,9 @@ func usage() {
 	fmt.Fprintln(out, "Exits 1 if the ledger has errors, 2 if the checker itself could not run,")
 	fmt.Fprintln(out, "0 otherwise.")
 	fmt.Fprintln(out)
+	fmt.Fprintln(out, "Out-of-tree postprocessors load from -plugin PATH (repeatable) and the")
+	fmt.Fprintln(out, "BEANCOUNT_PLUGINS environment variable (a path-list-separated list).")
+	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Flags:")
 	flag.PrintDefaults()
 }
@@ -54,11 +68,12 @@ func main() {
 	// flag.ExitOnError already maps parse failures to exit 2, matching our
 	// "checker meta-failure" convention.
 	flag.Parse()
-	os.Exit(run(context.Background(), flag.Args(), *strict, os.Stderr))
+	os.Exit(run(context.Background(), flag.Args(), *strict, *pluginPaths, os.Stderr))
 }
 
-// run is the testable entry point. It returns the process exit code.
-func run(ctx context.Context, args []string, strict bool, stderr io.Writer) int {
+// run is the testable entry point. It returns the process exit code. plugins
+// are the -plugin flag values, combined with BEANCOUNT_PLUGINS.
+func run(ctx context.Context, args []string, strict bool, plugins []string, stderr io.Writer) int {
 	switch len(args) {
 	case 0:
 		// TODO: wire stdin to loader.LoadReader. The entry point now
@@ -68,6 +83,11 @@ func run(ctx context.Context, args []string, strict bool, stderr io.Writer) int 
 		fmt.Fprintln(stderr, "Usage: beancheck [flags] <file>")
 		return 2
 	case 1:
+		// register postprocessors before loading the ledger
+		if err := goplug.LoadAll(plugins); err != nil {
+			fmt.Fprintf(stderr, "beancheck: %v\n", err)
+			return 2
+		}
 		return check(ctx, args[0], strict, stderr)
 	default:
 		fmt.Fprintln(stderr, "beancheck: expected exactly one file argument")

@@ -10,6 +10,8 @@ go_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//pkg/ast",
+        "//pkg/ext/goplug",
+        "//pkg/ext/goplug/goplugflag",
         "//pkg/ext/postproc/api",
         "//pkg/ext/postproc/sprout",
         "//pkg/ext/postproc/std",
@@ -26,6 +28,8 @@ go_test(
     importpath = "github.com/yugui/go-beancount/cmd/beancheck",
     deps = [
         "//pkg/ast",
+        "//pkg/ext/goplug",
+        "//pkg/ext/goplug/goplugflag",
         "//pkg/ext/postproc/api",
         "//pkg/ext/postproc/sprout",
         "//pkg/ext/postproc/std",

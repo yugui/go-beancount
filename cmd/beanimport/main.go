@@ -13,6 +13,7 @@ import (
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/ext/goplug"
+	"github.com/yugui/go-beancount/pkg/ext/goplug/goplugflag"
 	"github.com/yugui/go-beancount/pkg/importer"
 	"github.com/yugui/go-beancount/pkg/importer/hook"
 	"github.com/yugui/go-beancount/pkg/printer"
@@ -20,13 +21,6 @@ import (
 	_ "github.com/yugui/go-beancount/pkg/importer/hook/std/classify"
 	_ "github.com/yugui/go-beancount/pkg/importer/std/csvimp"
 )
-
-// stringSlice accumulates repeated flag occurrences as literal strings,
-// preserving commas. Used for -plugin because .so paths may contain commas.
-type stringSlice []string
-
-func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
-func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
 
 // commaSlice accumulates repeated flag occurrences and splits each value
 // on commas, discarding empty segments. Both -hook A,B and -hook A -hook B
@@ -75,11 +69,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	for _, p := range opts.plugins {
-		if err := goplug.Load(p); err != nil {
-			fmt.Fprintf(stderr, "beanimport: plugin %q: %v\n", p, err)
-			return 2
-		}
+	if err := goplug.LoadAll(opts.plugins); err != nil {
+		fmt.Fprintf(stderr, "beanimport: %v\n", err)
+		return 2
 	}
 
 	f, err := os.Open(opts.config)
@@ -221,10 +213,7 @@ func exitCode(diags []ast.Diagnostic, strict bool) int {
 // to stderr), or the underlying flag-parse error otherwise.
 func parseFlags(args []string, stderr io.Writer) (*runOptions, error) {
 	opts := &runOptions{}
-	var (
-		hooks   commaSlice
-		plugins stringSlice
-	)
+	var hooks commaSlice
 
 	cmd := flag.NewFlagSet("beanimport", flag.ContinueOnError)
 	cmd.SetOutput(stderr)
@@ -232,7 +221,7 @@ func parseFlags(args []string, stderr io.Writer) (*runOptions, error) {
 	cmd.Var(&hooks, "hook", "hook instance name(s), comma- or repeat-separated, in chain order")
 	cmd.StringVar(&opts.importer, "importer", "", "force a specific importer instance (bypass Dispatch)")
 	cmd.StringVar(&opts.account, "account", "", `account hint passed to Extract via Hints["account"]`)
-	cmd.Var(&plugins, "plugin", "load goplug .so plugin from PATH (repeatable)")
+	plugins := goplugflag.Var(cmd)
 	cmd.BoolVar(&opts.strict, "strict", false, "treat warnings as errors (exit 1 on any Warning)")
 	cmd.Usage = func() { printUsage(stderr, cmd) }
 
@@ -252,7 +241,7 @@ func parseFlags(args []string, stderr io.Writer) (*runOptions, error) {
 	}
 
 	opts.hooks = []string(hooks)
-	opts.plugins = []string(plugins)
+	opts.plugins = *plugins
 	opts.inputPath = positionals[0]
 	return opts, nil
 }
@@ -269,6 +258,11 @@ Flags:
 `)
 	cmd.PrintDefaults()
 	fmt.Fprint(w, `
+PLUGINS
+  Out-of-tree importers and hooks load from -plugin PATH (repeatable) and from
+  the BEANCOUNT_PLUGINS environment variable (a path-list-separated list, like
+  PATH). A path that does not load is a CLI failure (exit 2).
+
 EXIT CODES
   0  pipeline completed; no Error diagnostics
      (Warnings are allowed unless -strict.)

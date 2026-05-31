@@ -13,7 +13,10 @@ go_library(
 
 go_test(
     name = "goplug_test",
-    srcs = ["goplug_test.go"],
+    srcs = [
+        "goplug_test.go",
+        "loadall_test.go",
+    ],
     data = [
         "//pkg/ext/goplug/testdata/badapiversion",
         "//pkg/ext/goplug/testdata/badinitsig",
