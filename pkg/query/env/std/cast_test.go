@@ -171,6 +171,56 @@ func TestCastAcceptsNullLiteral(t *testing.T) {
 	}
 }
 
+// TestCastInterval pins the cast behavior for Interval values, which hit the
+// generic default branch of each cast function.
+//
+// str/repr render the canonical interval form (Format == String for Interval).
+// bool is always true — truthy's default does not inspect components, so even
+// an all-zero interval is a non-null value and therefore true.
+// int/decimal/date yield NULL — no numeric conversion exists for a calendar offset.
+func TestCastInterval(t *testing.T) {
+	l := scalarLedger(t)
+
+	// str and repr both render the canonical form, including negative values.
+	for _, tc := range []struct{ expr, want string }{
+		{"str(interval('5 day'))", "5 days"},
+		{"str(interval('1 year'))", "1 year"},
+		{"str(interval('-1 day'))", "-1 day"},
+		{"str(interval('-2 year'))", "-2 years"},
+		{"repr(interval('5 day'))", "5 days"},
+		{"repr(interval('-1 month'))", "-1 month"},
+	} {
+		v := mustQuery(t, l, "SELECT "+tc.expr+" AS v FROM postings LIMIT 1").Rows[0][0]
+		if v.Type() != types.String {
+			t.Errorf("%s: type = %v, want String", tc.expr, v.Type())
+			continue
+		}
+		if got, _ := types.AsString(v); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.expr, got, tc.want)
+		}
+	}
+
+	// bool is true for any non-null Interval, including all-zero.
+	for _, expr := range []string{"bool(interval('5 day'))", "bool(interval('0 day'))"} {
+		v := mustQuery(t, l, "SELECT "+expr+" AS v FROM postings LIMIT 1").Rows[0][0]
+		if b, ok := types.AsBool(v); !ok || !b {
+			t.Errorf("%s = %v, want TRUE", expr, v)
+		}
+	}
+
+	// int, decimal, and date yield NULL — no conversion defined for Interval.
+	for _, expr := range []string{
+		"int(interval('5 day'))",
+		"decimal(interval('5 day'))",
+		"date(interval('5 day'))",
+	} {
+		v := mustQuery(t, l, "SELECT "+expr+" AS v FROM postings LIMIT 1").Rows[0][0]
+		if !v.IsNull() {
+			t.Errorf("%s = %v, want NULL", expr, v)
+		}
+	}
+}
+
 // TestConcreteRejectsNullLiteral confirms concrete-typed functions (no Any
 // slot) still reject a NULL literal at compile time, matching upstream
 // beanquery's Any-vs-concrete distinction.
