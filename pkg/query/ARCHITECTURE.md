@@ -237,14 +237,62 @@ The **single parallel-executor insertion point** is the input-row scan in
 Each item below is deferred *by design*, with the concrete seam already in place
 so it lands without reworking the core. These are not vague TODOs.
 
-### 7.0 interval / date_bin — need a relativedelta-style value type
-Upstream beanquery's `interval(str)` returns a `relativedelta`, and `date_bin`
-takes one to bucket dates by a calendar stride. Both are out of scope until the
-type system grows a value kind for a calendar offset (years/months/days), which
-`types.Type` does not yet have. The rest of the cast/numeric/date/string/
-inventory parity work landed without it; add the new kind here, then register
-`interval` and the two `date_bin` overloads alongside the other date functions
-in `pkg/query/env/std/dateops.go`.
+### 7.0 interval / date_bin — shipped
+
+`types.Interval` is a new value kind: an immutable `(years, months, days)`
+calendar offset. Its ordinal sits between Inventory and the container kinds
+(Set, Dict); it participates in the sealed-`Value` order and the NULL model as
+other concrete kinds do, with one deliberate restriction described under
+*Comparison* below.
+
+`interval(str)` parses a stride string and returns an Interval. It accepts
+only `day`, `month`, and `year` units (optional trailing `s`, optional leading
+sign), matching the observable behavior of upstream beanquery's regex
+`([-+]?[0-9]+)\s+(day|month|year)s?`. Input that does not match — any other
+unit, malformed syntax — yields NULL. (Upstream's function body contains
+unreachable week/decade/century/millennium branches that the regex never feeds;
+we match what the regex actually produces, not those dead branches.)
+
+`date_bin` is registered with two overloads (Interval stride and String stride)
+in `pkg/query/env/std/dateops.go`. The resolved alignment semantics:
+
+- **Day strides** align by floor division toward −∞, matching `//` in Python:
+  `floor((date − origin) / stride_days) * stride_days + origin`.
+- **Month and year strides** iterate relativedelta-style addition from origin
+  with end-of-month clamping that *accumulates* across steps. The key invariant
+  is that advancing from Jan 31 by one month lands on Feb 28 (or Feb 29 in a
+  leap year), and advancing again from that Feb 28 lands on Mar 28 — not
+  Mar 31. The boundary does not snap back to 31 each step. This is why
+  alignment iterates forward from origin rather than computing `origin + k·stride`
+  directly: the accumulated clamp matches Python's `dateutil.relativedelta` and
+  upstream beanquery.
+- **Non-advancing stride** (zero or negative): the function returns NULL rather
+  than looping forever or producing a meaningless result.
+- **Zero-day stride**: yields NULL (safe divergence from an upstream edge-case
+  bug that would divide by zero).
+
+Comparison: Interval supports **equality only** (`=`, `!=`); it is deliberately
+**not ordered**. A lexicographic `(years, months, days)` order would be stable
+but meaningless as a duration — interval `'700 days'` is longer than `'1 year'`
+yet sorts below it — so the ordering operators (`<` `<=` `>` `>=`), `ORDER BY`,
+and the `min`/`max`/`first`/`last` aggregates reject an interval operand at
+compile time (`checkComparable` and the ORDER BY key check in
+`exec/compile.go`; the aggregates simply omit Interval from `orderedTypes`).
+`types.Value.Compare` still returns a structural, stable result so that `=`,
+`!=`, `DISTINCT`, and `GROUP BY` distinguish distinct intervals correctly —
+note this makes equality structural, so `interval('12 months')` does not equal
+`interval('1 year')`. Upstream beanquery supports no interval comparison at
+all; restricting to equality keeps the well-defined operation while dropping
+the ill-defined order (the SQL year-month vs day-interval distinction was
+considered and rejected as over-engineered for single-unit interval values).
+
+Cast behavior: the Any-taking cast functions treat Interval via their generic
+default branches. `str` and `repr` render the canonical form (non-zero
+components only, ordered years→months→days, each `<n> <unit[s]>` with singular
+unit when |n|==1, joined by `", "`; all-zero → `"0 days"`). `bool` is always
+`true` — `truthy`'s default does not inspect components, so even an all-zero
+Interval is a non-null value and therefore truthy. `int`, `decimal`, and `date`
+yield their typed NULL — no numeric conversion is defined for a calendar offset.
 
 ### 7.1 OPEN/CLOSE/CLEAR entry-stream scoping — shipped
 Both halves of the original §7.1 have landed: the `balance` running-inventory

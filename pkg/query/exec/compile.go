@@ -222,6 +222,9 @@ func (c *compiler) compileOrderBy(items []parser.OrderItem, plan *Compiled) erro
 		if err != nil {
 			return err
 		}
+		if ce.Type() == types.Interval {
+			return errf(item.Expr.Pos(), "interval values are not ordered; cannot ORDER BY an interval expression")
+		}
 		plan.orderBy = append(plan.orderBy, orderKey{expr: ce, desc: item.Desc})
 	}
 	return nil
@@ -468,7 +471,7 @@ func (c *compiler) compileCompare(x *parser.Binary, aggOK bool) (cexpr, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := checkComparable(x.Position, l.Type(), r.Type()); err != nil {
+	if err := checkComparable(x.Position, x.Op, l.Type(), r.Type()); err != nil {
 		return nil, err
 	}
 	return &cmpExpr{op: x.Op, l: l, r: r}, nil
@@ -477,7 +480,16 @@ func (c *compiler) compileCompare(x *parser.Binary, aggOK bool) (cexpr, error) {
 // checkComparable accepts equal types, a numeric pair (which widens), and
 // any pairing involving an untyped NULL (Invalid). Other mixed types are a
 // compile error.
-func checkComparable(pos parser.Position, l, r types.Type) error {
+//
+// Interval is exempt from ordering: only = and != are defined for interval
+// operands, because no meaningful total order over a (years, months, days)
+// calendar offset exists (interval '700 days' is longer than '1 year' yet
+// would sort below it). The ordering operators reject it here; ORDER BY and
+// the min/max/first/last aggregates reject it through their own paths.
+func checkComparable(pos parser.Position, op parser.BinaryOp, l, r types.Type) error {
+	if isOrderingOp(op) && (l == types.Interval || r == types.Interval) {
+		return errf(pos, "interval values are not ordered; only = and != are supported")
+	}
 	switch {
 	case l == types.Invalid || r == types.Invalid:
 		return nil
@@ -487,6 +499,15 @@ func checkComparable(pos parser.Position, l, r types.Type) error {
 		return nil
 	default:
 		return errf(pos, "cannot compare %s with %s", l, r)
+	}
+}
+
+func isOrderingOp(op parser.BinaryOp) bool {
+	switch op {
+	case parser.OpLt, parser.OpLe, parser.OpGt, parser.OpGe:
+		return true
+	default:
+		return false
 	}
 }
 

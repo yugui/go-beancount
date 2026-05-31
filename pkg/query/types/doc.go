@@ -22,6 +22,7 @@
 //	Amount     NewAmount     (ast.Amount)
 //	Position   NewPosition   (inventory.Position)
 //	Inventory  NewInventory  (*inventory.Inventory)
+//	Interval   NewInterval   (years/months/days calendar offset)
 //	Set        NewSet        (string elements; tags/links)
 //	Dict       NewDict        (string-keyed Value; metadata)
 //

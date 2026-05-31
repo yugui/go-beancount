@@ -38,6 +38,7 @@ func mixed(t *testing.T) []types.Value {
 		types.NewAmount(amount(t, "1", "USD")),
 		types.NewPosition(inventory.Position{Units: amount(t, "2", "EUR")}),
 		types.NewInventory(inv),
+		types.NewInterval(1, 0, 0),
 		types.NewSet("x"),
 		types.NewDict(map[string]types.Value{"k": types.NewInt(1)}),
 		types.Null(types.Int),
@@ -171,6 +172,54 @@ func TestCompareInventoryByLength(t *testing.T) {
 	}
 	if empty.Compare(types.NewInventory(one)) != -1 {
 		t.Error("shorter inventory must sort first")
+	}
+}
+
+// TestCompareIntervalStructural locks that Interval ordering is STRUCTURAL —
+// lexicographic on the (years, months, days) tuple — and explicitly NOT a
+// duration order. The ascending chain exercises negative, mixed-sign, and zero
+// components.
+func TestCompareIntervalStructural(t *testing.T) {
+	// Strictly ascending under lexicographic (years, months, days).
+	ascending := []types.Value{
+		types.NewInterval(-1, 0, 0), // negative year
+		types.NewInterval(0, -2, 0), // negative month
+		types.NewInterval(0, -1, 0),
+		types.NewInterval(0, 0, -1), // negative day
+		types.NewInterval(0, 0, 0),  // zero
+		types.NewInterval(0, 0, 1),
+		types.NewInterval(0, 1, -5), // mixed sign: month dominates the negative day
+		types.NewInterval(0, 1, 0),
+		types.NewInterval(1, -3, 0), // mixed sign: year dominates the negative month
+		types.NewInterval(1, 0, 0),
+		types.NewInterval(1, 2, 3),
+		types.NewInterval(1, 2, 4),
+	}
+	for i := 0; i+1 < len(ascending); i++ {
+		if ascending[i].Compare(ascending[i+1]) != -1 {
+			t.Errorf("%s must sort before %s", ascending[i].Format(), ascending[i+1].Format())
+		}
+		if ascending[i+1].Compare(ascending[i]) != 1 {
+			t.Errorf("%s must sort after %s", ascending[i+1].Format(), ascending[i].Format())
+		}
+	}
+
+	// Equality is structural: equal only when every component matches.
+	if got := types.NewInterval(0, 0, 0).Compare(types.NewInterval(0, 0, 0)); got != 0 {
+		t.Errorf("zero interval not equal to itself: Compare = %d", got)
+	}
+	if got := types.NewInterval(1, 2, 3).Compare(types.NewInterval(1, 2, 3)); got != 0 {
+		t.Errorf("equal tuples must compare 0, got %d", got)
+	}
+	// 12 months and 1 year are the same duration but distinct tuples, so they
+	// are NOT equal — confirming the order is structural, not duration-based.
+	if got := types.NewInterval(0, 12, 0).Compare(types.NewInterval(1, 0, 0)); got == 0 {
+		t.Error("interval(12 months) must not structurally equal interval(1 year)")
+	}
+	// And not a duration order: 700 days is longer than 1 year yet sorts below
+	// it, because the years component dominates.
+	if got := types.NewInterval(0, 0, 700).Compare(types.NewInterval(1, 0, 0)); got != -1 {
+		t.Errorf("structural order: (0,0,700) must sort below (1,0,0), got %d", got)
 	}
 }
 

@@ -2,6 +2,8 @@ package std
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,6 +70,126 @@ func init() {
 		x, _ := types.AsDate(args[1])
 		return datePart(field, x), nil
 	})
+
+	registerStrict("interval", []types.Type{types.String}, types.Interval, func(args []types.Value) (types.Value, error) {
+		s, _ := types.AsString(args[0])
+		if y, mo, d, ok := intervalFromString(s); ok {
+			return types.NewInterval(y, mo, d), nil
+		}
+		return types.Null(types.Interval), nil
+	})
+	registerStrict("date_bin", []types.Type{types.Interval, types.Date, types.Date}, types.Date, func(args []types.Value) (types.Value, error) {
+		y, mo, d, _ := types.AsInterval(args[0])
+		source, _ := types.AsDate(args[1])
+		origin, _ := types.AsDate(args[2])
+		return dateBin(y, mo, d, source, origin), nil
+	})
+	registerStrict("date_bin", []types.Type{types.String, types.Date, types.Date}, types.Date, func(args []types.Value) (types.Value, error) {
+		s, _ := types.AsString(args[0])
+		source, _ := types.AsDate(args[1])
+		origin, _ := types.AsDate(args[2])
+		y, mo, d, ok := intervalFromString(s)
+		if !ok {
+			return types.Null(types.Date), nil
+		}
+		return dateBin(y, mo, d, source, origin), nil
+	})
+}
+
+var intervalRE = regexp.MustCompile(`^([-+]?[0-9]+)\s+(day|month|year)s?$`)
+
+// intervalFromString parses upstream beanquery's interval() grammar:
+// "<int> <unit>" where unit is day|month|year (optional trailing s),
+// matched against the whole string. ok is false when x does not match.
+func intervalFromString(x string) (years, months, days int, ok bool) {
+	m := intervalRE.FindStringSubmatch(x)
+	if m == nil {
+		return 0, 0, 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	switch m[2] {
+	case "day":
+		return 0, 0, n, true
+	case "month":
+		return 0, n, 0, true
+	default: // year
+		return n, 0, 0, true
+	}
+}
+
+// addInterval applies a dateutil relativedelta-style offset to t: it adds
+// years and months with end-of-month CLAMPING (e.g. Jan 31 + 1 month =
+// Feb 28), then adds days as a plain day delta. This matches Python
+// dateutil's relativedelta addition, which date_bin's month/year stride
+// relies on.
+func addInterval(t time.Time, years, months, days int) time.Time {
+	y := t.Year() + years
+	mi := int(t.Month()) - 1 + months
+	y += floorDiv(mi, 12)
+	m := floorMod(mi, 12) + 1
+	day := t.Day()
+	if max := daysInMonth(y, m); day > max {
+		day = max
+	}
+	base := time.Date(y, time.Month(m), day, 0, 0, 0, 0, time.UTC)
+	return base.AddDate(0, 0, days)
+}
+
+func daysInMonth(y, m int) int {
+	return time.Date(y, time.Month(m)+1, 0, 0, 0, 0, 0, time.UTC).Day()
+}
+
+func floorDiv(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
+}
+
+func floorMod(a, b int) int {
+	return a - floorDiv(a, b)*b
+}
+
+// dateBin buckets source into the half-open bin aligned to origin by the
+// (years, months, days) stride, matching upstream beanquery's date_bin.
+// A non-positive stride (a stride that does not advance origin) yields a
+// NULL Date. Month/year strides iterate addInterval (so end-of-month
+// clamping accumulates across steps, matching dateutil); pure-day strides
+// align by floor division.
+func dateBin(years, months, days int, source, origin time.Time) types.Value {
+	if years != 0 || months != 0 {
+		if next := addInterval(origin, years, months, days); !next.After(origin) {
+			return types.Null(types.Date)
+		}
+		if !source.Before(origin) {
+			prev := origin
+			n := origin
+			for {
+				n = addInterval(n, years, months, days)
+				if !n.Before(source) {
+					return types.NewDate(prev)
+				}
+				prev = n
+			}
+		}
+		n := origin
+		for {
+			n = addInterval(n, -years, -months, -days)
+			if !n.After(source) {
+				return types.NewDate(n)
+			}
+		}
+	}
+	if days <= 0 {
+		return types.Null(types.Date)
+	}
+	diffDays := int(source.Sub(origin) / (24 * time.Hour))
+	aligned := floorDiv(diffDays, days) * days
+	return types.NewDate(origin.AddDate(0, 0, aligned))
 }
 
 func dateOnly(t time.Time) time.Time {

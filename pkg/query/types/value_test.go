@@ -42,6 +42,7 @@ func TestConstructorsTypeAndNotNull(t *testing.T) {
 		{"amount", types.NewAmount(amount(t, "5", "JPY")), types.Amount},
 		{"position", types.NewPosition(inventory.Position{Units: amount(t, "3", "EUR")}), types.Position},
 		{"inventory", types.NewInventory(inv), types.Inventory},
+		{"interval", types.NewInterval(1, 2, 3), types.Interval},
 		{"set", types.NewSet("a", "b"), types.SetType},
 		{"dict", types.NewDict(map[string]types.Value{"k": types.NewInt(1)}), types.DictType},
 	}
@@ -131,6 +132,58 @@ func TestNull(t *testing.T) {
 	}
 	if _, ok := types.AsSet(types.Null(types.SetType)); ok {
 		t.Error("AsSet on Null(SetType): ok=true")
+	}
+}
+
+func TestInterval(t *testing.T) {
+	v := types.NewInterval(1, 2, 3)
+	if v.Type() != types.Interval {
+		t.Errorf("Type() = %v, want Interval", v.Type())
+	}
+	if v.IsNull() {
+		t.Error("IsNull() = true, want false")
+	}
+	if y, m, d, ok := types.AsInterval(v); !ok || y != 1 || m != 2 || d != 3 {
+		t.Errorf("AsInterval = (%d,%d,%d,%v), want (1,2,3,true)", y, m, d, ok)
+	}
+
+	if _, _, _, ok := types.AsInterval(types.NewInt(1)); ok {
+		t.Error("AsInterval on Int: ok=true")
+	}
+	if _, _, _, ok := types.AsInterval(types.Null(types.Interval)); ok {
+		t.Error("AsInterval on Null(Interval): ok=true")
+	}
+
+	null := types.Null(types.Interval)
+	if !null.IsNull() || null.Type() != types.Interval {
+		t.Errorf("Null(Interval): IsNull=%v Type=%v", null.IsNull(), null.Type())
+	}
+	if null.Format() != "NULL" {
+		t.Errorf("Null(Interval).Format() = %q, want NULL", null.Format())
+	}
+}
+
+func TestIntervalFormat(t *testing.T) {
+	cases := []struct {
+		years, months, days int
+		want                string
+	}{
+		{1, 2, 3, "1 year, 2 months, 3 days"},
+		{0, -1, 0, "-1 month"},
+		{-2, 0, 0, "-2 years"},
+		{0, 0, 1, "1 day"},
+		{0, 0, -1, "-1 day"},
+		{0, 0, 0, "0 days"},
+		{2, 0, 5, "2 years, 5 days"},
+	}
+	for _, tc := range cases {
+		v := types.NewInterval(tc.years, tc.months, tc.days)
+		if got := v.Format(); got != tc.want {
+			t.Errorf("NewInterval(%d,%d,%d).Format() = %q, want %q", tc.years, tc.months, tc.days, got, tc.want)
+		}
+		if got := v.String(); got != tc.want {
+			t.Errorf("NewInterval(%d,%d,%d).String() = %q, want %q", tc.years, tc.months, tc.days, got, tc.want)
+		}
 	}
 }
 

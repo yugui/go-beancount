@@ -2,6 +2,7 @@ package types
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
@@ -70,6 +71,12 @@ func NewInventory(inv *inventory.Inventory) Value {
 		return inventoryValue{inv: inventory.NewInventory()}
 	}
 	return inventoryValue{inv: inv.Clone()}
+}
+
+// NewInterval returns a non-null Interval value holding the given calendar
+// offset.
+func NewInterval(years, months, days int) Value {
+	return intervalValue{years: years, months: months, days: days}
 }
 
 // Null returns a NULL value that remembers t as its kind. IsNull reports
@@ -150,6 +157,15 @@ func (v inventoryValue) Format() string      { return formatInventory(v.inv) }
 func (v inventoryValue) String() string      { return v.Format() }
 func (v inventoryValue) Compare(o Value) int { return compare(v, o) }
 
+type intervalValue struct{ years, months, days int }
+
+func (intervalValue) Type() Type            { return Interval }
+func (intervalValue) IsNull() bool          { return false }
+func (intervalValue) sealedValue()          {}
+func (v intervalValue) Format() string      { return formatInterval(v.years, v.months, v.days) }
+func (v intervalValue) String() string      { return v.Format() }
+func (v intervalValue) Compare(o Value) int { return compare(v, o) }
+
 type nullValue struct{ t Type }
 
 func (v nullValue) Type() Type          { return v.t }
@@ -228,6 +244,13 @@ func AsInventory(v Value) (*inventory.Inventory, bool) {
 	return i.inv.Clone(), true
 }
 
+// AsInterval returns the underlying calendar offset. ok is false when v is
+// NULL or not an Interval.
+func AsInterval(v Value) (years, months, days int, ok bool) {
+	i, ok := v.(intervalValue)
+	return i.years, i.months, i.days, ok
+}
+
 // AsSet returns the underlying Set. ok is false when v is NULL or not a
 // Set.
 func AsSet(v Value) (Set, bool) {
@@ -240,6 +263,27 @@ func AsSet(v Value) (Set, bool) {
 func AsDict(v Value) (Dict, bool) {
 	d, ok := v.(Dict)
 	return d, ok
+}
+
+func formatInterval(years, months, days int) string {
+	var parts []string
+	for _, c := range []struct {
+		n    int
+		unit string
+	}{{years, "year"}, {months, "month"}, {days, "day"}} {
+		if c.n == 0 {
+			continue
+		}
+		unit := c.unit
+		if c.n != 1 && c.n != -1 {
+			unit += "s"
+		}
+		parts = append(parts, strconv.Itoa(c.n)+" "+unit)
+	}
+	if len(parts) == 0 {
+		return "0 days"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func formatPosition(p inventory.Position) string {
