@@ -47,15 +47,12 @@
 // and sum(position) returns an empty inventory, while count returns 0 and
 // min/max/first/last return NULL.
 //
-// # Documented beanquery-parity divergences (follow-ups)
+// # Date-scalar return types follow upstream beanquery
 //
-// The lean engine intentionally simplifies a few return shapes relative to
-// beanquery; full parity is deferred and should be recorded in the Step 8
-// architecture doc:
-//
-//   - weekday returns the English weekday name (e.g. "Monday") via
-//     time.Weekday.String(); beanquery returns an integer index.
-//   - quarter returns an int 1..4; beanquery returns a "YYYY-Qn" string.
-//   - yearmonth returns a "YYYY-MM" string; beanquery returns a
-//     month-truncated date.
+// weekday returns a 3-letter abbreviation (strftime %a, e.g. "Mon");
+// quarter returns a "YYYY-Qn" string; yearmonth returns a month-truncated
+// date. The convenient renderings that an earlier draft put on these names
+// (full English weekday name, int quarter 1..4, "YYYY-MM" string) are
+// re-provided under distinct names in pkg/query/env/sprout, so they do not
+// shadow the upstream-parity std names.
 package std

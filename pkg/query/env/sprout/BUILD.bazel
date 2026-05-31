@@ -4,6 +4,7 @@ go_library(
     name = "sprout",
     srcs = [
         "coalesce.go",
+        "date.go",
         "doc.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/query/env/sprout",
@@ -17,7 +18,10 @@ go_library(
 
 go_test(
     name = "sprout_test",
-    srcs = ["coalesce_test.go"],
+    srcs = [
+        "coalesce_test.go",
+        "date_test.go",
+    ],
     deps = [
         ":sprout",
         "//pkg/ast",

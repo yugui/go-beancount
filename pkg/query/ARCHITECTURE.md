@@ -215,17 +215,18 @@ The **single parallel-executor insertion point** is the input-row scan in
 - **`Set`/`Dict` ordering** in `Compare` is deterministic and total
   (lexicographic over sorted elements / keyed pairs); it is internal and need
   not match beanquery byte-for-byte.
-- **Date-function return types — original-plan mistake, parity is the goal**:
-  the initial plan recorded `weekday`/`quarter`/`yearmonth` return types that
-  diverge from upstream beanquery (English weekday name / int 1..4 / `"YYYY-MM"`
-  string), framing the divergence as a deliberate lean choice. That was a
-  mistake. The intended correction (a later slice, not yet implemented): align
-  the std scalars to upstream — `weekday → int index`, `quarter → "YYYY-Qn"`
-  string, `yearmonth → month-truncated date`. The convenient variants (English
-  weekday name, int quarter 1..4, `"YYYY-MM"` string) will be re-provided as
-  separately-named functions registered in the sprout library
-  (`pkg/query/env/sprout`), so users keep them without polluting the
-  upstream-parity std names.
+- **Date-function return types - corrected to upstream parity (shipped)**: an
+  earlier draft recorded `weekday`/`quarter`/`yearmonth` return types that
+  diverged from upstream beanquery (English weekday name / int 1..4 / "YYYY-MM"
+  string) and framed the divergence as a deliberate lean choice. That was a
+  planning mistake. The std scalars now match upstream: `weekday` is a 3-letter
+  abbreviation (strftime `%a`, e.g. "Mon"), `quarter` is a "YYYY-Qn" string,
+  and `yearmonth` is a month-truncated date. The convenient variants are
+  re-provided under distinct names in the sprout library
+  (`pkg/query/env/sprout`): `weekday_name` (full English weekday name),
+  `quarter_index` (int 1..4), and `yearmonth_str` ("YYYY-MM"), so users keep
+  them without shadowing the upstream-parity std names.
+
 - **Aggregate-mixing check** runs over the *compiled* tree (aggregate calls
   already replaced by slot refs), matching group keys by bare column name.
   Limitation: `GROUP BY year(date)` does not cover a bare `date` in a target;
