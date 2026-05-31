@@ -8,6 +8,7 @@ go_library(
     deps = [
         "//pkg/ast",
         "//pkg/ext/goplug",
+        "//pkg/ext/goplug/goplugflag",
         "//pkg/loader",
         "//pkg/quote",
         "//pkg/quote/api",

@@ -2,10 +2,27 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yugui/go-beancount/pkg/ast"
 )
+
+// TestRunBadPluginExitsTwo verifies that a plugin path that cannot load is a
+// checker meta-failure (exit 2) and that the failing path is named on stderr.
+func TestRunBadPluginExitsTwo(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.so")
+	var stderr bytes.Buffer
+	got := run(context.Background(), []string{"ignored.beancount"}, false, []string{missing}, &stderr)
+	if got != 2 {
+		t.Errorf("run(bad plugin) = %d, want 2; stderr: %q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), missing) {
+		t.Errorf("stderr = %q, want it to name %q", stderr.String(), missing)
+	}
+}
 
 func TestReportExitCodes(t *testing.T) {
 	warning := ast.Diagnostic{

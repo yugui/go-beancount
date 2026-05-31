@@ -13,6 +13,7 @@ go_library(
     deps = [
         "//pkg/ast",
         "//pkg/ext/goplug",
+        "//pkg/ext/goplug/goplugflag",
         "//pkg/importer",
         "//pkg/importer/hook",
         "//pkg/importer/hook/std/classify",

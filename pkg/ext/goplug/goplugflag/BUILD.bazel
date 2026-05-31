@@ -1,0 +1,17 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "goplugflag",
+    srcs = [
+        "doc.go",
+        "goplugflag.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/ext/goplug/goplugflag",
+    visibility = ["//visibility:public"],
+)
+
+go_test(
+    name = "goplugflag_test",
+    srcs = ["goplugflag_test.go"],
+    deps = [":goplugflag"],
+)

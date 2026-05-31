@@ -128,3 +128,30 @@ func Load(path string) error {
 	}
 	return nil
 }
+
+// LoadAll loads each path via [Load], skipping any path already seen so a
+// path that appears more than once is loaded only once. Deduplication is
+// required, not cosmetic: Load panics when the same path is loaded twice
+// (plugin.Open caches the file and the second InitPlugin re-runs
+// postproc.Register, tripping its duplicate-name check). The first occurrence
+// of a path wins and load order follows paths.
+//
+// LoadAll attempts every (deduplicated) path even after a failure, so one bad
+// path does not suppress the rest, and returns the joined error of all
+// failures via [errors.Join] (nil when every path loaded). It inherits Load's
+// concurrency contract: do not call it concurrently with itself, Load, or
+// postproc.Register.
+func LoadAll(paths []string) error {
+	seen := make(map[string]struct{}, len(paths))
+	var errs []error
+	for _, p := range paths {
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		if err := Load(p); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}

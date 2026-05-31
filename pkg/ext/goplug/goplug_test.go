@@ -175,3 +175,28 @@ func assertRegistryEmpty(t *testing.T) {
 		t.Errorf("postproc.Apply(plugin %q) after failed goplug.Load: diagnostic code = %q, want %q", probeName, ledger.Diagnostics[0].Code, "plugin-not-registered")
 	}
 }
+
+// TestLoadAll_DedupAvoidsDoubleLoadPanic loads the same plugin path twice
+// through LoadAll and asserts it registers exactly once without the panic a
+// raw double goplug.Load would trigger (plugin.Open caches the file, so the
+// second InitPlugin would re-run postproc.Register and trip its duplicate-name
+// check). It then confirms the plugin did register, via postproc.Apply.
+func TestLoadAll_DedupAvoidsDoubleLoadPanic(t *testing.T) {
+	path := pluginPath(t, "ok")
+	restore := postproc.ResetForTest()
+	defer restore()
+
+	if err := goplug.LoadAll([]string{path, path}); err != nil {
+		t.Fatalf("goplug.LoadAll([ok, ok]) = %v, want nil", err)
+	}
+
+	const pluginName = "github.com/yugui/go-beancount/pkg/ext/goplug/testdata/ok"
+	ledger := &ast.Ledger{}
+	ledger.InsertAll([]ast.Directive{&ast.Plugin{Name: pluginName}})
+	if err := postproc.Apply(context.Background(), ledger); err != nil {
+		t.Fatalf("postproc.Apply after goplug.LoadAll = %v, want nil", err)
+	}
+	if len(ledger.Diagnostics) != 1 || ledger.Diagnostics[0].Code != "ok.sentinel" {
+		t.Fatalf("after LoadAll([ok, ok]), diagnostics = %v, want a single ok.sentinel", ledger.Diagnostics)
+	}
+}

@@ -307,8 +307,8 @@ func TestRun_PluginLoadFailure(t *testing.T) {
 	if got != 2 {
 		t.Errorf("run(missing-plugin) = %d, want 2; stderr: %q", got, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "plugin load failed") {
-		t.Errorf("stderr = %q, want it to mention 'plugin load failed'", stderr.String())
+	if !strings.Contains(stderr.String(), missing) {
+		t.Errorf("stderr = %q, want it to name the failing plugin path %q", stderr.String(), missing)
 	}
 }
 
