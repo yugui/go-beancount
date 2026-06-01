@@ -178,24 +178,25 @@ func TestRun_SyntaxError_ExitsOne(t *testing.T) {
 	}
 }
 
-// TestRun_ErrorDiagnostic_BlocksQuery feeds a ledger that references an
-// unopened account. The loader reports an Error diagnostic; run must print
-// it and exit 1 without running the query (so stdout stays empty).
-func TestRun_ErrorDiagnostic_BlocksQuery(t *testing.T) {
+// TestRun_ErrorDiagnostic_StillRunsQuery feeds a ledger that references an
+// unopened account. The loader reports an Error diagnostic; matching upstream
+// beanquery, run must print it to stderr but still run the query (exit 0 with
+// the result on stdout) — diagnostics are informational, not a query gate.
+func TestRun_ErrorDiagnostic_StillRunsQuery(t *testing.T) {
 	path := writeLedger(t, `2024-01-05 * "Cafe" "Coffee"
   Assets:Cash      -5.50 USD
   Expenses:Food     5.50 USD
 `)
 	var stdout, stderr bytes.Buffer
 	got := run(context.Background(), []string{path, "SELECT account"}, &stdout, &stderr)
-	if got != 1 {
-		t.Errorf("run(error-diagnostic) = %d, want 1; stderr: %q", got, stderr.String())
+	if got != 0 {
+		t.Errorf("run(error-diagnostic) = %d, want 0; stderr: %q", got, stderr.String())
 	}
 	if stderr.Len() == 0 {
 		t.Error("run(error-diagnostic) wrote nothing to stderr, want diagnostics")
 	}
-	if stdout.Len() != 0 {
-		t.Errorf("run(error-diagnostic) wrote %q to stdout, want empty (query must not run)", stdout.String())
+	if !strings.Contains(stdout.String(), "Assets:Cash") {
+		t.Errorf("run(error-diagnostic) stdout = %q, want the query result (query must still run)", stdout.String())
 	}
 }
 
