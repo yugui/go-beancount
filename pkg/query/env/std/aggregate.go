@@ -38,6 +38,9 @@ func init() {
 	registerAggregator("sum", []types.Type{types.Position}, types.Inventory, func() api.Accumulator {
 		return &sumPositionAcc{inv: inventory.NewInventory()}
 	})
+	registerAggregator("sum", []types.Type{types.Amount}, types.Inventory, func() api.Accumulator {
+		return &sumAmountAcc{inv: inventory.NewInventory()}
+	})
 
 	for _, t := range orderedTypes {
 		registerAggregator("min", []types.Type{t}, t, func() api.Accumulator {
@@ -141,6 +144,30 @@ func (a *sumPositionAcc) Merge(o api.Accumulator) error {
 }
 
 func (a *sumPositionAcc) Result() (types.Value, error) { return types.NewInventory(a.inv), nil }
+
+// sumAmountAcc folds bare amounts into an inventory as cash positions (no cost
+// lot), so SUM over a valuation like cost(position) or value(position) yields
+// an inventory.
+type sumAmountAcc struct{ inv *inventory.Inventory }
+
+func (a *sumAmountAcc) Add(args []types.Value) error {
+	amt, ok := types.AsAmount(args[0])
+	if !ok {
+		return nil
+	}
+	return a.inv.Add(inventory.Position{Units: amt})
+}
+
+func (a *sumAmountAcc) Merge(o api.Accumulator) error {
+	for p := range o.(*sumAmountAcc).inv.All() {
+		if err := a.inv.Add(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *sumAmountAcc) Result() (types.Value, error) { return types.NewInventory(a.inv), nil }
 
 // minMaxAcc holds the extreme non-null value seen, ordered by
 // [types.Value.Compare]. dir is +1 for max and -1 for min. NULLs are skipped;

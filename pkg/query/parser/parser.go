@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
@@ -20,7 +21,14 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("%d:%d: %s", e.Pos.Line, e.Pos.Column, e.Msg)
 }
 
-// Parse parses a single SELECT statement and returns its untyped syntax tree.
+// Parse parses a single statement and returns its untyped syntax tree. The
+// statement is a SELECT, or one of the JOURNAL / BALANCES shortcuts, which are
+// desugared into the equivalent SELECT (so the result is always a [*Select]).
+//
+// JOURNAL, BALANCES, and the AT modifier are recognized contextually by the
+// leading identifier rather than as reserved keywords, so existing queries
+// that use those words as table or column names (e.g. FROM balances) keep
+// working.
 //
 // The input must contain exactly one statement; an optional trailing ';' is
 // allowed, but any other tokens after the statement are an error. Parse does
@@ -32,7 +40,18 @@ func Parse(input string) (*Select, error) {
 	if err := p.advance(); err != nil {
 		return nil, err
 	}
-	sel, err := p.parseSelect()
+	var (
+		sel *Select
+		err error
+	)
+	switch {
+	case p.isContextualKeyword("journal"):
+		sel, err = p.parseJournal()
+	case p.isContextualKeyword("balances"):
+		sel, err = p.parseBalances()
+	default:
+		sel, err = p.parseSelect()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -149,6 +168,175 @@ func (p *parser) parseSelect() (*Select, error) {
 	}
 
 	return sel, nil
+}
+
+// isContextualKeyword reports whether the current token is a bare identifier
+// equal (case-insensitively) to word. Used for the statement and AT keywords,
+// which are not reserved.
+func (p *parser) isContextualKeyword(word string) bool {
+	return p.tok.kind == tokIdent && strings.EqualFold(p.tok.text, word)
+}
+
+// parseJournal parses the JOURNAL shortcut and desugars it into a SELECT over
+// postings:
+//
+//	JOURNAL ["account-regex"] [AT func] [FROM ...]
+//	  -> SELECT date, flag, MAXWIDTH(payee, 48), MAXWIDTH(narration, 80),
+//	            account, func(position), func(balance)
+//	     [WHERE account ~ "account-regex"] [FROM ...]
+//
+// When AT is absent the position and balance columns are projected directly.
+func (p *parser) parseJournal() (*Select, error) {
+	pos := p.tok.pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+
+	var account *string
+	if p.tok.kind == tokString {
+		s := p.tok.text
+		account = &s
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+	}
+
+	summary, err := p.parseSummaryFunc()
+	if err != nil {
+		return nil, err
+	}
+
+	from, err := p.parseOptFrom()
+	if err != nil {
+		return nil, err
+	}
+
+	sel := &Select{
+		Targets: []Target{
+			{Expr: &ColumnRef{Name: "date", Position: pos}, Pos: pos},
+			{Expr: &ColumnRef{Name: "flag", Position: pos}, Pos: pos},
+			{Expr: maxwidthCall("payee", 48, pos), Pos: pos},
+			{Expr: maxwidthCall("narration", 80, pos), Pos: pos},
+			{Expr: &ColumnRef{Name: "account", Position: pos}, Pos: pos},
+			{Expr: summaryWrap(summary, "position", pos), Pos: pos},
+			{Expr: summaryWrap(summary, "balance", pos), Pos: pos},
+		},
+		From: from,
+		Pos:  pos,
+	}
+	if account != nil {
+		sel.Where = &Binary{
+			Op:       OpMatch,
+			L:        &ColumnRef{Name: "account", Position: pos},
+			R:        &StringLit{Value: *account, Position: pos},
+			Position: pos,
+		}
+	}
+	return sel, nil
+}
+
+// parseBalances parses the BALANCES shortcut and desugars it into a grouped
+// SELECT over postings:
+//
+//	BALANCES [AT func] [FROM ...] [WHERE ...]
+//	  -> SELECT account, SUM(func(position))
+//	     [FROM ...] [WHERE ...]
+//	     GROUP BY account, ACCOUNT_SORTKEY(account)
+//	     ORDER BY ACCOUNT_SORTKEY(account)
+//
+// When AT is absent the position column is summed directly.
+func (p *parser) parseBalances() (*Select, error) {
+	pos := p.tok.pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+
+	summary, err := p.parseSummaryFunc()
+	if err != nil {
+		return nil, err
+	}
+
+	from, err := p.parseOptFrom()
+	if err != nil {
+		return nil, err
+	}
+
+	var where Expr
+	if p.tok.kind == tokWhere {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		where, err = p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	sumTarget := &FuncCall{
+		Name:     "sum",
+		Args:     []Expr{summaryWrap(summary, "position", pos)},
+		Position: pos,
+	}
+	return &Select{
+		Targets: []Target{
+			{Expr: &ColumnRef{Name: "account", Position: pos}, Pos: pos},
+			{Expr: sumTarget, Pos: pos},
+		},
+		From:    from,
+		Where:   where,
+		GroupBy: []Expr{&ColumnRef{Name: "account", Position: pos}, accountSortkey(pos)},
+		OrderBy: []OrderItem{{Expr: accountSortkey(pos), Pos: pos}},
+		Pos:     pos,
+	}, nil
+}
+
+// parseSummaryFunc parses an optional "AT <func>" modifier, returning the
+// function name, or "" when absent. AT is a contextual keyword.
+func (p *parser) parseSummaryFunc() (string, error) {
+	if !p.isContextualKeyword("at") {
+		return "", nil
+	}
+	if err := p.advance(); err != nil {
+		return "", err
+	}
+	name, err := p.expect(tokIdent)
+	if err != nil {
+		return "", err
+	}
+	return name.text, nil
+}
+
+// parseOptFrom parses a FROM clause when present, returning nil otherwise.
+func (p *parser) parseOptFrom() (*FromClause, error) {
+	if p.tok.kind != tokFrom {
+		return nil, nil
+	}
+	return p.parseFrom()
+}
+
+// summaryWrap returns func(col) when summary is non-empty, else the bare column.
+func summaryWrap(summary, col string, pos Position) Expr {
+	c := &ColumnRef{Name: col, Position: pos}
+	if summary == "" {
+		return c
+	}
+	return &FuncCall{Name: summary, Args: []Expr{c}, Position: pos}
+}
+
+func maxwidthCall(col string, width int64, pos Position) Expr {
+	return &FuncCall{
+		Name:     "maxwidth",
+		Args:     []Expr{&ColumnRef{Name: col, Position: pos}, &IntLit{Value: width, Position: pos}},
+		Position: pos,
+	}
+}
+
+func accountSortkey(pos Position) Expr {
+	return &FuncCall{
+		Name:     "account_sortkey",
+		Args:     []Expr{&ColumnRef{Name: "account", Position: pos}},
+		Position: pos,
+	}
 }
 
 func (p *parser) parseTargetList() ([]Target, error) {
@@ -397,7 +585,10 @@ func (p *parser) parseExprList() ([]Expr, error) {
 //	parseOr          -> parseAnd   (OR parseAnd)*
 //	parseAnd         -> parseNot   (AND parseNot)*
 //	parseNot         -> NOT parseNot | parseComparison
-//	parseComparison  -> parseAdd [ (= != < <= > >= ~) parseAdd | IN parseAdd ]   (non-associative)
+//	parseComparison  -> parseAdd [ (= != < <= > >= ~) parseAdd
+//	                              | [NOT] IN parseAdd
+//	                              | [NOT] BETWEEN parseAdd AND parseAdd
+//	                              | IS [NOT] NULL ]                   (non-associative)
 //	parseAdd         -> parseMul   ((+ -) parseMul)*
 //	parseMul         -> parseUnary ((* / %) parseUnary)*
 //	parseUnary       -> (- +) parseUnary | parsePrimary
@@ -469,14 +660,32 @@ var comparisonOps = map[tokenKind]BinaryOp{
 	tokTilde: OpMatch,
 }
 
-// parseComparison parses a single non-associative comparison. Chained
-// comparisons (a = b = c) are rejected, matching beanquery's grammar.
+// isComparisonContinuation reports whether k would start another comparison
+// immediately after one already parsed, which the non-associative grammar
+// rejects as a chained comparison.
+func isComparisonContinuation(k tokenKind) bool {
+	if _, ok := comparisonOps[k]; ok {
+		return true
+	}
+	switch k {
+	case tokIn, tokBetween, tokIs:
+		return true
+	}
+	return false
+}
+
+// parseComparison parses a single non-associative comparison, optionally an
+// IN / NOT IN membership test, a BETWEEN / NOT BETWEEN range test, or an
+// IS [NOT] NULL test. Chained comparisons (a = b = c, a < b BETWEEN ...) are
+// rejected, matching beanquery's grammar.
 func (p *parser) parseComparison() (Expr, error) {
 	left, err := p.parseAdd()
 	if err != nil {
 		return nil, err
 	}
-	if op, ok := comparisonOps[p.tok.kind]; ok {
+	switch {
+	case isComparisonOp(p.tok.kind):
+		op := comparisonOps[p.tok.kind]
 		pos := p.tok.pos
 		if err := p.advance(); err != nil {
 			return nil, err
@@ -485,23 +694,112 @@ func (p *parser) parseComparison() (Expr, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, chained := comparisonOps[p.tok.kind]; chained || p.tok.kind == tokIn {
+		if isComparisonContinuation(p.tok.kind) {
 			return nil, p.errf(p.tok.pos, "chained comparison %s is not allowed", p.tok.kind)
 		}
 		return &Binary{Op: op, L: left, R: right, Position: pos}, nil
-	}
-	if p.tok.kind == tokIn {
+	case p.tok.kind == tokIn:
+		return p.parseInTail(left, false)
+	case p.tok.kind == tokBetween:
+		return p.parseBetweenTail(left, false)
+	case p.tok.kind == tokIs:
+		return p.parseIsNullTail(left)
+	case p.tok.kind == tokNot:
 		pos := p.tok.pos
 		if err := p.advance(); err != nil {
 			return nil, err
 		}
-		right, err := p.parseAdd()
-		if err != nil {
-			return nil, err
+		switch p.tok.kind {
+		case tokIn:
+			return p.parseInTail(left, true)
+		case tokBetween:
+			return p.parseBetweenTail(left, true)
+		default:
+			return nil, p.errf(pos, "expected IN or BETWEEN after NOT, found %s", p.tok.kind)
 		}
-		return &In{X: left, List: right, Position: pos}, nil
 	}
 	return left, nil
+}
+
+func isComparisonOp(k tokenKind) bool {
+	_, ok := comparisonOps[k]
+	return ok
+}
+
+// parseInTail parses the right-hand side of an IN (or NOT IN) test; the
+// current token is IN.
+func (p *parser) parseInTail(left Expr, neg bool) (Expr, error) {
+	pos := p.tok.pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	right, err := p.parseAdd()
+	if err != nil {
+		return nil, err
+	}
+	return &In{X: left, List: right, Neg: neg, Position: pos}, nil
+}
+
+// parseBetweenTail parses "BETWEEN lo AND hi" and desugars it into the
+// equivalent comparison conjunction; the current token is BETWEEN. The AND
+// separating the bounds is consumed here, so a following AND binds as the
+// boolean operator. NOT BETWEEN desugars to the De Morgan dual.
+func (p *parser) parseBetweenTail(left Expr, neg bool) (Expr, error) {
+	pos := p.tok.pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	lo, err := p.parseAdd()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := p.expect(tokAnd); err != nil {
+		return nil, err
+	}
+	hi, err := p.parseAdd()
+	if err != nil {
+		return nil, err
+	}
+	if isComparisonContinuation(p.tok.kind) {
+		return nil, p.errf(p.tok.pos, "chained comparison %s is not allowed", p.tok.kind)
+	}
+	// left is aliased into both bounds; the AST is read-only after Parse, so
+	// the shared node is never mutated downstream.
+	if neg {
+		return &Binary{
+			Op:       OpOr,
+			L:        &Binary{Op: OpLt, L: left, R: lo, Position: pos},
+			R:        &Binary{Op: OpGt, L: left, R: hi, Position: pos},
+			Position: pos,
+		}, nil
+	}
+	return &Binary{
+		Op:       OpAnd,
+		L:        &Binary{Op: OpGe, L: left, R: lo, Position: pos},
+		R:        &Binary{Op: OpLe, L: left, R: hi, Position: pos},
+		Position: pos,
+	}, nil
+}
+
+// parseIsNullTail parses "IS [NOT] NULL"; the current token is IS.
+func (p *parser) parseIsNullTail(left Expr) (Expr, error) {
+	pos := p.tok.pos
+	if err := p.advance(); err != nil {
+		return nil, err
+	}
+	neg := p.tok.kind == tokNot
+	if neg {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+	}
+	if _, err := p.expect(tokNull); err != nil {
+		return nil, err
+	}
+	if isComparisonContinuation(p.tok.kind) {
+		return nil, p.errf(p.tok.pos, "chained comparison %s is not allowed", p.tok.kind)
+	}
+	return &IsNull{X: left, Neg: neg, Position: pos}, nil
 }
 
 func (p *parser) parseAdd() (Expr, error) {

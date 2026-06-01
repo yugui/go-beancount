@@ -315,6 +315,8 @@ func ungroupedColumn(ce cexpr, grouped map[string]bool) string {
 		return firstUngrouped([]cexpr{x.l, x.r}, grouped)
 	case *negExpr:
 		return ungroupedColumn(x.x, grouped)
+	case *isNullExpr:
+		return ungroupedColumn(x.x, grouped)
 	case *inListExpr:
 		return firstUngrouped(append([]cexpr{x.x}, x.elems...), grouped)
 	case *inSetExpr:
@@ -375,6 +377,8 @@ func (c *compiler) compileExpr(e parser.Expr, aggOK bool) (cexpr, error) {
 		return c.compileBinary(x, aggOK)
 	case *parser.In:
 		return c.compileIn(x, aggOK)
+	case *parser.IsNull:
+		return c.compileIsNull(x, aggOK)
 	case *parser.FuncCall:
 		return c.compileCall(x, aggOK)
 	case *parser.ListLit:
@@ -550,6 +554,7 @@ func (c *compiler) compileIn(x *parser.In, aggOK bool) (cexpr, error) {
 	if err != nil {
 		return nil, err
 	}
+	var in cexpr
 	if list, ok := x.List.(*parser.ListLit); ok {
 		elems := make([]cexpr, len(list.Elems))
 		for i, el := range list.Elems {
@@ -559,19 +564,35 @@ func (c *compiler) compileIn(x *parser.In, aggOK bool) (cexpr, error) {
 			}
 			elems[i] = ce
 		}
-		return &inListExpr{x: left, elems: elems}, nil
+		in = &inListExpr{x: left, elems: elems}
+	} else {
+		right, err := c.compileExpr(x.List, aggOK)
+		if err != nil {
+			return nil, err
+		}
+		if right.Type() != types.SetType {
+			return nil, errf(x.Position, "IN requires a list literal or a set operand, got %s", right.Type())
+		}
+		if t := left.Type(); t != types.String && t != types.Invalid {
+			return nil, errf(x.X.Pos(), "IN over a set requires a string left operand, got %s", t)
+		}
+		in = &inSetExpr{x: left, set: right}
 	}
-	right, err := c.compileExpr(x.List, aggOK)
+	// NULL membership stays NULL under 3-valued NOT.
+	if x.Neg {
+		return &boolExpr{not: true, l: in}, nil
+	}
+	return in, nil
+}
+
+// compileIsNull compiles IS NULL / IS NOT NULL. Any operand type is accepted:
+// nullability is a runtime property, so no type check is needed.
+func (c *compiler) compileIsNull(x *parser.IsNull, aggOK bool) (cexpr, error) {
+	operand, err := c.compileExpr(x.X, aggOK)
 	if err != nil {
 		return nil, err
 	}
-	if right.Type() != types.SetType {
-		return nil, errf(x.Position, "IN requires a list literal or a set operand, got %s", right.Type())
-	}
-	if t := left.Type(); t != types.String && t != types.Invalid {
-		return nil, errf(x.X.Pos(), "IN over a set requires a string left operand, got %s", t)
-	}
-	return &inSetExpr{x: left, set: right}, nil
+	return &isNullExpr{x: operand, neg: x.Neg}, nil
 }
 
 // metaSugarColumns is the set of function names (lowercase) rewritten as
@@ -678,6 +699,8 @@ func hasAggRef(ce cexpr) bool {
 		}
 		return x.r != nil && hasAggRef(x.r)
 	case *negExpr:
+		return hasAggRef(x.x)
+	case *isNullExpr:
 		return hasAggRef(x.x)
 	case *inListExpr:
 		return hasAggRef(x.x) || anyHasAggRef(x.elems)

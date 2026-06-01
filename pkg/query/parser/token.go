@@ -40,6 +40,8 @@ const (
 	tokOr
 	tokNot
 	tokIn
+	tokBetween
+	tokIs
 	tokTrue
 	tokFalse
 	tokNull
@@ -92,6 +94,8 @@ var tokenKindNames = [tokKindCount]string{
 	tokOr:       "OR",
 	tokNot:      "NOT",
 	tokIn:       "IN",
+	tokBetween:  "BETWEEN",
+	tokIs:       "IS",
 	tokTrue:     "TRUE",
 	tokFalse:    "FALSE",
 	tokNull:     "NULL",
@@ -144,6 +148,8 @@ var keywords = map[string]tokenKind{
 	"or":       tokOr,
 	"not":      tokNot,
 	"in":       tokIn,
+	"between":  tokBetween,
+	"is":       tokIs,
 	"true":     tokTrue,
 	"false":    tokFalse,
 	"null":     tokNull,
