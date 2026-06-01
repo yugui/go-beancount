@@ -10,6 +10,7 @@ load("//pkg/ext/goplug:fixture_constraints.bzl", "PLUGIN_COMPATIBLE_PLATFORMS")
 go_library(
     name = "beanquery_lib",
     srcs = [
+        "csv.go",
         "format.go",
         "json.go",
         "main.go",
@@ -22,6 +23,7 @@ go_library(
         "//pkg/ext/goplug/goplugflag",
         "//pkg/ext/postproc/sprout",
         "//pkg/ext/postproc/std",
+        "//pkg/inventory",
         "//pkg/loader",
         "//pkg/query",
         "//pkg/query/env/sprout",
@@ -40,23 +42,26 @@ go_binary(
 go_test(
     name = "beanquery_test",
     srcs = [
+        "csv_test.go",
         "format_test.go",
         "json_test.go",
         "main_test.go",
     ],
     embed = [":beanquery_lib"],
     deps = [
+        "//pkg/ast",
+        "//pkg/inventory",
         "//pkg/query",
         "//pkg/query/types",
         "@com_github_cockroachdb_apd_v3//:apd",
-        "//pkg/ast",
-        "//pkg/inventory",
+        "@com_github_google_go_cmp//cmp",
     ],
 )
 
 go_test(
     name = "beanquery_plugin_test",
     srcs = [
+        "csv_test.go",
         "format_test.go",
         "json_test.go",
         "main_test.go",
@@ -72,5 +77,6 @@ go_test(
         "//pkg/query",
         "//pkg/query/types",
         "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
     ],
 )
