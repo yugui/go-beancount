@@ -125,6 +125,7 @@ func TestEntriesColumnSchema(t *testing.T) {
 		{"meta", types.DictType},
 		{"entry_meta", types.DictType},
 		{"any_meta", types.DictType},
+		{"id", types.String},
 	}
 	if len(tb.Columns) != len(want) {
 		t.Fatalf("got %d columns, want %d", len(tb.Columns), len(want))
@@ -340,5 +341,16 @@ func TestEntriesOverSyntheticDirective(t *testing.T) {
 	collectRows(tb)
 	if calls != 2 {
 		t.Errorf("factory called %d times after two Rows() calls, want 2", calls)
+	}
+}
+
+func TestEntriesIDNeverNull(t *testing.T) {
+	tb := table.Entries(entriesLedger(t))
+	for i, r := range collectRows(tb) {
+		v := valueOf(t, tb, r, "id")
+		s, ok := types.AsString(v)
+		if !ok || len(s) != 32 {
+			t.Errorf("id[%d] = %v, want a 32-hex String (never NULL)", i, v.Format())
+		}
 	}
 }

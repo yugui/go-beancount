@@ -45,6 +45,8 @@ func Entries(l *ast.Ledger) *Table {
 	return EntriesOver("entries", l.All)
 }
 
+// entryCol builds a [Column] whose accessor receives the row handle already
+// asserted to [ast.Directive].
 func entryCol(name string, t types.Type, fn func(ast.Directive) types.Value) Column {
 	return Column{
 		Name: name,
@@ -116,6 +118,9 @@ var entryColumns = []Column{
 	}),
 	entryCol("any_meta", types.DictType, func(d ast.Directive) types.Value {
 		return metaval.Dict(d.DirMeta())
+	}),
+	entryCol("id", types.String, func(d ast.Directive) types.Value {
+		return types.NewString(entryID(d))
 	}),
 }
 

@@ -129,6 +129,7 @@ func TestPostingsColumnSchema(t *testing.T) {
 		{"meta", types.DictType},
 		{"entry_meta", types.DictType},
 		{"any_meta", types.DictType},
+		{"id", types.String},
 		{"balance", types.Inventory},
 	}
 	if len(tb.Columns) != len(want) {
@@ -545,5 +546,36 @@ func TestColumnLookupCaseInsensitive(t *testing.T) {
 	}
 	if _, ok := tb.Column("nonesuch"); ok {
 		t.Error(`Column("nonesuch") found; want not found`)
+	}
+}
+
+func TestPostingsIDSharedAcrossTransaction(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(stockTxn(t))
+	tb := table.Postings(l)
+	rows := collectRows(tb)
+
+	s0, _ := types.AsString(valueOf(t, tb, rows[0], "id"))
+	s1, _ := types.AsString(valueOf(t, tb, rows[1], "id"))
+	if s0 != s1 {
+		t.Errorf("id differs across one transaction's postings: %q != %q", s0, s1)
+	}
+	if len(s0) != 32 {
+		t.Errorf("id = %q, want 32 hex chars", s0)
+	}
+}
+
+// TestPostingsIDEqualsParentEntryID confirms a posting's id equals its parent
+// transaction's id in the entries table.
+func TestPostingsIDEqualsParentEntryID(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(stockTxn(t))
+
+	pt := table.Postings(l)
+	et := table.Entries(l)
+	ps, _ := types.AsString(valueOf(t, pt, collectRows(pt)[0], "id"))
+	es, _ := types.AsString(valueOf(t, et, collectRows(et)[0], "id"))
+	if ps != es {
+		t.Errorf("postings id %q != entries id %q for the same transaction", ps, es)
 	}
 }

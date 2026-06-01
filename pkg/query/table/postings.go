@@ -71,6 +71,8 @@ func Postings(l *ast.Ledger) *Table {
 	return PostingsOver("postings", l.All)
 }
 
+// postingCol builds a [Column] whose accessor receives the row handle already
+// asserted to [postingRow].
 func postingCol(name string, t types.Type, fn func(postingRow) types.Value) Column {
 	return Column{
 		Name: name,
@@ -211,6 +213,9 @@ var postingColumns = []Column{
 	// txn meta merged with posting meta; posting wins
 	postingCol("any_meta", types.DictType, func(r postingRow) types.Value {
 		return mergedMeta(r.txn.Meta, r.posting().Meta)
+	}),
+	postingCol("id", types.String, func(r postingRow) types.Value {
+		return types.NewString(entryID(r.txn))
 	}),
 	// balance's value is supplied by the executor over the selected rows (see
 	// RunningBalanceColumn); this placeholder returns NULL for direct reads.
