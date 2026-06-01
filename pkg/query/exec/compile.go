@@ -19,8 +19,14 @@ import (
 // tableCatalog maps a (case-insensitive) BQL table name to its constructor
 // over a directive factory. Keys are lowercase.
 var tableCatalog = map[string]func(string, func() iter.Seq2[int, ast.Directive]) *table.Table{
-	"postings": table.PostingsOver,
-	"entries":  table.EntriesOver,
+	"postings":     table.PostingsOver,
+	"entries":      table.EntriesOver,
+	"prices":       table.PricesOver,
+	"commodities":  table.CommoditiesOver,
+	"transactions": table.TransactionsOver,
+	"notes":        table.NotesOver,
+	"events":       table.EventsOver,
+	"documents":    table.DocumentsOver,
 }
 
 // compileError reports a compile-time failure, carrying the source position

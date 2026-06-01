@@ -819,6 +819,58 @@ func mustQueryOn(t *testing.T, q string, l *ast.Ledger) query.Result {
 	return res
 }
 
+// TestNewDirectiveTables exercises the six directive-filter tables end-to-end
+// through the compiler, confirming bare table names in FROM resolve and that
+// the upstream-renamed columns (events.type/description, documents.filename,
+// commodities.currency) are selectable.
+func TestNewDirectiveTables(t *testing.T) {
+	l := &ast.Ledger{}
+	l.InsertAll([]ast.Directive{
+		&ast.Commodity{Date: date(2024, 1, 1), Currency: "USD"},
+		&ast.Transaction{
+			Date: date(2024, 2, 1), Flag: '*', Payee: "ACME", Narration: "buy",
+			Postings: []ast.Posting{
+				{Account: "Assets:Cash", Amount: &ast.Amount{Number: dec(t, "-5"), Currency: "USD"}},
+				{Account: "Expenses:Food", Amount: &ast.Amount{Number: dec(t, "5"), Currency: "USD"}},
+			},
+		},
+		&ast.Note{Date: date(2024, 3, 1), Account: "Assets:Cash", Comment: "hi"},
+		&ast.Event{Date: date(2024, 4, 1), Name: "location", Value: "Paris"},
+		&ast.Document{Date: date(2024, 5, 1), Account: "Assets:Cash", Path: "/r/a.pdf"},
+		&ast.Price{Date: date(2024, 6, 1), Commodity: "STOCK", Amount: ast.Amount{Number: dec(t, "7"), Currency: "USD"}},
+	})
+
+	cases := []struct {
+		query    string
+		wantRows int
+	}{
+		{"SELECT currency, amount FROM prices", 1},
+		{"SELECT currency FROM commodities", 1},
+		{"SELECT payee, accounts FROM transactions", 1},
+		{"SELECT account, comment FROM notes", 1},
+		{"SELECT type, description FROM events", 1},
+		{"SELECT account, filename FROM documents", 1},
+	}
+	for _, c := range cases {
+		t.Run(c.query, func(t *testing.T) {
+			res := mustQueryOn(t, c.query, l)
+			if len(res.Rows) != c.wantRows {
+				t.Errorf("rows = %d, want %d", len(res.Rows), c.wantRows)
+			}
+		})
+	}
+
+	// Spot-check the upstream-renamed event columns carry the directive's
+	// Name/Value.
+	res := mustQueryOn(t, "SELECT type, description FROM events", l)
+	if s, _ := types.AsString(cell(res, 0, column(t, res, "type"))); s != "location" {
+		t.Errorf("events.type = %q, want location", s)
+	}
+	if s, _ := types.AsString(cell(res, 0, column(t, res, "description"))); s != "Paris" {
+		t.Errorf("events.description = %q, want Paris", s)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

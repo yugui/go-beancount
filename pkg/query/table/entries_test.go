@@ -125,6 +125,9 @@ func TestEntriesColumnSchema(t *testing.T) {
 		{"meta", types.DictType},
 		{"entry_meta", types.DictType},
 		{"any_meta", types.DictType},
+		{"id", types.String},
+		{"description", types.String},
+		{"accounts", types.SetType},
 	}
 	if len(tb.Columns) != len(want) {
 		t.Fatalf("got %d columns, want %d", len(tb.Columns), len(want))

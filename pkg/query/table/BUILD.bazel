@@ -3,10 +3,17 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "table",
     srcs = [
+        "commodities.go",
         "doc.go",
+        "documents.go",
         "entries.go",
+        "entry_id.go",
+        "events.go",
+        "notes.go",
         "postings.go",
+        "prices.go",
         "table.go",
+        "transactions.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/query/table",
     visibility = ["//visibility:public"],
@@ -22,11 +29,16 @@ go_library(
 go_test(
     name = "table_test",
     srcs = [
+        "directivetables_test.go",
+        "entries_newcolumns_test.go",
         "entries_test.go",
+        "entry_id_internal_test.go",
+        "id_columns_test.go",
+        "postings_newcolumns_test.go",
         "postings_test.go",
     ],
+    embed = [":table"],
     deps = [
-        ":table",
         "//pkg/ast",
         "//pkg/query/types",
         "@com_github_cockroachdb_apd_v3//:apd",

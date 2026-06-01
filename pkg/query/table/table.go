@@ -1,6 +1,7 @@
 package table
 
 import (
+	"fmt"
 	"iter"
 	"strings"
 	"time"
@@ -22,6 +23,16 @@ func spanLineno(s ast.Span) types.Value {
 		return types.Null(types.Int)
 	}
 	return types.NewInt(int64(s.Start.Line))
+}
+
+// spanLocation renders a span as the upstream `"{filename}:{lineno}:"`
+// location String (note the trailing colon), or a typed NULL when the span
+// carries no position (Line == 0).
+func spanLocation(s ast.Span) types.Value {
+	if s.Start.Line == 0 {
+		return types.Null(types.String)
+	}
+	return types.NewString(fmt.Sprintf("%s:%d:", s.Start.Filename, s.Start.Line))
 }
 
 // flagString renders a single flag byte as a one-character String value, or a
@@ -88,6 +99,36 @@ type Table struct {
 	Name    string
 	Columns []Column
 	Rows    func() iter.Seq[Row]
+}
+
+// directiveRows builds a [Table.Rows] factory that keeps only the directives of
+// concrete type T from all, yielding each as the opaque row handle. It is the
+// shared row factory of the single-directive virtual tables (prices,
+// commodities, transactions, notes, events, documents).
+func directiveRows[T ast.Directive](all func() iter.Seq2[int, ast.Directive]) func() iter.Seq[Row] {
+	return func() iter.Seq[Row] {
+		return func(yield func(Row) bool) {
+			for _, d := range all() {
+				if v, ok := d.(T); ok {
+					if !yield(v) {
+						return
+					}
+				}
+			}
+		}
+	}
+}
+
+// dirCol builds a [Column] whose accessor receives the row handle already
+// asserted to concrete type T.
+func dirCol[T any](name string, t types.Type, fn func(T) types.Value) Column {
+	return Column{
+		Name: name,
+		Type: t,
+		Accessor: func(r Row) types.Value {
+			return fn(r.(T))
+		},
+	}
 }
 
 // Column returns the column named name and true, matched case-insensitively
