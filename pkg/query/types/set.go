@@ -63,3 +63,11 @@ func (s Set) String() string { return s.Format() }
 func (s Set) compareTo(o Set) int {
 	return slices.Compare(s.elems, o.elems)
 }
+
+func (s Set) marshalTree() any {
+	out := make([]any, len(s.elems))
+	for i, e := range s.elems {
+		out[i] = e
+	}
+	return out
+}

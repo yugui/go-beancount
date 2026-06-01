@@ -102,3 +102,11 @@ func (d Dict) compareTo(o Dict) int {
 	}
 	return cmpInt(len(d.keys), len(o.keys))
 }
+
+func (d Dict) marshalTree() any {
+	out := map[string]any{}
+	for _, k := range d.keys {
+		out[k] = d.m[k].marshalTree()
+	}
+	return out
+}

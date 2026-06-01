@@ -24,6 +24,7 @@ go_test(
     srcs = [
         "compare_test.go",
         "dict_test.go",
+        "marshaltree_test.go",
         "set_test.go",
         "type_test.go",
         "value_test.go",
@@ -33,5 +34,6 @@ go_test(
         "//pkg/ast",
         "//pkg/inventory",
         "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
     ],
 )
