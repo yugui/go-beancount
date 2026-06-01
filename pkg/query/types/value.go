@@ -30,6 +30,7 @@ type Value interface {
 	String() string
 
 	sealedValue()
+	marshalTree() any
 }
 
 // NewBool returns a non-null Bool value.
@@ -93,6 +94,7 @@ func (boolValue) sealedValue()          {}
 func (v boolValue) Format() string      { return strconv.FormatBool(bool(v)) }
 func (v boolValue) String() string      { return v.Format() }
 func (v boolValue) Compare(o Value) int { return compare(v, o) }
+func (v boolValue) marshalTree() any    { return bool(v) }
 
 type intValue int64
 
@@ -102,6 +104,7 @@ func (intValue) sealedValue()          {}
 func (v intValue) Format() string      { return strconv.FormatInt(int64(v), 10) }
 func (v intValue) String() string      { return v.Format() }
 func (v intValue) Compare(o Value) int { return compare(v, o) }
+func (v intValue) marshalTree() any    { return int64(v) }
 
 type decimalValue struct{ d apd.Decimal }
 
@@ -111,6 +114,7 @@ func (decimalValue) sealedValue()          {}
 func (v decimalValue) Format() string      { return v.d.Text('f') }
 func (v decimalValue) String() string      { return v.d.String() }
 func (v decimalValue) Compare(o Value) int { return compare(v, o) }
+func (v decimalValue) marshalTree() any    { return v.d.Text('f') }
 
 type stringValue string
 
@@ -120,6 +124,7 @@ func (stringValue) sealedValue()          {}
 func (v stringValue) Format() string      { return string(v) }
 func (v stringValue) String() string      { return strconv.Quote(string(v)) }
 func (v stringValue) Compare(o Value) int { return compare(v, o) }
+func (v stringValue) marshalTree() any    { return string(v) }
 
 type dateValue time.Time
 
@@ -129,6 +134,7 @@ func (dateValue) sealedValue()          {}
 func (v dateValue) Format() string      { return time.Time(v).Format("2006-01-02") }
 func (v dateValue) String() string      { return v.Format() }
 func (v dateValue) Compare(o Value) int { return compare(v, o) }
+func (v dateValue) marshalTree() any    { return time.Time(v).Format("2006-01-02") }
 
 type amountValue struct{ a ast.Amount }
 
@@ -138,6 +144,7 @@ func (amountValue) sealedValue()          {}
 func (v amountValue) Format() string      { return v.a.Number.Text('f') + " " + v.a.Currency }
 func (v amountValue) String() string      { return v.Format() }
 func (v amountValue) Compare(o Value) int { return compare(v, o) }
+func (v amountValue) marshalTree() any    { return amountTree(v.a) }
 
 type positionValue struct{ p inventory.Position }
 
@@ -147,6 +154,7 @@ func (positionValue) sealedValue()          {}
 func (v positionValue) Format() string      { return formatPosition(v.p) }
 func (v positionValue) String() string      { return v.Format() }
 func (v positionValue) Compare(o Value) int { return compare(v, o) }
+func (v positionValue) marshalTree() any    { return positionTree(v.p) }
 
 type inventoryValue struct{ inv *inventory.Inventory }
 
@@ -156,6 +164,7 @@ func (inventoryValue) sealedValue()          {}
 func (v inventoryValue) Format() string      { return formatInventory(v.inv) }
 func (v inventoryValue) String() string      { return v.Format() }
 func (v inventoryValue) Compare(o Value) int { return compare(v, o) }
+func (v inventoryValue) marshalTree() any    { return inventoryTree(v.inv) }
 
 type intervalValue struct{ years, months, days int }
 
@@ -165,6 +174,13 @@ func (intervalValue) sealedValue()          {}
 func (v intervalValue) Format() string      { return formatInterval(v.years, v.months, v.days) }
 func (v intervalValue) String() string      { return v.Format() }
 func (v intervalValue) Compare(o Value) int { return compare(v, o) }
+func (v intervalValue) marshalTree() any {
+	return map[string]any{
+		"years":  int64(v.years),
+		"months": int64(v.months),
+		"days":   int64(v.days),
+	}
+}
 
 type nullValue struct{ t Type }
 
@@ -174,6 +190,7 @@ func (nullValue) sealedValue()          {}
 func (nullValue) Format() string        { return "NULL" }
 func (nullValue) String() string        { return "NULL" }
 func (v nullValue) Compare(o Value) int { return compare(v, o) }
+func (nullValue) marshalTree() any      { return nil }
 
 // AsBool returns the underlying bool. ok is false when v is NULL or not a
 // Bool.
@@ -310,4 +327,63 @@ func formatInventory(inv *inventory.Inventory) string {
 	}
 	b = append(b, ')')
 	return string(b)
+}
+
+// MarshalTree converts v into a tree of plain Go values suitable for JSON
+// encoding. v must not be nil. The mapping per kind:
+//
+//   - NULL (any kind) → nil
+//   - Bool → bool
+//   - Int → int64
+//   - Decimal → string (fixed-point, e.g. "1.23")
+//   - String → string
+//   - Date → string ("2006-01-02")
+//   - Amount → map[string]any{"number": string, "currency": string}
+//   - Position → map[string]any{"units": Amount-tree, "cost": Lot-tree or nil}
+//   - Lot (cost) → map[string]any{"number": string, "currency": string, "date": string or nil when zero, "label": string}
+//   - Inventory → []any of Position-trees; empty inventory yields []any{} (not nil)
+//   - Interval → map[string]any{"years": int64, "months": int64, "days": int64}
+//   - Set → []any of string elements in ascending order; empty set yields []any{} (not nil)
+//   - Dict → map[string]any with values recursively marshalled; empty dict yields map[string]any{} (not nil)
+func MarshalTree(v Value) any {
+	return v.marshalTree()
+}
+
+func amountTree(a ast.Amount) map[string]any {
+	return map[string]any{
+		"number":   a.Number.Text('f'),
+		"currency": a.Currency,
+	}
+}
+
+func lotTree(l *inventory.Lot) map[string]any {
+	var date any
+	if !l.Date.IsZero() {
+		date = l.Date.Format("2006-01-02")
+	}
+	return map[string]any{
+		"number":   l.Number.Text('f'),
+		"currency": l.Currency,
+		"date":     date,
+		"label":    l.Label,
+	}
+}
+
+func positionTree(p inventory.Position) map[string]any {
+	var cost any
+	if p.Cost != nil {
+		cost = lotTree(p.Cost)
+	}
+	return map[string]any{
+		"units": amountTree(p.Units),
+		"cost":  cost,
+	}
+}
+
+func inventoryTree(inv *inventory.Inventory) []any {
+	out := []any{} // non-nil: JSON must render [] not null
+	for p := range inv.All() {
+		out = append(out, positionTree(p))
+	}
+	return out
 }
