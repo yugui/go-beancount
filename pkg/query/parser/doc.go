@@ -8,7 +8,7 @@
 //
 // # Statement grammar
 //
-// The lean subset supports a single SELECT statement:
+// The primary statement is SELECT:
 //
 //	SELECT [DISTINCT] (<target-list> | '*')
 //	       [FROM (<table-name> | <bool-expr>)]
@@ -19,6 +19,20 @@
 //
 // A target is an expression with an optional `AS <identifier>` alias. An
 // order item is an expression with an optional ASC (default) or DESC.
+//
+// Two shortcut statements desugar to an equivalent SELECT (so [Parse] always
+// returns a [*Select]):
+//
+//	JOURNAL ["<account-regex>"] [AT <func>] [FROM ...]
+//	BALANCES [AT <func>] [FROM ...] [WHERE ...]
+//
+// JOURNAL expands to a register over postings (date, flag, the payee and
+// narration shortened with MAXWIDTH, account, and the position and running
+// balance, each optionally wrapped by the AT function). BALANCES expands to a
+// per-account trial balance (account, SUM of the optionally-wrapped position),
+// grouped and ordered by ACCOUNT_SORTKEY. The statement words JOURNAL and
+// BALANCES and the AT modifier are recognized contextually, not reserved, so
+// they remain usable as table or column identifiers (e.g. FROM balances).
 //
 // # FROM stays catalog-free
 //
@@ -35,15 +49,20 @@
 //	OR
 //	AND
 //	NOT            (prefix)
-//	comparison     = != < <= > >= ~  and  IN   (non-associative)
+//	comparison     = != < <= > >= ~ , IN , [NOT] BETWEEN .. AND .. ,
+//	               and IS [NOT] NULL                       (non-associative)
 //	additive       + -
 //	multiplicative * / %
 //	unary sign     - +              (prefix)
 //	primary        literal | column ref | func call | (expr) | (e1, e2, ...)
 //
 // All binary operators are left-associative except comparison, which is
-// non-associative: a chained comparison such as `a = b = c` (or `a < b IN c`)
-// is a parse error.
+// non-associative: a chained comparison such as `a = b = c` (or `a < b IN c`,
+// `a = b BETWEEN c AND d`) is a parse error. `x NOT IN ...` and `x NOT BETWEEN
+// lo AND hi` are the negated membership and range tests; BETWEEN desugars to a
+// comparison conjunction, consuming the bound-separating AND so a following AND
+// binds as the boolean operator. `x IS NULL` / `x IS NOT NULL` test
+// nullability and always yield a definite boolean.
 //
 // # Lexical conventions
 //

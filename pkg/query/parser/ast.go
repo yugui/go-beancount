@@ -220,10 +220,20 @@ type Binary struct {
 }
 
 // In is the membership test X IN List. List is typically a *ListLit but may be
-// any expression.
+// any expression. Neg reports the negated form X NOT IN List.
 type In struct {
 	X        Expr
 	List     Expr
+	Neg      bool
+	Position Position
+}
+
+// IsNull is the null test X IS NULL, or its negation X IS NOT NULL when Neg.
+// Unlike a comparison against NULL (which yields NULL), it always evaluates to
+// a definite boolean.
+type IsNull struct {
+	X        Expr
+	Neg      bool
 	Position Position
 }
 
@@ -251,6 +261,7 @@ func (e *NullLit) Pos() Position    { return e.Position }
 func (e *Unary) Pos() Position      { return e.Position }
 func (e *Binary) Pos() Position     { return e.Position }
 func (e *In) Pos() Position         { return e.Position }
+func (e *IsNull) Pos() Position     { return e.Position }
 func (e *ListLit) Pos() Position    { return e.Position }
 func (e *FuncCall) Pos() Position   { return e.Position }
 
@@ -264,5 +275,6 @@ func (*NullLit) exprNode()    {}
 func (*Unary) exprNode()      {}
 func (*Binary) exprNode()     {}
 func (*In) exprNode()         {}
+func (*IsNull) exprNode()     {}
 func (*ListLit) exprNode()    {}
 func (*FuncCall) exprNode()   {}

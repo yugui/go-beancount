@@ -525,7 +525,31 @@ realization pass): `prices`, `commodities`, `transactions`, `notes`, `events`,
 ## 8. Excluded (initially)
 
 `CREATE TABLE` / `INSERT` (beanquery's generic non-beancount data sources);
-`BALANCES` / `JOURNAL` / `PRINT` shortcut statements; `PIVOT BY`, `HAVING`,
-subselects, `BETWEEN` / `ANY` / `ALL`, query placeholders. These are out of
-scope for the lean subset, not blocked seams; revisit per consumer demand. (The
-`prices` virtual table, formerly listed here, now ships — see §7.5.)
+the `PRINT` shortcut statement; `PIVOT BY`, `HAVING`, subselects, `ANY` / `ALL`,
+query placeholders. These are out of scope for the lean subset, not blocked
+seams; revisit per consumer demand.
+
+**Shipped since.** Several initially-excluded sugar items now ship, all as
+desugaring over the existing SELECT machinery (no executor changes):
+
+- `BETWEEN` / `NOT BETWEEN`, `NOT IN`, and `IS [NOT] NULL`. BETWEEN desugars in
+  the parser to a comparison conjunction (`x BETWEEN a AND b` ≡
+  `x >= a AND x <= b`, the De Morgan dual for the negation), matching SQL's
+  definition including 3-valued NULL behavior. `NOT IN` reuses the 3-valued
+  `NOT` over the IN test. `IS [NOT] NULL` is the one new operator that needs a
+  dedicated compiled node, since equality against NULL yields NULL rather than a
+  boolean.
+- `BALANCES` / `JOURNAL` shortcut statements. Both desugar **in the parser** to
+  a `*Select` (so the compiler/executor are untouched), mirroring upstream's
+  `transform_balances` / `transform_journal`: JOURNAL is a postings register
+  (date, flag, MAXWIDTH(payee/narration), account, position, running balance);
+  BALANCES is a per-account trial balance (`SUM(position)` grouped/ordered by
+  `account_sortkey`). The `AT <func>` modifier wraps the position/balance with
+  any registered scalar function resolved through the normal function registry
+  (`AT cost`, `AT value`, `AT units`; an unregistered name is a compile error,
+  matching upstream). To support `AT`-modified BALANCES, `sum(Amount)→Inventory`
+  was added alongside the existing `sum(Position)`. The statement words and `AT`
+  are **contextual**, not reserved, so `FROM balances` (the Balance-directive
+  table) still resolves as a table name.
+
+(The `prices` virtual table, formerly listed here, ships — see §7.5.)

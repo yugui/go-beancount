@@ -47,6 +47,7 @@ go_test(
         "price_test.go",
         "scalar_test.go",
         "str_ext_test.go",
+        "sugar_query_test.go",
         "value_ext_test.go",
     ],
     embed = [":std"],

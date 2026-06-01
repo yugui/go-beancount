@@ -330,6 +330,24 @@ func (e *inSetExpr) eval(ctx *evalCtx) (types.Value, error) {
 	return types.NewBool(set.Contains(s)), nil
 }
 
+// isNullExpr implements IS NULL / IS NOT NULL. It always yields a definite
+// boolean (never NULL): TRUE when the operand is NULL for IS NULL, inverted
+// for IS NOT NULL.
+type isNullExpr struct {
+	x   cexpr
+	neg bool
+}
+
+func (*isNullExpr) Type() types.Type { return types.Bool }
+
+func (e *isNullExpr) eval(ctx *evalCtx) (types.Value, error) {
+	v, err := e.x.eval(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return types.NewBool(v.IsNull() != e.neg), nil
+}
+
 // negExpr implements unary minus over a numeric operand; unary plus
 // compiles to its operand directly (in compile.go). A NULL yields NULL.
 type negExpr struct {
