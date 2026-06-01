@@ -21,6 +21,7 @@ import (
 var tableCatalog = map[string]func(string, func() iter.Seq2[int, ast.Directive]) *table.Table{
 	"postings":     table.PostingsOver,
 	"entries":      table.EntriesOver,
+	"balances":     table.BalancesOver,
 	"prices":       table.PricesOver,
 	"commodities":  table.CommoditiesOver,
 	"transactions": table.TransactionsOver,

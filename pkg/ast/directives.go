@@ -184,13 +184,20 @@ func (c *Commodity) DirMeta() Metadata      { return c.Meta }
 //
 // Tolerance, when non-nil, shares Amount.Currency; the tolerance number has
 // no independent currency in Beancount's real syntax.
+//
+// DiffAmount carries the booking-time check residual (actual − expected),
+// recorded by the balance-assertion pass only when an assertion fails beyond
+// its tolerance; it is nil when the assertion holds (mirroring upstream
+// beancount's diff_amount=None) or when no such pass has run. Its currency
+// equals Amount.Currency.
 type Balance struct {
-	Span      Span
-	Date      time.Time
-	Account   Account
-	Amount    Amount
-	Tolerance *apd.Decimal // optional; nil if not specified
-	Meta      Metadata
+	Span       Span
+	Date       time.Time
+	Account    Account
+	Amount     Amount
+	Tolerance  *apd.Decimal // optional; nil if not specified
+	Meta       Metadata
+	DiffAmount *Amount // optional; nil when within tolerance or unchecked
 }
 
 func (b *Balance) directive()                {}

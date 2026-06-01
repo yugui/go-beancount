@@ -838,6 +838,7 @@ func TestQueryDirectiveTablesByName(t *testing.T) {
 		&ast.Event{Date: date(2024, 4, 1), Name: "location", Value: "Paris"},
 		&ast.Document{Date: date(2024, 5, 1), Account: "Assets:Cash", Path: "/r/a.pdf"},
 		&ast.Price{Date: date(2024, 6, 1), Commodity: "STOCK", Amount: ast.Amount{Number: dec(t, "7"), Currency: "USD"}},
+		&ast.Balance{Date: date(2024, 7, 1), Account: "Assets:Cash", Amount: ast.Amount{Number: dec(t, "100"), Currency: "USD"}},
 	})
 
 	cases := []struct {
@@ -850,6 +851,7 @@ func TestQueryDirectiveTablesByName(t *testing.T) {
 		{"SELECT account, comment FROM notes", 1},
 		{"SELECT type, description FROM events", 1},
 		{"SELECT account, filename FROM documents", 1},
+		{"SELECT account, amount FROM balances", 1},
 	}
 	for _, c := range cases {
 		t.Run(c.query, func(t *testing.T) {

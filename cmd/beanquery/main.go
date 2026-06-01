@@ -8,10 +8,12 @@
 //
 // It loads <ledger-file> through pkg/loader, reports any ledger
 // diagnostics to stderr in the canonical
-// "<path>:<line>:<col>: <severity>: <message>" form, then — if the
-// ledger has no Error-severity diagnostics — compiles and runs <query>
-// through pkg/query and writes the result to stdout. The query is
-// a single positional argument, so it must be quoted on the shell.
+// "<path>:<line>:<col>: <severity>: <message>" form, then compiles and
+// runs <query> through pkg/query and writes the result to stdout.
+// Matching upstream beanquery, ledger diagnostics are informational and
+// do not block the query: the query runs even when the ledger has
+// Error-severity diagnostics. The query is a single positional argument,
+// so it must be quoted on the shell.
 //
 // beanquery is glue only: all loading, compilation, and evaluation live
 // in pkg/loader and pkg/query. The built-in query functions are
@@ -71,10 +73,9 @@ func main() {
 //
 //	0  success: the query compiled, ran, and its result was written to
 //	   stdout in the selected format (a zero-row result still prints its
-//	   header).
-//	1  invalid ledger content (at least one Error-severity diagnostic,
-//	   in which case the query is not run) OR a query parse/compile/run
-//	   error.
+//	   header). Ledger diagnostics, including Error-severity ones, are
+//	   reported to stderr but do not change this code.
+//	1  a query parse/compile/run error.
 //	2  CLI failure: bad flags (including an unknown -format value), the
 //	   wrong number of positional arguments, a ledger file that could not
 //	   be loaded (missing/unreadable, I/O error, context cancellation), or
@@ -128,9 +129,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	if hasError := reportDiagnostics(stderr, ledger.Diagnostics); hasError {
-		return 1
-	}
+	reportDiagnostics(stderr, ledger.Diagnostics)
 
 	result, err := query.Query(ctx, q, ledger)
 	if err != nil {
@@ -146,16 +145,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 }
 
 // reportDiagnostics writes each diagnostic to w in the canonical
-// greppable form (ast.Diagnostic.String) and reports whether any was
-// Error severity. Warnings are printed but do not block the query.
-func reportDiagnostics(w io.Writer, diags []ast.Diagnostic) (hasError bool) {
+// greppable form (ast.Diagnostic.String). Diagnostics are informational
+// only: matching upstream beanquery, neither Error- nor Warning-severity
+// findings block the query or affect the exit status.
+func reportDiagnostics(w io.Writer, diags []ast.Diagnostic) {
 	for _, d := range diags {
 		fmt.Fprintln(w, d.String())
-		if d.Severity == ast.Error {
-			hasError = true
-		}
 	}
-	return hasError
 }
 
 func isNumeric(t types.Type) bool {
@@ -199,8 +195,9 @@ func printUsage(w io.Writer, cmd *flag.FlagSet) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "EXIT CODES")
 	fmt.Fprintln(w, "  0  success; the result was written to stdout in the selected format")
-	fmt.Fprintln(w, "  1  the ledger has Error-severity diagnostics (query not run),")
-	fmt.Fprintln(w, "     OR the query failed to parse/compile/run")
+	fmt.Fprintln(w, "     (ledger diagnostics, if any, are reported to stderr but do not")
+	fmt.Fprintln(w, "     block the query)")
+	fmt.Fprintln(w, "  1  the query failed to parse/compile/run")
 	fmt.Fprintln(w, "  2  CLI failure: bad flags (including an unknown -format value),")
 	fmt.Fprintln(w, "     wrong argument count, or the ledger file could not be loaded")
 	fmt.Fprintln(w)

@@ -1363,3 +1363,101 @@ func TestPlugin_DuplicateBalanceAssertion(t *testing.T) {
 		}
 	})
 }
+
+// firstBalance returns the single *ast.Balance in directives, failing
+// the test when none or more than one is present.
+func firstBalance(t *testing.T, directives []ast.Directive) *ast.Balance {
+	t.Helper()
+	var found *ast.Balance
+	for _, d := range directives {
+		if b, ok := d.(*ast.Balance); ok {
+			if found != nil {
+				t.Fatalf("more than one *ast.Balance in result")
+			}
+			found = b
+		}
+	}
+	if found == nil {
+		t.Fatalf("no *ast.Balance in result")
+	}
+	return found
+}
+
+// TestPlugin_FailedAssertionRecordsResidual verifies that a failing
+// assertion is replaced by a clone whose DiffAmount records the residual
+// actual−expected (here 100.00−101.00 = −1.00 USD), that Apply returns the
+// full directive stream with the clone substituted, and that the original
+// directive is left unmutated.
+func TestPlugin_FailedAssertionRecordsResidual(t *testing.T) {
+	pos := amtStr(t, "100.00", "USD")
+	neg := amtStr(t, "-100.00", "USD")
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &pos},
+			{Account: "Expenses:Food", Amount: &neg},
+		},
+	}
+	bal := &ast.Balance{
+		Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Cash",
+		Amount:  amtStr(t, "101.00", "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+	res, err := balance.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("balance.Apply: unexpected error %v", err)
+	}
+	if res.Directives == nil {
+		t.Fatalf("Result.Directives = nil, want the substituted stream")
+	}
+	if bal.DiffAmount != nil {
+		t.Errorf("original Balance.DiffAmount = %v, want nil (directive must not be mutated)", bal.DiffAmount)
+	}
+	got := firstBalance(t, res.Directives)
+	if got == bal {
+		t.Fatalf("result Balance is the original pointer, want a clone")
+	}
+	if got.DiffAmount == nil {
+		t.Fatalf("clone DiffAmount = nil, want recorded residual")
+	}
+	if got.DiffAmount.Currency != "USD" {
+		t.Errorf("DiffAmount.Currency = %q, want USD", got.DiffAmount.Currency)
+	}
+	if s := got.DiffAmount.Number.Text('f'); s != "-1.00" {
+		t.Errorf("DiffAmount.Number = %s, want -1.00 (actual − expected)", s)
+	}
+}
+
+// TestPlugin_PassingAssertionRecordsNoResidual verifies that an assertion
+// holding within tolerance leaves DiffAmount nil and that Apply preserves
+// the input verbatim by returning a nil Directives field.
+func TestPlugin_PassingAssertionRecordsNoResidual(t *testing.T) {
+	pos := amtInt(100, "USD")
+	neg := amtInt(-100, "USD")
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &pos},
+			{Account: "Expenses:Food", Amount: &neg},
+		},
+	}
+	bal := &ast.Balance{
+		Date:    time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Cash",
+		Amount:  amtInt(100, "USD"),
+	}
+	in := api.Input{Directives: seqOf([]ast.Directive{txn, bal})}
+	res, err := balance.Apply(context.Background(), in)
+	if err != nil {
+		t.Fatalf("balance.Apply: unexpected error %v", err)
+	}
+	if res.Directives != nil {
+		t.Errorf("Result.Directives = %v, want nil (no failing assertion)", res.Directives)
+	}
+	if bal.DiffAmount != nil {
+		t.Errorf("Balance.DiffAmount = %v, want nil (within tolerance)", bal.DiffAmount)
+	}
+}

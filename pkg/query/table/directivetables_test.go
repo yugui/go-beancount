@@ -160,6 +160,80 @@ func TestDocumentsTable(t *testing.T) {
 	assertString(t, valueOf(t, tb, rows[0], "filename"), "/receipts/a.pdf")
 }
 
+func TestBalancesTable(t *testing.T) {
+	tol := dec(t, "0.005")
+	diff := ast.Amount{Number: dec(t, "0.01"), Currency: "USD"}
+	l := &ast.Ledger{}
+	l.InsertAll([]ast.Directive{
+		&ast.Balance{
+			Date:       time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC),
+			Account:    "Assets:Cash",
+			Amount:     ast.Amount{Number: dec(t, "100"), Currency: "USD"},
+			Tolerance:  &tol,
+			DiffAmount: &diff,
+		},
+		&ast.Open{Date: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Account: "Assets:Cash"},
+	})
+	tb := table.BalancesOver("balances", l.All)
+
+	assertSchema(t, tb, "balances", [][2]any{
+		{"date", types.Date},
+		{"account", types.String},
+		{"amount", types.Amount},
+		{"tolerance", types.Decimal},
+		{"discrepancy", types.Amount},
+		{"meta", types.DictType},
+	})
+
+	rows := collectRows(tb)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1 Balance", len(rows))
+	}
+	r := rows[0]
+
+	assertDate(t, valueOf(t, tb, r, "date"), time.Date(2024, 7, 1, 0, 0, 0, 0, time.UTC))
+	assertString(t, valueOf(t, tb, r, "account"), "Assets:Cash")
+
+	a, ok := types.AsAmount(valueOf(t, tb, r, "amount"))
+	if !ok || a.Currency != "USD" || a.Number.Text('f') != "100" {
+		t.Errorf("amount = %v, want 100 USD", valueOf(t, tb, r, "amount").Format())
+	}
+
+	assertDecimal(t, valueOf(t, tb, r, "tolerance"), "0.005")
+
+	da, ok := types.AsAmount(valueOf(t, tb, r, "discrepancy"))
+	if !ok || da.Currency != "USD" || da.Number.Text('f') != "0.01" {
+		t.Errorf("discrepancy = %v, want 0.01 USD", valueOf(t, tb, r, "discrepancy").Format())
+	}
+
+	if d, ok := types.AsDict(valueOf(t, tb, r, "meta")); !ok || d.Len() != 0 {
+		t.Errorf("meta = %v, want empty Dict", valueOf(t, tb, r, "meta").Format())
+	}
+
+	// tolerance and discrepancy are typed NULL when fields are nil.
+	l2 := &ast.Ledger{}
+	l2.Insert(&ast.Balance{
+		Date:    time.Date(2024, 8, 1, 0, 0, 0, 0, time.UTC),
+		Account: "Assets:Cash",
+		Amount:  ast.Amount{Number: dec(t, "50"), Currency: "USD"},
+	})
+	tb2 := table.BalancesOver("balances", l2.All)
+	rows2 := collectRows(tb2)
+	if len(rows2) != 1 {
+		t.Fatalf("got %d rows, want 1 Balance", len(rows2))
+	}
+	r2 := rows2[0]
+
+	tolVal := valueOf(t, tb2, r2, "tolerance")
+	if !tolVal.IsNull() || tolVal.Type() != types.Decimal {
+		t.Errorf("tolerance = %v, want typed NULL Decimal", tolVal.Format())
+	}
+	discVal := valueOf(t, tb2, r2, "discrepancy")
+	if !discVal.IsNull() || discVal.Type() != types.Amount {
+		t.Errorf("discrepancy = %v, want typed NULL Amount", discVal.Format())
+	}
+}
+
 // TestDirectiveTablesLazyRerunnable confirms the shared directiveRows spine is
 // re-runnable and supports early exit, like the postings/entries tables.
 func TestDirectiveTablesLazyRerunnable(t *testing.T) {
