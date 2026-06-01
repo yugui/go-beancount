@@ -94,6 +94,12 @@ func (s *scanner) scan() (token, error) {
 	case ';':
 		s.advance(1)
 		return token{kind: tokSemi, text: ";", pos: start}, nil
+	case '[':
+		s.advance(1)
+		return token{kind: tokLBracket, text: "[", pos: start}, nil
+	case ']':
+		s.advance(1)
+		return token{kind: tokRBracket, text: "]", pos: start}, nil
 	case '=':
 		s.advance(1)
 		return token{kind: tokEq, text: "=", pos: start}, nil
@@ -128,6 +134,9 @@ func (s *scanner) scan() (token, error) {
 		return s.scanDateOrNumber(start)
 	case ch == '.' && isDigit(s.peekByte(1)):
 		return s.scanNumber(start)
+	case ch == '.':
+		s.advance(1)
+		return token{kind: tokDot, text: ".", pos: start}, nil
 	case isIdentStart(ch):
 		return s.scanIdent(start)
 	default:

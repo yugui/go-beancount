@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "compare.go",
         "dict.go",
+        "directive.go",
         "doc.go",
         "set.go",
         "type.go",
@@ -24,6 +25,8 @@ go_test(
     srcs = [
         "compare_test.go",
         "dict_test.go",
+        "entry_test.go",
+        "entryid_test.go",
         "marshaltree_test.go",
         "set_test.go",
         "type_test.go",

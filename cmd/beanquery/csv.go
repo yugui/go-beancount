@@ -53,7 +53,7 @@ func (csvFormatter) Format(w io.Writer, result query.Result) error {
 
 // csvCell encodes a single BQL value as a CSV cell string. The returned string
 // is the raw field content; the caller's csv.Writer handles outer RFC 4180
-// quoting. NULL → "". Unsupported kinds (Entry, Any, Invalid) return an error.
+// quoting. NULL → "". Unsupported kinds (Any, Invalid) return an error.
 //
 // Composite encodings:
 //   - Position: "<units>[ {<cost components>}]" with full cost detail.
@@ -61,6 +61,7 @@ func (csvFormatter) Format(w io.Writer, result query.Result) error {
 //   - Set: nested CSV record of elements, ascending order.
 //   - Dict: "key:value,..." ascending by key; values are CSV-quoted when they
 //     contain a comma, colon, double-quote, CR, or LF.
+//   - Entry: the directive's JSON object (same as Format).
 func csvCell(v types.Value) (string, error) {
 	if v.IsNull() {
 		return "", nil
@@ -68,7 +69,7 @@ func csvCell(v types.Value) (string, error) {
 
 	// Each As* accessor below cannot fail: v.Type() has already matched.
 	switch v.Type() {
-	case types.Bool, types.Int, types.Decimal, types.String, types.Date, types.Amount, types.Interval:
+	case types.Bool, types.Int, types.Decimal, types.String, types.Date, types.Amount, types.Interval, types.Entry:
 		return v.Format(), nil
 
 	case types.Position:

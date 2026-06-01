@@ -26,9 +26,10 @@
 //	Set        NewSet        (string elements; tags/links)
 //	Dict       NewDict        (string-keyed Value; metadata)
 //
-// [Entry] is a reserved kind for a future directive-as-value variant. It
-// has a stable ordinal and a String form but is never constructed in this
-// step.
+// [Entry] wraps a beancount directive as a value ([NewEntry]); it backs the
+// entry column and the accounts table's open/close columns. It has no
+// magnitude order but is totally ordered by directive identity (see
+// [Value.Compare]) and renders as the directive's JSON tree.
 //
 // # NULL
 //

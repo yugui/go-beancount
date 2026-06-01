@@ -59,7 +59,7 @@ func entryCol(name string, t types.Type, fn func(ast.Directive) types.Value) Col
 
 var entryColumns = []Column{
 	entryCol("type", types.String, func(d ast.Directive) types.Value {
-		return types.NewString(directiveTypeName(d))
+		return types.NewString(types.DirectiveTypeName(d))
 	}),
 	entryCol("date", types.Date, func(d ast.Directive) types.Value {
 		return nullableDate(d.DirDate())
@@ -120,7 +120,10 @@ var entryColumns = []Column{
 		return metaval.Dict(d.DirMeta())
 	}),
 	entryCol("id", types.String, func(d ast.Directive) types.Value {
-		return types.NewString(entryID(d))
+		return types.NewString(types.EntryID(d))
+	}),
+	entryCol("entry", types.Entry, func(d ast.Directive) types.Value {
+		return types.NewEntry(d)
 	}),
 	entryCol("description", types.String, func(d ast.Directive) types.Value {
 		if txn, ok := d.(*ast.Transaction); ok {
@@ -134,44 +137,6 @@ var entryColumns = []Column{
 		}
 		return types.Null(types.SetType)
 	}),
-}
-
-// directiveTypeName returns the lowercase BQL type name for a directive.
-func directiveTypeName(d ast.Directive) string {
-	switch d.(type) {
-	case *ast.Transaction:
-		return "transaction"
-	case *ast.Open:
-		return "open"
-	case *ast.Close:
-		return "close"
-	case *ast.Balance:
-		return "balance"
-	case *ast.Pad:
-		return "pad"
-	case *ast.Price:
-		return "price"
-	case *ast.Note:
-		return "note"
-	case *ast.Document:
-		return "document"
-	case *ast.Commodity:
-		return "commodity"
-	case *ast.Event:
-		return "event"
-	case *ast.Query:
-		return "query"
-	case *ast.Custom:
-		return "custom"
-	case *ast.Option:
-		return "option"
-	case *ast.Plugin:
-		return "plugin"
-	case *ast.Include:
-		return "include"
-	default:
-		return "directive"
-	}
 }
 
 // directiveTags returns the directive's tags and ok=true for the types that

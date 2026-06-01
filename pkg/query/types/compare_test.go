@@ -41,6 +41,7 @@ func mixed(t *testing.T) []types.Value {
 		types.NewInterval(1, 0, 0),
 		types.NewSet("x"),
 		types.NewDict(map[string]types.Value{"k": types.NewInt(1)}),
+		types.NewEntry(sampleTxn(t)),
 		types.Null(types.Int),
 		types.Null(types.String),
 	}

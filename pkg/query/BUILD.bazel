@@ -22,6 +22,7 @@ go_test(
     srcs = [
         "aggregate_test.go",
         "concurrency_test.go",
+        "entry_test.go",
         "errors_test.go",
         "helpers_test.go",
         "query_test.go",

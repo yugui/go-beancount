@@ -135,6 +135,7 @@ func TestEntriesColumnSchema(t *testing.T) {
 		{"entry_meta", types.DictType},
 		{"any_meta", types.DictType},
 		{"id", types.String},
+		{"entry", types.Entry},
 		{"description", types.String},
 		{"accounts", types.SetType},
 	}

@@ -511,16 +511,36 @@ realization pass): `prices`, `commodities`, `transactions`, `notes`, `events`,
   (posting over transaction), and the transaction-only view as `entry_meta`
   (see §6). No further column-level meta work is deferred.
 
-**Deferred — recorded facts.**
-- **`entry` column** (postings/entries) and the **`accounts` table** share one
-  blocker: both expose a directive *as a value* (the `accounts` table's
-  `open`/`close` columns return Open/Close directive objects). That needs a new
-  `types.Entry` sealed-value kind — a heavier `pkg/query/types` change than a
-  pure table accessor: it must define `Compare` (no natural order, the dilemma
-  resolved for `Interval`), `Format`, a NULL model, and a sealed-order ordinal.
-  Attach point once that kind exists: a new `Column` over the existing row
-  handle (`entry`), and an `accounts`-table constructor whose row source maps
-  each account to its Open/Close.
+**Directive-as-value (shipped).** The `entry` column (postings/entries) and the
+`accounts` table both expose a directive *as a value*; they are built on the
+now-constructible `types.Entry` kind (`NewEntry`/`AsEntry`). Decisions worth
+recording:
+- **`types.Entry`** wraps an `ast.Directive`. Unlike Interval (which rejects all
+  ordering), Entry is *totally ordered by identity*: `Compare` ranks by source
+  span then canonical `EntryID`, so two values are equal iff they denote the
+  same directive and DISTINCT/GROUP BY/ORDER BY are deterministic (the order is
+  stable but not semantically meaningful). `Format`/`marshalTree` render the
+  directive as a JSON object (type, date, identifying fields, meta, location);
+  NULL uses the standard typed-NULL model.
+- The **canonical id** (`EntryID`), the **type name** (`DirectiveTypeName`), and
+  the **meta→value** coercion (`MetaValue`/`MetaDict`) now live in
+  `pkg/query/types` as the single source of truth; `table` delegates its
+  `id`/`type` columns there and `metaval` re-exports the coercion (stable API,
+  unchanged callers).
+- The **`entry` column** is the parent transaction on postings and the row
+  directive on entries. The **`accounts` table** (`account`/`open`/`close`, the
+  upstream column set) maps each account with an Open or Close to its first of
+  each (first-wins, mirroring `get_account_open_close`), ascending by name;
+  `open`/`close` are typed NULL when absent.
+- **Field access** makes entries queryable, matching upstream
+  `open.meta['rate']` / `entry.narration`. The parser gained a postfix layer
+  (`parsePostfix`, binding tighter than unary): `.attr` and `["key"]`. `.attr`
+  resolves against a purpose-built directive-attribute namespace
+  (`table.EntryAttribute`: account/date/currencies/amount/narration/meta/… with
+  a typed NULL for kinds that lack the field) and fixes the static result type;
+  `["key"]` is getitem sugar over a dict (e.g. `entry.meta`). `open`/`close`/
+  `clear` are soft keywords: column references in expression position, scoping
+  keywords only in the FROM clause's own production.
 
 ## 8. Excluded (initially)
 

@@ -18,6 +18,7 @@ go_test(
     name = "parser_test",
     srcs = [
         "parser_test.go",
+        "postfix_test.go",
         "scanner_test.go",
     ],
     deps = [

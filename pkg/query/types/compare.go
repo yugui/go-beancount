@@ -26,9 +26,11 @@ import (
 //     structurally by (years, months, days) — see the note below; Set and
 //     Dict per set.go and dict.go.
 //
-// Entry is reserved and never constructed in this step; were it to appear,
-// all Entry values compare equal (rule 3 yields 0), so ordering an Entry
-// column is effectively unsupported. This is noted on [Type] Entry.
+// Entry has no magnitude order, but is totally ordered by directive identity
+// so DISTINCT, GROUP BY, and ORDER BY behave deterministically: two Entry
+// values are ranked by source span (filename, line, column), then by canonical
+// [EntryID]. Two Entry values are equal iff they denote the same directive;
+// distinct directives sort in a stable but not semantically meaningful order.
 //
 // Interval's order is STRUCTURAL, not a duration order. It distinguishes
 // distinct (years, months, days) tuples — so equality, DISTINCT, and GROUP BY
@@ -85,9 +87,30 @@ func compare(a, b Value) int {
 		return x.compareTo(b.(Set))
 	case Dict:
 		return x.compareTo(b.(Dict))
+	case entryValue:
+		return cmpEntry(x, b.(entryValue))
 	default:
 		return 0
 	}
+}
+
+// cmpEntry orders two entries by source span, then by canonical id, so equal
+// directives compare 0 and distinct ones order deterministically.
+func cmpEntry(a, b entryValue) int {
+	if c := cmpSpan(a.d.DirSpan(), b.d.DirSpan()); c != 0 {
+		return c
+	}
+	return strings.Compare(a.id, b.id)
+}
+
+func cmpSpan(a, b ast.Span) int {
+	if c := strings.Compare(a.Start.Filename, b.Start.Filename); c != 0 {
+		return c
+	}
+	if c := cmpInt(a.Start.Line, b.Start.Line); c != 0 {
+		return c
+	}
+	return cmpInt(a.Start.Column, b.Start.Column)
 }
 
 func cmpAmount(a, b ast.Amount) int {
