@@ -130,6 +130,11 @@ func TestPostingsColumnSchema(t *testing.T) {
 		{"entry_meta", types.DictType},
 		{"any_meta", types.DictType},
 		{"id", types.String},
+		{"location", types.String},
+		{"description", types.String},
+		{"other_accounts", types.SetType},
+		{"accounts", types.SetType},
+		{"posting_flag", types.String},
 		{"balance", types.Inventory},
 	}
 	if len(tb.Columns) != len(want) {

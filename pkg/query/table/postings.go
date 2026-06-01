@@ -217,11 +217,40 @@ var postingColumns = []Column{
 	postingCol("id", types.String, func(r postingRow) types.Value {
 		return types.NewString(entryID(r.txn))
 	}),
+	postingCol("location", types.String, func(r postingRow) types.Value {
+		return spanLocation(r.posting().Span)
+	}),
+	postingCol("description", types.String, func(r postingRow) types.Value {
+		return description(r.txn.Payee, r.txn.Narration)
+	}),
+	postingCol("other_accounts", types.SetType, func(r postingRow) types.Value {
+		return types.NewSet(txnAccounts(r.txn, r.idx)...)
+	}),
+	postingCol("accounts", types.SetType, func(r postingRow) types.Value {
+		return types.NewSet(txnAccounts(r.txn, -1)...)
+	}),
+	postingCol("posting_flag", types.String, func(r postingRow) types.Value {
+		return flagString(r.posting().Flag)
+	}),
 	// balance's value is supplied by the executor over the selected rows (see
 	// RunningBalanceColumn); this placeholder returns NULL for direct reads.
 	postingCol(RunningBalanceColumn, types.Inventory, func(postingRow) types.Value {
 		return types.Null(types.Inventory)
 	}),
+}
+
+// txnAccounts returns the accounts of txn's postings, excluding the posting at
+// exclude (pass -1 to include all). Exclusion is by position, so a sibling
+// posting sharing the excluded posting's account is still returned.
+func txnAccounts(txn *ast.Transaction, exclude int) []string {
+	accts := make([]string, 0, len(txn.Postings))
+	for i := range txn.Postings {
+		if i == exclude {
+			continue
+		}
+		accts = append(accts, string(txn.Postings[i].Account))
+	}
+	return accts
 }
 
 // mergedMeta builds a Dict from base overlaid by overlay; overlay wins on conflict.
