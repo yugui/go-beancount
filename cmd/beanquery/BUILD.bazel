@@ -9,7 +9,10 @@ load("//pkg/ext/goplug:fixture_constraints.bzl", "PLUGIN_COMPATIBLE_PLATFORMS")
 
 go_library(
     name = "beanquery_lib",
-    srcs = ["main.go"],
+    srcs = [
+        "format.go",
+        "main.go",
+    ],
     importpath = "github.com/yugui/go-beancount/cmd/beanquery",
     visibility = ["//visibility:private"],
     deps = [
@@ -35,13 +38,21 @@ go_binary(
 
 go_test(
     name = "beanquery_test",
-    srcs = ["main_test.go"],
+    srcs = [
+        "format_test.go",
+        "main_test.go",
+    ],
     embed = [":beanquery_lib"],
+    deps = [
+        "//pkg/query",
+        "//pkg/query/types",
+    ],
 )
 
 go_test(
     name = "beanquery_plugin_test",
     srcs = [
+        "format_test.go",
         "main_test.go",
         "plugin_test.go",
     ],
@@ -49,4 +60,8 @@ go_test(
     embed = [":beanquery_lib"],
     gotags = ["testhelpers"],
     target_compatible_with = PLUGIN_COMPATIBLE_PLATFORMS,
+    deps = [
+        "//pkg/query",
+        "//pkg/query/types",
+    ],
 )

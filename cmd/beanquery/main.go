@@ -129,7 +129,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	writeTable(stdout, result)
+	var f Formatter = textFormatter{}
+	if err := f.Format(stdout, result); err != nil {
+		fmt.Fprintf(stderr, "beanquery: %v\n", err)
+		return 1
+	}
 	return 0
 }
 
@@ -144,58 +148,6 @@ func reportDiagnostics(w io.Writer, diags []ast.Diagnostic) (hasError bool) {
 		}
 	}
 	return hasError
-}
-
-// writeTable renders result as a space-padded text table: a header row
-// of column names followed by one row per result row. Numeric columns
-// (Int, Decimal, Amount) are right-aligned; all others are left-aligned.
-// A zero-row result prints just the header. Column widths are measured
-// in display cells via go-runewidth so wide runes line up.
-func writeTable(w io.Writer, result query.Result) {
-	n := len(result.Columns)
-	if n == 0 {
-		return
-	}
-
-	cells := make([][]string, 0, len(result.Rows)+1)
-	header := make([]string, n)
-	for j, c := range result.Columns {
-		header[j] = c.Name
-	}
-	cells = append(cells, header)
-	for _, row := range result.Rows {
-		line := make([]string, n)
-		for j, v := range row {
-			line[j] = v.Format()
-		}
-		cells = append(cells, line)
-	}
-
-	widths := make([]int, n)
-	for _, line := range cells {
-		for j, s := range line {
-			if wdt := runewidth.StringWidth(s); wdt > widths[j] {
-				widths[j] = wdt
-			}
-		}
-	}
-
-	right := make([]bool, n)
-	for j, c := range result.Columns {
-		right[j] = isNumeric(c.Type)
-	}
-
-	var b strings.Builder
-	for _, line := range cells {
-		b.Reset()
-		for j, s := range line {
-			if j > 0 {
-				b.WriteString("  ")
-			}
-			b.WriteString(pad(s, widths[j], right[j]))
-		}
-		fmt.Fprintln(w, strings.TrimRight(b.String(), " "))
-	}
 }
 
 func isNumeric(t types.Type) bool {
