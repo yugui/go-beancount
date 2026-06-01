@@ -2,10 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/query"
@@ -19,6 +22,19 @@ func mustDecimal(t *testing.T, s string) apd.Decimal {
 		t.Fatalf("mustDecimal(%q): %v", s, err)
 	}
 	return d
+}
+
+// decodeJSON parses s into an order-independent Go value so tests compare JSON
+// by structure and content rather than by byte-exact indentation. JSON objects
+// become map[string]any, dropping key order; when key order is itself the
+// contract under test, assert it separately (see TestJSONFormatter_ColumnOrder).
+func decodeJSON(t *testing.T, s string) any {
+	t.Helper()
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		t.Fatalf("decoding JSON %q: %v", s, err)
+	}
+	return v
 }
 
 func TestFormatterFor_JSON(t *testing.T) {
@@ -67,9 +83,22 @@ func TestJSONFormatter_Scalars(t *testing.T) {
 	if err := f.Format(&buf, result); err != nil {
 		t.Fatalf("Format error: %v", err)
 	}
-	want := "[\n  {\n    \"label\": \"foo\",\n    \"count\": 7,\n    \"amount\": \"1.50\"\n  }\n]\n"
-	if got := buf.String(); got != want {
-		t.Errorf("scalars output mismatch:\ngot:  %q\nwant: %q", got, want)
+	got := buf.String()
+	// Output is pretty-printed (indented), not compact. A single robust check
+	// guards against a regression to json.Marshal without pinning the layout.
+	if !strings.Contains(got, "\n  ") {
+		t.Errorf("output is not indented:\n%s", got)
+	}
+	// Int is a JSON number; Decimal is an exact JSON string.
+	want := `[
+  {
+    "label": "foo",
+    "count": 7,
+    "amount": "1.50"
+  }
+]`
+	if d := cmp.Diff(decodeJSON(t, want), decodeJSON(t, got)); d != "" {
+		t.Errorf("scalars JSON mismatch (-want +got):\n%s", d)
 	}
 }
 
@@ -87,15 +116,17 @@ func TestJSONFormatter_NullCell(t *testing.T) {
 	if err := f.Format(&buf, result); err != nil {
 		t.Fatalf("Format error: %v", err)
 	}
-	want := "[\n  {\n    \"x\": null\n  }\n]\n"
-	if got := buf.String(); got != want {
-		t.Errorf("null cell output = %q, want %q", got, want)
+	want := `[{"x": null}]`
+	if d := cmp.Diff(decodeJSON(t, want), decodeJSON(t, buf.String())); d != "" {
+		t.Errorf("null cell JSON mismatch (-want +got):\n%s", d)
 	}
 }
 
 func TestJSONFormatter_ColumnOrder(t *testing.T) {
 	// Column names in non-alphabetical order: "zebra" before "apple".
-	// A plain map[string]any would emit "apple" first; column order must be preserved.
+	// A plain map[string]any would emit "apple" first; column order must be
+	// preserved, which decoding into a map cannot verify — so assert the key
+	// positions directly on the serialized output.
 	result := query.Result{
 		Columns: []query.Column{
 			{Name: "zebra", Type: types.String},
@@ -110,9 +141,18 @@ func TestJSONFormatter_ColumnOrder(t *testing.T) {
 	if err := f.Format(&buf, result); err != nil {
 		t.Fatalf("Format error: %v", err)
 	}
-	want := "[\n  {\n    \"zebra\": \"z\",\n    \"apple\": 1\n  }\n]\n"
-	if got := buf.String(); got != want {
-		t.Errorf("column order output = %q, want %q", got, want)
+	out := buf.String()
+	zi, ai := strings.Index(out, `"zebra"`), strings.Index(out, `"apple"`)
+	if zi < 0 || ai < 0 {
+		t.Fatalf("output missing expected keys:\n%s", out)
+	}
+	if zi >= ai {
+		t.Errorf("column order not preserved: zebra@%d should precede apple@%d:\n%s", zi, ai, out)
+	}
+	// Content is correct regardless of key order.
+	want := `[{"zebra": "z", "apple": 1}]`
+	if d := cmp.Diff(decodeJSON(t, want), decodeJSON(t, out)); d != "" {
+		t.Errorf("column-order JSON content mismatch (-want +got):\n%s", d)
 	}
 }
 
@@ -146,36 +186,20 @@ func TestJSONFormatter_Composite(t *testing.T) {
 	if err := f.Format(&buf, result); err != nil {
 		t.Fatalf("Format error: %v", err)
 	}
-	// Amount keys are sorted alphabetically by encoding/json: "currency" before "number".
-	// Set is sorted ascending: ["a","b"].
-	// Dict has one key "k".
-	// Inventory contains one position: {"cost":null,"units":{"currency":"USD","number":"10"}}.
-	want := "[\n" +
-		"  {\n" +
-		"    \"amt\": {\n" +
-		"      \"currency\": \"USD\",\n" +
-		"      \"number\": \"12.50\"\n" +
-		"    },\n" +
-		"    \"tags\": [\n" +
-		"      \"a\",\n" +
-		"      \"b\"\n" +
-		"    ],\n" +
-		"    \"meta\": {\n" +
-		"      \"k\": \"v\"\n" +
-		"    },\n" +
-		"    \"inv\": [\n" +
-		"      {\n" +
-		"        \"cost\": null,\n" +
-		"        \"units\": {\n" +
-		"          \"currency\": \"USD\",\n" +
-		"          \"number\": \"10\"\n" +
-		"        }\n" +
-		"      }\n" +
-		"    ]\n" +
-		"  }\n" +
-		"]\n"
-	if got := buf.String(); got != want {
-		t.Errorf("composite output mismatch:\ngot:\n%s\nwant:\n%s", got, want)
+	// Amount/Position are objects; Set is sorted ascending; a cash position has
+	// a null cost; Decimal-valued fields are exact strings.
+	want := `[
+  {
+    "amt": {"currency": "USD", "number": "12.50"},
+    "tags": ["a", "b"],
+    "meta": {"k": "v"},
+    "inv": [
+      {"cost": null, "units": {"currency": "USD", "number": "10"}}
+    ]
+  }
+]`
+	if d := cmp.Diff(decodeJSON(t, want), decodeJSON(t, buf.String())); d != "" {
+		t.Errorf("composite JSON mismatch (-want +got):\n%s", d)
 	}
 }
 
@@ -193,11 +217,19 @@ func TestJSONFormatter_StringEscaping(t *testing.T) {
 	if err := f.Format(&buf, result); err != nil {
 		t.Fatalf("Format error: %v", err)
 	}
-	// encoding/json escapes " as \" and passes non-ASCII runes through as raw
-	// UTF-8 (it escapes only <, >, &, and control characters), so é stays é.
-	want := "[\n  {\n    \"s\": \"say \\\"héllo\\\"\"\n  }\n]\n"
-	if got := buf.String(); got != want {
-		t.Errorf("string escaping output = %q, want %q", got, want)
+	out := buf.String()
+	// Serialization concern (lost on decode): quotes are escaped, but non-ASCII
+	// runes pass through as raw UTF-8 rather than \u escapes.
+	if !strings.Contains(out, `say \"héllo\"`) {
+		t.Errorf("want escaped quotes and raw é in:\n%s", out)
+	}
+	if strings.Contains(out, "\\u00e9") {
+		t.Errorf("é should be raw UTF-8, not \\u-escaped, in:\n%s", out)
+	}
+	// And it round-trips back to the original string.
+	want := `[{"s": "say \"héllo\""}]`
+	if d := cmp.Diff(decodeJSON(t, want), decodeJSON(t, out)); d != "" {
+		t.Errorf("string-escaping JSON content mismatch (-want +got):\n%s", d)
 	}
 }
 
@@ -217,9 +249,14 @@ func TestJSONFormatter_MultipleRows(t *testing.T) {
 	if err := f.Format(&buf, result); err != nil {
 		t.Fatalf("Format error: %v", err)
 	}
-	want := "[\n  {\n    \"n\": \"a\",\n    \"v\": 1\n  },\n  {\n    \"n\": \"b\",\n    \"v\": 2\n  }\n]\n"
-	if got := buf.String(); got != want {
-		t.Errorf("jsonFormatter.Format() multi-row output = %q, want %q", got, want)
+	// Row order is significant; decoding into a slice preserves it, so cmp.Diff
+	// catches a reordering regression.
+	want := `[
+  {"n": "a", "v": 1},
+  {"n": "b", "v": 2}
+]`
+	if d := cmp.Diff(decodeJSON(t, want), decodeJSON(t, buf.String())); d != "" {
+		t.Errorf("multi-row JSON mismatch (-want +got):\n%s", d)
 	}
 }
 
@@ -242,9 +279,16 @@ func TestJSONFormatter_PositionWithCost(t *testing.T) {
 	if err := f.Format(&buf, result); err != nil {
 		t.Fatalf("Format error: %v", err)
 	}
-	want := "[\n  {\n    \"p\": {\n      \"cost\": {\n        \"currency\": \"USD\",\n        \"date\": \"2023-06-01\",\n        \"label\": \"lot-a\",\n        \"number\": \"100.00\"\n      },\n      \"units\": {\n        \"currency\": \"AAPL\",\n        \"number\": \"10\"\n      }\n    }\n  }\n]\n"
-	if got := buf.String(); got != want {
-		t.Errorf("jsonFormatter.Format() position-with-cost output = %q, want %q", got, want)
+	want := `[
+  {
+    "p": {
+      "cost": {"currency": "USD", "date": "2023-06-01", "label": "lot-a", "number": "100.00"},
+      "units": {"currency": "AAPL", "number": "10"}
+    }
+  }
+]`
+	if d := cmp.Diff(decodeJSON(t, want), decodeJSON(t, buf.String())); d != "" {
+		t.Errorf("position-with-cost JSON mismatch (-want +got):\n%s", d)
 	}
 }
 
@@ -258,8 +302,8 @@ func TestJSONFormatter_NullComposite(t *testing.T) {
 	if err := f.Format(&buf, result); err != nil {
 		t.Fatalf("Format error: %v", err)
 	}
-	want := "[\n  {\n    \"a\": null\n  }\n]\n"
-	if got := buf.String(); got != want {
-		t.Errorf("jsonFormatter.Format() null-composite output = %q, want %q", got, want)
+	want := `[{"a": null}]`
+	if d := cmp.Diff(decodeJSON(t, want), decodeJSON(t, buf.String())); d != "" {
+		t.Errorf("null-composite JSON mismatch (-want +got):\n%s", d)
 	}
 }
