@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -211,6 +213,90 @@ func TestRun_BadPlugin_ExitsTwo(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), missing) {
 		t.Errorf("stderr = %q, want it to name %q", stderr.String(), missing)
+	}
+}
+
+func TestRun_FormatJSON_ValidJSON(t *testing.T) {
+	path := writeLedger(t, sampleLedger)
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{
+		"-format", "json",
+		path,
+		"SELECT account, sum(number) AS total GROUP BY account ORDER BY account",
+	}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("run(-format json) = %d, want 0; stderr: %q", got, stderr.String())
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &rows); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput:\n%s", err, stdout.String())
+	}
+	if len(rows) == 0 {
+		t.Error("JSON result has no rows, want at least one")
+	}
+	// Spot-check a known key from the SELECT.
+	if _, ok := rows[0]["account"]; !ok {
+		t.Errorf("first JSON row has no 'account' key; got %v", rows[0])
+	}
+}
+
+func TestRun_FormatCSV_ValidCSV(t *testing.T) {
+	path := writeLedger(t, sampleLedger)
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{
+		"-format", "csv",
+		path,
+		"SELECT account, sum(number) AS total GROUP BY account ORDER BY account",
+	}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("run(-format csv) = %d, want 0; stderr: %q", got, stderr.String())
+	}
+	records, err := csv.NewReader(&stdout).ReadAll()
+	if err != nil {
+		t.Fatalf("stdout is not valid CSV: %v\noutput:\n%s", err, stdout.String())
+	}
+	if len(records) < 2 {
+		t.Fatalf("CSV has %d records, want at least 2 (header + one data row)", len(records))
+	}
+	header := records[0]
+	if len(header) < 2 || header[0] != "account" || header[1] != "total" {
+		t.Errorf("CSV header = %v, want [account total ...]", header)
+	}
+}
+
+func TestRun_FormatText_Explicit(t *testing.T) {
+	path := writeLedger(t, sampleLedger)
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{
+		"-format", "text",
+		path,
+		"SELECT account, sum(number) AS total GROUP BY account ORDER BY account",
+	}, &stdout, &stderr)
+	if got != 0 {
+		t.Fatalf("run(-format text) = %d, want 0; stderr: %q", got, stderr.String())
+	}
+	assertAligned(t, stdout.String())
+}
+
+func TestRun_FormatBogus_ExitsTwo(t *testing.T) {
+	// Use a nonexistent ledger path: the os.Stat preflight would itself exit 2.
+	// Asserting that stderr names the bad format (not the missing file) proves
+	// the format is validated before any ledger load, and stdout stays empty.
+	path := filepath.Join(t.TempDir(), "nonexistent.beancount")
+	var stdout, stderr bytes.Buffer
+	got := run(context.Background(), []string{
+		"-format", "bogus",
+		path,
+		"SELECT account",
+	}, &stdout, &stderr)
+	if got != 2 {
+		t.Errorf("run(-format bogus) = %d, want 2; stderr: %q", got, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "bogus") {
+		t.Errorf("stderr = %q, want it to mention the bad format value %q", stderr.String(), "bogus")
+	}
+	if stdout.Len() != 0 {
+		t.Errorf("stdout = %q, want empty on the bad-format path", stdout.String())
 	}
 }
 
