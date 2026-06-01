@@ -469,19 +469,64 @@ convention (upstream name + Go import path) carries over.
   `Column`s + a lazy `Rows` over `ast.Ledger.All()`); the compiler's
   `tableCatalog` gains one entry.
 - **Adding a column** = a new `Column` with a pure accessor over the row handle.
-- Known deferred columns: on `postings` — `entry`, `id`, `location`,
-  `description`, `other_accounts`, `accounts`, `posting_flag`; on `entries` —
-  `id`, `description`, `accounts`. (`balance` shipped — §7.1, §6;
-  `value`/`convert` shipped as functions, not columns — §7.2;
-  `entry_meta`/`any_meta` shipped — §6.)
+
+**Shipped tables.** Beyond `postings`/`entries`, six single-directive tables
+ship via the shared `directiveRows[T]` filter spine (keep the directives of one
+concrete type from the stream; map fields to scalar/Set/Dict columns — no
+realization pass): `prices`, `commodities`, `transactions`, `notes`, `events`,
+`documents`. Decisions worth recording:
+- `transactions` is the whole-transaction view (one row per `Transaction`) with
+  **no `postings` column** (upstream deletes it); its `accounts` column is the
+  Set of all posting accounts.
+- Upstream column renames are honored: `events.type`/`events.description` carry
+  our `Event.Name`/`Value`; `documents.filename` carries `Document.Path`;
+  `commodities.currency`/`prices.currency` expose the currency name.
+
+**Shipped columns** (previously deferred): on `postings` — `id`, `location`,
+`description`, `other_accounts`, `accounts`, `posting_flag`; on `entries` —
+`id`, `description`, `accounts`. Decisions:
+- **`id`** is a stable, unique 32-hex id per directive — a purpose-built
+  canonical encoding (`pkg/query/table/entry_id.go`) hashed with MD5, **not**
+  byte-identical to upstream's Python id. Meta- and span-insensitive;
+  collection fields (tags/links) sorted before hashing; all postings of one
+  transaction share its id (`postings.id == entries.id` for the parent).
+- **`location`** is `"{filename}:{lineno}:"` (trailing colon), typed NULL on a
+  zero span.
+- **`description`** joins payee and narration with `" | "`, dropping empties;
+  all-empty → NULL.
+- **`other_accounts`** (postings) excludes the current posting **by index**, so
+  a sibling sharing its account is still included.
+- **`accounts`** is a Set of referenced accounts: a `Transaction`'s posting
+  accounts; the single account of Open/Close/Balance/Note/Document; **both** the
+  target and source account of a `Pad`; typed NULL for kinds with no account
+  concept (mirrors the §6 tags/links convention).
+- **`posting_flag`** is the posting's **own** flag only — no transaction-flag
+  fallback (unlike the existing `flag` column).
 - The **merged posting/transaction `meta`** variant is shipped as `any_meta`
   (posting over transaction), and the transaction-only view as `entry_meta`
   (see §6). No further column-level meta work is deferred.
+
+**Deferred — recorded facts.**
+- **`entry` column** (postings/entries) and the **`accounts` table** share one
+  blocker: both expose a directive *as a value* (the `accounts` table's
+  `open`/`close` columns return Open/Close directive objects). That needs a new
+  `types.Entry` sealed-value kind — a heavier `pkg/query/types` change than a
+  pure table accessor: it must define `Compare` (no natural order, the dilemma
+  resolved for `Interval`), `Format`, a NULL model, and a sealed-order ordinal.
+  Attach point once that kind exists: a new `Column` over the existing row
+  handle (`entry`), and an `accounts`-table constructor whose row source maps
+  each account to its Open/Close.
+- **`balances` table.** `ast.Balance` (Date/Account/Amount/Tolerance/Meta)
+  carries no `diff_amount`/`discrepancy` field; upstream's `discrepancy` column
+  is the booking-time check residual, which our pipeline does not persist on the
+  directive. Attach point: have booking/validation record the residual on the
+  `Balance` (or a side table), after which `balances` is a trivial
+  `directiveRows[*ast.Balance]` filter. Deferred until that data is needed.
 
 ## 8. Excluded (initially)
 
 `CREATE TABLE` / `INSERT` (beanquery's generic non-beancount data sources);
 `BALANCES` / `JOURNAL` / `PRINT` shortcut statements; `PIVOT BY`, `HAVING`,
-subselects, `BETWEEN` / `ANY` / `ALL`, query placeholders; the `prices` virtual
-table. These are out of scope for the lean subset, not blocked seams; revisit
-per consumer demand.
+subselects, `BETWEEN` / `ANY` / `ALL`, query placeholders. These are out of
+scope for the lean subset, not blocked seams; revisit per consumer demand. (The
+`prices` virtual table, formerly listed here, now ships — see §7.5.)
