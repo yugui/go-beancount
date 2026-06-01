@@ -1,6 +1,7 @@
 package table
 
 import (
+	"fmt"
 	"iter"
 	"strings"
 	"time"
@@ -22,6 +23,16 @@ func spanLineno(s ast.Span) types.Value {
 		return types.Null(types.Int)
 	}
 	return types.NewInt(int64(s.Start.Line))
+}
+
+// spanLocation renders a span as the upstream `"{filename}:{lineno}:"`
+// location String (note the trailing colon), or a typed NULL when the span
+// carries no position (Line == 0).
+func spanLocation(s ast.Span) types.Value {
+	if s.Start.Line == 0 {
+		return types.Null(types.String)
+	}
+	return types.NewString(fmt.Sprintf("%s:%d:", s.Start.Filename, s.Start.Line))
 }
 
 // flagString renders a single flag byte as a one-character String value, or a

@@ -190,3 +190,18 @@ func directiveLinks(d ast.Directive) ([]string, bool) {
 		return nil, false
 	}
 }
+
+// description joins a transaction's payee and narration with " | ", dropping
+// empty parts; it returns a typed-NULL String when both are empty. This is the
+// shared form of the upstream `description` column on the postings, entries,
+// and transactions tables.
+func description(payee, narration string) types.Value {
+	switch {
+	case payee != "" && narration != "":
+		return types.NewString(payee + " | " + narration)
+	case payee != "":
+		return types.NewString(payee)
+	default:
+		return nullableString(narration)
+	}
+}

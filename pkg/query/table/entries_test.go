@@ -54,6 +54,15 @@ func assertDecimal(t *testing.T, v types.Value, want string) {
 	}
 }
 
+func setElems(t *testing.T, v types.Value) []string {
+	t.Helper()
+	s, ok := types.AsSet(v)
+	if !ok {
+		t.Fatalf("value %v is NULL or not a Set", v.Format())
+	}
+	return s.Elements()
+}
+
 // entriesLedger builds a ledger holding one of each of a transaction, open,
 // balance, price, and note directive, with distinct dates so the canonical
 // iteration order is predictable.
