@@ -470,17 +470,22 @@ convention (upstream name + Go import path) carries over.
   `tableCatalog` gains one entry.
 - **Adding a column** = a new `Column` with a pure accessor over the row handle.
 
-**Shipped tables.** Beyond `postings`/`entries`, six single-directive tables
+**Shipped tables.** Beyond `postings`/`entries`, seven single-directive tables
 ship via the shared `directiveRows[T]` filter spine (keep the directives of one
 concrete type from the stream; map fields to scalar/Set/Dict columns — no
 realization pass): `prices`, `commodities`, `transactions`, `notes`, `events`,
-`documents`. Decisions worth recording:
+`documents`, `balances`. Decisions worth recording:
 - `transactions` is the whole-transaction view (one row per `Transaction`) with
   **no `postings` column** (upstream deletes it); its `accounts` column is the
   Set of all posting accounts.
 - Upstream column renames are honored: `events.type`/`events.description` carry
   our `Event.Name`/`Value`; `documents.filename` carries `Document.Path`;
   `commodities.currency`/`prices.currency` expose the currency name.
+- `balances` exposes `Balance.DiffAmount` (actual − expected, nil when within
+  tolerance or unchecked) as the `discrepancy` column — the upstream rename from
+  `diff_amount`. The balance-assertion pass records the residual on
+  `Balance.DiffAmount`; both `tolerance` and `discrepancy` are typed NULL when
+  the respective field is nil.
 
 **Shipped columns** (previously deferred): on `postings` — `id`, `location`,
 `description`, `other_accounts`, `accounts`, `posting_flag`; on `entries` —
@@ -516,12 +521,6 @@ realization pass): `prices`, `commodities`, `transactions`, `notes`, `events`,
   Attach point once that kind exists: a new `Column` over the existing row
   handle (`entry`), and an `accounts`-table constructor whose row source maps
   each account to its Open/Close.
-- **`balances` table.** `ast.Balance` (Date/Account/Amount/Tolerance/Meta)
-  carries no `diff_amount`/`discrepancy` field; upstream's `discrepancy` column
-  is the booking-time check residual, which our pipeline does not persist on the
-  directive. Attach point: have booking/validation record the residual on the
-  `Balance` (or a side table), after which `balances` is a trivial
-  `directiveRows[*ast.Balance]` filter. Deferred until that data is needed.
 
 ## 8. Excluded (initially)
 
