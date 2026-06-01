@@ -1,5 +1,6 @@
 // Command beanquery runs a Beancount Query Language (BQL) query over a
-// loaded ledger and prints the result as an aligned text table.
+// loaded ledger and writes the result to stdout in the format selected
+// by -format (text, the default aligned table; csv; or json).
 //
 // Usage:
 //
@@ -9,7 +10,7 @@
 // diagnostics to stderr in the canonical
 // "<path>:<line>:<col>: <severity>: <message>" form, then — if the
 // ledger has no Error-severity diagnostics — compiles and runs <query>
-// through pkg/query and writes the result table to stdout. The query is
+// through pkg/query and writes the result to stdout. The query is
 // a single positional argument, so it must be quoted on the shell.
 //
 // beanquery is glue only: all loading, compilation, and evaluation live
@@ -68,20 +69,22 @@ func main() {
 // run is the testable entry point; args is os.Args[1:]. It returns a
 // process exit code:
 //
-//	0  success: the query compiled, ran, and its table was written to
-//	   stdout (a zero-row result still prints its header).
+//	0  success: the query compiled, ran, and its result was written to
+//	   stdout in the selected format (a zero-row result still prints its
+//	   header).
 //	1  invalid ledger content (at least one Error-severity diagnostic,
 //	   in which case the query is not run) OR a query parse/compile/run
 //	   error.
-//	2  CLI failure: bad flags, the wrong number of positional
-//	   arguments, a ledger file that could not be loaded
-//	   (missing/unreadable, I/O error, context cancellation), or a
-//	   goplug plugin that failed to load.
+//	2  CLI failure: bad flags (including an unknown -format value), the
+//	   wrong number of positional arguments, a ledger file that could not
+//	   be loaded (missing/unreadable, I/O error, context cancellation), or
+//	   a goplug plugin that failed to load.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	cmd := flag.NewFlagSet("beanquery", flag.ContinueOnError)
 	cmd.SetOutput(stderr)
 	cmd.Usage = func() { printUsage(stderr, cmd) }
 	pluginPaths := goplugflag.Var(cmd)
+	format := cmd.String("format", "text", "output format: text, csv, or json")
 	if err := cmd.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -94,6 +97,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	path, q := cmd.Arg(0), cmd.Arg(1)
+
+	f, err := formatterFor(*format)
+	if err != nil {
+		fmt.Fprintf(stderr, "beanquery: %v\n", err)
+		return 2
+	}
 
 	// loader.LoadFile reports a missing or unreadable top-level file as
 	// an Error diagnostic on a non-nil ledger rather than via its error
@@ -129,7 +138,6 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	var f Formatter = textFormatter{}
 	if err := f.Format(stdout, result); err != nil {
 		fmt.Fprintf(stderr, "beanquery: %v\n", err)
 		return 1
@@ -177,9 +185,10 @@ func pad(s string, width int, rightAlign bool) string {
 func printUsage(w io.Writer, cmd *flag.FlagSet) {
 	fmt.Fprintln(w, "Usage: beanquery [flags] <ledger-file> <query>")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Run a BQL query over a beancount ledger and print an aligned")
-	fmt.Fprintln(w, "text table to stdout. The query is a single positional argument,")
-	fmt.Fprintln(w, "so quote it on the shell. Ledger diagnostics go to stderr.")
+	fmt.Fprintln(w, "Run a BQL query over a beancount ledger and write the result to stdout.")
+	fmt.Fprintln(w, "Use -format to choose text (default, aligned table), csv, or json.")
+	fmt.Fprintln(w, "The query is a single positional argument, so quote it on the shell.")
+	fmt.Fprintln(w, "Ledger diagnostics go to stderr.")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Out-of-tree query functions and post-processors load from -plugin PATH")
 	fmt.Fprintln(w, "(repeatable) and the BEANCOUNT_PLUGINS environment variable (a")
@@ -189,14 +198,15 @@ func printUsage(w io.Writer, cmd *flag.FlagSet) {
 	cmd.PrintDefaults()
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "EXIT CODES")
-	fmt.Fprintln(w, "  0  success; the result table was written to stdout")
+	fmt.Fprintln(w, "  0  success; the result was written to stdout in the selected format")
 	fmt.Fprintln(w, "  1  the ledger has Error-severity diagnostics (query not run),")
 	fmt.Fprintln(w, "     OR the query failed to parse/compile/run")
-	fmt.Fprintln(w, "  2  CLI failure: bad flags, wrong argument count, or the ledger")
-	fmt.Fprintln(w, "     file could not be loaded")
+	fmt.Fprintln(w, "  2  CLI failure: bad flags (including an unknown -format value),")
+	fmt.Fprintln(w, "     wrong argument count, or the ledger file could not be loaded")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "EXAMPLES")
 	fmt.Fprintln(w, "  beanquery my.beancount \\")
 	fmt.Fprintln(w, "    'SELECT account, sum(number) AS total GROUP BY account ORDER BY account'")
 	fmt.Fprintln(w, "  beanquery my.beancount 'SELECT date, narration, tags WHERE year(date) = 2024'")
+	fmt.Fprintln(w, "  beanquery -format json my.beancount 'SELECT account, sum(number) AS total GROUP BY account'")
 }
