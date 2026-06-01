@@ -52,9 +52,14 @@ import (
 	"github.com/yugui/go-beancount/pkg/validation/tolerance"
 )
 
-// Apply runs the balance-assertion check as a postproc plugin. It
-// does not mutate the ledger; the function returns a Result with a nil
-// Directives field so the runner preserves the input verbatim.
+// Apply runs the balance-assertion check as a postproc plugin.
+//
+// When every assertion holds within tolerance the function returns a nil
+// Directives field, so the runner preserves the input verbatim. When an
+// assertion fails, the offending *ast.Balance is replaced by a clone whose
+// DiffAmount records the residual (actual − expected), and Apply returns the
+// full directive stream with those clones substituted so the recorded
+// residual is observable downstream (e.g. the balances query table).
 //
 // Expects booked AST: postings without an Amount yield a
 // CodeAutoPostingUnresolved diagnostic instead of being inferred.
@@ -70,17 +75,28 @@ func Apply(ctx context.Context, in api.Input) (api.Result, error) {
 	balances := map[balanceKey]*apd.Decimal{}
 	seen := map[seenKey]ast.Amount{}
 	var diags []ast.Diagnostic
+	var dirs []ast.Directive
+	changed := false
 	for _, d := range in.Directives {
 		switch x := d.(type) {
 		case *ast.Transaction:
 			diags = append(diags, applyTransaction(x, balances)...)
 		case *ast.Balance:
-			diags = append(diags, checkBalance(x, balances, in.Options)...)
+			clone, bdiags := checkBalance(x, balances, in.Options)
+			diags = append(diags, bdiags...)
 			diags = append(diags, checkDuplicate(x, seen)...)
+			if clone != nil {
+				d = clone
+				changed = true
+			}
 		}
+		dirs = append(dirs, d)
 	}
 
-	return api.Result{Diagnostics: diags}, nil
+	if !changed {
+		return api.Result{Diagnostics: diags}, nil
+	}
+	return api.Result{Directives: dirs, Diagnostics: diags}, nil
 }
 
 // init registers Apply in the global registry so that, once this
@@ -178,7 +194,14 @@ func applyTransaction(tx *ast.Transaction, balances map[balanceKey]*apd.Decimal)
 // diff is computed as expected - actual; the tolerance check operates
 // on |diff|, so the sign of diff only affects error message
 // formatting.
-func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *ast.OptionValues) []ast.Diagnostic {
+//
+// On a failed assertion checkBalance returns a clone of b carrying the
+// residual (actual − expected, matching upstream beancount's diff_amount
+// sign) in DiffAmount; the caller substitutes the clone into the directive
+// stream. It returns nil for the directive when the assertion holds or an
+// internal error short-circuits the check, leaving b unchanged. b is never
+// mutated.
+func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *ast.OptionValues) (*ast.Balance, []ast.Diagnostic) {
 	var diags []ast.Diagnostic
 	actual := new(apd.Decimal)
 	for k, v := range balances {
@@ -197,7 +220,7 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *as
 					b.Account, b.Amount.Currency, err,
 				),
 			})
-			return diags
+			return nil, diags
 		}
 	}
 
@@ -211,7 +234,7 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *as
 			Span:    b.Span,
 			Message: fmt.Sprintf("failed to compute balance difference: %v", err),
 		})
-		return diags
+		return nil, diags
 	}
 
 	var tol *apd.Decimal
@@ -223,7 +246,7 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *as
 				Span:    b.Span,
 				Message: fmt.Sprintf("failed to normalize tolerance: %v", err),
 			})
-			return diags
+			return nil, diags
 		}
 	} else {
 		tol = tolerance.ForBalanceAssertion(opts, b.Amount)
@@ -236,25 +259,39 @@ func checkBalance(b *ast.Balance, balances map[balanceKey]*apd.Decimal, opts *as
 			Span:    b.Span,
 			Message: fmt.Sprintf("failed to evaluate balance tolerance: %v", err),
 		})
-		return diags
+		return nil, diags
 	}
-	if !ok {
+	if ok {
+		return nil, diags
+	}
+
+	diags = append(diags, ast.Diagnostic{
+		Code: string(validation.CodeBalanceMismatch),
+		Span: b.Span,
+		Message: fmt.Sprintf(
+			"balance assertion failed: account %s: expected %s %s, got %s %s (off by %s %s)",
+			b.Account,
+			expected.Text('f'),
+			b.Amount.Currency,
+			actual.Text('f'),
+			b.Amount.Currency,
+			diff.Text('f'),
+			b.Amount.Currency,
+		),
+	})
+
+	residual := new(apd.Decimal)
+	if _, err := apd.BaseContext.Sub(residual, actual, expected); err != nil {
 		diags = append(diags, ast.Diagnostic{
-			Code: string(validation.CodeBalanceMismatch),
-			Span: b.Span,
-			Message: fmt.Sprintf(
-				"balance assertion failed: account %s: expected %s %s, got %s %s (off by %s %s)",
-				b.Account,
-				expected.Text('f'),
-				b.Amount.Currency,
-				actual.Text('f'),
-				b.Amount.Currency,
-				diff.Text('f'),
-				b.Amount.Currency,
-			),
+			Code:    string(validation.CodeInternalError),
+			Span:    b.Span,
+			Message: fmt.Sprintf("failed to compute balance residual: %v", err),
 		})
+		return nil, diags
 	}
-	return diags
+	clone := *b
+	clone.DiffAmount = &ast.Amount{Number: *residual, Currency: b.Amount.Currency}
+	return &clone, diags
 }
 
 // checkDuplicate records b in seen and reports a duplicate-balance
