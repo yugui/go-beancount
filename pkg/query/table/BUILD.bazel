@@ -5,6 +5,7 @@ go_library(
     srcs = [
         "doc.go",
         "entries.go",
+        "entry_id.go",
         "postings.go",
         "table.go",
     ],
@@ -23,10 +24,12 @@ go_test(
     name = "table_test",
     srcs = [
         "entries_test.go",
+        "entry_id_internal_test.go",
+        "id_columns_test.go",
         "postings_test.go",
     ],
+    embed = [":table"],
     deps = [
-        ":table",
         "//pkg/ast",
         "//pkg/query/types",
         "@com_github_cockroachdb_apd_v3//:apd",
