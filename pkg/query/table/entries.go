@@ -122,6 +122,18 @@ var entryColumns = []Column{
 	entryCol("id", types.String, func(d ast.Directive) types.Value {
 		return types.NewString(entryID(d))
 	}),
+	entryCol("description", types.String, func(d ast.Directive) types.Value {
+		if txn, ok := d.(*ast.Transaction); ok {
+			return description(txn.Payee, txn.Narration)
+		}
+		return types.Null(types.String)
+	}),
+	entryCol("accounts", types.SetType, func(d ast.Directive) types.Value {
+		if accts, ok := directiveAccounts(d); ok {
+			return types.NewSet(accts...)
+		}
+		return types.Null(types.SetType)
+	}),
 }
 
 // directiveTypeName returns the lowercase BQL type name for a directive.
@@ -186,6 +198,35 @@ func directiveLinks(d ast.Directive) ([]string, bool) {
 		return v.Links, true
 	case *ast.Document:
 		return v.Links, true
+	default:
+		return nil, false
+	}
+}
+
+// directiveAccounts returns the accounts a directive references and ok=true
+// for the types that carry an account concept; ok=false for types with none.
+// A Transaction yields every posting account; a Pad yields both its target and
+// source account.
+func directiveAccounts(d ast.Directive) ([]string, bool) {
+	switch v := d.(type) {
+	case *ast.Transaction:
+		accts := make([]string, len(v.Postings))
+		for i := range v.Postings {
+			accts[i] = string(v.Postings[i].Account)
+		}
+		return accts, true
+	case *ast.Open:
+		return []string{string(v.Account)}, true
+	case *ast.Close:
+		return []string{string(v.Account)}, true
+	case *ast.Balance:
+		return []string{string(v.Account)}, true
+	case *ast.Note:
+		return []string{string(v.Account)}, true
+	case *ast.Document:
+		return []string{string(v.Account)}, true
+	case *ast.Pad:
+		return []string{string(v.Account), string(v.PadAccount)}, true
 	default:
 		return nil, false
 	}
