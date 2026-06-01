@@ -129,6 +129,12 @@ func TestPostingsColumnSchema(t *testing.T) {
 		{"meta", types.DictType},
 		{"entry_meta", types.DictType},
 		{"any_meta", types.DictType},
+		{"id", types.String},
+		{"location", types.String},
+		{"description", types.String},
+		{"other_accounts", types.SetType},
+		{"accounts", types.SetType},
+		{"posting_flag", types.String},
 		{"balance", types.Inventory},
 	}
 	if len(tb.Columns) != len(want) {
@@ -545,5 +551,149 @@ func TestColumnLookupCaseInsensitive(t *testing.T) {
 	}
 	if _, ok := tb.Column("nonesuch"); ok {
 		t.Error(`Column("nonesuch") found; want not found`)
+	}
+}
+
+func TestPostingsIDSharedAcrossTransaction(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(stockTxn(t))
+	tb := table.Postings(l)
+	rows := collectRows(tb)
+
+	s0, _ := types.AsString(valueOf(t, tb, rows[0], "id"))
+	s1, _ := types.AsString(valueOf(t, tb, rows[1], "id"))
+	if s0 != s1 {
+		t.Errorf("id differs across one transaction's postings: %q != %q", s0, s1)
+	}
+	if len(s0) != 32 {
+		t.Errorf("id = %q, want 32 hex chars", s0)
+	}
+}
+
+// TestPostingsIDEqualsParentEntryID confirms a posting's id equals its parent
+// transaction's id in the entries table.
+func TestPostingsIDEqualsParentEntryID(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(stockTxn(t))
+
+	pt := table.Postings(l)
+	et := table.Entries(l)
+	ps, _ := types.AsString(valueOf(t, pt, collectRows(pt)[0], "id"))
+	es, _ := types.AsString(valueOf(t, et, collectRows(et)[0], "id"))
+	if ps != es {
+		t.Errorf("postings id %q != entries id %q for the same transaction", ps, es)
+	}
+}
+
+func TestPostingsLocationAndDescription(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(stockTxn(t))
+	tb := table.Postings(l)
+	first := collectRows(tb)[0]
+
+	assertString(t, valueOf(t, tb, first, "location"), "main.beancount:13:")
+	assertString(t, valueOf(t, tb, first, "description"), "ACME | buy stock")
+}
+
+func TestPostingsLocationNullOnZeroSpan(t *testing.T) {
+	txn := &ast.Transaction{
+		Date:     time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		Flag:     '*',
+		Postings: []ast.Posting{{Account: "Assets:Cash", Amount: &ast.Amount{Number: dec(t, "1"), Currency: "USD"}}},
+	}
+	l := &ast.Ledger{}
+	l.Insert(txn)
+	tb := table.Postings(l)
+	v := valueOf(t, tb, collectRows(tb)[0], "location")
+	if !v.IsNull() || v.Type() != types.String {
+		t.Errorf("location on zero span = %v (type %v), want typed-NULL String", v.Format(), v.Type())
+	}
+}
+
+func TestPostingsDescriptionJoinVariants(t *testing.T) {
+	cases := []struct {
+		payee, narration, want string
+		wantNull               bool
+	}{
+		{"ACME", "buy", "ACME | buy", false},
+		{"ACME", "", "ACME", false},
+		{"", "buy", "buy", false},
+		{"", "", "", true},
+	}
+	for _, c := range cases {
+		txn := &ast.Transaction{
+			Date:      time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+			Flag:      '*',
+			Payee:     c.payee,
+			Narration: c.narration,
+			Postings:  []ast.Posting{{Account: "Assets:Cash", Amount: &ast.Amount{Number: dec(t, "1"), Currency: "USD"}}},
+		}
+		l := &ast.Ledger{}
+		l.Insert(txn)
+		tb := table.Postings(l)
+		v := valueOf(t, tb, collectRows(tb)[0], "description")
+		if c.wantNull {
+			if !v.IsNull() {
+				t.Errorf("description(%q,%q) = %v, want NULL", c.payee, c.narration, v.Format())
+			}
+			continue
+		}
+		assertString(t, v, c.want)
+	}
+}
+
+func TestPostingsAccountsAndOtherAccounts(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(stockTxn(t))
+	tb := table.Postings(l)
+	first := collectRows(tb)[0]
+
+	// other_accounts excludes the current posting by index.
+	if got := setElems(t, valueOf(t, tb, first, "other_accounts")); len(got) != 1 || got[0] != "Assets:Cash" {
+		t.Errorf("other_accounts(first) = %v, want [Assets:Cash]", got)
+	}
+	// accounts includes the current posting.
+	if got := setElems(t, valueOf(t, tb, first, "accounts")); len(got) != 2 || got[0] != "Assets:Broker" || got[1] != "Assets:Cash" {
+		t.Errorf("accounts(first) = %v, want [Assets:Broker Assets:Cash]", got)
+	}
+}
+
+// TestPostingsOtherAccountsExcludesByPosition pins that exclusion is by
+// position, so a sibling posting sharing the current posting's account is still
+// listed.
+func TestPostingsOtherAccountsExcludesByPosition(t *testing.T) {
+	txn := &ast.Transaction{
+		Date: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		Flag: '*',
+		Postings: []ast.Posting{
+			{Account: "Assets:Cash", Amount: &ast.Amount{Number: dec(t, "1"), Currency: "USD"}},
+			{Account: "Assets:Cash", Amount: &ast.Amount{Number: dec(t, "-1"), Currency: "USD"}},
+			{Account: "Expenses:Fee", Amount: &ast.Amount{Number: dec(t, "1"), Currency: "USD"}},
+		},
+	}
+	l := &ast.Ledger{}
+	l.Insert(txn)
+	tb := table.Postings(l)
+	got := setElems(t, valueOf(t, tb, collectRows(tb)[0], "other_accounts"))
+	if len(got) != 2 || got[0] != "Assets:Cash" || got[1] != "Expenses:Fee" {
+		t.Errorf("other_accounts(0) = %v, want [Assets:Cash Expenses:Fee] (sibling sharing account kept)", got)
+	}
+}
+
+// TestPostingsFlagIsOwnFlagOnly pins that posting_flag reports the posting's
+// own flag with no transaction-flag fallback (unlike the flag column).
+func TestPostingsFlagIsOwnFlagOnly(t *testing.T) {
+	l := &ast.Ledger{}
+	l.Insert(stockTxn(t))
+	tb := table.Postings(l)
+	rows := collectRows(tb)
+
+	assertString(t, valueOf(t, tb, rows[0], "posting_flag"), "!")
+	pf := valueOf(t, tb, rows[1], "posting_flag")
+	if !pf.IsNull() {
+		t.Errorf("posting_flag(auto) = %v, want NULL (no own flag, no txn fallback)", pf.Format())
+	}
+	if pf.Type() != types.String {
+		t.Errorf("posting_flag NULL carries type %v, want String", pf.Type())
 	}
 }

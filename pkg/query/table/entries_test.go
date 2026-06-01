@@ -54,6 +54,15 @@ func assertDecimal(t *testing.T, v types.Value, want string) {
 	}
 }
 
+func setElems(t *testing.T, v types.Value) []string {
+	t.Helper()
+	s, ok := types.AsSet(v)
+	if !ok {
+		t.Fatalf("value %v is NULL or not a Set", v.Format())
+	}
+	return s.Elements()
+}
+
 // entriesLedger builds a ledger holding one of each of a transaction, open,
 // balance, price, and note directive, with distinct dates so the canonical
 // iteration order is predictable.
@@ -125,6 +134,9 @@ func TestEntriesColumnSchema(t *testing.T) {
 		{"meta", types.DictType},
 		{"entry_meta", types.DictType},
 		{"any_meta", types.DictType},
+		{"id", types.String},
+		{"description", types.String},
+		{"accounts", types.SetType},
 	}
 	if len(tb.Columns) != len(want) {
 		t.Fatalf("got %d columns, want %d", len(tb.Columns), len(want))
@@ -340,5 +352,94 @@ func TestEntriesOverSyntheticDirective(t *testing.T) {
 	collectRows(tb)
 	if calls != 2 {
 		t.Errorf("factory called %d times after two Rows() calls, want 2", calls)
+	}
+}
+
+func TestEntriesIDNeverNull(t *testing.T) {
+	tb := table.Entries(entriesLedger(t))
+	for i, r := range collectRows(tb) {
+		v := valueOf(t, tb, r, "id")
+		s, ok := types.AsString(v)
+		if !ok || len(s) != 32 {
+			t.Errorf("id[%d] = %v, want a 32-hex String (never NULL)", i, v.Format())
+		}
+	}
+}
+
+func TestEntriesDescriptionJoinAndNull(t *testing.T) {
+	tb := table.Entries(entriesLedger(t))
+	rows := collectRows(tb)
+	open, txn := rows[0], rows[1]
+
+	assertString(t, valueOf(t, tb, txn, "description"), "ACME | buy")
+	if v := valueOf(t, tb, open, "description"); !v.IsNull() || v.Type() != types.String {
+		t.Errorf("description(open) = %v (type %v), want typed-NULL String", v.Format(), v.Type())
+	}
+}
+
+func TestEntriesAccountsPerKind(t *testing.T) {
+	tb := table.Entries(entriesLedger(t))
+	rows := collectRows(tb)
+	open, txn, bal, note := rows[0], rows[1], rows[2], rows[3]
+
+	for _, tc := range []struct {
+		name string
+		row  table.Row
+	}{{"txn", txn}, {"open", open}, {"balance", bal}, {"note", note}} {
+		got := setElems(t, valueOf(t, tb, tc.row, "accounts"))
+		if len(got) != 1 || got[0] != "Assets:Broker" {
+			t.Errorf("accounts(%s) = %v, want [Assets:Broker]", tc.name, got)
+		}
+	}
+}
+
+// TestEntriesAccountsPadAndAccountlessKinds pins that a Pad reports both its
+// target and source account, while kinds with no account concept yield a typed
+// NULL Set rather than an empty Set.
+func TestEntriesAccountsPadAndAccountlessKinds(t *testing.T) {
+	l := &ast.Ledger{}
+	l.InsertAll([]ast.Directive{
+		&ast.Pad{
+			Date:       time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+			Account:    "Assets:Cash",
+			PadAccount: "Equity:Opening",
+		},
+		&ast.Custom{
+			Date:     time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC),
+			TypeName: "budget",
+		},
+		&ast.Option{
+			Span:  ast.Span{Start: ast.Position{Filename: "main.beancount", Line: 1}},
+			Key:   "title",
+			Value: "L",
+		},
+	})
+	tb := table.Entries(l)
+	var pad, custom, opt table.Row
+	for _, r := range collectRows(tb) {
+		switch r.(type) {
+		case *ast.Pad:
+			pad = r
+		case *ast.Custom:
+			custom = r
+		case *ast.Option:
+			opt = r
+		}
+	}
+	if pad == nil || custom == nil || opt == nil {
+		t.Fatal("missing one of pad/custom/option rows")
+	}
+
+	if got := setElems(t, valueOf(t, tb, pad, "accounts")); len(got) != 2 || got[0] != "Assets:Cash" || got[1] != "Equity:Opening" {
+		t.Errorf("accounts(pad) = %v, want [Assets:Cash Equity:Opening]", got)
+	}
+	for _, tc := range []struct {
+		name string
+		row  table.Row
+	}{{"custom", custom}, {"option", opt}} {
+		v := valueOf(t, tb, tc.row, "accounts")
+		if !v.IsNull() || v.Type() != types.SetType {
+			t.Errorf("accounts(%s) = %v (type %v), want typed-NULL SetType", tc.name, v.Format(), v.Type())
+		}
 	}
 }
