@@ -11,6 +11,7 @@ go_library(
     name = "beanquery_lib",
     srcs = [
         "format.go",
+        "json.go",
         "main.go",
     ],
     importpath = "github.com/yugui/go-beancount/cmd/beanquery",
@@ -40,12 +41,16 @@ go_test(
     name = "beanquery_test",
     srcs = [
         "format_test.go",
+        "json_test.go",
         "main_test.go",
     ],
     embed = [":beanquery_lib"],
     deps = [
         "//pkg/query",
         "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "//pkg/ast",
+        "//pkg/inventory",
     ],
 )
 
@@ -53,6 +58,7 @@ go_test(
     name = "beanquery_plugin_test",
     srcs = [
         "format_test.go",
+        "json_test.go",
         "main_test.go",
         "plugin_test.go",
     ],
@@ -61,7 +67,10 @@ go_test(
     gotags = ["testhelpers"],
     target_compatible_with = PLUGIN_COMPATIBLE_PLATFORMS,
     deps = [
+        "//pkg/ast",
+        "//pkg/inventory",
         "//pkg/query",
         "//pkg/query/types",
+        "@com_github_cockroachdb_apd_v3//:apd",
     ],
 )

@@ -18,11 +18,13 @@ type Formatter interface {
 }
 
 // formatterFor returns the Formatter named by format, or an error naming the
-// unknown format. Recognized names: "text".
+// unknown format. Recognized names: "text", "json".
 func formatterFor(format string) (Formatter, error) {
 	switch format {
 	case "text":
 		return textFormatter{}, nil
+	case "json":
+		return jsonFormatter{}, nil
 	default:
 		return nil, fmt.Errorf("unknown output format %q", format)
 	}
