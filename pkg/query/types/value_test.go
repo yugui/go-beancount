@@ -45,6 +45,7 @@ func TestConstructorsTypeAndNotNull(t *testing.T) {
 		{"interval", types.NewInterval(1, 2, 3), types.Interval},
 		{"set", types.NewSet("a", "b"), types.SetType},
 		{"dict", types.NewDict(map[string]types.Value{"k": types.NewInt(1)}), types.DictType},
+		{"entry", types.NewEntry(sampleTxn(t)), types.Entry},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

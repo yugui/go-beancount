@@ -51,22 +51,25 @@ const (
 	tokOn
 
 	// Operators and punctuation
-	tokLParen  // (
-	tokRParen  // )
-	tokComma   // ,
-	tokStar    // *
-	tokPlus    // +
-	tokMinus   // -
-	tokSlash   // /
-	tokPercent // %
-	tokEq      // =
-	tokNe      // !=
-	tokLt      // <
-	tokLe      // <=
-	tokGt      // >
-	tokGe      // >=
-	tokTilde   // ~
-	tokSemi    // ;
+	tokLParen   // (
+	tokRParen   // )
+	tokComma    // ,
+	tokStar     // *
+	tokPlus     // +
+	tokMinus    // -
+	tokSlash    // /
+	tokPercent  // %
+	tokEq       // =
+	tokNe       // !=
+	tokLt       // <
+	tokLe       // <=
+	tokGt       // >
+	tokGe       // >=
+	tokTilde    // ~
+	tokSemi     // ;
+	tokDot      // .
+	tokLBracket // [
+	tokRBracket // ]
 
 	tokKindCount
 )
@@ -119,6 +122,9 @@ var tokenKindNames = [tokKindCount]string{
 	tokGe:       ">=",
 	tokTilde:    "~",
 	tokSemi:     ";",
+	tokDot:      ".",
+	tokLBracket: "[",
+	tokRBracket: "]",
 }
 
 func (k tokenKind) String() string {

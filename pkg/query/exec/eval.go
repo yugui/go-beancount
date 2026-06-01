@@ -1,6 +1,7 @@
 package exec
 
 import (
+	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/inventory"
 	"github.com/yugui/go-beancount/pkg/query/api"
 	"github.com/yugui/go-beancount/pkg/query/price"
@@ -76,6 +77,29 @@ func (e *aggRefExpr) Type() types.Type { return e.typ }
 
 func (e *aggRefExpr) eval(ctx *evalCtx) (types.Value, error) {
 	return ctx.aggResults[e.slot], nil
+}
+
+// entryAttrExpr reads a fixed attribute of an entry value: it evaluates inner
+// to an Entry (or NULL), then applies the directive attribute accessor. A NULL
+// (or non-entry) inner yields a typed NULL of the attribute's static type.
+type entryAttrExpr struct {
+	inner cexpr
+	get   func(ast.Directive) types.Value
+	out   types.Type
+}
+
+func (e *entryAttrExpr) Type() types.Type { return e.out }
+
+func (e *entryAttrExpr) eval(ctx *evalCtx) (types.Value, error) {
+	v, err := e.inner.eval(ctx)
+	if err != nil {
+		return nil, err
+	}
+	d, ok := types.AsEntry(v)
+	if !ok {
+		return types.Null(e.out), nil
+	}
+	return e.get(d), nil
 }
 
 // scalarExpr applies a resolved scalar overload to its argument exprs.

@@ -1,6 +1,7 @@
 package types
 
 import (
+	"encoding/json"
 	"strconv"
 	"strings"
 	"time"
@@ -78,6 +79,17 @@ func NewInventory(inv *inventory.Inventory) Value {
 // offset.
 func NewInterval(years, months, days int) Value {
 	return intervalValue{years: years, months: months, days: days}
+}
+
+// NewEntry returns a non-null Entry value that shares d by pointer. d must be
+// non-nil; callers must not mutate d after the call, which would be observable
+// through the returned Value. Use [Null]([Entry]) for an absent directive (e.g.
+// an account with no close). Two Entry values compare equal iff they denote the
+// same directive (by source span, then canonical [EntryID]); Entry has no
+// meaningful magnitude order but is totally ordered for DISTINCT, GROUP BY, and
+// ORDER BY.
+func NewEntry(d ast.Directive) Value {
+	return entryValue{d: d, id: EntryID(d)}
 }
 
 // Null returns a NULL value that remembers t as its kind. IsNull reports
@@ -182,6 +194,25 @@ func (v intervalValue) marshalTree() any {
 	}
 }
 
+type entryValue struct {
+	d  ast.Directive
+	id string // cached EntryID, the secondary compare key
+}
+
+func (entryValue) Type() Type   { return Entry }
+func (entryValue) IsNull() bool { return false }
+func (entryValue) sealedValue() {}
+func (v entryValue) Format() string {
+	b, err := json.Marshal(directiveTree(v.d))
+	if err != nil {
+		return "{}" // unreachable: directiveTree yields JSON-safe values
+	}
+	return string(b)
+}
+func (v entryValue) String() string      { return v.Format() }
+func (v entryValue) Compare(o Value) int { return compare(v, o) }
+func (v entryValue) marshalTree() any    { return directiveTree(v.d) }
+
 type nullValue struct{ t Type }
 
 func (v nullValue) Type() Type          { return v.t }
@@ -266,6 +297,16 @@ func AsInventory(v Value) (*inventory.Inventory, bool) {
 func AsInterval(v Value) (years, months, days int, ok bool) {
 	i, ok := v.(intervalValue)
 	return i.years, i.months, i.days, ok
+}
+
+// AsEntry returns the wrapped directive. ok is false when v is NULL or not an
+// Entry.
+func AsEntry(v Value) (ast.Directive, bool) {
+	e, ok := v.(entryValue)
+	if !ok {
+		return nil, false
+	}
+	return e.d, true
 }
 
 // AsSet returns the underlying Set. ok is false when v is NULL or not a

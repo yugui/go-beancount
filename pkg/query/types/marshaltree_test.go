@@ -41,7 +41,7 @@ func TestMarshalTreeNull(t *testing.T) {
 	nullKinds := []types.Type{
 		types.Bool, types.Int, types.Decimal, types.String, types.Date,
 		types.Amount, types.Position, types.Inventory, types.Interval,
-		types.SetType, types.DictType,
+		types.SetType, types.DictType, types.Entry,
 	}
 	for _, ty := range nullKinds {
 		t.Run(ty.String(), func(t *testing.T) {

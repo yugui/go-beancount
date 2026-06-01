@@ -28,6 +28,7 @@ var tableCatalog = map[string]func(string, func() iter.Seq2[int, ast.Directive])
 	"notes":        table.NotesOver,
 	"events":       table.EventsOver,
 	"documents":    table.DocumentsOver,
+	"accounts":     table.AccountsOver,
 }
 
 // compileError reports a compile-time failure, carrying the source position
@@ -302,6 +303,8 @@ func ungroupedColumn(ce cexpr, grouped map[string]bool) string {
 		return ""
 	case *scalarExpr:
 		return firstUngrouped(x.args, grouped)
+	case *entryAttrExpr:
+		return ungroupedColumn(x.inner, grouped)
 	case *arithExpr:
 		return firstUngrouped([]cexpr{x.l, x.r}, grouped)
 	case *cmpExpr:
@@ -381,6 +384,10 @@ func (c *compiler) compileExpr(e parser.Expr, aggOK bool) (cexpr, error) {
 		return c.compileIsNull(x, aggOK)
 	case *parser.FuncCall:
 		return c.compileCall(x, aggOK)
+	case *parser.AttributeAccess:
+		return c.compileAttribute(x, aggOK)
+	case *parser.IndexAccess:
+		return c.compileIndex(x, aggOK)
 	case *parser.ListLit:
 		return nil, errf(x.Position, "list literal is only valid as the right operand of IN")
 	default:
@@ -670,6 +677,54 @@ func (c *compiler) compileMeta(x *parser.FuncCall, colName string, aggOK bool) (
 	return &scalarExpr{fn: fn.Scalar, args: args, out: fn.Out}, nil
 }
 
+// compileAttribute compiles `<entry>.<attr>` postfix access. The operand must
+// be an entry value; the attribute name is resolved against the purpose-built
+// directive-attribute namespace ([table.EntryAttribute]), which fixes the
+// result's static type.
+func (c *compiler) compileAttribute(x *parser.AttributeAccess, aggOK bool) (cexpr, error) {
+	inner, err := c.compileExpr(x.Expr, aggOK)
+	if err != nil {
+		return nil, err
+	}
+	if inner.Type() != types.Entry {
+		return nil, errf(x.Position, "attribute access requires an entry value, got %s", inner.Type())
+	}
+	out, get, ok := table.EntryAttribute(x.Attr)
+	if !ok {
+		return nil, errf(x.Position, "entry has no attribute %q", x.Attr)
+	}
+	return &entryAttrExpr{inner: inner, get: get, out: out}, nil
+}
+
+// compileIndex compiles `<dict>["key"]` postfix subscript as getitem(dict,
+// key). The operand must be a dict and the key a string. It shares the getitem
+// path with the meta-family sugar, so the result is dynamically typed
+// (types.Invalid).
+func (c *compiler) compileIndex(x *parser.IndexAccess, aggOK bool) (cexpr, error) {
+	left, err := c.compileExpr(x.Expr, aggOK)
+	if err != nil {
+		return nil, err
+	}
+	if t := left.Type(); t != types.DictType {
+		return nil, errf(x.Position, `cannot subscript %s; only dict values support ["key"]`, t)
+	}
+	index, err := c.compileExpr(x.Index, aggOK)
+	if err != nil {
+		return nil, err
+	}
+	if t := index.Type(); t != types.String {
+		return nil, errf(x.Index.Pos(), "subscript key must be a string, got %s", t)
+	}
+	fn, err := env.Resolve("getitem", []types.Type{left.Type(), index.Type()})
+	if err != nil {
+		return nil, errf(x.Position, "%v", err)
+	}
+	if fn.Flavor != api.ScalarFlavor {
+		return nil, errf(x.Position, "getitem must be a scalar function")
+	}
+	return &scalarExpr{fn: fn.Scalar, args: []cexpr{left, index}, out: fn.Out}, nil
+}
+
 func (c *compiler) containsAggregate(args []cexpr) bool {
 	for _, a := range args {
 		if hasAggRef(a) {
@@ -687,6 +742,8 @@ func hasAggRef(ce cexpr) bool {
 		return true
 	case *scalarExpr:
 		return anyHasAggRef(x.args)
+	case *entryAttrExpr:
+		return hasAggRef(x.inner)
 	case *arithExpr:
 		return hasAggRef(x.l) || hasAggRef(x.r)
 	case *cmpExpr:

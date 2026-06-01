@@ -251,6 +251,27 @@ type FuncCall struct {
 	Position Position
 }
 
+// AttributeAccess is postfix dot access `X.Attr`, selecting a named attribute
+// of a structured value (e.g. an entry's narration). Position is the dot.
+type AttributeAccess struct {
+	Expr     Expr
+	Attr     string
+	Position Position
+}
+
+// IndexAccess is postfix subscript `X[Index]`, looking up a key in a
+// dict-valued operand (e.g. an entry's meta). Position is the opening bracket.
+type IndexAccess struct {
+	Expr     Expr
+	Index    Expr
+	Position Position
+}
+
+func (e *AttributeAccess) Pos() Position { return e.Position }
+func (e *IndexAccess) Pos() Position     { return e.Position }
+func (*AttributeAccess) exprNode()       {}
+func (*IndexAccess) exprNode()           {}
+
 func (e *ColumnRef) Pos() Position  { return e.Position }
 func (e *StringLit) Pos() Position  { return e.Position }
 func (e *IntLit) Pos() Position     { return e.Position }

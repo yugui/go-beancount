@@ -591,7 +591,8 @@ func (p *parser) parseExprList() ([]Expr, error) {
 //	                              | IS [NOT] NULL ]                   (non-associative)
 //	parseAdd         -> parseMul   ((+ -) parseMul)*
 //	parseMul         -> parseUnary ((* / %) parseUnary)*
-//	parseUnary       -> (- +) parseUnary | parsePrimary
+//	parseUnary       -> (- +) parseUnary | parsePostfix
+//	parsePostfix     -> parsePrimary (. ident | '[' expr ']')*
 //	parsePrimary     -> literal | columnRef | funcCall | '(' expr ')' | '(' exprList ')'
 func (p *parser) parseExpr() (Expr, error) {
 	return p.parseOr()
@@ -866,7 +867,7 @@ func (p *parser) parseUnary() (Expr, error) {
 	case tokPlus:
 		op = OpPos
 	default:
-		return p.parsePrimary()
+		return p.parsePostfix()
 	}
 	pos := p.tok.pos
 	if err := p.advance(); err != nil {
@@ -925,10 +926,60 @@ func (p *parser) parsePrimary() (Expr, error) {
 			return p.parseFuncCall(t)
 		}
 		return &ColumnRef{Name: t.text, Position: t.pos}, nil
+	case tokOpen, tokClose, tokClear:
+		// soft keywords: column references (e.g. the accounts table's
+		// open/close columns) outside the FROM scoping clause, where
+		// parseFrom recognizes them by their own production.
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		return &ColumnRef{Name: t.text, Position: t.pos}, nil
 	case tokLParen:
 		return p.parseParen(t)
 	default:
 		return nil, p.errf(t.pos, "expected expression, found %s", t.kind)
+	}
+}
+
+// parsePostfix wraps a primary in zero or more postfix accessors: `.attr`
+// attribute access and `[expr]` subscript, left-associative and binding
+// tighter than any prefix or infix operator.
+func (p *parser) parsePostfix() (Expr, error) {
+	expr, err := p.parsePrimary()
+	if err != nil {
+		return nil, err
+	}
+	for {
+		switch p.tok.kind {
+		case tokDot:
+			pos := p.tok.pos
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			if p.tok.kind != tokIdent {
+				return nil, p.errf(p.tok.pos, "expected attribute name after '.', found %s", p.tok.kind)
+			}
+			attr := p.tok.text
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			expr = &AttributeAccess{Expr: expr, Attr: attr, Position: pos}
+		case tokLBracket:
+			pos := p.tok.pos
+			if err := p.advance(); err != nil {
+				return nil, err
+			}
+			idx, err := p.parseExpr()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := p.expect(tokRBracket); err != nil {
+				return nil, err
+			}
+			expr = &IndexAccess{Expr: expr, Index: idx, Position: pos}
+		default:
+			return expr, nil
+		}
 	}
 }
 

@@ -215,7 +215,10 @@ var postingColumns = []Column{
 		return mergedMeta(r.txn.Meta, r.posting().Meta)
 	}),
 	postingCol("id", types.String, func(r postingRow) types.Value {
-		return types.NewString(entryID(r.txn))
+		return types.NewString(types.EntryID(r.txn))
+	}),
+	postingCol("entry", types.Entry, func(r postingRow) types.Value {
+		return types.NewEntry(r.txn)
 	}),
 	postingCol("location", types.String, func(r postingRow) types.Value {
 		return spanLocation(r.posting().Span)
