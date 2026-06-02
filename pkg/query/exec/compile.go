@@ -90,10 +90,15 @@ func Compile(sel *parser.Select, ledger *ast.Ledger) (*Compiled, error) {
 	if err := c.compileOrderBy(sel.OrderBy, plan); err != nil {
 		return nil, err
 	}
-	// An aggregate may first appear in ORDER BY; promote the plan to
-	// aggregate mode so Run takes the grouping path and the mixing check
-	// below applies (otherwise an aggregate-ref would read a nil result set).
-	plan.aggregate = plan.aggregate || len(c.slots) > 0
+	if err := c.compileHaving(sel.Having, plan); err != nil {
+		return nil, err
+	}
+	// An aggregate may first appear in ORDER BY or HAVING; a bare HAVING also
+	// implies whole-table aggregation. Promote the plan to aggregate mode so
+	// Run takes the grouping path and the mixing check below applies (otherwise
+	// an aggregate-ref would read a nil result set, and a HAVING would never be
+	// evaluated).
+	plan.aggregate = plan.aggregate || len(c.slots) > 0 || plan.having != nil
 	if err := checkAggregateMixing(sel.GroupBy, plan); err != nil {
 		return nil, err
 	}
@@ -253,9 +258,29 @@ func (c *compiler) compileOrderExpr(e parser.Expr, plan *Compiled) (cexpr, error
 	return c.compileAggregable(e)
 }
 
+// compileHaving compiles the HAVING predicate in the aggregable scope (so it
+// may reference aggregates and grouped columns) and verifies the result is
+// boolean (or an untyped NULL). HAVING does not require a GROUP BY: a bare
+// HAVING aggregates the whole table into one group. Whether every bare column
+// is grouped or aggregated is enforced later by checkAggregateMixing.
+func (c *compiler) compileHaving(having parser.Expr, plan *Compiled) error {
+	if having == nil {
+		return nil
+	}
+	ce, err := c.compileAggregable(having)
+	if err != nil {
+		return err
+	}
+	if t := ce.Type(); t != types.Bool && t != types.Invalid {
+		return errf(having.Pos(), "HAVING clause must be boolean, got %s", t)
+	}
+	plan.having = ce
+	return nil
+}
+
 // checkAggregateMixing enforces, in aggregate mode, that every column read by
-// a target or ORDER BY expression is either a grouped column or sits inside an
-// aggregate call. It walks the COMPILED targets, where aggregate calls have
+// a target, ORDER BY, or HAVING expression is either a grouped column or sits
+// inside an aggregate call. It walks the COMPILED targets, where aggregate calls have
 // already been replaced by aggRef placeholders (their column reads moved into
 // the slots), so a columnExpr surviving in a target is genuinely an
 // ungrouped, unaggregated reference. Grouped columns are matched by the bare
@@ -279,6 +304,11 @@ func checkAggregateMixing(groupBy []parser.Expr, plan *Compiled) error {
 	}
 	for _, ok := range plan.orderBy {
 		if name := ungroupedColumn(ok.expr, grouped); name != "" {
+			return errf(parser.Position{}, "column %q must appear in GROUP BY or be aggregated", name)
+		}
+	}
+	if plan.having != nil {
+		if name := ungroupedColumn(plan.having, grouped); name != "" {
 			return errf(parser.Position{}, "column %q must appear in GROUP BY or be aggregated", name)
 		}
 	}

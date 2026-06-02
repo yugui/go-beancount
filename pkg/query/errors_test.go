@@ -25,6 +25,9 @@ func TestCompileErrors(t *testing.T) {
 		{"non-boolean predicate", "SELECT account WHERE number", "boolean"},
 		{"non-boolean from", "SELECT account FROM number", "boolean"},
 		{"aggregate only in order by", "SELECT account FROM postings ORDER BY sum(number)", "must appear in GROUP BY"},
+		{"non-boolean having", "SELECT account GROUP BY account HAVING sum(number)", "HAVING clause must be boolean"},
+		{"having ungrouped column", "SELECT account GROUP BY account HAVING currency = 'USD'", "must appear in GROUP BY"},
+		{"bare having ungrouped column", "SELECT count(account) HAVING account = 'Assets:Cash'", "must appear in GROUP BY"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -151,6 +151,17 @@ func (p *parser) parseSelect() (*Select, error) {
 		sel.GroupBy = groupBy
 	}
 
+	if p.tok.kind == tokHaving {
+		if err := p.advance(); err != nil {
+			return nil, err
+		}
+		having, err := p.parseExpr()
+		if err != nil {
+			return nil, err
+		}
+		sel.Having = having
+	}
+
 	if p.tok.kind == tokOrder {
 		orderBy, err := p.parseOrderBy()
 		if err != nil {

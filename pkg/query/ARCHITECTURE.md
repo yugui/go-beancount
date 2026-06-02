@@ -545,7 +545,7 @@ recording:
 ## 8. Excluded (initially)
 
 `CREATE TABLE` / `INSERT` (beanquery's generic non-beancount data sources);
-the `PRINT` shortcut statement; `PIVOT BY`, `HAVING`, subselects, `ANY` / `ALL`,
+the `PRINT` shortcut statement; `PIVOT BY`, subselects, `ANY` / `ALL`,
 query placeholders. These are out of scope for the lean subset, not blocked
 seams; revisit per consumer demand.
 
@@ -571,5 +571,26 @@ desugaring over the existing SELECT machinery (no executor changes):
   was added alongside the existing `sum(Position)`. The statement words and `AT`
   are **contextual**, not reserved, so `FROM balances` (the Balance-directive
   table) still resolves as a table name.
+
+**HAVING (shipped).** Unlike the sugar items above, HAVING required a small,
+targeted executor change: a post-grouping per-group filter. Each group is
+emitted only when HAVING evaluates to TRUE (NULL/FALSE excluded, exactly like
+WHERE); its aggregates occupy ordinary slots and grouped columns read from the
+group's representative row. The clause sits between GROUP BY and ORDER BY, and
+`having` becomes a reserved keyword. Two **deliberate divergences from upstream**
+(both standard-SQL-ward, both essentially free given existing machinery):
+- **No GROUP BY required.** Upstream nests HAVING inside the GROUP BY production;
+  here a bare HAVING aggregates the whole table into one group (reusing the
+  existing no-GROUP-BY single-group path). HAVING simply promotes the query to
+  aggregate mode.
+- **No aggregate required in the clause.** Upstream rejects a HAVING that is not
+  an aggregate expression; here HAVING may be any boolean predicate over grouped
+  columns and/or aggregates. Safety is unchanged: the existing aggregate-mixing
+  check rejects an ungrouped, unaggregated column in HAVING just as in a target.
+
+HAVING is a boolean predicate (a non-boolean clause is a compile error — stricter
+than upstream, matching this engine's typed WHERE) and does **not** resolve
+SELECT aliases (unlike ORDER BY; recursive alias substitution is absent and not
+worth its cost).
 
 (The `prices` virtual table, formerly listed here, ships — see §7.5.)

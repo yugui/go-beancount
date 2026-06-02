@@ -18,8 +18,8 @@ import (
 // the same plan (Decision 6). It checks ctx once per input row and returns
 // ctx.Err() on cancellation.
 //
-// The pipeline is: predicate filter → (group+aggregate | row projection) →
-// DISTINCT → ORDER BY → LIMIT.
+// The pipeline is: predicate filter → (group+aggregate → HAVING filter | row
+// projection) → DISTINCT → ORDER BY → LIMIT.
 //
 // PARALLEL-EXECUTOR SEAM (not built): the input-row scan below is the single
 // point to partition. A future parallel executor would split table.Rows into
@@ -93,9 +93,10 @@ type group struct {
 }
 
 // runAggregate folds passing rows into groups keyed by the GROUP BY values,
-// then projects one output row per group in first-seen order. With aggregate
-// targets but no GROUP BY it produces exactly one group (one output row even
-// over zero rows), matching SQL "SELECT count(*) FROM empty".
+// then projects one output row per group in first-seen order, dropping groups
+// rejected by HAVING. With aggregate targets (or a bare HAVING) but no GROUP BY
+// it produces exactly one group (one output row even over zero rows, subject to
+// HAVING), matching SQL "SELECT count(*) FROM empty".
 func (c *Compiled) runAggregate(ctx context.Context) (rows, keys [][]types.Value, err error) {
 	groups := map[string]*group{}
 	var order []string
@@ -139,9 +140,12 @@ func (c *Compiled) runAggregate(ctx context.Context) (rows, keys [][]types.Value
 	}
 
 	for _, k := range order {
-		out, key, err := c.projectGroup(groups[k], ectx)
+		out, key, keep, err := c.projectGroup(groups[k], ectx)
 		if err != nil {
 			return nil, nil, err
+		}
+		if !keep {
+			continue
 		}
 		rows = append(rows, out)
 		keys = append(keys, key)
@@ -149,12 +153,17 @@ func (c *Compiled) runAggregate(ctx context.Context) (rows, keys [][]types.Value
 	return rows, keys, nil
 }
 
-func (c *Compiled) projectGroup(g *group, ectx *evalCtx) (out, key []types.Value, err error) {
+// projectGroup finalizes one group's accumulators and projects its output row
+// and ORDER BY keys. keep is false when the HAVING predicate does not evaluate
+// to TRUE (NULL/FALSE excluded), in which case out and key are nil and the
+// group is dropped. HAVING is evaluated before projection so a filtered group
+// costs no target/ORDER BY work.
+func (c *Compiled) projectGroup(g *group, ectx *evalCtx) (out, key []types.Value, keep bool, err error) {
 	results := make([]types.Value, len(c.slots))
 	for i, acc := range g.accs {
 		v, err := acc.Result()
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, false, err
 		}
 		results[i] = v
 	}
@@ -162,15 +171,39 @@ func (c *Compiled) projectGroup(g *group, ectx *evalCtx) (out, key []types.Value
 	ectx.aggResults = results
 	defer func() { ectx.aggResults = nil }()
 
+	pass, err := c.groupPasses(ectx)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if !pass {
+		return nil, nil, false, nil
+	}
+
 	out, err = evalRow(c.targets, ectx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
 	key, err = evalRow(orderExprs(c.orderBy), ectx)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, false, err
 	}
-	return out, key, nil
+	return out, key, true, nil
+}
+
+// groupPasses reports whether the current group satisfies the HAVING
+// predicate. Like WHERE, a group passes ONLY when HAVING evaluates to TRUE;
+// NULL and FALSE are excluded. A nil HAVING passes every group. It must be
+// called with ectx.aggResults set to the group's finalized results.
+func (c *Compiled) groupPasses(ectx *evalCtx) (bool, error) {
+	if c.having == nil {
+		return true, nil
+	}
+	v, err := c.having.eval(ectx)
+	if err != nil {
+		return false, err
+	}
+	b, ok := types.AsBool(v)
+	return ok && b, nil
 }
 
 func (c *Compiled) newAccumulators() []api.Accumulator {

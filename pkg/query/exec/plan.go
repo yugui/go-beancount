@@ -46,6 +46,11 @@ type Compiled struct {
 	groupBy   []cexpr
 	slots     []aggSlot
 
+	// having is the compiled HAVING predicate, evaluated per group after
+	// aggregation; nil when absent. A group is emitted only when it evaluates
+	// to TRUE (NULL/FALSE are excluded, like WHERE).
+	having cexpr
+
 	orderBy  []orderKey
 	distinct bool
 	limit    *int64

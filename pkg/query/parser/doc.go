@@ -14,11 +14,14 @@
 //	       [FROM (<table-name> | <bool-expr>)]
 //	       [WHERE <expr>]
 //	       [GROUP BY <expr-list>]
+//	       [HAVING <expr>]
 //	       [ORDER BY <order-item-list>]
 //	       [LIMIT <integer>]
 //
 // A target is an expression with an optional `AS <identifier>` alias. An
-// order item is an expression with an optional ASC (default) or DESC.
+// order item is an expression with an optional ASC (default) or DESC. HAVING
+// is a per-group predicate applied after aggregation; unlike upstream it does
+// not require a GROUP BY (a bare HAVING aggregates the whole table).
 //
 // Two shortcut statements desugar to an equivalent SELECT (so [Parse] always
 // returns a [*Select]):

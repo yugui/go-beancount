@@ -128,6 +128,68 @@ func TestOrderByAggregateAlias(t *testing.T) {
 	}
 }
 
+func TestHavingFiltersGroupsByAggregate(t *testing.T) {
+	// Per-account number sums: Expenses:Food=25, Assets:Cash=75,
+	// Income:Salary=-100. HAVING keeps only the positive totals.
+	res := mustQuery(t, "SELECT account, sum(number) AS total GROUP BY account HAVING sum(number) > 0")
+	acctCol := column(t, res, "account")
+	got := map[string]bool{}
+	for _, row := range res.Rows {
+		acct, _ := types.AsString(row[acctCol])
+		got[acct] = true
+	}
+	want := map[string]bool{"Expenses:Food": true, "Assets:Cash": true}
+	if len(got) != len(want) {
+		t.Fatalf("groups = %v, want %v", got, want)
+	}
+	for acct := range want {
+		if !got[acct] {
+			t.Errorf("missing group %q", acct)
+		}
+	}
+}
+
+func TestHavingAggregateNotInSelect(t *testing.T) {
+	// HAVING may reference an aggregate absent from the target list.
+	// Per-account posting counts: Expenses:Food=2, Assets:Cash=3,
+	// Income:Salary=1. Only counts greater than one survive.
+	res := mustQuery(t, "SELECT account GROUP BY account HAVING count(account) > 1")
+	if len(res.Rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(res.Rows))
+	}
+}
+
+func TestHavingGroupedColumnNoAggregate(t *testing.T) {
+	// Relaxation from upstream: HAVING need not contain an aggregate; a
+	// grouped-column predicate is accepted.
+	res := mustQuery(t, "SELECT account GROUP BY account HAVING account = 'Assets:Cash'")
+	if len(res.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(res.Rows))
+	}
+	acct, _ := types.AsString(cell(res, 0, column(t, res, "account")))
+	if acct != "Assets:Cash" {
+		t.Fatalf("account = %q, want Assets:Cash", acct)
+	}
+}
+
+func TestBareHavingWholeTable(t *testing.T) {
+	// Relaxation from upstream: HAVING without GROUP BY aggregates the whole
+	// table into one group. The sample ledger has six postings.
+	kept := mustQuery(t, "SELECT count(account) AS n HAVING count(account) > 3")
+	if len(kept.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1 (whole-table group passes HAVING)", len(kept.Rows))
+	}
+	n, _ := types.AsInt(cell(kept, 0, 0))
+	if n != 6 {
+		t.Fatalf("count = %d, want 6", n)
+	}
+
+	dropped := mustQuery(t, "SELECT count(account) AS n HAVING count(account) > 100")
+	if len(dropped.Rows) != 0 {
+		t.Fatalf("rows = %d, want 0 (whole-table group fails HAVING)", len(dropped.Rows))
+	}
+}
+
 func TestLimit(t *testing.T) {
 	res := mustQuery(t, "SELECT account FROM postings ORDER BY number DESC LIMIT 2")
 	if len(res.Rows) != 2 {
