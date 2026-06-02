@@ -23,6 +23,9 @@ type Select struct {
 	Where Expr
 	// GroupBy holds the GROUP BY expressions, or nil/empty when absent.
 	GroupBy []Expr
+	// Having is the HAVING predicate, applied per group after aggregation, or
+	// nil when absent.
+	Having Expr
 	// OrderBy holds the ORDER BY items, or nil/empty when absent.
 	OrderBy []OrderItem
 	// Limit is the LIMIT value, or nil when absent.

@@ -31,6 +31,7 @@ const (
 	tokFrom
 	tokWhere
 	tokGroup
+	tokHaving
 	tokOrder
 	tokBy
 	tokAsc
@@ -88,6 +89,7 @@ var tokenKindNames = [tokKindCount]string{
 	tokFrom:     "FROM",
 	tokWhere:    "WHERE",
 	tokGroup:    "GROUP",
+	tokHaving:   "HAVING",
 	tokOrder:    "ORDER",
 	tokBy:       "BY",
 	tokAsc:      "ASC",
@@ -145,6 +147,7 @@ var keywords = map[string]tokenKind{
 	"from":     tokFrom,
 	"where":    tokWhere,
 	"group":    tokGroup,
+	"having":   tokHaving,
 	"order":    tokOrder,
 	"by":       tokBy,
 	"asc":      tokAsc,

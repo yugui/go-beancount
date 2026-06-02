@@ -54,25 +54,32 @@
 //
 // # Aggregation
 //
-// A query is in aggregate mode when it has a GROUP BY clause or any aggregate
-// target. Each distinct aggregate call is an ordered slot with its own
-// per-group accumulator. Rows passing the predicate are folded into groups
-// keyed by the GROUP BY values (first-seen group order is preserved before any
-// ORDER BY); each group then projects one output row, with aggregate
+// A query is in aggregate mode when it has a GROUP BY clause, any aggregate
+// target, or a HAVING clause. Each distinct aggregate call is an ordered slot
+// with its own per-group accumulator. Rows passing the predicate are folded
+// into groups keyed by the GROUP BY values (first-seen group order is preserved
+// before any ORDER BY); each group then projects one output row, with aggregate
 // references resolving to finalized results and group-key columns read from a
 // representative row. Aggregate mode with no GROUP BY produces exactly one
 // group, hence one output row even over zero input rows.
 //
+// HAVING is a per-group boolean predicate applied after aggregation: a group is
+// emitted only when HAVING evaluates to TRUE (NULL/FALSE excluded, like WHERE).
+// Unlike upstream beanquery, HAVING does not require a GROUP BY (a bare HAVING
+// filters the single whole-table group) and need not itself contain an
+// aggregate; it may reference grouped columns and aggregates, subject to the
+// aggregate-mixing check below.
+//
 // The aggregate-mixing check matches grouped columns by the bare column name
-// referenced in GROUP BY: a target or ORDER BY column reference must be a
-// grouped column or sit inside an aggregate call, else it is a compile error.
-// A non-trivial grouped expression (for example GROUP BY year(date)) does not
-// cover the bare columns it derives from; this is the lean rule.
+// referenced in GROUP BY: a target, ORDER BY, or HAVING column reference must
+// be a grouped column or sit inside an aggregate call, else it is a compile
+// error. A non-trivial grouped expression (for example GROUP BY year(date))
+// does not cover the bare columns it derives from; this is the lean rule.
 //
 // # Output ordering
 //
-// The pipeline is predicate filter → (group+aggregate | row projection) →
-// DISTINCT → ORDER BY → LIMIT. DISTINCT removes duplicate output rows by true
+// The pipeline is predicate filter → (group+aggregate → HAVING filter | row
+// projection) → DISTINCT → ORDER BY → LIMIT. DISTINCT removes duplicate output rows by true
 // value equality (every column compares 0, NULL == NULL). Without an ORDER BY
 // clause the output order is the deterministic first-seen scan order (table
 // row order for scalar queries, first-seen group order for aggregate queries);

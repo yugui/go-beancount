@@ -165,6 +165,29 @@ func TestParseStructural(t *testing.T) {
 			},
 		},
 		{
+			name:  "group by having",
+			input: "SELECT account GROUP BY account HAVING sum(number) > 100",
+			want: &parser.Select{
+				Targets: []parser.Target{{Expr: col("account")}},
+				GroupBy: []parser.Expr{col("account")},
+				Having: bin(parser.OpGt,
+					&parser.FuncCall{Name: "sum", Args: []parser.Expr{col("number")}},
+					intLit(100)),
+			},
+		},
+		{
+			name:  "bare having without group by",
+			input: "SELECT count(account) HAVING count(account) > 1",
+			want: &parser.Select{
+				Targets: []parser.Target{
+					{Expr: &parser.FuncCall{Name: "count", Args: []parser.Expr{col("account")}}},
+				},
+				Having: bin(parser.OpGt,
+					&parser.FuncCall{Name: "count", Args: []parser.Expr{col("account")}},
+					intLit(1)),
+			},
+		},
+		{
 			name:  "order by default asc",
 			input: "SELECT account ORDER BY account",
 			want: &parser.Select{
@@ -247,7 +270,7 @@ func TestParseStructural(t *testing.T) {
 			name: "full query",
 			input: "SELECT account, sum(position) AS total " +
 				"FROM year >= 2020 WHERE not flag = '*' " +
-				"GROUP BY account ORDER BY total DESC LIMIT 10",
+				"GROUP BY account HAVING count(account) > 1 ORDER BY total DESC LIMIT 10",
 			want: &parser.Select{
 				Targets: []parser.Target{
 					{Expr: col("account")},
@@ -257,6 +280,9 @@ func TestParseStructural(t *testing.T) {
 				Where: unary(parser.OpNot,
 					bin(parser.OpEq, col("flag"), strLit("*"))),
 				GroupBy: []parser.Expr{col("account")},
+				Having: bin(parser.OpGt,
+					&parser.FuncCall{Name: "count", Args: []parser.Expr{col("account")}},
+					intLit(1)),
 				OrderBy: []parser.OrderItem{{Expr: col("total"), Desc: true}},
 				Limit:   ptr(int64(10)),
 			},
