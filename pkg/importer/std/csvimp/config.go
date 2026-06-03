@@ -58,6 +58,14 @@ type shapeConfig struct {
 	Currency       currencyConfig  `toml:"currency"`
 	Narration      narrationConfig `toml:"narration"`
 	Amount         []amountColumn  `toml:"amount"`
+	Exclude        []excludeConfig `toml:"exclude"`
+}
+
+// excludeConfig is one [[exclude]] rule: Match (required) is a regular
+// expression tested against Col when set, otherwise against every cell.
+type excludeConfig struct {
+	Col   string `toml:"col"`
+	Match string `toml:"match"`
 }
 
 type dateConfig struct {
@@ -65,9 +73,8 @@ type dateConfig struct {
 	Format string `toml:"format"`
 }
 
-// numberConfig is the on-disk shape of the optional [number] block. It
-// tunes how amount cells are parsed; an absent block parses amounts
-// exactly as apd does (commas rejected, '.' decimal point).
+// numberConfig tunes amount parsing; an absent block parses amounts as
+// apd does (commas rejected, '.' decimal point).
 type numberConfig struct {
 	ThousandsSep string     `toml:"thousands_sep"`
 	DecimalSep   string     `toml:"decimal_sep"`
@@ -159,6 +166,10 @@ type shape struct {
 
 	amounts      []csvkit.AmountColumn
 	numberFormat csvkit.NumberFormat
+
+	// filters drop statement noise (footnotes, totals) before a row
+	// becomes a directive; empty means no filtering.
+	filters []csvkit.RowFilter
 }
 
 // newImporter is the factory function registered under kind "csv". It returns
@@ -293,6 +304,20 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 			return nil, fmt.Errorf("shape %q: encoding %q is not a recognised IANA charset name", name, sc.Encoding)
 		}
 		s.inputEncoding = enc
+	}
+	for i, e := range sc.Exclude {
+		if e.Match == "" {
+			return nil, fmt.Errorf("shape %q: [[exclude]][%d].match is required", name, i)
+		}
+		re, err := regexp.Compile(e.Match)
+		if err != nil {
+			return nil, fmt.Errorf("shape %q: [[exclude]][%d].match: %w", name, i, err)
+		}
+		if e.Col != "" {
+			s.filters = append(s.filters, csvkit.ExcludeMatching(e.Col, re))
+		} else {
+			s.filters = append(s.filters, csvkit.ExcludeAnyField(re))
+		}
 	}
 	return s, nil
 }

@@ -47,6 +47,9 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 		if len(rec.Fields) == 0 || allBlank(rec.Fields) {
 			continue
 		}
+		if s.excluded(rec.Fields, idx) {
+			continue
+		}
 		dir, diag := processRow(in.Path, rec.Line, name, s, idx, rec.Fields, in.Hints)
 		if diag != nil {
 			diags = append(diags, *diag)
@@ -56,6 +59,22 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 		}
 	}
 	return importer.Output{Directives: directives, Diagnostics: diags}, nil
+}
+
+// excluded reports whether any configured [[exclude]] filter drops the
+// record. Filtered rows are skipped silently: they are statement noise
+// (footnotes, totals), not data errors.
+func (s *shape) excluded(fields []string, idx map[string]int) bool {
+	if len(s.filters) == 0 {
+		return false
+	}
+	get := func(col string) string { return fieldAt(fields, idx, col) }
+	for _, f := range s.filters {
+		if f.Skip(fields, get) {
+			return true
+		}
+	}
+	return false
 }
 
 // reader returns a csvkit.Reader configured from s.
@@ -171,18 +190,7 @@ func fieldAt(row []string, idx map[string]int, col string) string {
 // survivors with sep. Returns "" when every cell is blank or cols is
 // empty.
 func joinKey(cols []string, sep string, idx map[string]int, row []string) string {
-	if len(cols) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(cols))
-	for _, c := range cols {
-		v := strings.TrimSpace(fieldAt(row, idx, c))
-		if v == "" {
-			continue
-		}
-		parts = append(parts, v)
-	}
-	return strings.Join(parts, sep)
+	return csvkit.Join(cols, sep, func(c string) string { return fieldAt(row, idx, c) })
 }
 
 // sumAmounts returns the signed sum of the shape's amount columns under
@@ -231,15 +239,21 @@ func resolveAccountDefault(s *shape, path string, line int) (string, *ast.Diagno
 // [account.map]. With no map configured the key is returned verbatim;
 // with a map configured a miss returns DiagUnmappedAccount.
 func resolveAccountFromKey(s *shape, key, path string, line int) (string, *ast.Diagnostic) {
-	if s.accountMap == nil {
-		return key, nil
-	}
-	if mapped, ok := s.accountMap[key]; ok {
+	if mapped, ok := csvkit.ResolveThroughMap(key, s.accountMap, mapMode(s.accountMap)); ok {
 		return mapped, nil
 	}
 	d := rowDiag(DiagUnmappedAccount, path, line,
 		fmt.Sprintf("account key %q from columns %v has no entry in [account.map]", key, s.accountCols))
 	return "", &d
+}
+
+// mapMode selects strict resolution when a translation table is
+// configured and pass-through resolution otherwise.
+func mapMode(m map[string]string) csvkit.MapMode {
+	if m == nil {
+		return csvkit.Verbatim
+	}
+	return csvkit.Strict
 }
 
 // resolveCounterAccount resolves a row's counter (balancing) account
@@ -274,10 +288,7 @@ func resolveCounterAccount(s *shape, idx map[string]int, row []string, path stri
 		}
 		return s.counterAccountDefault, nil, true
 	}
-	if s.counterAccountMap == nil {
-		return key, nil, true
-	}
-	if mapped, ok := s.counterAccountMap[key]; ok {
+	if mapped, ok := csvkit.ResolveThroughMap(key, s.counterAccountMap, mapMode(s.counterAccountMap)); ok {
 		return mapped, nil, true
 	}
 	d := rowWarn(DiagUnmappedCounterAccount, path, line,
@@ -302,10 +313,8 @@ func resolveCurrency(s *shape, idx map[string]int, row []string) string {
 	if v == "" {
 		return s.currencyDefault
 	}
-	if mapped, ok := s.currencyMap[v]; ok {
-		return mapped
-	}
-	return v
+	mapped, _ := csvkit.ResolveThroughMap(v, s.currencyMap, csvkit.Verbatim)
+	return mapped
 }
 
 // resolvePayee resolves a row's payee. Returns "" when [payee].col is
@@ -320,10 +329,8 @@ func resolvePayee(s *shape, idx map[string]int, row []string) string {
 	if v == "" {
 		return ""
 	}
-	if mapped, ok := s.payeeMap[v]; ok {
-		return mapped
-	}
-	return v
+	mapped, _ := csvkit.ResolveThroughMap(v, s.payeeMap, csvkit.Verbatim)
+	return mapped
 }
 
 // buildNarration concatenates the trimmed values of [narration].col with
@@ -341,9 +348,8 @@ func buildNarration(s *shape, idx map[string]int, row []string) string {
 		if v == "" {
 			continue
 		}
-		if mapped, ok := s.narrationMap[v]; ok {
-			v = mapped
-		}
+		// per-cell translation; a mapped "" drops the cell
+		v, _ = csvkit.ResolveThroughMap(v, s.narrationMap, csvkit.Verbatim)
 		if v == "" {
 			continue
 		}

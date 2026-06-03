@@ -95,6 +95,16 @@
 //	col    = "Deposit"
 //	negate = false
 //
+//	# Optional row-exclusion rules. Each rule's match is a regular
+//	# expression; a rule with col tests that column, a rule without col
+//	# tests every cell. A matching row is dropped silently (no diagnostic).
+//	[[exclude]]
+//	col   = "Date"
+//	match = "^Total"                   # skip a trailing total row
+//
+//	[[exclude]]
+//	match = "^※"                       # skip footnote rows not aligned to columns
+//
 // At least one of [account].col / [account].default must be set;
 // similarly for [currency]. [counter_account] is entirely optional —
 // omitting it preserves the historical single-posting behavior. When
@@ -143,6 +153,18 @@
 // as "no value" (contributing nothing to the row's amount) rather than a
 // parse error. When [number] is absent, amounts parse with apd's default
 // semantics, which reject embedded separators such as "1,234".
+//
+// # Excluding rows
+//
+// The optional [[exclude]] array drops statement noise — footnotes, total
+// and subtotal lines — before a row is interpreted. Each rule carries a
+// required match regular expression; a rule with col tests only that
+// column, while a rule without col tests every cell in the row. A row that
+// matches any rule is skipped silently and produces no diagnostic, so rows
+// that would otherwise fail date or amount parsing (a "Total" line, a "※"
+// footnote) can be removed without noise. Exclusion runs after blank-row
+// skipping and before field resolution; excluded columns need not appear
+// in the header.
 //
 // # Resolution priorities
 //

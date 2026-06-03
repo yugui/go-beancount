@@ -110,6 +110,10 @@ func TestIdempotency_BOM(t *testing.T) {
 	checkIdempotency(t, "bom")
 }
 
+func TestIdempotency_Exclude(t *testing.T) {
+	checkIdempotency(t, "exclude")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)
