@@ -12,6 +12,7 @@ import (
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer"
+	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
 
 // stringList is a TOML field that accepts either a single string or an
@@ -49,6 +50,7 @@ type shapeConfig struct {
 	Delimiter      string          `toml:"delimiter"`
 	SkipLines      int             `toml:"skip_lines"`
 	Encoding       string          `toml:"encoding"`
+	Number         numberConfig    `toml:"number"`
 	Date           dateConfig      `toml:"date"`
 	Account        accountConfig   `toml:"account"`
 	CounterAccount accountConfig   `toml:"counter_account"`
@@ -61,6 +63,15 @@ type shapeConfig struct {
 type dateConfig struct {
 	Col    string `toml:"col"`
 	Format string `toml:"format"`
+}
+
+// numberConfig is the on-disk shape of the optional [number] block. It
+// tunes how amount cells are parsed; an absent block parses amounts
+// exactly as apd does (commas rejected, '.' decimal point).
+type numberConfig struct {
+	ThousandsSep string     `toml:"thousands_sep"`
+	DecimalSep   string     `toml:"decimal_sep"`
+	Placeholders stringList `toml:"placeholders"`
 }
 
 // accountConfig is the on-disk shape of an account-selecting block
@@ -92,6 +103,9 @@ type narrationConfig struct {
 	Map       map[string]string `toml:"map"`
 }
 
+// amountColumn is the TOML decode target for one [[amount]] entry. It
+// mirrors csvkit.AmountColumn but stays local so csvkit carries no TOML
+// tags; validateShape converts between the two.
 type amountColumn struct {
 	Col    string `toml:"col"`
 	Negate bool   `toml:"negate"`
@@ -143,7 +157,8 @@ type shape struct {
 	narrationSep  string
 	narrationMap  map[string]string
 
-	amounts []amountColumn
+	amounts      []csvkit.AmountColumn
+	numberFormat csvkit.NumberFormat
 }
 
 // newImporter is the factory function registered under kind "csv". It returns
@@ -212,10 +227,16 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 	if len(sc.Amount) == 0 {
 		return nil, fmt.Errorf("shape %q: at least one [[amount]] entry is required", name)
 	}
+	amounts := make([]csvkit.AmountColumn, len(sc.Amount))
 	for i, a := range sc.Amount {
 		if a.Col == "" {
 			return nil, fmt.Errorf("shape %q: amount[%d].col is required", name, i)
 		}
+		amounts[i] = csvkit.AmountColumn{Col: a.Col, Negate: a.Negate}
+	}
+
+	if sc.Number.DecimalSep != "" && sc.Number.DecimalSep == sc.Number.ThousandsSep {
+		return nil, fmt.Errorf("shape %q: [number].decimal_sep and [number].thousands_sep must differ", name)
 	}
 
 	// nil == "no map configured" (see shape.accountMap doc).
@@ -241,7 +262,12 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		narrationCols:         []string(sc.Narration.Col),
 		narrationSep:          sc.Narration.Separator,
 		narrationMap:          nilIfEmpty(sc.Narration.Map),
-		amounts:               sc.Amount,
+		amounts:               amounts,
+		numberFormat: csvkit.NumberFormat{
+			ThousandsSep: sc.Number.ThousandsSep,
+			DecimalSep:   sc.Number.DecimalSep,
+			Placeholders: []string(sc.Number.Placeholders),
+		},
 	}
 
 	if sc.Match != "" {

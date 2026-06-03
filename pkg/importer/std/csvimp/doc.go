@@ -13,6 +13,14 @@
 //	skip_lines  = 1                    # banner lines before the header; default 0
 //	encoding    = "Shift_JIS"          # optional IANA charset; default UTF-8/pass-through
 //
+//	# Optional numeric parsing rules applied to every [[amount]] cell.
+//	# Absent, amounts parse exactly as apd does (commas rejected, '.'
+//	# decimal point).
+//	[number]
+//	thousands_sep = ","                # stripped before parsing ("1,234" -> 1234)
+//	decimal_sep   = "."                # normalised to '.' (e.g. "," for European decimals)
+//	placeholders  = ["-"]              # cells equal to these parse as "no value", not an error
+//
 //	[date]
 //	col    = "Date"
 //	format = "2006-01-02"              # must include year
@@ -123,6 +131,18 @@
 // registry aliases (e.g. "MS_Kanji" for Shift_JIS). Unset is equivalent
 // to passing the bytes through unchanged, which works for UTF-8 and any
 // ASCII-compatible single-byte encoding.
+//
+// A leading UTF-8 byte-order mark is always stripped before parsing, so a
+// BOM never contaminates the first header column name.
+//
+// # Number format
+//
+// The optional [number] block tunes how every [[amount]] cell is parsed.
+// thousands_sep is removed before parsing; decimal_sep (when not ".") is
+// normalised to "."; and any cell equal to a placeholders entry is treated
+// as "no value" (contributing nothing to the row's amount) rather than a
+// parse error. When [number] is absent, amounts parse with apd's default
+// semantics, which reject embedded separators such as "1,234".
 //
 // # Resolution priorities
 //

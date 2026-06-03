@@ -1,12 +1,8 @@
 package csvimp
 
 import (
-	"bufio"
 	"context"
-	"encoding/csv"
-	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -14,6 +10,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer"
 	"github.com/yugui/go-beancount/pkg/importer/importerutil"
+	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
 
 const rowhashKey = "csvimp-rowhash"
@@ -25,7 +22,7 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 	}
 	defer rc.Close()
 
-	rdr, hdr, err := openCSVAtBody(rc, s)
+	hdr, rows, err := s.reader().Records(rc)
 	if err != nil {
 		return importer.Output{}, fmt.Errorf("csvimp: reading header from %q: %w", in.Path, err)
 	}
@@ -38,26 +35,19 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 	var (
 		directives []ast.Directive
 		diags      []ast.Diagnostic
-		row        []string
 	)
-	for {
+	for rec, rerr := range rows {
 		if err := ctx.Err(); err != nil {
 			return importer.Output{Directives: directives, Diagnostics: diags}, err
 		}
-		row, err = rdr.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
+		if rerr != nil {
 			return importer.Output{Directives: directives, Diagnostics: diags},
-				fmt.Errorf("csvimp: parsing row in %q: %w", in.Path, err)
+				fmt.Errorf("csvimp: parsing row in %q: %w", in.Path, rerr)
 		}
-		if len(row) == 0 || allBlank(row) {
+		if len(rec.Fields) == 0 || allBlank(rec.Fields) {
 			continue
 		}
-		csvLine, _ := rdr.FieldPos(0)
-		line := csvLine + s.skipLines
-		dir, diag := processRow(in.Path, line, name, s, idx, row, in.Hints)
+		dir, diag := processRow(in.Path, rec.Line, name, s, idx, rec.Fields, in.Hints)
 		if diag != nil {
 			diags = append(diags, *diag)
 		}
@@ -66,6 +56,16 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 		}
 	}
 	return importer.Output{Directives: directives, Diagnostics: diags}, nil
+}
+
+// reader returns a csvkit.Reader configured from s.
+func (s *shape) reader() *csvkit.Reader {
+	return &csvkit.Reader{
+		Delimiter:  s.delimiter,
+		Encoding:   s.inputEncoding,
+		LazyQuotes: true,
+		SkipLines:  s.skipLines,
+	}
 }
 
 func checkMissingColumns(path, name string, s *shape, idx map[string]int) ([]ast.Diagnostic, bool) {
@@ -77,27 +77,6 @@ func checkMissingColumns(path, name string, s *shape, idx map[string]int) ([]ast
 		}
 	}
 	return diags, len(diags) == 0
-}
-
-// openCSVAtBody returns a csv.Reader positioned past the header and the
-// parsed header row. On success the reader is ready to yield body rows.
-func openCSVAtBody(rc io.Reader, s *shape) (*csv.Reader, []string, error) {
-	if s.inputEncoding != nil {
-		rc = s.inputEncoding.NewDecoder().Reader(rc)
-	}
-	br := bufio.NewReader(rc)
-	if err := skipRawLines(br, s.skipLines); err != nil {
-		return nil, nil, err
-	}
-	rdr := csv.NewReader(br)
-	rdr.Comma = s.delimiter
-	rdr.FieldsPerRecord = -1
-	rdr.LazyQuotes = true
-	hdr, err := rdr.Read()
-	if err != nil {
-		return nil, nil, err
-	}
-	return rdr, hdr, nil
 }
 
 func allBlank(row []string) bool {
@@ -122,12 +101,12 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 
 	sum, status, badCol := sumAmounts(s, idx, row)
 	switch status {
-	case amountStatusOK:
-	case amountStatusBad:
+	case csvkit.AmountOK:
+	case csvkit.AmountBad:
 		d := rowDiag(DiagBadAmount, path, line,
 			fmt.Sprintf("cannot parse amount column %q: %q", badCol, fieldAt(row, idx, badCol)))
 		return nil, &d
-	case amountStatusAllBlank:
+	case csvkit.AmountAllBlank:
 		d := rowDiag(DiagAllBlankAmount, path, line, "all amount columns blank")
 		return nil, &d
 	}
@@ -152,11 +131,11 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 	postings := make([]ast.Posting, 0, 2)
 	postings = append(postings, ast.Posting{
 		Account: ast.Account(account),
-		Amount:  &ast.Amount{Number: *sum, Currency: currency},
+		Amount:  &ast.Amount{Number: sum, Currency: currency},
 	})
 	if hasCounter {
 		var neg apd.Decimal
-		if _, err := apd.BaseContext.Neg(&neg, sum); err != nil {
+		if _, err := apd.BaseContext.Neg(&neg, &sum); err != nil {
 			d := rowDiag(DiagBadAmount, path, line,
 				fmt.Sprintf("cannot negate amount for counter posting: %v", err))
 			return nil, &d
@@ -206,44 +185,12 @@ func joinKey(cols []string, sep string, idx map[string]int, row []string) string
 	return strings.Join(parts, sep)
 }
 
-type amountStatus int
-
-const (
-	amountStatusOK amountStatus = iota
-	amountStatusBad
-	amountStatusAllBlank
-)
-
-// sumAmounts returns the signed sum of all amount columns in row. A
-// negate=true column is subtracted. Blank cells contribute 0. Returns
-// amountStatusAllBlank when every amount cell is blank, amountStatusBad
-// (with the offending column name) when a non-blank cell fails decimal
-// parsing.
-func sumAmounts(s *shape, idx map[string]int, row []string) (*apd.Decimal, amountStatus, string) {
-	sum := new(apd.Decimal)
-	allAmountsBlank := true
-	for _, a := range s.amounts {
-		raw := strings.TrimSpace(fieldAt(row, idx, a.Col))
-		if raw == "" {
-			continue
-		}
-		allAmountsBlank = false
-		var v apd.Decimal
-		if _, _, err := apd.BaseContext.SetString(&v, raw); err != nil {
-			return nil, amountStatusBad, a.Col
-		}
-		op := apd.BaseContext.Add
-		if a.Negate {
-			op = apd.BaseContext.Sub
-		}
-		if _, err := op(sum, sum, &v); err != nil {
-			return nil, amountStatusBad, a.Col
-		}
-	}
-	if allAmountsBlank {
-		return nil, amountStatusAllBlank, ""
-	}
-	return sum, amountStatusOK, ""
+// sumAmounts returns the signed sum of the shape's amount columns under
+// its NumberFormat, delegating to csvkit. A negate=true column is
+// subtracted; blank or placeholder cells contribute nothing.
+func sumAmounts(s *shape, idx map[string]int, row []string) (apd.Decimal, csvkit.AmountStatus, string) {
+	p := csvkit.AmountParser{Format: s.numberFormat}
+	return p.Sum(s.amounts, func(col string) string { return fieldAt(row, idx, col) })
 }
 
 // resolveAccount resolves a row's primary beancount account. Priority:

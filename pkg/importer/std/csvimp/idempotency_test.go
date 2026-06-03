@@ -98,6 +98,18 @@ func TestIdempotency_MultiAccountMultiCol(t *testing.T) {
 	checkIdempotency(t, "multiaccount_multicol")
 }
 
+func TestIdempotency_CommaAmount(t *testing.T) {
+	checkIdempotency(t, "commaamount")
+}
+
+func TestIdempotency_Placeholder(t *testing.T) {
+	checkIdempotency(t, "placeholder")
+}
+
+func TestIdempotency_BOM(t *testing.T) {
+	checkIdempotency(t, "bom")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)

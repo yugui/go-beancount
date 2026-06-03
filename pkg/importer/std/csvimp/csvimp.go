@@ -1,10 +1,8 @@
 package csvimp
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"path/filepath"
 	"strings"
 
@@ -70,35 +68,11 @@ func readHeader(in importer.Input, s *shape) ([]string, bool) {
 		return nil, false
 	}
 	defer rc.Close()
-	_, hdr, err := openCSVAtBody(rc, s)
+	hdr, _, err := s.reader().Records(rc)
 	if err != nil {
 		return nil, false
 	}
 	return hdr, true
-}
-
-func skipRawLines(br *bufio.Reader, skipLines int) error {
-	for n := 0; n < skipLines; n++ {
-		if _, err := readLine(br); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// readLine reads one line up to (and including) '\n', strips the
-// trailing CR/LF, and returns the line body. A trailing partial line
-// without a final newline is returned as success; only an EOF with no
-// data returns io.EOF.
-func readLine(br *bufio.Reader) (string, error) {
-	line, err := br.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	if err == io.EOF && line == "" {
-		return "", io.EOF
-	}
-	return strings.TrimRight(line, "\r\n"), nil
 }
 
 func buildColumnIndex(header []string) map[string]int {
