@@ -32,6 +32,10 @@ func (i *Importer) Identify(ctx context.Context, in importer.Input) bool {
 	if i.s.compiledMatch != nil && !i.s.compiledMatch.MatchString(in.Path) {
 		return false
 	}
+	// Headerless input has no header to inspect; gate on path/MIME/match only.
+	if i.s.columns != nil {
+		return true
+	}
 	hdr, ok := readHeader(in, i.s)
 	if !ok {
 		return false

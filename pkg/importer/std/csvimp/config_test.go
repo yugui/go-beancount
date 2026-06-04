@@ -269,6 +269,27 @@ default = "USD"
 ` + minimalAmount,
 			wantIn: "[narration.map] is set but [narration].col is empty",
 		},
+		{
+			name: "columns and header_match together",
+			src: `header_match = ["Date"]
+[columns]
+Date = 0
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "columns (headerless) and header_match are mutually exclusive",
+		},
+		{
+			name: "blank header_match entry",
+			src: `header_match = ["Date", ""]
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "header_match contains a blank column name",
+		},
+		{
+			name: "negative column index",
+			src: `[columns]
+Date = -1
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "must be non-negative",
+		},
 	}
 
 	for _, tc := range cases {

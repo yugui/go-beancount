@@ -26,7 +26,10 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 	if err != nil {
 		return importer.Output{}, fmt.Errorf("csvimp: reading header from %q: %w", in.Path, err)
 	}
-	idx := buildColumnIndex(hdr)
+	idx := s.columns
+	if idx == nil {
+		idx = buildColumnIndex(hdr)
+	}
 
 	if diags, ok := checkMissingColumns(in.Path, name, s, idx); !ok {
 		return importer.Output{Diagnostics: diags}, nil
@@ -80,10 +83,12 @@ func (s *shape) excluded(fields []string, idx map[string]int) bool {
 // reader returns a csvkit.Reader configured from s.
 func (s *shape) reader() *csvkit.Reader {
 	return &csvkit.Reader{
-		Delimiter:  s.delimiter,
-		Encoding:   s.inputEncoding,
-		LazyQuotes: true,
-		SkipLines:  s.skipLines,
+		Delimiter:   s.delimiter,
+		Encoding:    s.inputEncoding,
+		LazyQuotes:  true,
+		SkipLines:   s.skipLines,
+		HeaderMatch: s.headerMatch,
+		Columns:     s.columns,
 	}
 }
 

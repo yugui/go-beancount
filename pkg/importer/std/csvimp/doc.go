@@ -134,6 +134,31 @@
 // registering them in an [importer.Registry]; [importer.Dispatch]
 // walks instances in declaration order.
 //
+// # Header location
+//
+// By default the header is the first row after skip_lines banner lines.
+// Two alternatives handle messier inputs:
+//
+//   - header_match = ["Date", "Amount"] discovers a header that follows a
+//     variable-length banner: rows are scanned (after any skip_lines) until
+//     one contains every listed column name, and that row becomes the
+//     header. Use it when the number of preamble lines is not fixed.
+//
+//   - a [columns] table maps column names to zero-based positions for
+//     headerless files:
+//
+//     [columns]
+//     Date   = 0
+//     Amount = 3
+//
+//     In headerless mode no header row is consumed and Identify cannot
+//     inspect column names, so dispatch falls back to the path/MIME gate
+//     and match regex alone. A required column absent from [columns]
+//     surfaces as DiagMissingColumn at Extract time.
+//
+// header_match and [columns] are mutually exclusive; either may combine
+// with skip_lines.
+//
 // # Input encoding
 //
 // When encoding is set, the file's bytes are decoded to UTF-8 before CSV

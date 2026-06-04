@@ -114,6 +114,14 @@ func TestIdempotency_Exclude(t *testing.T) {
 	checkIdempotency(t, "exclude")
 }
 
+func TestIdempotency_Headerless(t *testing.T) {
+	checkIdempotency(t, "headerless")
+}
+
+func TestIdempotency_Banner(t *testing.T) {
+	checkIdempotency(t, "banner")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)

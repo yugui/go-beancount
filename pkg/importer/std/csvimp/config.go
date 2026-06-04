@@ -49,6 +49,8 @@ type shapeConfig struct {
 	Match          string          `toml:"match"`
 	Delimiter      string          `toml:"delimiter"`
 	SkipLines      int             `toml:"skip_lines"`
+	HeaderMatch    stringList      `toml:"header_match"`
+	Columns        map[string]int  `toml:"columns"`
 	Encoding       string          `toml:"encoding"`
 	Number         numberConfig    `toml:"number"`
 	Date           dateConfig      `toml:"date"`
@@ -124,6 +126,12 @@ type shape struct {
 	compiledMatch *regexp.Regexp // nil when Match was unset
 	delimiter     rune           // default ','
 	skipLines     int
+
+	// headerMatch locates the header past a variable banner; nil for a
+	// fixed header. columns is non-nil only for headerless input, where
+	// it is both the reader's headerless trigger and the column index.
+	headerMatch func([]string) bool
+	columns     map[string]int
 
 	// inputEncoding decodes file bytes to UTF-8 before CSV parsing.
 	// nil means "no transformation"; bytes flow through verbatim
@@ -250,10 +258,36 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		return nil, fmt.Errorf("shape %q: [number].decimal_sep and [number].thousands_sep must differ", name)
 	}
 
+	hasColumns := len(sc.Columns) > 0
+	hasHeaderMatch := len(sc.HeaderMatch) > 0
+	if hasColumns && hasHeaderMatch {
+		return nil, fmt.Errorf("shape %q: columns (headerless) and header_match are mutually exclusive", name)
+	}
+	for _, c := range sc.HeaderMatch {
+		if strings.TrimSpace(c) == "" {
+			return nil, fmt.Errorf("shape %q: header_match contains a blank column name", name)
+		}
+	}
+	for col, i := range sc.Columns {
+		if i < 0 {
+			return nil, fmt.Errorf("shape %q: [columns][%q] = %d must be non-negative", name, col, i)
+		}
+	}
+	var columns map[string]int
+	if hasColumns {
+		columns = sc.Columns
+	}
+	var headerMatch func([]string) bool
+	if hasHeaderMatch {
+		headerMatch = headerMatcher([]string(sc.HeaderMatch))
+	}
+
 	// nil == "no map configured" (see shape.accountMap doc).
 	s := &shape{
 		delimiter:             ',',
 		skipLines:             sc.SkipLines,
+		headerMatch:           headerMatch,
+		columns:               columns,
 		dateCol:               sc.Date.Col,
 		dateFormat:            sc.Date.Format,
 		accountCols:           []string(sc.Account.Col),
@@ -354,6 +388,24 @@ func validateAccountSection(name, section string, cfg accountConfig, optional bo
 		}
 	}
 	return nil
+}
+
+// headerMatcher returns a predicate accepting any row that contains every
+// name in required (compared after trimming), used to locate a header that
+// follows a variable-length banner.
+func headerMatcher(required []string) func([]string) bool {
+	return func(row []string) bool {
+		present := make(map[string]bool, len(row))
+		for _, c := range row {
+			present[strings.TrimSpace(c)] = true
+		}
+		for _, r := range required {
+			if !present[r] {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 func nilIfEmpty(m map[string]string) map[string]string {

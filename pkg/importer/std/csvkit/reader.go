@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/csv"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"strings"
@@ -14,7 +15,8 @@ import (
 // Reader reads CSV/TSV records from a byte stream. It decodes an optional
 // source Encoding to UTF-8, strips a leading UTF-8 byte-order mark, skips
 // a fixed number of banner lines, and parses the remaining rows. The zero
-// value reads comma-delimited UTF-8 with no banner lines.
+// value reads comma-delimited UTF-8 with no banner lines, taking the first
+// row as the header.
 //
 // A Reader holds no state across calls; the same value is safe for
 // concurrent use once constructed.
@@ -33,6 +35,19 @@ type Reader struct {
 
 	// SkipLines is the count of raw banner lines preceding the header.
 	SkipLines int
+
+	// HeaderMatch locates a header that follows a variable-length banner:
+	// when set, parsed rows are discarded until HeaderMatch returns true
+	// for one, which becomes the header. SkipLines still applies first, so
+	// a fixed preamble may precede the variable banner. Mutually exclusive
+	// with Columns.
+	HeaderMatch func([]string) bool
+
+	// Columns enables headerless input: when non-nil, no header row is
+	// consumed and Records returns a nil header. The map carries the
+	// caller's name-to-position bindings for its own indexing; SkipLines
+	// still applies. Mutually exclusive with HeaderMatch.
+	Columns map[string]int
 }
 
 // Record is one parsed data row together with its 1-based source line,
@@ -43,11 +58,17 @@ type Record struct {
 }
 
 // Records parses rc and returns the header row and an iterator over the
-// body rows. The iterator yields (Record{}, err) for the first parse
-// failure and then stops; io.EOF terminates iteration without an error.
-// A header-read failure is reported as a non-nil error from Records
-// itself. The caller owns rc and is responsible for closing it.
+// body rows. In headerless mode (Columns set) the returned header is nil;
+// otherwise it is the header row, located either directly or, when
+// HeaderMatch is set, by scanning past a variable banner. The iterator
+// yields (Record{}, err) for the first parse failure and then stops;
+// io.EOF terminates iteration without an error. A header-read failure
+// (including no row satisfying HeaderMatch) is reported as a non-nil error
+// from Records itself. The caller owns rc and is responsible for closing it.
 func (r *Reader) Records(rc io.Reader) (header []string, rows iter.Seq2[Record, error], err error) {
+	if r.Columns != nil && r.HeaderMatch != nil {
+		return nil, nil, fmt.Errorf("csvkit: Columns and HeaderMatch are mutually exclusive")
+	}
 	if r.Encoding != nil {
 		rc = r.Encoding.NewDecoder().Reader(rc)
 	}
@@ -65,9 +86,28 @@ func (r *Reader) Records(rc io.Reader) (header []string, rows iter.Seq2[Record, 
 	cr.FieldsPerRecord = -1
 	cr.LazyQuotes = r.LazyQuotes
 
-	header, err = cr.Read()
-	if err != nil {
-		return nil, nil, err
+	switch {
+	case r.Columns != nil:
+		// headerless: no header row consumed
+	case r.HeaderMatch != nil:
+		for {
+			row, err := cr.Read()
+			if errors.Is(err, io.EOF) {
+				return nil, nil, fmt.Errorf("csvkit: no row matched HeaderMatch before EOF")
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+			if r.HeaderMatch(row) {
+				header = row
+				break
+			}
+		}
+	default:
+		header, err = cr.Read()
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	rows = func(yield func(Record, error) bool) {

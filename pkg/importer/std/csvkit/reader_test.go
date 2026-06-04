@@ -57,6 +57,65 @@ func TestReaderSkipLines(t *testing.T) {
 	}
 }
 
+func TestReaderHeaderless(t *testing.T) {
+	r := &csvkit.Reader{Columns: map[string]int{"Date": 0, "Amount": 1}}
+	header, recs := collect(t, r, "2024-01-01,10\n2024-01-02,20\n")
+	if header != nil {
+		t.Errorf("header = %v, want nil in headerless mode", header)
+	}
+	want := []csvkit.Record{
+		{Fields: []string{"2024-01-01", "10"}, Line: 1},
+		{Fields: []string{"2024-01-02", "20"}, Line: 2},
+	}
+	if diff := cmp.Diff(want, recs); diff != "" {
+		t.Errorf("records mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestReaderHeaderMatch(t *testing.T) {
+	hasCols := func(want ...string) func([]string) bool {
+		return func(row []string) bool {
+			set := map[string]bool{}
+			for _, c := range row {
+				set[c] = true
+			}
+			for _, w := range want {
+				if !set[w] {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	r := &csvkit.Reader{HeaderMatch: hasCols("Date", "Amount")}
+	body := "Bank statement\n\"period: 2024\"\nDate,Amount\n2024-01-01,10\n"
+	header, recs := collect(t, r, body)
+	if diff := cmp.Diff([]string{"Date", "Amount"}, header); diff != "" {
+		t.Errorf("header mismatch (-want +got):\n%s", diff)
+	}
+	if len(recs) != 1 || recs[0].Line != 4 {
+		t.Fatalf("recs = %+v, want one record at line 4", recs)
+	}
+}
+
+func TestReaderHeaderMatchNotFound(t *testing.T) {
+	r := &csvkit.Reader{HeaderMatch: func([]string) bool { return false }}
+	_, _, err := r.Records(strings.NewReader("a\nb\n"))
+	if err == nil {
+		t.Error("Records() err = nil, want error when no header matches")
+	}
+}
+
+func TestReaderColumnsAndHeaderMatchConflict(t *testing.T) {
+	r := &csvkit.Reader{
+		Columns:     map[string]int{"A": 0},
+		HeaderMatch: func([]string) bool { return true },
+	}
+	if _, _, err := r.Records(strings.NewReader("x\n")); err == nil {
+		t.Error("Records() err = nil, want error for conflicting Columns and HeaderMatch")
+	}
+}
+
 func TestReaderTSV(t *testing.T) {
 	header, recs := collect(t, &csvkit.Reader{Delimiter: '\t'}, "A\tB\n1\t2\n")
 	if diff := cmp.Diff([]string{"A", "B"}, header); diff != "" {
