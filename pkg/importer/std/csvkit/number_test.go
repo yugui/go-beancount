@@ -70,6 +70,54 @@ func TestParseNumber(t *testing.T) {
 	}
 }
 
+func TestSplitCurrencySuffix(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantNum  string
+		wantCurr string
+	}{
+		{in: "1,000 JPY", wantNum: "1,000", wantCurr: "JPY"},
+		{in: "-4.50 USD", wantNum: "-4.50", wantCurr: "USD"},
+		{in: "1234", wantNum: "1234", wantCurr: ""},
+		{in: "  100 BTC  ", wantNum: "100", wantCurr: "BTC"},
+		{in: "100 each", wantNum: "100 each", wantCurr: ""}, // lowercase suffix is not a commodity
+		{in: "JPY", wantNum: "JPY", wantCurr: ""},           // single token, no number
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			num, curr := csvkit.SplitCurrencySuffix(tc.in)
+			if num != tc.wantNum || curr != tc.wantCurr {
+				t.Errorf("SplitCurrencySuffix(%q) = (%q, %q), want (%q, %q)", tc.in, num, curr, tc.wantNum, tc.wantCurr)
+			}
+		})
+	}
+}
+
+func TestAmountParserSplitCurrency(t *testing.T) {
+	cells := func(m map[string]string) func(string) string {
+		return func(col string) string { return m[col] }
+	}
+	p := csvkit.AmountParser{Format: csvkit.NumberFormat{ThousandsSep: ","}, SplitCurrency: true}
+
+	t.Run("extracts hint and number", func(t *testing.T) {
+		got, status, _ := p.Sum([]csvkit.AmountColumn{{Col: "Amount"}}, cells(map[string]string{"Amount": "1,000 JPY"}))
+		if status != csvkit.AmountOK {
+			t.Fatalf("status = %v, want AmountOK", status)
+		}
+		if got.Number.String() != "1000" || got.CurrencyHint != "JPY" {
+			t.Errorf("Sum() = (%s, %q), want (1000, JPY)", got.Number.String(), got.CurrencyHint)
+		}
+	})
+
+	t.Run("conflicting currencies are bad", func(t *testing.T) {
+		cols := []csvkit.AmountColumn{{Col: "A"}, {Col: "B"}}
+		_, status, badCol := p.Sum(cols, cells(map[string]string{"A": "10 USD", "B": "20 JPY"}))
+		if status != csvkit.AmountBad || badCol != "B" {
+			t.Errorf("Sum() = (%v, %q), want (AmountBad, B)", status, badCol)
+		}
+	})
+}
+
 func TestAmountParserSum(t *testing.T) {
 	cells := func(m map[string]string) func(string) string {
 		return func(col string) string { return m[col] }
@@ -131,7 +179,7 @@ func TestAmountParserSum(t *testing.T) {
 				t.Errorf("Sum() badCol = %q, want %q", badCol, tc.wantBadCol)
 			}
 			if tc.wantStatus == csvkit.AmountOK {
-				if got := sum.String(); got != tc.want {
+				if got := sum.Number.String(); got != tc.want {
 					t.Errorf("Sum() = %q, want %q", got, tc.want)
 				}
 			}

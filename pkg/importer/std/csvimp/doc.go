@@ -64,8 +64,9 @@
 //	"AMZN MKTPL" = "Amazon"
 //
 //	[currency]
-//	col     = "Currency"               # optional; scalar only
-//	default = "JPY"                    # optional
+//	col         = "Currency"           # optional; scalar only
+//	default     = "JPY"                # optional
+//	from_amount = true                 # take currency from the amount cell's suffix
 //
 //	[currency.map]                     # optional translation
 //	"¥" = "JPY"
@@ -222,8 +223,12 @@
 //  1. [currency].col cell when non-blank: [currency.map] lookup; on
 //     miss the trimmed cell value is used verbatim. Unlike account
 //     resolution, a currency map miss is never an error.
-//  2. [currency].default.
-//  3. Otherwise: DiagMissingCurrency.
+//  2. with [currency].from_amount set, a currency token split off the
+//     amount cell (e.g. "1,000 JPY" yields JPY). An explicit [currency].col
+//     outranks this; conflicting suffixes across multiple amount columns
+//     are a DiagBadAmount.
+//  3. [currency].default.
+//  4. Otherwise: DiagMissingCurrency.
 //
 // Payee:
 //  1. joined [payee].col cells when non-empty: [payee.map] lookup or

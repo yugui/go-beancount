@@ -101,9 +101,10 @@ type payeeConfig struct {
 }
 
 type currencyConfig struct {
-	Col     string            `toml:"col"`
-	Default string            `toml:"default"`
-	Map     map[string]string `toml:"map"`
+	Col        string            `toml:"col"`
+	Default    string            `toml:"default"`
+	FromAmount bool              `toml:"from_amount"`
+	Map        map[string]string `toml:"map"`
 }
 
 type narrationConfig struct {
@@ -164,9 +165,10 @@ type shape struct {
 	payeeSep  string
 	payeeMap  map[string]string
 
-	currencyCol     string
-	currencyDefault string
-	currencyMap     map[string]string
+	currencyCol        string
+	currencyDefault    string
+	currencyFromAmount bool
+	currencyMap        map[string]string
 
 	narrationCols []string
 	narrationSep  string
@@ -224,8 +226,8 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		return nil, fmt.Errorf("shape %q: [payee.map] is set but [payee].col is not; the map would never be consulted", name)
 	}
 
-	if sc.Currency.Col == "" && sc.Currency.Default == "" {
-		return nil, fmt.Errorf("shape %q: [currency] requires col or default", name)
+	if sc.Currency.Col == "" && sc.Currency.Default == "" && !sc.Currency.FromAmount {
+		return nil, fmt.Errorf("shape %q: [currency] requires col, default, or from_amount", name)
 	}
 	if sc.Currency.Default != "" && strings.TrimSpace(sc.Currency.Default) == "" {
 		return nil, fmt.Errorf("shape %q: [currency].default is blank", name)
@@ -303,6 +305,7 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		payeeMap:              nilIfEmpty(sc.Payee.Map),
 		currencyCol:           sc.Currency.Col,
 		currencyDefault:       sc.Currency.Default,
+		currencyFromAmount:    sc.Currency.FromAmount,
 		currencyMap:           nilIfEmpty(sc.Currency.Map),
 		narrationCols:         []string(sc.Narration.Col),
 		narrationSep:          sc.Narration.Separator,

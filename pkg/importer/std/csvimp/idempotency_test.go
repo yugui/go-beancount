@@ -122,6 +122,10 @@ func TestIdempotency_Banner(t *testing.T) {
 	checkIdempotency(t, "banner")
 }
 
+func TestIdempotency_CurrencySuffix(t *testing.T) {
+	checkIdempotency(t, "currencysuffix")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)

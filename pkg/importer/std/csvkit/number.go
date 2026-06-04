@@ -2,7 +2,9 @@ package csvkit
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/cockroachdb/apd/v3"
 )
@@ -54,6 +56,31 @@ func ParseNumber(s string, f NumberFormat) (apd.Decimal, bool, error) {
 	return v, false, nil
 }
 
+// commodityRe matches a beancount commodity token: an uppercase letter,
+// optionally followed by uppercase letters, digits, or the interior
+// characters ' . _ - , and ending in a letter or digit.
+var commodityRe = regexp.MustCompile(`^[A-Z][A-Z0-9'._-]*[A-Z0-9]$|^[A-Z]$`)
+
+// SplitCurrencySuffix separates a trailing, whitespace-delimited currency
+// token from a numeric prefix: "1,000 JPY" -> ("1,000", "JPY"); "1234" ->
+// ("1234", ""). The suffix is split off only when it matches the beancount
+// commodity grammar and a non-empty prefix remains; otherwise the trimmed
+// input is returned with an empty currency. It never strips a sign or a
+// thousands separator from the number.
+func SplitCurrencySuffix(s string) (number, currency string) {
+	t := strings.TrimSpace(s)
+	i := strings.LastIndexFunc(t, unicode.IsSpace)
+	if i < 0 {
+		return t, ""
+	}
+	suffix := t[i+1:]
+	prefix := strings.TrimSpace(t[:i])
+	if prefix == "" || !commodityRe.MatchString(suffix) {
+		return t, ""
+	}
+	return prefix, suffix
+}
+
 // AmountColumn names one cell contributing to a row's amount and whether
 // its value is subtracted (Negate) rather than added.
 type AmountColumn struct {
@@ -61,7 +88,16 @@ type AmountColumn struct {
 	Negate bool
 }
 
-// AmountStatus reports the outcome of [AmountParser.Sum].
+// Amount is the result of summing amount columns: the numeric total plus an
+// optional currency observed in the cells. CurrencyHint is non-empty only
+// when AmountParser.SplitCurrency is set and a consistent suffix was found.
+type Amount struct {
+	Number       apd.Decimal
+	CurrencyHint string
+}
+
+// AmountStatus reports the outcome of [AmountParser.Sum]. The zero value
+// is not one of the named statuses and is never returned by Sum.
 type AmountStatus int
 
 const (
@@ -90,19 +126,38 @@ func (s AmountStatus) String() string {
 // AmountParser sums one or more amount columns under a NumberFormat.
 type AmountParser struct {
 	Format NumberFormat
+
+	// SplitCurrency, when set, extracts a trailing currency token from each
+	// cell (see SplitCurrencySuffix) before numeric parsing and reports it
+	// as the result's CurrencyHint. Conflicting currencies across cells are
+	// an AmountBad error.
+	SplitCurrency bool
 }
 
 // Sum adds each column's value (subtracting Negate columns), reading cells
 // through value. Blank or placeholder cells contribute nothing. The result
 // is AmountAllBlank when no column held a value, or AmountBad (with the
-// offending column name) when a non-blank cell failed to parse.
-func (p AmountParser) Sum(cols []AmountColumn, value func(col string) string) (apd.Decimal, AmountStatus, string) {
+// offending column name) when a non-blank cell failed to parse or when
+// SplitCurrency yielded conflicting currencies across cells.
+func (p AmountParser) Sum(cols []AmountColumn, value func(col string) string) (Amount, AmountStatus, string) {
 	var sum apd.Decimal
 	allBlank := true
+	currency := ""
 	for _, a := range cols {
-		v, blank, err := ParseNumber(value(a.Col), p.Format)
+		raw := value(a.Col)
+		if p.SplitCurrency {
+			num, cur := SplitCurrencySuffix(raw)
+			raw = num
+			if cur != "" {
+				if currency != "" && currency != cur {
+					return Amount{}, AmountBad, a.Col
+				}
+				currency = cur
+			}
+		}
+		v, blank, err := ParseNumber(raw, p.Format)
 		if err != nil {
-			return apd.Decimal{}, AmountBad, a.Col
+			return Amount{}, AmountBad, a.Col
 		}
 		if blank {
 			continue
@@ -113,11 +168,11 @@ func (p AmountParser) Sum(cols []AmountColumn, value func(col string) string) (a
 			op = apd.BaseContext.Sub
 		}
 		if _, err := op(&sum, &sum, &v); err != nil {
-			return apd.Decimal{}, AmountBad, a.Col
+			return Amount{}, AmountBad, a.Col
 		}
 	}
 	if allBlank {
-		return apd.Decimal{}, AmountAllBlank, ""
+		return Amount{}, AmountAllBlank, ""
 	}
-	return sum, AmountOK, ""
+	return Amount{Number: sum, CurrencyHint: currency}, AmountOK, ""
 }

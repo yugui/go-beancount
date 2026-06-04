@@ -210,7 +210,7 @@ col = "Acct"
 		{
 			name:   "currency requires col or default",
 			src:    minimalDate + minimalAccount + minimalAmount,
-			wantIn: "[currency] requires col or default",
+			wantIn: "[currency] requires col, default, or from_amount",
 		},
 		{
 			name: "currency map blank value",

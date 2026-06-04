@@ -135,7 +135,7 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 		return nil, &d
 	}
 
-	currency := resolveCurrency(s, idx, row)
+	currency := resolveCurrency(s, idx, row, sum.CurrencyHint)
 	if currency == "" {
 		d := rowDiag(DiagMissingCurrency, path, line,
 			fmt.Sprintf("no currency: [currency].col=%q [currency].default=%q", s.currencyCol, s.currencyDefault))
@@ -155,11 +155,11 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 	postings := make([]ast.Posting, 0, 2)
 	postings = append(postings, ast.Posting{
 		Account: ast.Account(account),
-		Amount:  &ast.Amount{Number: sum, Currency: currency},
+		Amount:  &ast.Amount{Number: sum.Number, Currency: currency},
 	})
 	if hasCounter {
 		var neg apd.Decimal
-		if _, err := apd.BaseContext.Neg(&neg, &sum); err != nil {
+		if _, err := apd.BaseContext.Neg(&neg, &sum.Number); err != nil {
 			d := rowDiag(DiagBadAmount, path, line,
 				fmt.Sprintf("cannot negate amount for counter posting: %v", err))
 			return nil, &d
@@ -200,9 +200,11 @@ func joinKey(cols []string, sep string, idx map[string]int, row []string) string
 
 // sumAmounts returns the signed sum of the shape's amount columns under
 // its NumberFormat, delegating to csvkit. A negate=true column is
-// subtracted; blank or placeholder cells contribute nothing.
-func sumAmounts(s *shape, idx map[string]int, row []string) (apd.Decimal, csvkit.AmountStatus, string) {
-	p := csvkit.AmountParser{Format: s.numberFormat}
+// subtracted; blank or placeholder cells contribute nothing. When the
+// shape extracts currency from the amount cell, the result's CurrencyHint
+// carries it.
+func sumAmounts(s *shape, idx map[string]int, row []string) (csvkit.Amount, csvkit.AmountStatus, string) {
+	p := csvkit.AmountParser{Format: s.numberFormat, SplitCurrency: s.currencyFromAmount}
 	return p.Sum(s.amounts, func(col string) string { return fieldAt(row, idx, col) })
 }
 
@@ -306,20 +308,24 @@ func resolveCounterAccount(s *shape, idx map[string]int, row []string, path stri
 //  1. [currency].col cell when non-blank: when [currency.map] holds the
 //     value, the mapped currency is returned; otherwise the trimmed cell
 //     value is used verbatim (pass-through).
-//  2. [currency].default.
+//  2. hint — a currency extracted from the amount cell (only when
+//     [currency].from_amount is set; empty otherwise).
+//  3. [currency].default.
 //
-// Returns "" when neither the col cell nor the default produces a value;
-// the caller treats that as DiagMissingCurrency.
-func resolveCurrency(s *shape, idx map[string]int, row []string) string {
-	if s.currencyCol == "" {
-		return s.currencyDefault
+// An explicit currency column outranks an amount-cell suffix. Returns ""
+// when no source produces a value; the caller treats that as
+// DiagMissingCurrency.
+func resolveCurrency(s *shape, idx map[string]int, row []string, hint string) string {
+	if s.currencyCol != "" {
+		if v := strings.TrimSpace(fieldAt(row, idx, s.currencyCol)); v != "" {
+			mapped, _ := csvkit.ResolveThroughMap(v, s.currencyMap, csvkit.Verbatim)
+			return mapped
+		}
 	}
-	v := strings.TrimSpace(fieldAt(row, idx, s.currencyCol))
-	if v == "" {
-		return s.currencyDefault
+	if hint != "" {
+		return hint
 	}
-	mapped, _ := csvkit.ResolveThroughMap(v, s.currencyMap, csvkit.Verbatim)
-	return mapped
+	return s.currencyDefault
 }
 
 // resolvePayee resolves a row's payee. Returns "" when [payee].col is
