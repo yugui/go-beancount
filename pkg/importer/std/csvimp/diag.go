@@ -49,6 +49,11 @@ const (
 	// DiagMissingColumn signals that a required column declared in the
 	// shape was absent from the file's header at Extract time.
 	DiagMissingColumn = "csvimp-missing-column"
+
+	// DiagBadNarrationTemplate signals that [narration].template failed to
+	// render for the row (for example, a reference to an unknown column).
+	// The row is skipped.
+	DiagBadNarrationTemplate = "csvimp-bad-narration-template"
 )
 
 func rowDiag(code, path string, line int, msg string) ast.Diagnostic {

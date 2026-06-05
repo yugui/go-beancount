@@ -75,9 +75,19 @@
 //	[narration]
 //	col       = ["Description", "Memo"] # scalar or list
 //	separator = " / "
+//	# template is an alternative to col (mutually exclusive): a restricted
+//	# Go text/template over the row's columns, e.g.
+//	# template = "{{.Desc}}{{if .Memo}} ({{.Memo}}){{end}}"
 //
 //	[narration.map]                    # optional per-cell translation
 //	"ATM W/D" = "ATM withdrawal"
+//
+//	# Optional: split one column into named parts via a regular expression.
+//	# Each named capture group becomes a synthetic column that any field
+//	# (payee, narration, account, …) may reference by the group's name.
+//	[split]
+//	col     = "Detail"
+//	pattern = "^(?P<payee>[^|]+)\\|(?P<memo>.*)$"
 //
 //	# At least one [[amount]] entry is required. Use one entry for a
 //	# single signed column, or multiple entries (with negate as needed)
@@ -239,11 +249,27 @@
 //
 // Narration:
 //
-// For each [narration].col entry: trim the cell, apply [narration.map]
-// (lookup or pass-through) when set, and skip blanks. A [narration.map]
-// entry mapped to "" drops the cell from the concatenation (useful for
-// masking noisy columns). The surviving values are joined with
-// [narration].separator.
+// With [narration].template set, the narration is the rendered template
+// (see "Splitting and templating" below). Otherwise, for each
+// [narration].col entry: trim the cell, apply [narration.map] (lookup or
+// pass-through) when set, and skip blanks. A [narration.map] entry mapped
+// to "" drops the cell from the concatenation (useful for masking noisy
+// columns). The surviving values are joined with [narration].separator.
+//
+// # Splitting and templating
+//
+// [split] applies a regular expression to one source column; each named
+// capture group becomes a synthetic column carrying the captured text,
+// addressable by the group name from any field (so [payee].col = "payee"
+// or [narration].col = "memo" can consume a split). The synthetic columns
+// are not required to appear in the header. A row whose source cell does
+// not match leaves the group columns blank rather than failing.
+//
+// [narration].template renders the narration from the row's columns with a
+// restricted Go text/template (functions: trim, upper, lower, default;
+// referencing an unknown column is a per-row DiagBadNarrationTemplate that
+// skips the row). It is mutually exclusive with [narration].col and is
+// validated at configure time. Split groups are visible to the template.
 //
 // # Diagnostics
 //
@@ -260,6 +286,7 @@
 //   - DiagUnmappedAccount         — [account].col cell missing from [account.map] in strict mode.
 //   - DiagUnmappedCounterAccount  — [counter_account].col cell missing from [counter_account.map] in strict mode (warning; row kept).
 //   - DiagMissingColumn           — a required column was absent from the header at Extract time.
+//   - DiagBadNarrationTemplate    — [narration].template failed to render for the row (e.g. unknown column).
 //
 // # Identity metadata
 //

@@ -1,0 +1,23 @@
+[split]
+col     = "Detail"
+pattern = "^(?P<payee>[^|]+)\\|(?P<memo>.*)$"
+
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[payee]
+col = "payee"
+
+[currency]
+default = "USD"
+
+[narration]
+col = "memo"
+
+[[amount]]
+col    = "Amount"
+negate = false

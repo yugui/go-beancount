@@ -117,5 +117,19 @@ func requiredColumns(s *shape) []string {
 	}
 	out = append(out, s.accountCols...)
 	out = append(out, s.counterAccountCols...)
-	return out
+	if s.split == nil {
+		return out
+	}
+	// Synthetic split columns are produced per row, not present in the
+	// header; only the split source column is required.
+	out = append(out, s.split.col)
+	// filter in-place: groups[c] is true only for synthetic names, never
+	// the real columns appended above, so writes stay within out's bounds.
+	filtered := out[:0]
+	for _, c := range out {
+		if !s.split.groups[c] {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
 }

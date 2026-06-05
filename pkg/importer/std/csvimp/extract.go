@@ -113,7 +113,13 @@ func allBlank(row []string) bool {
 }
 
 func processRow(path string, line int, name string, s *shape, idx map[string]int, row []string, hints map[string]string) (ast.Directive, *ast.Diagnostic) {
+	// hash the raw row before split augments it: synthetic columns must
+	// not affect the idempotency key.
 	hash := rowHash(name, row)
+
+	if s.split != nil {
+		row, idx = applySplit(s, row, idx)
+	}
 
 	dateRaw := fieldAt(row, idx, s.dateCol)
 	parsedDate, err := time.Parse(s.dateFormat, strings.TrimSpace(dateRaw))
@@ -150,7 +156,10 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 	counter, counterWarn, hasCounter := resolveCounterAccount(s, idx, row, path, line)
 
 	payee := resolvePayee(s, idx, row)
-	narration := buildNarration(s, idx, row)
+	narration, ndiag := renderNarration(s, idx, row, path, line)
+	if ndiag != nil {
+		return nil, ndiag
+	}
 
 	postings := make([]ast.Posting, 0, 2)
 	postings = append(postings, ast.Posting{
@@ -367,4 +376,56 @@ func buildNarration(s *shape, idx map[string]int, row []string) string {
 		parts = append(parts, v)
 	}
 	return strings.Join(parts, s.narrationSep)
+}
+
+// renderNarration produces a row's narration: from [narration].template
+// when configured (a render failure yields DiagBadNarrationTemplate and the
+// row is skipped), otherwise from the concatenation built by buildNarration.
+func renderNarration(s *shape, idx map[string]int, row []string, path string, line int) (string, *ast.Diagnostic) {
+	if s.narrationTemplate == nil {
+		return buildNarration(s, idx, row), nil
+	}
+	out, err := s.narrationTemplate.Render(rowMap(idx, row))
+	if err != nil {
+		d := rowDiag(DiagBadNarrationTemplate, path, line,
+			fmt.Sprintf("[narration].template: %v", err))
+		return "", &d
+	}
+	return out, nil
+}
+
+// applySplit extracts the named capture groups of s.split from its source
+// column and returns row and idx augmented with one synthetic column per
+// group. On no match the inputs are returned unchanged, so a group-named
+// field reads as blank. The originals are never mutated.
+func applySplit(s *shape, row []string, idx map[string]int) ([]string, map[string]int) {
+	groups, ok := csvkit.NamedSubmatches(s.split.re, fieldAt(row, idx, s.split.col))
+	if !ok {
+		return row, idx
+	}
+	aug := make([]string, len(row), len(row)+len(groups))
+	copy(aug, row)
+	aidx := make(map[string]int, len(idx)+len(groups))
+	for k, v := range idx {
+		aidx[k] = v
+	}
+	for name, val := range groups {
+		aidx[name] = len(aug)
+		aug = append(aug, val)
+	}
+	return aug, aidx
+}
+
+// rowMap projects a row into a name-keyed map for template rendering.
+// Columns absent from the row (short rows) map to "".
+func rowMap(idx map[string]int, row []string) map[string]string {
+	m := make(map[string]string, len(idx))
+	for name, i := range idx {
+		if i < len(row) {
+			m[name] = row[i]
+		} else {
+			m[name] = ""
+		}
+	}
+	return m
 }

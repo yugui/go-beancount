@@ -126,6 +126,14 @@ func TestIdempotency_CurrencySuffix(t *testing.T) {
 	checkIdempotency(t, "currencysuffix")
 }
 
+func TestIdempotency_Split(t *testing.T) {
+	checkIdempotency(t, "split")
+}
+
+func TestIdempotency_Template(t *testing.T) {
+	checkIdempotency(t, "template")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)

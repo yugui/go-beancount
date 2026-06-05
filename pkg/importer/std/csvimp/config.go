@@ -59,6 +59,7 @@ type shapeConfig struct {
 	Payee          payeeConfig     `toml:"payee"`
 	Currency       currencyConfig  `toml:"currency"`
 	Narration      narrationConfig `toml:"narration"`
+	Split          splitConfig     `toml:"split"`
 	Amount         []amountColumn  `toml:"amount"`
 	Exclude        []excludeConfig `toml:"exclude"`
 }
@@ -111,6 +112,15 @@ type narrationConfig struct {
 	Col       stringList        `toml:"col"`
 	Separator string            `toml:"separator"`
 	Map       map[string]string `toml:"map"`
+	Template  string            `toml:"template"`
+}
+
+// splitConfig is the on-disk shape of the optional [split] block: Pattern
+// is a regular expression whose named capture groups become synthetic
+// columns extracted from Col, referenceable by any field.
+type splitConfig struct {
+	Col     string `toml:"col"`
+	Pattern string `toml:"pattern"`
 }
 
 // amountColumn is the TOML decode target for one [[amount]] entry. It
@@ -170,16 +180,30 @@ type shape struct {
 	currencyFromAmount bool
 	currencyMap        map[string]string
 
-	narrationCols []string
-	narrationSep  string
-	narrationMap  map[string]string
+	narrationCols     []string
+	narrationSep      string
+	narrationMap      map[string]string
+	narrationTemplate *csvkit.NarrationTemplate // nil unless [narration].template set
 
 	amounts      []csvkit.AmountColumn
 	numberFormat csvkit.NumberFormat
 
+	// split, when non-nil, extracts named capture groups from a source
+	// column into synthetic columns referenceable by any field.
+	split *splitRule
+
 	// filters drop statement noise (footnotes, totals) before a row
 	// becomes a directive; empty means no filtering.
 	filters []csvkit.RowFilter
+}
+
+// splitRule is the compiled form of [split]: re's named groups become
+// synthetic columns drawn from col. groups holds those names so they are
+// not mistaken for required header columns.
+type splitRule struct {
+	col    string
+	re     *regexp.Regexp
+	groups map[string]bool
 }
 
 // newImporter is the factory function registered under kind "csv". It returns
@@ -243,6 +267,16 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 
 	if len(sc.Narration.Col) == 0 && len(sc.Narration.Map) != 0 {
 		return nil, fmt.Errorf("shape %q: [narration.map] is set but [narration].col is empty; the map would never be consulted", name)
+	}
+	if len(sc.Narration.Col) > 0 && sc.Narration.Template != "" {
+		return nil, fmt.Errorf("shape %q: [narration].col and [narration].template are mutually exclusive", name)
+	}
+
+	if sc.Split.Pattern == "" && sc.Split.Col != "" {
+		return nil, fmt.Errorf("shape %q: [split].col is set without [split].pattern", name)
+	}
+	if sc.Split.Pattern != "" && sc.Split.Col == "" {
+		return nil, fmt.Errorf("shape %q: [split].pattern requires [split].col", name)
 	}
 
 	if len(sc.Amount) == 0 {
@@ -356,7 +390,36 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 			s.filters = append(s.filters, csvkit.ExcludeAnyField(re))
 		}
 	}
+	if sc.Narration.Template != "" {
+		nt, err := csvkit.CompileNarration(sc.Narration.Template)
+		if err != nil {
+			return nil, fmt.Errorf("shape %q: [narration].template: %w", name, err)
+		}
+		s.narrationTemplate = nt
+	}
+	if sc.Split.Pattern != "" {
+		re, err := regexp.Compile(sc.Split.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("shape %q: [split].pattern: %w", name, err)
+		}
+		groups := namedGroups(re)
+		if len(groups) == 0 {
+			return nil, fmt.Errorf("shape %q: [split].pattern has no named capture groups", name)
+		}
+		s.split = &splitRule{col: sc.Split.Col, re: re, groups: groups}
+	}
 	return s, nil
+}
+
+// namedGroups returns the set of named capture groups declared by re.
+func namedGroups(re *regexp.Regexp) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range re.SubexpNames() {
+		if n != "" {
+			out[n] = true
+		}
+	}
+	return out
 }
 
 // validateAccountSection enforces the common rules for an [account]-like

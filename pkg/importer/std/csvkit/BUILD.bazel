@@ -8,6 +8,8 @@ go_library(
         "filter.go",
         "number.go",
         "reader.go",
+        "regex.go",
+        "template.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/importer/std/csvkit",
     visibility = ["//visibility:public"],
@@ -24,6 +26,8 @@ go_test(
         "filter_test.go",
         "number_test.go",
         "reader_test.go",
+        "regex_test.go",
+        "template_test.go",
     ],
     deps = [
         ":csvkit",

@@ -290,6 +290,38 @@ Date = -1
 ` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
 			wantIn: "must be non-negative",
 		},
+		{
+			name: "narration col and template together",
+			src: minimalDate + minimalAccount + minimalCurrency + `
+[narration]
+col      = "Memo"
+template = "{{.Memo}}"
+` + minimalAmount,
+			wantIn: "[narration].col and [narration].template are mutually exclusive",
+		},
+		{
+			name: "bad narration template",
+			src: minimalDate + minimalAccount + minimalCurrency + `
+[narration]
+template = "{{.Memo"
+` + minimalAmount,
+			wantIn: "[narration].template:",
+		},
+		{
+			name: "split pattern without col",
+			src: `[split]
+pattern = "(?P<x>.*)"
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "[split].pattern requires [split].col",
+		},
+		{
+			name: "split pattern without named groups",
+			src: `[split]
+col     = "Detail"
+pattern = "(.*)"
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "no named capture groups",
+		},
 	}
 
 	for _, tc := range cases {
