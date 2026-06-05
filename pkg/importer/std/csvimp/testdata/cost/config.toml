@@ -1,0 +1,25 @@
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Broker:Stock"
+
+[currency]
+col = "Symbol"
+
+[counter_account]
+default = "Assets:Broker:Cash"
+
+[narration]
+col = "Symbol"
+
+[[amount]]
+col    = "Quantity"
+negate = false
+
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+date             = "Date"
+date_format      = "2006-01-02"

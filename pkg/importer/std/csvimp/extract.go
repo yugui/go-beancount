@@ -161,22 +161,40 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 		return nil, ndiag
 	}
 
-	postings := make([]ast.Posting, 0, 2)
-	postings = append(postings, ast.Posting{
+	primary := ast.Posting{
 		Account: ast.Account(account),
 		Amount:  &ast.Amount{Number: sum.Number, Currency: currency},
-	})
-	if hasCounter {
-		var neg apd.Decimal
-		if _, err := apd.BaseContext.Neg(&neg, &sum.Number); err != nil {
-			d := rowDiag(DiagBadAmount, path, line,
-				fmt.Sprintf("cannot negate amount for counter posting: %v", err))
-			return nil, &d
+	}
+	hasCost := false
+	if s.cost != nil {
+		cs, cdiag := buildCost(s, idx, row, path, line)
+		if cdiag != nil {
+			return nil, cdiag
 		}
-		postings = append(postings, ast.Posting{
-			Account: ast.Account(counter),
-			Amount:  &ast.Amount{Number: neg, Currency: currency},
-		})
+		if cs != nil {
+			primary.Cost = cs
+			hasCost = true
+		}
+	}
+
+	postings := make([]ast.Posting, 0, 2)
+	postings = append(postings, primary)
+	if hasCounter {
+		if hasCost {
+			// elided cash leg: beancount balances it against the cost.
+			postings = append(postings, ast.Posting{Account: ast.Account(counter)})
+		} else {
+			var neg apd.Decimal
+			if _, err := apd.BaseContext.Neg(&neg, &sum.Number); err != nil {
+				d := rowDiag(DiagBadAmount, path, line,
+					fmt.Sprintf("cannot negate amount for counter posting: %v", err))
+				return nil, &d
+			}
+			postings = append(postings, ast.Posting{
+				Account: ast.Account(counter),
+				Amount:  &ast.Amount{Number: neg, Currency: currency},
+			})
+		}
 	}
 
 	tx := &ast.Transaction{
@@ -215,6 +233,55 @@ func joinKey(cols []string, sep string, idx map[string]int, row []string) string
 func sumAmounts(s *shape, idx map[string]int, row []string) (csvkit.Amount, csvkit.AmountStatus, string) {
 	p := csvkit.AmountParser{Format: s.numberFormat, SplitCurrency: s.currencyFromAmount}
 	return p.Sum(s.amounts, func(col string) string { return fieldAt(row, idx, col) })
+}
+
+// buildCost constructs the CostSpec for the primary posting from the row.
+// Returns (nil, nil) when the cost-number cell is blank: the row simply
+// carries no cost. A non-blank but unparseable number, a number with no
+// resolvable cost currency, or an unparseable date yields DiagBadCost.
+func buildCost(s *shape, idx map[string]int, row []string, path string, line int) (*ast.CostSpec, *ast.Diagnostic) {
+	c := s.cost
+	raw := fieldAt(row, idx, c.numberCol)
+	num, blank, err := csvkit.ParseNumber(raw, s.numberFormat)
+	if blank {
+		return nil, nil
+	}
+	if err != nil {
+		d := rowDiag(DiagBadCost, path, line,
+			fmt.Sprintf("cannot parse cost column %q: %q", c.numberCol, raw))
+		return nil, &d
+	}
+
+	cur := c.currencyDefault
+	if c.currencyCol != "" {
+		if v := strings.TrimSpace(fieldAt(row, idx, c.currencyCol)); v != "" {
+			cur = v
+		}
+	}
+	if cur == "" {
+		d := rowDiag(DiagBadCost, path, line, "cost has no currency: [cost].currency blank and no default_currency")
+		return nil, &d
+	}
+
+	cs := &ast.CostSpec{Currency: cur, Label: strings.TrimSpace(fieldAt(row, idx, c.labelCol))}
+	n := num
+	if c.isTotal {
+		cs.Total = &n
+	} else {
+		cs.PerUnit = &n
+	}
+	if c.dateCol != "" {
+		if dv := strings.TrimSpace(fieldAt(row, idx, c.dateCol)); dv != "" {
+			t, err := time.Parse(c.dateFormat, dv)
+			if err != nil {
+				d := rowDiag(DiagBadCost, path, line,
+					fmt.Sprintf("cannot parse cost date %q with format %q: %v", dv, c.dateFormat, err))
+				return nil, &d
+			}
+			cs.Date = &t
+		}
+	}
+	return cs, nil
 }
 
 // resolveAccount resolves a row's primary beancount account. Priority:

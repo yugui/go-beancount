@@ -322,6 +322,55 @@ pattern = "(.*)"
 ` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
 			wantIn: "no named capture groups",
 		},
+		{
+			name: "cost per_unit and total together",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit         = "Price"
+total            = "Total"
+default_currency = "USD"
+`,
+			wantIn: "exactly one of per_unit or total",
+		},
+		{
+			name: "cost without currency",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit = "Price"
+`,
+			wantIn: "[cost] requires currency or default_currency",
+		},
+		{
+			name: "cost date without date_format",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+date             = "Acq"
+`,
+			wantIn: "[cost].date requires [cost].date_format",
+		},
+		{
+			name: "cost date_format without date",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+date_format      = "2006-01-02"
+`,
+			wantIn: "[cost].date_format is set without [cost].date",
+		},
+		{
+			name: "cost date_format missing year",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+date             = "Acq"
+date_format      = "01-02"
+`,
+			wantIn: "must include year, month and day",
+		},
 	}
 
 	for _, tc := range cases {

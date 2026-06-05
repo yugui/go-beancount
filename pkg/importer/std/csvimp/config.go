@@ -60,8 +60,23 @@ type shapeConfig struct {
 	Currency       currencyConfig  `toml:"currency"`
 	Narration      narrationConfig `toml:"narration"`
 	Split          splitConfig     `toml:"split"`
+	Cost           costConfig      `toml:"cost"`
 	Amount         []amountColumn  `toml:"amount"`
 	Exclude        []excludeConfig `toml:"exclude"`
+}
+
+// costConfig is the on-disk shape of the optional [cost] block. Exactly one
+// of PerUnit / Total names the cost-number column; the cost currency comes
+// from Currency or DefaultCurrency. Date (with DateFormat) and Label are
+// optional.
+type costConfig struct {
+	PerUnit         string `toml:"per_unit"`
+	Total           string `toml:"total"`
+	Currency        string `toml:"currency"`
+	DefaultCurrency string `toml:"default_currency"`
+	Date            string `toml:"date"`
+	DateFormat      string `toml:"date_format"`
+	Label           string `toml:"label"`
 }
 
 // excludeConfig is one [[exclude]] rule: Match (required) is a regular
@@ -192,9 +207,27 @@ type shape struct {
 	// column into synthetic columns referenceable by any field.
 	split *splitRule
 
+	// cost, when non-nil, annotates the primary posting with a CostSpec
+	// built from the row.
+	cost *costRule
+
 	// filters drop statement noise (footnotes, totals) before a row
 	// becomes a directive; empty means no filtering.
 	filters []csvkit.RowFilter
+}
+
+// costRule is the compiled form of [cost]: numberCol holds the cost number
+// (a Total when isTotal, otherwise a per-unit cost), resolved into the cost
+// currency from currencyCol or currencyDefault, with an optional date and
+// label.
+type costRule struct {
+	numberCol       string
+	isTotal         bool
+	currencyCol     string
+	currencyDefault string
+	dateCol         string
+	dateFormat      string
+	labelCol        string
 }
 
 // splitRule is the compiled form of [split]: re's named groups become
@@ -235,7 +268,7 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		return nil, fmt.Errorf("shape %q: [date].format is required", name)
 	}
 	// year/month/day required: shorter layouts produce ambiguous beancount dates.
-	if t, err := time.Parse(sc.Date.Format, sc.Date.Format); err != nil || t.Year() != 2006 || t.Month() != time.January || t.Day() != 2 {
+	if !dateLayoutHasYMD(sc.Date.Format) {
 		return nil, fmt.Errorf(`shape %q: [date].format %q must include year, month and day expressed against the layout reference date Jan 2, 2006 (for example "2006-01-02" or "02/01/2006")`, name, sc.Date.Format)
 	}
 
@@ -408,7 +441,57 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		}
 		s.split = &splitRule{col: sc.Split.Col, re: re, groups: groups}
 	}
+	cr, err := compileCost(name, sc.Cost)
+	if err != nil {
+		return nil, err
+	}
+	s.cost = cr
 	return s, nil
+}
+
+// compileCost validates the [cost] block and returns its compiled rule, or
+// (nil, nil) when [cost] is absent.
+func compileCost(name string, c costConfig) (*costRule, error) {
+	if c == (costConfig{}) {
+		return nil, nil
+	}
+	if (c.PerUnit == "") == (c.Total == "") {
+		return nil, fmt.Errorf("shape %q: [cost] requires exactly one of per_unit or total", name)
+	}
+	if c.Currency == "" && c.DefaultCurrency == "" {
+		return nil, fmt.Errorf("shape %q: [cost] requires currency or default_currency", name)
+	}
+	if c.Date != "" && c.DateFormat == "" {
+		return nil, fmt.Errorf("shape %q: [cost].date requires [cost].date_format", name)
+	}
+	if c.DateFormat != "" {
+		if c.Date == "" {
+			return nil, fmt.Errorf("shape %q: [cost].date_format is set without [cost].date", name)
+		}
+		if !dateLayoutHasYMD(c.DateFormat) {
+			return nil, fmt.Errorf(`shape %q: [cost].date_format %q must include year, month and day expressed against the layout reference date Jan 2, 2006`, name, c.DateFormat)
+		}
+	}
+	cr := &costRule{
+		numberCol:       c.PerUnit,
+		currencyCol:     c.Currency,
+		currencyDefault: c.DefaultCurrency,
+		dateCol:         c.Date,
+		dateFormat:      c.DateFormat,
+		labelCol:        c.Label,
+	}
+	if c.Total != "" {
+		cr.numberCol = c.Total
+		cr.isTotal = true
+	}
+	return cr, nil
+}
+
+// dateLayoutHasYMD reports whether the Go time layout expresses year, month
+// and day against the reference date Jan 2, 2006.
+func dateLayoutHasYMD(format string) bool {
+	t, err := time.Parse(format, format)
+	return err == nil && t.Year() == 2006 && t.Month() == time.January && t.Day() == 2
 }
 
 // namedGroups returns the set of named capture groups declared by re.

@@ -134,6 +134,10 @@ func TestIdempotency_Template(t *testing.T) {
 	checkIdempotency(t, "template")
 }
 
+func TestIdempotency_Cost(t *testing.T) {
+	checkIdempotency(t, "cost")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)

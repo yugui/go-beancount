@@ -89,6 +89,16 @@
 //	col     = "Detail"
 //	pattern = "^(?P<payee>[^|]+)\\|(?P<memo>.*)$"
 //
+//	# Optional: annotate the primary posting with a lot cost (securities,
+//	# crypto). The primary amount is the quantity in the commodity the
+//	# currency resolution yields; [cost] adds the per-unit (or total) price.
+//	[cost]
+//	per_unit         = "Price"        # or total = "..."; exactly one
+//	default_currency = "USD"          # or currency = "<column>"
+//	date             = "TradeDate"    # optional; requires date_format
+//	date_format      = "2006-01-02"
+//	label            = "Lot"          # optional
+//
 //	# At least one [[amount]] entry is required. Use one entry for a
 //	# single signed column, or multiple entries (with negate as needed)
 //	# for a debit/credit split.
@@ -271,6 +281,21 @@
 // skips the row). It is mutually exclusive with [narration].col and is
 // validated at configure time. Split groups are visible to the template.
 //
+// # Lot cost
+//
+// [cost] annotates the primary posting with a beancount lot cost, for
+// securities and crypto. The primary posting's amount is the quantity (from
+// [[amount]]) in the commodity that currency resolution produces (so
+// [currency].col = "Symbol", say, names the security), and [cost] adds the
+// per-unit price ({X CUR}) or total ({{X CUR}}) drawn from a column, with
+// an optional acquisition date and lot label. The cost number is parsed
+// with the [number] format. A blank cost cell leaves the row without a cost
+// (so mixed statements with non-trade rows are tolerated); an unparseable
+// number or date, or a cost with no resolvable currency, is a per-row
+// DiagBadCost. When a cost is present and [counter_account] is configured,
+// the counter posting is emitted without an amount so beancount balances
+// the cash leg against the cost.
+//
 // # Diagnostics
 //
 // Most diagnostics carry [ast.Error] severity and cause csvimp to skip
@@ -287,6 +312,7 @@
 //   - DiagUnmappedCounterAccount  — [counter_account].col cell missing from [counter_account.map] in strict mode (warning; row kept).
 //   - DiagMissingColumn           — a required column was absent from the header at Extract time.
 //   - DiagBadNarrationTemplate    — [narration].template failed to render for the row (e.g. unknown column).
+//   - DiagBadCost                 — [cost] could not be built (unparseable number/date, or no cost currency).
 //
 // # Identity metadata
 //

@@ -117,6 +117,7 @@ func requiredColumns(s *shape) []string {
 	}
 	out = append(out, s.accountCols...)
 	out = append(out, s.counterAccountCols...)
+	out = append(out, costColumns(s.cost)...)
 	if s.split == nil {
 		return out
 	}
@@ -132,4 +133,19 @@ func requiredColumns(s *shape) []string {
 		}
 	}
 	return filtered
+}
+
+// costColumns returns the header columns a [cost] rule reads. A
+// default-only cost currency contributes no column.
+func costColumns(c *costRule) []string {
+	if c == nil {
+		return nil
+	}
+	cols := []string{c.numberCol}
+	for _, col := range []string{c.currencyCol, c.dateCol, c.labelCol} {
+		if col != "" {
+			cols = append(cols, col)
+		}
+	}
+	return cols
 }

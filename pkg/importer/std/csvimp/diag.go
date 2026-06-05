@@ -54,6 +54,13 @@ const (
 	// render for the row (for example, a reference to an unknown column).
 	// The row is skipped.
 	DiagBadNarrationTemplate = "csvimp-bad-narration-template"
+
+	// DiagBadCost signals that [cost] was configured but the row's cost
+	// could not be built: an unparseable cost number, a cost number with
+	// no resolvable currency, or an unparseable cost date. The row is
+	// skipped. A blank cost number is not an error (the row simply carries
+	// no cost).
+	DiagBadCost = "csvimp-bad-cost"
 )
 
 func rowDiag(code, path string, line int, msg string) ast.Diagnostic {
