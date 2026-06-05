@@ -13,22 +13,24 @@ func TestExcludeMatching(t *testing.T) {
 	get := func(c string) string { return row[c] }
 
 	if !f.Skip([]string{"Total", "-3000"}, get) {
-		t.Error("Skip = false on matching column, want true")
+		t.Errorf("ExcludeMatching.Skip(Type=%q) = false, want true", "Total")
 	}
 
 	row["Type"] = "Purchase"
 	if f.Skip([]string{"Purchase", "-10"}, get) {
-		t.Error("Skip = true on non-matching column, want false")
+		t.Errorf("ExcludeMatching.Skip(Type=%q) = true, want false", "Purchase")
 	}
 }
 
 func TestExcludeAnyField(t *testing.T) {
 	f := csvkit.ExcludeAnyField(regexp.MustCompile("^※"))
 
-	if !f.Skip([]string{"※ reference only", "", ""}, nil) {
-		t.Error("Skip = false on footnote row, want true")
+	footnote := []string{"※ reference only", "", ""}
+	if !f.Skip(footnote, nil) {
+		t.Errorf("ExcludeAnyField.Skip(%v) = false, want true", footnote)
 	}
-	if f.Skip([]string{"2024-08-01", "Shop", "-1000"}, nil) {
-		t.Error("Skip = true on data row, want false")
+	data := []string{"2024-08-01", "Shop", "-1000"}
+	if f.Skip(data, nil) {
+		t.Errorf("ExcludeAnyField.Skip(%v) = true, want false", data)
 	}
 }

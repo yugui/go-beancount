@@ -18,8 +18,9 @@ import (
 // value reads comma-delimited UTF-8 with no banner lines, taking the first
 // row as the header.
 //
-// A Reader holds no state across calls; the same value is safe for
-// concurrent use once constructed.
+// A Reader holds no mutable state; the same value may be passed to Records
+// concurrently. Each call returns an independent iterator, but a single
+// iterator is not safe for concurrent use.
 type Reader struct {
 	// Delimiter is the field separator. The zero value selects ','.
 	Delimiter rune
@@ -120,7 +121,7 @@ func (r *Reader) Records(rc io.Reader) (header []string, rows iter.Seq2[Record, 
 				yield(Record{}, err)
 				return
 			}
-			line, _ := cr.FieldPos(0)
+			line, _ := cr.FieldPos(0) // column offset unused
 			if !yield(Record{Fields: fields, Line: line + r.SkipLines}, nil) {
 				return
 			}
