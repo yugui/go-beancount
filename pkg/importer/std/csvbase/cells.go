@@ -53,3 +53,17 @@ func (c *Cells) Field(col string) string {
 func (c *Cells) Info() RowInfo {
 	return c.info
 }
+
+// Row returns a fresh map of every indexed column name to its raw cell value
+// ("" for columns past a short row).
+func (c *Cells) Row() map[string]string {
+	m := make(map[string]string, len(c.index))
+	for name, i := range c.index {
+		if i < len(c.fields) {
+			m[name] = c.fields[i]
+		} else {
+			m[name] = ""
+		}
+	}
+	return m
+}
