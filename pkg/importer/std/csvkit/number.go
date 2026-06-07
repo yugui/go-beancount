@@ -88,6 +88,14 @@ type AmountColumn struct {
 	Negate bool
 }
 
+// ValueAmount is one numeric contribution to an [AmountParser.SumValues] call,
+// expressed as the already-resolved raw cell string (the parser still applies
+// NumberFormat / SplitCurrency to it).
+type ValueAmount struct {
+	Value  string
+	Negate bool
+}
+
 // Amount is the result of summing amount columns: the numeric total plus an
 // optional currency observed in the cells. CurrencyHint is non-empty only
 // when AmountParser.SplitCurrency is set and a consistent suffix was found.
@@ -96,15 +104,17 @@ type Amount struct {
 	CurrencyHint string
 }
 
-// AmountStatus reports the outcome of [AmountParser.Sum]. The zero value
-// is not one of the named statuses and is never returned by Sum.
+// AmountStatus reports the outcome of [AmountParser.Sum] or
+// [AmountParser.SumValues]. The zero value is not one of the named statuses
+// and is never returned by Sum or SumValues.
 type AmountStatus int
 
 const (
 	// AmountOK indicates at least one column held a parseable value.
 	AmountOK AmountStatus = iota + 1
-	// AmountBad indicates a non-blank column failed to parse; the
-	// offending column name is returned alongside.
+	// AmountBad indicates a non-blank entry failed to parse or currencies
+	// conflicted across entries; the caller method documents how the offending
+	// entry is identified.
 	AmountBad
 	// AmountAllBlank indicates every column was blank or a placeholder.
 	AmountAllBlank
@@ -175,4 +185,47 @@ func (p AmountParser) Sum(cols []AmountColumn, value func(col string) string) (A
 		return Amount{}, AmountAllBlank, ""
 	}
 	return Amount{Number: sum, CurrencyHint: currency}, AmountOK, ""
+}
+
+// SumValues is the value-keyed counterpart of [AmountParser.Sum]: callers pass
+// already-resolved cell strings instead of column names. Semantics match Sum
+// exactly (NumberFormat, SplitCurrency, conflict detection, AmountAllBlank
+// handling). On AmountBad the int return is the 0-based index of the offending
+// entry in values; on other statuses it is -1.
+func (p AmountParser) SumValues(values []ValueAmount) (Amount, AmountStatus, int) {
+	var sum apd.Decimal
+	allBlank := true
+	currency := ""
+	for i, a := range values {
+		raw := a.Value
+		if p.SplitCurrency {
+			num, cur := SplitCurrencySuffix(raw)
+			raw = num
+			if cur != "" {
+				if currency != "" && currency != cur {
+					return Amount{}, AmountBad, i
+				}
+				currency = cur
+			}
+		}
+		v, blank, err := ParseNumber(raw, p.Format)
+		if err != nil {
+			return Amount{}, AmountBad, i
+		}
+		if blank {
+			continue
+		}
+		allBlank = false
+		op := apd.BaseContext.Add
+		if a.Negate {
+			op = apd.BaseContext.Sub
+		}
+		if _, err := op(&sum, &sum, &v); err != nil {
+			return Amount{}, AmountBad, i
+		}
+	}
+	if allBlank {
+		return Amount{}, AmountAllBlank, -1
+	}
+	return Amount{Number: sum, CurrencyHint: currency}, AmountOK, -1
 }

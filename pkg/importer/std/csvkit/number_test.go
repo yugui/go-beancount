@@ -93,6 +93,82 @@ func TestSplitCurrencySuffix(t *testing.T) {
 	}
 }
 
+func TestAmountParserSumValues(t *testing.T) {
+	t.Run("single OK", func(t *testing.T) {
+		p := csvkit.AmountParser{}
+		got, status, idx := p.SumValues([]csvkit.ValueAmount{{Value: "42.00"}})
+		if status != csvkit.AmountOK || idx != -1 {
+			t.Fatalf("SumValues() = (%v, %v, %d), want (AmountOK, -1)", got, status, idx)
+		}
+		if got.Number.String() != "42.00" {
+			t.Errorf("SumValues() number = %q, want %q", got.Number.String(), "42.00")
+		}
+	})
+
+	t.Run("negate second entry", func(t *testing.T) {
+		p := csvkit.AmountParser{}
+		got, status, idx := p.SumValues([]csvkit.ValueAmount{
+			{Value: "100"},
+			{Value: "30", Negate: true},
+		})
+		if status != csvkit.AmountOK || idx != -1 {
+			t.Fatalf("SumValues() status = %v, idx = %d, want (AmountOK, -1)", status, idx)
+		}
+		if got.Number.String() != "70" {
+			t.Errorf("SumValues() number = %q, want %q", got.Number.String(), "70")
+		}
+	})
+
+	t.Run("AmountBad at specific index", func(t *testing.T) {
+		p := csvkit.AmountParser{}
+		_, status, idx := p.SumValues([]csvkit.ValueAmount{
+			{Value: "10"},
+			{Value: "bad"},
+		})
+		if status != csvkit.AmountBad || idx != 1 {
+			t.Errorf("SumValues() = (%v, %d), want (AmountBad, 1)", status, idx)
+		}
+	})
+
+	t.Run("AmountBad at index 0", func(t *testing.T) {
+		p := csvkit.AmountParser{}
+		_, status, idx := p.SumValues([]csvkit.ValueAmount{{Value: "bad"}})
+		if status != csvkit.AmountBad || idx != 0 {
+			t.Errorf("SumValues() = (%v, %d), want (AmountBad, 0)", status, idx)
+		}
+	})
+
+	t.Run("AmountAllBlank", func(t *testing.T) {
+		p := csvkit.AmountParser{}
+		_, status, idx := p.SumValues([]csvkit.ValueAmount{{Value: ""}, {Value: "  "}})
+		if status != csvkit.AmountAllBlank || idx != -1 {
+			t.Errorf("SumValues() = (%v, %d), want (AmountAllBlank, -1)", status, idx)
+		}
+	})
+
+	t.Run("SplitCurrency extracts hint", func(t *testing.T) {
+		p := csvkit.AmountParser{SplitCurrency: true}
+		got, status, idx := p.SumValues([]csvkit.ValueAmount{{Value: "1000 JPY"}})
+		if status != csvkit.AmountOK || idx != -1 {
+			t.Fatalf("SumValues() status = %v, idx = %d, want (AmountOK, -1)", status, idx)
+		}
+		if got.CurrencyHint != "JPY" || got.Number.String() != "1000" {
+			t.Errorf("SumValues() = (%s, %q), want (1000, JPY)", got.Number.String(), got.CurrencyHint)
+		}
+	})
+
+	t.Run("SplitCurrency conflict", func(t *testing.T) {
+		p := csvkit.AmountParser{SplitCurrency: true}
+		_, status, idx := p.SumValues([]csvkit.ValueAmount{
+			{Value: "10 USD"},
+			{Value: "20 JPY"},
+		})
+		if status != csvkit.AmountBad || idx != 1 {
+			t.Errorf("SumValues() conflict = (%v, %d), want (AmountBad, 1)", status, idx)
+		}
+	})
+}
+
 func TestAmountParserSplitCurrency(t *testing.T) {
 	cells := func(m map[string]string) func(string) string {
 		return func(col string) string { return m[col] }

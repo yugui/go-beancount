@@ -25,24 +25,32 @@ func TestExample_HappyPathWithRowHash(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{
-		Cols:    []string{"Cat"},
-		Map:     map[string]string{"food": "Expenses:Food", "entertainment": "Expenses:Entertainment"},
-		HintKey: "account",
-	})
-	ctrKey := csvbase.ResolveCounter(b, csvbase.CounterConfig{Default: "Assets:Bank"})
-	payKey := csvbase.ResolvePayee(b, csvbase.PayeeConfig{Cols: []string{"Desc"}})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
+	accKey := csvbase.Require(b,
+		csvbase.Coalesce(b,
+			csvbase.Hint(b, "account"),
+			csvbase.MapValue(b,
+				csvbase.JoinKeys(b, ":", csvbase.Columns(b, "Cat")...),
+				map[string]string{"food": "Expenses:Food", "entertainment": "Expenses:Entertainment"},
+				csvkit.Strict, csvbase.DiagUnmappedAccount),
+		),
+		csvbase.DiagMissingAccount)
+	// Empty map: every Cat misses (warning), Coalesce falls through to the Const default.
+	ctrKey := csvbase.Coalesce(b,
+		csvbase.DiagAsWarning(b,
+			csvbase.MapValue(b,
+				csvbase.JoinKeys(b, "", csvbase.Columns(b, "Cat")...),
+				map[string]string{}, csvkit.Strict, ""),
+			csvbase.DiagUnmappedCounterAccount),
+		csvbase.Const(b, "Assets:Bank"))
+	payKey := csvbase.JoinKeys(b, " ", csvbase.Columns(b, "Desc")...)
 	tmpl, _ := csvkit.CompileNarration("{{.Desc}}")
-	narrKey := csvbase.NarrationFromTemplate(b, tmpl, "")
+	narrKey := csvbase.NarrationFromTemplate(b, tmpl, nil, "")
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:      dateKey,
 		Amount:    amtKey,
-		Currency:  curKey,
+		Currency:  csvbase.Const(b, "USD"),
 		Account:   accKey,
 		Counter:   ctrKey,
 		Payee:     payKey,
@@ -96,22 +104,18 @@ func TestExample_SplitGroups(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 
-	raw := csvbase.Column(b, "Desc")
-	sp := csvbase.Split(b, raw, regexp.MustCompile(`(?P<payee>[^/]+) / (?P<memo>.+)`))
-	payKey := csvbase.Group(b, sp, "payee")
-	narrKey := csvbase.Group(b, sp, "memo")
+	groups := csvbase.SplitColumns(b, csvbase.Column(b, "Desc"),
+		regexp.MustCompile(`(?P<payee>[^/]+) / (?P<memo>.+)`))
+	payKey := csvbase.JoinKeys(b, "", groups["payee"])
+	narrKey := csvbase.JoinKeys(b, " ", groups["memo"])
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:      dateKey,
 		Amount:    amtKey,
-		Currency:  curKey,
-		Account:   accKey,
+		Currency:  csvbase.Const(b, "USD"),
+		Account:   csvbase.Const(b, "Expenses:Misc"),
 		Payee:     payKey,
 		Narration: narrKey,
 	}))
@@ -145,17 +149,13 @@ func TestExample_HeaderMatchBanner(t *testing.T) {
 
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
-		Account:  accKey,
+		Currency: csvbase.Const(b, "USD"),
+		Account:  csvbase.Const(b, "Expenses:Misc"),
 	}))
 
 	d, err := csvbase.New("banner", csvbase.Config{
@@ -200,17 +200,13 @@ func TestExample_Headerless(t *testing.T) {
 
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
-		Account:  accKey,
+		Currency: csvbase.Const(b, "USD"),
+		Account:  csvbase.Const(b, "Expenses:Misc"),
 	}))
 
 	d, err := csvbase.New("headerless", csvbase.Config{
@@ -249,17 +245,13 @@ func TestExample_ExcludeFilter(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
-		Account:  accKey,
+		Currency: csvbase.Const(b, "USD"),
+		Account:  csvbase.Const(b, "Expenses:Misc"),
 	}))
 
 	d, err := csvbase.New("exclude", csvbase.Config{
@@ -282,7 +274,7 @@ func TestExample_ExcludeFilter(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// (f) Cost with counter elision
+// (f) Cost with counter elision — AddStep extension pattern
 // ---------------------------------------------------------------------------
 
 func TestExample_CostElision(t *testing.T) {
@@ -291,23 +283,42 @@ func TestExample_CostElision(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Units"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "STOCK"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Assets:Brokerage"})
-	ctrKey := csvbase.ResolveCounter(b, csvbase.CounterConfig{Default: "Assets:Cash"})
-	costKey := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol:   "CostNum",
-		CurrencyCol: "CostCur",
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Units"), csvbase.ParseAmountConfig{})
+	costNumCol := csvbase.Column(b, "CostNum")
+	costCurCol := csvbase.Column(b, "CostCur")
+
+	// Cost assembly is tightly coupled to ast.CostSpec shape; use AddStep.
+	costKey := csvbase.AddStep(b, func(c *csvbase.MappingState) (*ast.CostSpec, *ast.Diagnostic, error) {
+		rawNum, _ := csvbase.Value(c, costNumCol)
+		rawNum = strings.TrimSpace(rawNum)
+		if rawNum == "" {
+			return nil, nil, nil
+		}
+		num, _, err := csvkit.ParseNumber(rawNum, csvkit.NumberFormat{})
+		if err != nil {
+			info := c.Info()
+			diag := csvbase.ErrorDiag(csvbase.DiagBadCost, info.Path, info.Line,
+				"cannot parse cost number")
+			return nil, &diag, nil
+		}
+		cur := ""
+		if v, _ := csvbase.Value(c, costCurCol); strings.TrimSpace(v) != "" {
+			cur = strings.TrimSpace(v)
+		}
+		if cur == "" {
+			info := c.Info()
+			diag := csvbase.ErrorDiag(csvbase.DiagBadCost, info.Path, info.Line, "cost currency missing")
+			return nil, &diag, nil
+		}
+		return &ast.CostSpec{PerUnit: &num, Currency: cur}, nil, nil
 	})
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
-		Account:  accKey,
-		Counter:  ctrKey,
+		Currency: csvbase.Const(b, "STOCK"),
+		Account:  csvbase.Const(b, "Assets:Brokerage"),
+		Counter:  csvbase.Const(b, "Assets:Cash"),
 		Cost:     costKey,
 	}))
 
@@ -346,20 +357,19 @@ func TestExample_AccountMapStrict_Unmapped(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{
-		Cols: []string{"Cat"},
-		Map:  map[string]string{"food": "Expenses:Food"},
-		// no Default: unmapped => DiagUnmappedAccount => drop
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
+	// No Default: strict miss on Cat → DiagUnmappedAccount → EmitTransaction drops the row.
+	accKey := csvbase.Require(b,
+		csvbase.MapValue(b,
+			csvbase.JoinKeys(b, ":", csvbase.Columns(b, "Cat")...),
+			map[string]string{"food": "Expenses:Food"},
+			csvkit.Strict, csvbase.DiagUnmappedAccount),
+		csvbase.DiagMissingAccount)
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
+		Currency: csvbase.Const(b, "USD"),
 		Account:  accKey,
 	}))
 
@@ -391,22 +401,20 @@ func TestExample_CounterMapStrict_Unmapped(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Assets:Bank"})
-	ctrKey := csvbase.ResolveCounter(b, csvbase.CounterConfig{
-		Cols: []string{"Type"},
-		Map:  map[string]string{"income": "Income:Salary"},
-		// strict: "mystery" not in map => warning, kept with single posting
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
+	// strict: "mystery" not in map → Warning soft-fail → EmitTransaction keeps row with single posting.
+	ctrKey := csvbase.DiagAsWarning(b,
+		csvbase.MapValue(b,
+			csvbase.JoinKeys(b, "", csvbase.Columns(b, "Type")...),
+			map[string]string{"income": "Income:Salary"},
+			csvkit.Strict, ""),
+		csvbase.DiagUnmappedCounterAccount)
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
-		Account:  accKey,
+		Currency: csvbase.Const(b, "USD"),
+		Account:  csvbase.Const(b, "Assets:Bank"),
 		Counter:  ctrKey,
 	}))
 
@@ -441,26 +449,27 @@ func TestExample_CounterMapStrict_Unmapped(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExample_CurrencyFromAmountSuffix(t *testing.T) {
-	const csv = `Date,Amount
-2024-03-01,1000 JPY
+	// CSV has no Cur column (blank), so Coalesce falls through to CurrencyHint ("JPY" from suffix).
+	const csv = `Date,Amount,Cur
+2024-03-01,1000 JPY,
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvkit.AmountColumn{{Col: "Amount"}},
-		SplitCurrency: true,
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
-		FromAmount: true,
-		Amount:     amtKey,
-	})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{SplitCurrency: true})
+	// Explicit Cur column wins when non-blank; hint from amount suffix is the fallback; USD is the last resort.
+	curKey := csvbase.Require(b,
+		csvbase.Coalesce(b,
+			csvbase.MapValue(b, csvbase.Column(b, "Cur"), nil, csvkit.Verbatim, ""),
+			csvbase.CurrencyHint(b, amtKey),
+			csvbase.Const(b, "USD"),
+		),
+		csvbase.DiagMissingCurrency)
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
 		Currency: curKey,
-		Account:  accKey,
+		Account:  csvbase.Const(b, "Expenses:Misc"),
 	}))
 
 	d, err := csvbase.New("cur-suffix", csvbase.Config{Mapper: pipeline})
@@ -493,17 +502,13 @@ func TestExample_FinalizeHook(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
-		Account:  accKey,
+		Currency: csvbase.Const(b, "USD"),
+		Account:  csvbase.Const(b, "Expenses:Misc"),
 	}))
 
 	var finalizeCalled bool
@@ -542,17 +547,13 @@ func TestExample_RowHashStability(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
-		Account:  accKey,
+		Currency: csvbase.Const(b, "USD"),
+		Account:  csvbase.Const(b, "Expenses:Misc"),
 	}))
 
 	d, err := csvbase.New("hash-stable", csvbase.Config{
@@ -605,20 +606,21 @@ func TestExample_AccountHintOverride(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
-	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{
-		Cols:    []string{"Cat"},
-		Map:     map[string]string{"food": "Expenses:Food"},
-		HintKey: "account",
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
+	accKey := csvbase.Require(b,
+		csvbase.Coalesce(b,
+			csvbase.Hint(b, "account"),
+			csvbase.MapValue(b,
+				csvbase.JoinKeys(b, ":", csvbase.Columns(b, "Cat")...),
+				map[string]string{"food": "Expenses:Food"},
+				csvkit.Strict, csvbase.DiagUnmappedAccount),
+		),
+		csvbase.DiagMissingAccount)
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     dateKey,
 		Amount:   amtKey,
-		Currency: curKey,
+		Currency: csvbase.Const(b, "USD"),
 		Account:  accKey,
 	}))
 
@@ -664,20 +666,18 @@ func printDirectives(out importer.Output) {
 	}
 }
 
-// Example shows the simplest wiring: parse a date, sum one amount column, and
-// post it against fixed accounts. Each transaction field is a Key produced by a
-// step constructor (here Const supplies a constant account and currency); the
-// Driver drives Identify/Extract and EmitTransaction assembles the directive.
+// Example shows the simplest wiring: parse a date, parse one amount column,
+// and post it against fixed accounts. Each transaction field is a Key produced
+// by a step constructor; the Driver drives Identify/Extract and EmitTransaction
+// assembles the directive.
 func Example() {
 	const csv = `Date,Description,Amount
 2024-01-05,Coffee,4.50
 `
 	b := csvbase.NewBuilder()
 	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
-	})
-	narration := csvbase.NarrationFromColumns(b, []string{"Description"}, " ", nil)
+	amount := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
+	narration := csvbase.JoinKeys(b, " ", csvbase.Columns(b, "Description")...)
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:      date,
 		Amount:    amount,
@@ -707,18 +707,24 @@ func Example_debitCredit() {
 `
 	b := csvbase.NewBuilder()
 	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Debit", Negate: true}, {Col: "Credit"}},
-	})
-	payee := csvbase.ResolvePayee(b, csvbase.PayeeConfig{Cols: []string{"Payee"}})
-	counter := csvbase.ResolveCounter(b, csvbase.CounterConfig{
-		Cols: []string{"Category"},
-		Map: map[string]string{
-			"Coffee": "Expenses:Food",
-			"Salary": "Income:Salary",
-			"Rent":   "Expenses:Rent",
-		},
-	})
+	amount := csvbase.AddAmounts(b,
+		csvbase.ParseAmount(b, csvbase.Column(b, "Credit"), csvbase.ParseAmountConfig{}),
+		csvbase.NegateAmount(b, csvbase.ParseAmount(b, csvbase.Column(b, "Debit"), csvbase.ParseAmountConfig{})),
+		"")
+	payee := csvbase.JoinKeys(b, " ", csvbase.Columns(b, "Payee")...)
+	counterMap := map[string]string{
+		"Coffee": "Expenses:Food",
+		"Salary": "Income:Salary",
+		"Rent":   "Expenses:Rent",
+	}
+	// Const("") here means "no counter posting" when the map misses (EmitTransaction skips empty Counter).
+	counter := csvbase.Coalesce(b,
+		csvbase.DiagAsWarning(b,
+			csvbase.MapValue(b,
+				csvbase.JoinKeys(b, "", csvbase.Columns(b, "Category")...),
+				counterMap, csvkit.Strict, ""),
+			csvbase.DiagUnmappedCounterAccount),
+		csvbase.Const(b, ""))
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:     date,
 		Amount:   amount,
@@ -746,9 +752,8 @@ func Example_debitCredit() {
 
 // Example_splitAndFilter shows several advanced features together: a banner
 // line skipped before the header, a Detail column split by regular expression
-// into payee and memo groups (fed straight to the transaction as Keys), the
-// currency taken from a suffix on the amount cell, and a totals row dropped by
-// an exclude filter on the Driver.
+// into payee and memo groups, the currency taken from a suffix on the amount
+// cell, and a totals row dropped by an exclude filter.
 func Example_splitAndFilter() {
 	const csv = `# Bank export
 Date,Detail,Amount
@@ -758,20 +763,19 @@ Total,,2100 JPY
 `
 	b := csvbase.NewBuilder()
 	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	detail := csvbase.Split(b, csvbase.Column(b, "Detail"),
+	groups := csvbase.SplitColumns(b, csvbase.Column(b, "Detail"),
 		regexp.MustCompile(`^(?P<payee>[^|]+)\|(?P<memo>.+)$`))
-	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvkit.AmountColumn{{Col: "Amount"}},
-		SplitCurrency: true,
-	})
-	currency := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{FromAmount: true, Amount: amount})
+	amount := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{SplitCurrency: true})
+	currency := csvbase.Require(b,
+		csvbase.Coalesce(b, csvbase.CurrencyHint(b, amount)),
+		csvbase.DiagMissingCurrency)
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:      date,
 		Amount:    amount,
 		Currency:  currency,
 		Account:   csvbase.Const(b, "Assets:Cash"),
-		Payee:     csvbase.Group(b, detail, "payee"),
-		Narration: csvbase.Group(b, detail, "memo"),
+		Payee:     csvbase.JoinKeys(b, "", groups["payee"]),
+		Narration: csvbase.JoinKeys(b, " ", groups["memo"]),
 	}))
 
 	d, _ := csvbase.New("statement", csvbase.Config{
@@ -787,6 +791,43 @@ Total,,2100 JPY
 	//   Assets:Cash  1500 JPY
 	// 2024-04-02 * "Starbucks" "Latte"
 	//   Assets:Cash  600 JPY
+}
+
+// Example_templateWithSplit shows NarrationFromTemplate with bindings: a split
+// group's value is made available to the template under a custom name, so the
+// template can reference it without that name being a raw header column.
+func Example_templateWithSplit() {
+	const csv = `Date,Amount,Detail
+2024-05-01,42.00,Amazon|Order #999
+`
+	b := csvbase.NewBuilder()
+	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
+	amount := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
+	groups := csvbase.SplitColumns(b, csvbase.Column(b, "Detail"),
+		regexp.MustCompile(`^(?P<vendor>[^|]+)\|(?P<ref>.+)$`))
+
+	tmpl, _ := csvkit.CompileNarration("{{.vendor}} — {{.ref}}")
+	narration := csvbase.NarrationFromTemplate(b, tmpl,
+		map[string]csvbase.Key[string]{
+			"vendor": groups["vendor"],
+			"ref":    groups["ref"],
+		}, "")
+
+	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
+		Date:      date,
+		Amount:    amount,
+		Narration: narration,
+		Currency:  csvbase.Const(b, "USD"),
+		Account:   csvbase.Const(b, "Assets:Cash"),
+	}))
+
+	d, _ := csvbase.New("tmpl-split", csvbase.Config{Mapper: pipeline})
+	out, _ := d.Extract(context.Background(), inputStr("/orders.csv", csv))
+	printDirectives(out)
+
+	// Output:
+	// 2024-05-01 * "" "Amazon — Order #999"
+	//   Assets:Cash  42.00 USD
 }
 
 // Example_lowLevelMapper shows that the framework layers are optional: the

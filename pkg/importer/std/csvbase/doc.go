@@ -23,14 +23,26 @@
 //
 // Ready-made step constructors cover the common field-resolution patterns:
 //
-//   - Primitive steps: [Column], [Const], [ParseDate], [SumAmounts], [Split],
-//     [Group], [MapValue], [JoinKeys].
-//   - Business-logic resolver steps (mirror csvimp semantics): [ResolveAccount],
-//     [ResolveCounter], [ResolveCurrency], [ResolvePayee],
-//     [NarrationFromColumns], [NarrationFromTemplate], [ResolveCost].
+//   - Column reading: [Column], [Columns], [Split], [SplitColumns], [Group].
+//   - Value construction: [Const], [Hint], [JoinKeys], [MapValue], [MapEach].
+//   - Flow control: [Coalesce], [Require], [DiagAsWarning].
+//   - Parsing: [ParseDate], [ParseAmount], [NegateAmount], [AddAmounts], [CurrencyHint].
+//   - Narration: [NarrationFromTemplate].
+//
+// Callers compose these primitives to express any resolution logic. For cases
+// not covered by the primitives, [AddStep] registers an arbitrary typed step.
 //
 // [EmitTransaction] consumes a [TxConfig] of pre-resolved keys and assembles
 // the standard primary+counter+cost transaction, handling soft-fail drop/keep
 // semantics in one place. It is the canonical emit callback for importers that
 // produce one transaction per row.
+//
+// # Leaf-only invariant
+//
+// The only steps that read raw row cells ([MappingState.At] / [Builder.Require])
+// are leaves: [Column] (and the [Columns] / [SplitColumns] conveniences built on
+// it), [NarrationFromTemplate] (justified exception — see its doc comment), and
+// any third-party step a caller writes via [AddStep]. Every standard resolver
+// step takes [Key] source(s) and returns a [Key], so values from raw columns,
+// split groups, maps, joins, and other steps are interchangeable.
 package csvbase

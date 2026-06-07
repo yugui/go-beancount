@@ -13,7 +13,7 @@ import (
 
 type txKeys struct {
 	date     csvbase.Key[time.Time]
-	amount   csvbase.Key[csvkit.Amount]
+	amount   csvbase.Key[*csvkit.Amount]
 	currency csvbase.Key[string]
 	account  csvbase.Key[string]
 	counter  csvbase.Key[string]
@@ -236,6 +236,54 @@ func TestEmitTransaction_DropOnCostDiag(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Nil amount => drop with MissingAmountCode
+// ---------------------------------------------------------------------------
+
+func TestEmitTransaction_NilAmountDropsWithDefaultCode(t *testing.T) {
+	b := csvbase.NewBuilder()
+	keys := txKeys{
+		date:     fixedDateKey(b, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),
+		amount:   nilAmountKey(b),
+		currency: csvbase.Const(b, "USD"),
+		account:  csvbase.Const(b, "Assets:Bank"),
+	}
+	p := b.Emit(csvbase.EmitTransaction(minimalTxConfig(keys)))
+	dirs, diags, err := p.Map(context.Background(), emptyRec())
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(dirs) != 0 {
+		t.Errorf("got %d dirs, want 0 (nil amount drops row)", len(dirs))
+	}
+	if len(diags) != 1 || diags[0].Code != csvbase.DiagAllBlankAmount {
+		t.Errorf("diags = %v, want DiagAllBlankAmount", diags)
+	}
+}
+
+func TestEmitTransaction_NilAmountDropsWithCustomCode(t *testing.T) {
+	b := csvbase.NewBuilder()
+	keys := txKeys{
+		date:     fixedDateKey(b, time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)),
+		amount:   nilAmountKey(b),
+		currency: csvbase.Const(b, "USD"),
+		account:  csvbase.Const(b, "Assets:Bank"),
+	}
+	cfg := minimalTxConfig(keys)
+	cfg.MissingAmountCode = "my-missing-amount"
+	p := b.Emit(csvbase.EmitTransaction(cfg))
+	dirs, diags, err := p.Map(context.Background(), emptyRec())
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if len(dirs) != 0 {
+		t.Errorf("got %d dirs, want 0", len(dirs))
+	}
+	if len(diags) != 1 || diags[0].Code != "my-missing-amount" {
+		t.Errorf("diags = %v, want my-missing-amount", diags)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Missing currency/account (empty value, no diag) => drop with missing code
 // ---------------------------------------------------------------------------
 
@@ -399,17 +447,23 @@ func failingDateKey(b *csvbase.Builder) csvbase.Key[time.Time] {
 	})
 }
 
-func fixedAmountKey(b *csvbase.Builder, num string) csvbase.Key[csvkit.Amount] {
+func fixedAmountKey(b *csvbase.Builder, num string) csvbase.Key[*csvkit.Amount] {
 	n, _, _ := apd.BaseContext.SetString(new(apd.Decimal), num)
-	return csvbase.AddStep(b, func(*csvbase.MappingState) (csvkit.Amount, *ast.Diagnostic, error) {
-		return csvkit.Amount{Number: *n}, nil, nil
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		return &csvkit.Amount{Number: *n}, nil, nil
 	})
 }
 
-func failingAmountKey(b *csvbase.Builder) csvbase.Key[csvkit.Amount] {
-	return csvbase.AddStep(b, func(*csvbase.MappingState) (csvkit.Amount, *ast.Diagnostic, error) {
+func nilAmountKey(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		return nil, nil, nil
+	})
+}
+
+func failingAmountKey(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
 		d := csvbase.ErrorDiag("amount-fail", "/f.csv", 1, "bad amount")
-		return csvkit.Amount{}, &d, nil
+		return nil, &d, nil
 	})
 }
 
