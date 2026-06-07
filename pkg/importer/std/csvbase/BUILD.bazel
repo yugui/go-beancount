@@ -26,7 +26,7 @@ go_library(
 go_test(
     name = "csvbase_test",
     srcs = [
-        "cells_test.go",
+        "cells_internal_test.go",
         "diag_test.go",
         "driver_test.go",
         "emit_test.go",
@@ -35,9 +35,9 @@ go_test(
         "rowhash_test.go",
         "steps_test.go",
     ],
+    embed = [":csvbase"],
     race = "on",
     deps = [
-        ":csvbase",
         "//pkg/ast",
         "//pkg/importer",
         "//pkg/importer/std/csvkit",

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -334,4 +335,81 @@ func TestPipelineConcurrency(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// point is a struct type used to verify Value round-trips over struct values.
+type point struct{ X, Y int }
+
+// TestValue_RoundTrips verifies that AddStep + Value round-trip several distinct
+// types (string, int, time.Time, struct) through a pipeline's Map.
+func TestValue_RoundTrips(t *testing.T) {
+	wantStr := "hello"
+	wantInt := 42
+	wantTime := time.Date(2024, 1, 15, 0, 0, 0, 0, time.UTC)
+	wantPoint := point{3, 7}
+
+	b := csvbase.NewBuilder()
+	kStr := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
+		return wantStr, nil, nil
+	})
+	kInt := csvbase.AddStep(b, func(*csvbase.MappingState) (int, *ast.Diagnostic, error) {
+		return wantInt, nil, nil
+	})
+	kTime := csvbase.AddStep(b, func(*csvbase.MappingState) (time.Time, *ast.Diagnostic, error) {
+		return wantTime, nil, nil
+	})
+	kPoint := csvbase.AddStep(b, func(*csvbase.MappingState) (point, *ast.Diagnostic, error) {
+		return wantPoint, nil, nil
+	})
+
+	var gotStr string
+	var gotInt int
+	var gotTime time.Time
+	var gotPoint point
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		gotStr, _ = csvbase.Value(c, kStr)
+		gotInt, _ = csvbase.Value(c, kInt)
+		gotTime, _ = csvbase.Value(c, kTime)
+		gotPoint, _ = csvbase.Value(c, kPoint)
+		return nil, nil, nil
+	})
+
+	rec := csvbase.RowContext{Fields: []string{}, Index: map[string]int{}}
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if gotStr != wantStr {
+		t.Errorf("string value = %q, want %q", gotStr, wantStr)
+	}
+	if gotInt != wantInt {
+		t.Errorf("int value = %d, want %d", gotInt, wantInt)
+	}
+	if !gotTime.Equal(wantTime) {
+		t.Errorf("time value = %v, want %v", gotTime, wantTime)
+	}
+	if gotPoint != wantPoint {
+		t.Errorf("point value = %v, want %v", gotPoint, wantPoint)
+	}
+}
+
+// TestValue_AbsentKey verifies that Value returns (zero, nil) for a key not
+// produced by the pipeline (here, one created from a different builder).
+func TestValue_AbsentKey(t *testing.T) {
+	otherBuilder := csvbase.NewBuilder()
+	orphan := csvbase.AddStep(otherBuilder, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
+		return "orphan", nil, nil
+	})
+
+	b := csvbase.NewBuilder()
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		v, diag := csvbase.Value(c, orphan)
+		if v != "" || diag != nil {
+			t.Errorf("absent key: got (%q, %v), want (\"\", nil)", v, diag)
+		}
+		return nil, nil, nil
+	})
+	rec := csvbase.RowContext{Fields: []string{}, Index: map[string]int{}}
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
 }
