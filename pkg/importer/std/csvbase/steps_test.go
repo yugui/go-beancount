@@ -1321,3 +1321,533 @@ func TestSumAmounts_CustomBadCode(t *testing.T) {
 		t.Errorf("SumAmounts() diag code = %v, want %q", gotD, "my-bad-amount")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Hint
+// ---------------------------------------------------------------------------
+
+func TestHint_ReturnsHintValue(t *testing.T) {
+	v, d := singleString(t,
+		csvbase.RowContext{Fields: []string{}, Index: map[string]int{},
+			Hints: map[string]string{"account": "Assets:Checking"}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			return csvbase.Hint(b, "account")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "Assets:Checking" {
+		t.Errorf("Hint = %q, want %q", v, "Assets:Checking")
+	}
+}
+
+func TestHint_AbsentYieldsEmpty(t *testing.T) {
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			return csvbase.Hint(b, "missing")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "" {
+		t.Errorf("absent Hint = %q, want %q", v, "")
+	}
+}
+
+func TestHint_EmptyStringYieldsEmpty(t *testing.T) {
+	v, d := singleString(t,
+		csvbase.RowContext{Fields: []string{}, Index: map[string]int{},
+			Hints: map[string]string{"account": ""}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			return csvbase.Hint(b, "account")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "" {
+		t.Errorf("empty Hint = %q, want %q", v, "")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coalesce
+// ---------------------------------------------------------------------------
+
+func TestCoalesce_FirstNonBlank(t *testing.T) {
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			k1 := csvbase.Const(b, "")
+			k2 := csvbase.Const(b, "  second  ")
+			k3 := csvbase.Const(b, "third")
+			return csvbase.Coalesce(b, k1, k2, k3)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "second" {
+		t.Errorf("Coalesce = %q, want %q", v, "second")
+	}
+}
+
+func TestCoalesce_AllBlankYieldsEmpty(t *testing.T) {
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			k1 := csvbase.Const(b, "")
+			k2 := csvbase.Const(b, "   ")
+			return csvbase.Coalesce(b, k1, k2)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "" {
+		t.Errorf("all-blank Coalesce = %q, want %q", v, "")
+	}
+}
+
+func TestCoalesce_SoftFailedInputSkipped(t *testing.T) {
+	// A soft-failed input is skipped (diagnostic NOT propagated); next non-blank wins.
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			failing := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
+				d := csvbase.ErrorDiag("fail", "", 0, "x")
+				return "", &d, nil
+			})
+			ok := csvbase.Const(b, "fallback")
+			return csvbase.Coalesce(b, failing, ok)
+		})
+	if d != nil {
+		t.Fatalf("soft-fail diag propagated by Coalesce, got: %v", d)
+	}
+	if v != "fallback" {
+		t.Errorf("Coalesce past soft-fail = %q, want %q", v, "fallback")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Require
+// ---------------------------------------------------------------------------
+
+func TestRequire_NonBlankPassesTrimmed(t *testing.T) {
+	v, d := singleString(t, rowCtx("X", "  hello  "), func(b *csvbase.Builder) csvbase.Key[string] {
+		return csvbase.Require(b, csvbase.Column(b, "X"), "missing-x")
+	})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "hello" {
+		t.Errorf("Require trimmed = %q, want %q", v, "hello")
+	}
+}
+
+func TestRequire_BlankSoftFails(t *testing.T) {
+	_, d := singleString(t, rowCtx("X", ""), func(b *csvbase.Builder) csvbase.Key[string] {
+		return csvbase.Require(b, csvbase.Column(b, "X"), "missing-x")
+	})
+	if d == nil || d.Code != "missing-x" {
+		t.Errorf("blank Require diag = %v, want missing-x", d)
+	}
+}
+
+func TestRequire_UpstreamSoftFailPropagates(t *testing.T) {
+	_, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			upstream := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
+				d := csvbase.ErrorDiag("upstream-code", "", 0, "x")
+				return "", &d, nil
+			})
+			return csvbase.Require(b, upstream, "require-code")
+		})
+	if d == nil || d.Code != "upstream-code" {
+		t.Errorf("upstream soft-fail diag = %v, want upstream-code", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// CurrencyHint
+// ---------------------------------------------------------------------------
+
+func singlePtrAmount(t *testing.T, rec csvbase.RowContext, build func(*csvbase.Builder) csvbase.Key[*csvkit.Amount]) (*csvkit.Amount, *ast.Diagnostic) {
+	t.Helper()
+	b := csvbase.NewBuilder()
+	k := build(b)
+	var gotV *csvkit.Amount
+	var gotD *ast.Diagnostic
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		gotV, gotD = csvbase.Value(c, k)
+		return nil, nil, nil
+	})
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	return gotV, gotD
+}
+
+func TestCurrencyHint_WithHint(t *testing.T) {
+	v, d := singleString(t, rowCtx("Amt", "1000 JPY"),
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amt"),
+				csvbase.ParseAmountConfig{SplitCurrency: true})
+			return csvbase.CurrencyHint(b, amtKey)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "JPY" {
+		t.Errorf("CurrencyHint = %q, want %q", v, "JPY")
+	}
+}
+
+func TestCurrencyHint_NilAmtYieldsEmpty(t *testing.T) {
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			nilAmt := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			return csvbase.CurrencyHint(b, nilAmt)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "" {
+		t.Errorf("CurrencyHint(nil) = %q, want %q", v, "")
+	}
+}
+
+func TestCurrencyHint_SoftFailedAmtYieldsEmpty(t *testing.T) {
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			failAmt := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				d := csvbase.ErrorDiag("amt-fail", "", 0, "x")
+				return nil, &d, nil
+			})
+			return csvbase.CurrencyHint(b, failAmt)
+		})
+	// CurrencyHint swallows the soft-fail: returns "" with no diag.
+	if d != nil {
+		t.Errorf("CurrencyHint(soft-fail) propagated diag: %v", d)
+	}
+	if v != "" {
+		t.Errorf("CurrencyHint(soft-fail) = %q, want %q", v, "")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MapEach
+// ---------------------------------------------------------------------------
+
+func TestMapEach_ParallelMap(t *testing.T) {
+	v, d := singleString(t, rowCtx("A", "x", "B", "y"),
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			ins := csvbase.Columns(b, "A", "B")
+			m := map[string]string{"x": "X", "y": "Y"}
+			outs := csvbase.MapEach(b, ins, m, csvkit.Verbatim, "miss")
+			return csvbase.JoinKeys(b, ",", outs...)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "X,Y" {
+		t.Errorf("MapEach joined = %q, want %q", v, "X,Y")
+	}
+}
+
+func TestMapEach_StrictMissFailsEntry(t *testing.T) {
+	b := csvbase.NewBuilder()
+	ins := csvbase.Columns(b, "A")
+	m := map[string]string{"x": "X"}
+	outs := csvbase.MapEach(b, ins, m, csvkit.Strict, "miss-code")
+	var gotD *ast.Diagnostic
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		_, gotD = csvbase.Value(c, outs[0])
+		return nil, nil, nil
+	})
+	if _, _, err := p.Map(context.Background(), rowCtx("A", "unknown")); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if gotD == nil || gotD.Code != "miss-code" {
+		t.Errorf("MapEach strict miss diag = %v, want miss-code", gotD)
+	}
+}
+
+func TestMapEach_SoftFailedEntryPropagates(t *testing.T) {
+	b := csvbase.NewBuilder()
+	failKey := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
+		d := csvbase.ErrorDiag("entry-fail", "", 0, "x")
+		return "", &d, nil
+	})
+	m := map[string]string{"x": "X"}
+	outs := csvbase.MapEach(b, []csvbase.Key[string]{failKey}, m, csvkit.Verbatim, "")
+	var gotD *ast.Diagnostic
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		_, gotD = csvbase.Value(c, outs[0])
+		return nil, nil, nil
+	})
+	rec := csvbase.RowContext{Fields: []string{}, Index: map[string]int{}}
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if gotD == nil || gotD.Code != "entry-fail" {
+		t.Errorf("MapEach propagated diag = %v, want entry-fail", gotD)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// DiagAsWarning
+// ---------------------------------------------------------------------------
+
+func TestDiagAsWarning_ErrorToWarning(t *testing.T) {
+	_, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			failKey := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
+				d := csvbase.ErrorDiag("orig-code", "", 0, "x")
+				return "", &d, nil
+			})
+			return csvbase.DiagAsWarning(b, failKey, "new-code")
+		})
+	if d == nil {
+		t.Fatal("expected diag, got nil")
+	}
+	if d.Severity != ast.Warning {
+		t.Errorf("DiagAsWarning severity = %v, want Warning", d.Severity)
+	}
+	if d.Code != "new-code" {
+		t.Errorf("DiagAsWarning code = %q, want %q", d.Code, "new-code")
+	}
+}
+
+func TestDiagAsWarning_SuccessPassesThrough(t *testing.T) {
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			ok := csvbase.Const(b, "value")
+			return csvbase.DiagAsWarning(b, ok, "unused-code")
+		})
+	if d != nil {
+		t.Fatalf("DiagAsWarning(success) produced diag: %v", d)
+	}
+	if v != "value" {
+		t.Errorf("DiagAsWarning(success) = %q, want %q", v, "value")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ParseAmount
+// ---------------------------------------------------------------------------
+
+func TestParseAmount_BlankYieldsNil(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("Amt", ""), func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+		return csvbase.ParseAmount(b, csvbase.Column(b, "Amt"), csvbase.ParseAmountConfig{})
+	})
+	if d != nil {
+		t.Fatalf("blank ParseAmount diag = %v, want nil", d)
+	}
+	if v != nil {
+		t.Errorf("blank ParseAmount = %v, want nil", v)
+	}
+}
+
+func TestParseAmount_PlaceholderYieldsNil(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("Amt", "-"), func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+		return csvbase.ParseAmount(b, csvbase.Column(b, "Amt"),
+			csvbase.ParseAmountConfig{Format: csvkit.NumberFormat{Placeholders: []string{"-"}}})
+	})
+	if d != nil {
+		t.Fatalf("placeholder ParseAmount diag = %v, want nil", d)
+	}
+	if v != nil {
+		t.Errorf("placeholder ParseAmount = %v, want nil", v)
+	}
+}
+
+func TestParseAmount_ParseableYieldsAmount(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("Amt", "42.50"), func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+		return csvbase.ParseAmount(b, csvbase.Column(b, "Amt"), csvbase.ParseAmountConfig{})
+	})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v == nil {
+		t.Fatal("ParseAmount returned nil, want *Amount")
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "42.50")
+	if v.Number.Cmp(want) != 0 {
+		t.Errorf("ParseAmount number = %v, want 42.50", v.Number)
+	}
+}
+
+func TestParseAmount_BadValueSoftFails(t *testing.T) {
+	_, d := singlePtrAmount(t, rowCtx("Amt", "bad"), func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+		return csvbase.ParseAmount(b, csvbase.Column(b, "Amt"), csvbase.ParseAmountConfig{})
+	})
+	if d == nil || d.Code != csvbase.DiagBadAmount {
+		t.Errorf("bad ParseAmount diag = %v, want DiagBadAmount", d)
+	}
+}
+
+func TestParseAmount_SplitCurrencyPopulatesHint(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("Amt", "1000 JPY"), func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+		return csvbase.ParseAmount(b, csvbase.Column(b, "Amt"),
+			csvbase.ParseAmountConfig{SplitCurrency: true})
+	})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v == nil {
+		t.Fatal("ParseAmount returned nil")
+	}
+	if v.CurrencyHint != "JPY" {
+		t.Errorf("CurrencyHint = %q, want JPY", v.CurrencyHint)
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "1000")
+	if v.Number.Cmp(want) != 0 {
+		t.Errorf("ParseAmount number = %v, want 1000", v.Number)
+	}
+}
+
+func TestParseAmount_SoftFailedSrcPropagates(t *testing.T) {
+	v, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			failSrc := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
+				d := csvbase.ErrorDiag("src-fail", "", 0, "x")
+				return "", &d, nil
+			})
+			return csvbase.ParseAmount(b, failSrc, csvbase.ParseAmountConfig{})
+		})
+	if v != nil {
+		t.Errorf("soft-fail src ParseAmount = %v, want nil", v)
+	}
+	if d == nil || d.Code != "src-fail" {
+		t.Errorf("propagated diag = %v, want src-fail", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// NegateAmount
+// ---------------------------------------------------------------------------
+
+func TestNegateAmount_NegatesValue(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("Amt", "50"),
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			src := csvbase.ParseAmount(b, csvbase.Column(b, "Amt"), csvbase.ParseAmountConfig{})
+			return csvbase.NegateAmount(b, src)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v == nil {
+		t.Fatal("NegateAmount returned nil")
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "-50")
+	if v.Number.Cmp(want) != 0 {
+		t.Errorf("NegateAmount = %v, want -50", v.Number)
+	}
+}
+
+func TestNegateAmount_NilYieldsNil(t *testing.T) {
+	v, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			nilKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			return csvbase.NegateAmount(b, nilKey)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != nil {
+		t.Errorf("NegateAmount(nil) = %v, want nil", v)
+	}
+}
+
+func TestNegateAmount_SoftFailPropagates(t *testing.T) {
+	_, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			failKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				d := csvbase.ErrorDiag("neg-fail", "", 0, "x")
+				return nil, &d, nil
+			})
+			return csvbase.NegateAmount(b, failKey)
+		})
+	if d == nil || d.Code != "neg-fail" {
+		t.Errorf("NegateAmount soft-fail propagated = %v, want neg-fail", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// AddAmounts
+// ---------------------------------------------------------------------------
+
+func TestAddAmounts_IdentityNilNil(t *testing.T) {
+	v, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			nilA := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			nilB := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			return csvbase.AddAmounts(b, nilA, nilB, "")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != nil {
+		t.Errorf("AddAmounts(nil,nil) = %v, want nil", v)
+	}
+}
+
+func TestAddAmounts_NilPlusV(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("Amt", "30"),
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			nilKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			parsed := csvbase.ParseAmount(b, csvbase.Column(b, "Amt"), csvbase.ParseAmountConfig{})
+			return csvbase.AddAmounts(b, nilKey, parsed, "")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v == nil {
+		t.Fatal("AddAmounts(nil,v) = nil, want v")
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "30")
+	if v.Number.Cmp(want) != 0 {
+		t.Errorf("AddAmounts(nil,v) = %v, want 30", v.Number)
+	}
+}
+
+func TestAddAmounts_Sum(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("Credit", "100", "Debit", "30"),
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			credit := csvbase.ParseAmount(b, csvbase.Column(b, "Credit"), csvbase.ParseAmountConfig{})
+			debit := csvbase.ParseAmount(b, csvbase.Column(b, "Debit"), csvbase.ParseAmountConfig{})
+			return csvbase.AddAmounts(b, credit, csvbase.NegateAmount(b, debit), "")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v == nil {
+		t.Fatal("AddAmounts returned nil")
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "70")
+	if v.Number.Cmp(want) != 0 {
+		t.Errorf("AddAmounts(100,-30) = %v, want 70", v.Number)
+	}
+}
+
+func TestAddAmounts_ConflictingHintSoftFails(t *testing.T) {
+	n, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "1")
+	_, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			aKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return &csvkit.Amount{Number: *n, CurrencyHint: "JPY"}, nil, nil
+			})
+			cKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return &csvkit.Amount{Number: *n, CurrencyHint: "EUR"}, nil, nil
+			})
+			return csvbase.AddAmounts(b, aKey, cKey, "conflict-code")
+		})
+	if d == nil || d.Code != "conflict-code" {
+		t.Errorf("conflicting hints diag = %v, want conflict-code", d)
+	}
+}

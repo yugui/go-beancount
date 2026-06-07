@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
@@ -194,6 +195,219 @@ func JoinKeys(b *Builder, sep string, ins ...Key[string]) Key[string] {
 			}
 		}
 		return strings.Join(parts, sep), nil, nil
+	})
+}
+
+// Hint returns a leaf Key that reads info.Hints[name] for every row. Empty
+// when the hint is absent or set to "".
+func Hint(b *Builder, name string) Key[string] {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		return c.Info().Hints[name], nil, nil
+	})
+}
+
+// Coalesce returns the first input whose value (after TrimSpace) is non-empty;
+// the result is "" when every input is blank. A soft-failed input is treated
+// as blank (its diagnostic is NOT propagated). Coalesce does not emit a
+// diagnostic itself.
+func Coalesce(b *Builder, ins ...Key[string]) Key[string] {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		for _, k := range ins {
+			v, d := Value(c, k)
+			if d != nil {
+				continue
+			}
+			if t := strings.TrimSpace(v); t != "" {
+				return t, nil, nil
+			}
+		}
+		return "", nil, nil
+	})
+}
+
+// Require soft-fails with code when in's value is blank (after TrimSpace).
+// A soft-failed input propagates its existing diagnostic unchanged (code is
+// not overridden). On success the trimmed value is returned.
+func Require(b *Builder, in Key[string], code string) Key[string] {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			return "", d, nil
+		}
+		t := strings.TrimSpace(v)
+		if t == "" {
+			info := c.Info()
+			diag := ErrorDiag(code, info.Path, info.Line, "required value is blank")
+			return "", &diag, nil
+		}
+		return t, nil, nil
+	})
+}
+
+// CurrencyHint extracts the CurrencyHint string from amt. Returns "" when
+// amt's value is nil, has no hint, or amt soft-failed.
+func CurrencyHint(b *Builder, amt Key[*csvkit.Amount]) Key[string] {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		v, d := Value(c, amt)
+		if d != nil {
+			return "", nil, nil
+		}
+		if v == nil {
+			return "", nil, nil
+		}
+		return v.CurrencyHint, nil, nil
+	})
+}
+
+// MapEach independently runs each input through m under mode, producing a
+// parallel slice of Keys. A soft-failed input propagates its diagnostic to
+// the corresponding output Key. Use with JoinKeys to reproduce per-cell map
+// semantics.
+func MapEach(b *Builder, ins []Key[string], m map[string]string, mode csvkit.MapMode, code string) []Key[string] {
+	out := make([]Key[string], len(ins))
+	for i, in := range ins {
+		in := in
+		out[i] = AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+			raw, d := Value(c, in)
+			if d != nil {
+				return "", d, nil
+			}
+			mapped, ok := csvkit.ResolveThroughMap(raw, m, mode)
+			if !ok {
+				info := c.Info()
+				diag := ErrorDiag(code, info.Path, info.Line,
+					fmt.Sprintf("key %q has no entry in map", raw))
+				return "", &diag, nil
+			}
+			return mapped, nil, nil
+		})
+	}
+	return out
+}
+
+// DiagAsWarning rewrites the severity of in's soft-fail diagnostic to Warning
+// and replaces its Code with newCode. A successful value passes through
+// untouched. Use to convert an error-severity miss (e.g. MapValue strict) into
+// a warn-keep signal that EmitTransaction surfaces without dropping the row.
+func DiagAsWarning[T any](b *Builder, in Key[T], newCode string) Key[T] {
+	return AddStep(b, func(c *MappingState) (T, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			warn := *d
+			warn.Severity = ast.Warning
+			warn.Code = newCode
+			var zero T
+			return zero, &warn, nil
+		}
+		return v, nil, nil
+	})
+}
+
+// ParseAmountConfig configures ParseAmount.
+type ParseAmountConfig struct {
+	Format        csvkit.NumberFormat
+	SplitCurrency bool
+	// Code is the diagnostic code for a non-blank unparseable value; defaults
+	// to DiagBadAmount.
+	Code string
+}
+
+// ParseAmount parses src's raw value under cfg.Format (and SplitCurrency).
+// A blank or placeholder cell yields (nil, nil) — no amount, not an error.
+// A non-blank unparseable value soft-fails with cfg.Code (default
+// DiagBadAmount). A soft-failed src propagates its diagnostic.
+func ParseAmount(b *Builder, src Key[string], cfg ParseAmountConfig) Key[*csvkit.Amount] {
+	code := cfg.Code
+	if code == "" {
+		code = DiagBadAmount
+	}
+	return AddStep(b, func(c *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		raw, d := Value(c, src)
+		if d != nil {
+			return nil, d, nil
+		}
+		numStr := raw
+		currency := ""
+		if cfg.SplitCurrency {
+			numStr, currency = csvkit.SplitCurrencySuffix(raw)
+		}
+		num, blank, err := csvkit.ParseNumber(numStr, cfg.Format)
+		if blank {
+			return nil, nil, nil
+		}
+		if err != nil {
+			info := c.Info()
+			diag := ErrorDiag(code, info.Path, info.Line,
+				fmt.Sprintf("cannot parse amount %q", raw))
+			return nil, &diag, nil
+		}
+		return &csvkit.Amount{Number: num, CurrencyHint: currency}, nil, nil
+	})
+}
+
+// NegateAmount returns -in (preserving CurrencyHint). A nil input yields nil.
+// A soft-failed input propagates its diagnostic.
+func NegateAmount(b *Builder, in Key[*csvkit.Amount]) Key[*csvkit.Amount] {
+	return AddStep(b, func(c *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			return nil, d, nil
+		}
+		if v == nil {
+			return nil, nil, nil
+		}
+		var neg apd.Decimal
+		if _, err := apd.BaseContext.Neg(&neg, &v.Number); err != nil {
+			info := c.Info()
+			diag := ErrorDiag(DiagBadAmount, info.Path, info.Line,
+				fmt.Sprintf("cannot negate amount: %v", err))
+			return nil, &diag, nil
+		}
+		return &csvkit.Amount{Number: neg, CurrencyHint: v.CurrencyHint}, nil, nil
+	})
+}
+
+// AddAmounts returns a+c. nil is the additive identity: AddAmounts(nil,nil)=nil,
+// AddAmounts(nil,v)=v, AddAmounts(v,nil)=v. Conflicting non-empty CurrencyHints
+// soft-fail with code (default DiagBadAmount). A soft-failed input propagates
+// its diagnostic.
+func AddAmounts(b *Builder, a, c Key[*csvkit.Amount], code string) Key[*csvkit.Amount] {
+	if code == "" {
+		code = DiagBadAmount
+	}
+	return AddStep(b, func(ms *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		av, ad := Value(ms, a)
+		if ad != nil {
+			return nil, ad, nil
+		}
+		cv, cd := Value(ms, c)
+		if cd != nil {
+			return nil, cd, nil
+		}
+		if av == nil {
+			return cv, nil, nil
+		}
+		if cv == nil {
+			return av, nil, nil
+		}
+		hint := av.CurrencyHint
+		if cv.CurrencyHint != "" {
+			if hint != "" && hint != cv.CurrencyHint {
+				info := ms.Info()
+				diag := ErrorDiag(code, info.Path, info.Line,
+					fmt.Sprintf("conflicting currency hints: %q vs %q", hint, cv.CurrencyHint))
+				return nil, &diag, nil
+			}
+			hint = cv.CurrencyHint
+		}
+		var sum apd.Decimal
+		if _, err := apd.BaseContext.Add(&sum, &av.Number, &cv.Number); err != nil {
+			info := ms.Info()
+			diag := ErrorDiag(code, info.Path, info.Line,
+				fmt.Sprintf("cannot add amounts: %v", err))
+			return nil, &diag, nil
+		}
+		return &csvkit.Amount{Number: sum, CurrencyHint: hint}, nil, nil
 	})
 }
 
