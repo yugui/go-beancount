@@ -1,0 +1,47 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "csvbase",
+    srcs = [
+        "diag.go",
+        "doc.go",
+        "driver.go",
+        "emit.go",
+        "mappingstate.go",
+        "pipeline.go",
+        "rowhash.go",
+        "steps.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/importer/std/csvbase",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/importer",
+        "//pkg/importer/importerutil",
+        "//pkg/importer/std/csvkit",
+        "@com_github_cockroachdb_apd_v3//:apd",
+    ],
+)
+
+go_test(
+    name = "csvbase_test",
+    srcs = [
+        "diag_test.go",
+        "driver_test.go",
+        "emit_test.go",
+        "example_test.go",
+        "mappingstate_internal_test.go",
+        "pipeline_test.go",
+        "rowhash_test.go",
+        "steps_test.go",
+    ],
+    embed = [":csvbase"],
+    race = "on",
+    deps = [
+        "//pkg/ast",
+        "//pkg/importer",
+        "//pkg/importer/std/csvkit",
+        "@com_github_cockroachdb_apd_v3//:apd",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)
