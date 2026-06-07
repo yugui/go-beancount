@@ -531,6 +531,7 @@ func TestResolveCurrency(t *testing.T) {
 		currencyMap     map[string]string
 
 		row  []string
+		hint string
 		want string
 	}{
 		{
@@ -539,6 +540,26 @@ func TestResolveCurrency(t *testing.T) {
 			currencyMap: map[string]string{"¥": "JPY"},
 			row:         []string{"¥"},
 			want:        "JPY",
+		},
+		{
+			name: "hint used when no col",
+			row:  nil,
+			hint: "JPY",
+			want: "JPY",
+		},
+		{
+			name:        "explicit col outranks hint",
+			currencyCol: "Cur",
+			row:         []string{"USD"},
+			hint:        "JPY",
+			want:        "USD",
+		},
+		{
+			name:            "hint outranks default",
+			currencyDefault: "USD",
+			row:             nil,
+			hint:            "JPY",
+			want:            "JPY",
 		},
 		{
 			name:        "col + map: miss passes through",
@@ -580,7 +601,7 @@ func TestResolveCurrency(t *testing.T) {
 			if tc.currencyCol != "" {
 				idx[tc.currencyCol] = 0
 			}
-			if got := resolveCurrency(s, idx, tc.row); got != tc.want {
+			if got := resolveCurrency(s, idx, tc.row, tc.hint); got != tc.want {
 				t.Errorf("resolveCurrency() = %q, want %q", got, tc.want)
 			}
 		})

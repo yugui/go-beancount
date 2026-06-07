@@ -210,7 +210,7 @@ col = "Acct"
 		{
 			name:   "currency requires col or default",
 			src:    minimalDate + minimalAccount + minimalAmount,
-			wantIn: "[currency] requires col or default",
+			wantIn: "[currency] requires col, default, or from_amount",
 		},
 		{
 			name: "currency map blank value",
@@ -268,6 +268,108 @@ default = "USD"
 "x" = "y"
 ` + minimalAmount,
 			wantIn: "[narration.map] is set but [narration].col is empty",
+		},
+		{
+			name: "columns and header_match together",
+			src: `header_match = ["Date"]
+[columns]
+Date = 0
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "columns (headerless) and header_match are mutually exclusive",
+		},
+		{
+			name: "blank header_match entry",
+			src: `header_match = ["Date", ""]
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "header_match contains a blank column name",
+		},
+		{
+			name: "negative column index",
+			src: `[columns]
+Date = -1
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "must be non-negative",
+		},
+		{
+			name: "narration col and template together",
+			src: minimalDate + minimalAccount + minimalCurrency + `
+[narration]
+col      = "Memo"
+template = "{{.Memo}}"
+` + minimalAmount,
+			wantIn: "[narration].col and [narration].template are mutually exclusive",
+		},
+		{
+			name: "bad narration template",
+			src: minimalDate + minimalAccount + minimalCurrency + `
+[narration]
+template = "{{.Memo"
+` + minimalAmount,
+			wantIn: "[narration].template:",
+		},
+		{
+			name: "split pattern without col",
+			src: `[split]
+pattern = "(?P<x>.*)"
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "[split].pattern requires [split].col",
+		},
+		{
+			name: "split pattern without named groups",
+			src: `[split]
+col     = "Detail"
+pattern = "(.*)"
+` + minimalDate + minimalAccount + minimalCurrency + minimalAmount,
+			wantIn: "no named capture groups",
+		},
+		{
+			name: "cost per_unit and total together",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit         = "Price"
+total            = "Total"
+default_currency = "USD"
+`,
+			wantIn: "exactly one of per_unit or total",
+		},
+		{
+			name: "cost without currency",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit = "Price"
+`,
+			wantIn: "[cost] requires currency or default_currency",
+		},
+		{
+			name: "cost date without date_format",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+date             = "Acq"
+`,
+			wantIn: "[cost].date requires [cost].date_format",
+		},
+		{
+			name: "cost date_format without date",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+date_format      = "2006-01-02"
+`,
+			wantIn: "[cost].date_format is set without [cost].date",
+		},
+		{
+			name: "cost date_format missing year",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+date             = "Acq"
+date_format      = "01-02"
+`,
+			wantIn: "must include year, month and day",
 		},
 	}
 

@@ -12,6 +12,7 @@ import (
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer"
+	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
 
 // stringList is a TOML field that accepts either a single string or an
@@ -48,19 +49,54 @@ type shapeConfig struct {
 	Match          string          `toml:"match"`
 	Delimiter      string          `toml:"delimiter"`
 	SkipLines      int             `toml:"skip_lines"`
+	HeaderMatch    stringList      `toml:"header_match"`
+	Columns        map[string]int  `toml:"columns"`
 	Encoding       string          `toml:"encoding"`
+	Number         numberConfig    `toml:"number"`
 	Date           dateConfig      `toml:"date"`
 	Account        accountConfig   `toml:"account"`
 	CounterAccount accountConfig   `toml:"counter_account"`
 	Payee          payeeConfig     `toml:"payee"`
 	Currency       currencyConfig  `toml:"currency"`
 	Narration      narrationConfig `toml:"narration"`
+	Split          splitConfig     `toml:"split"`
+	Cost           costConfig      `toml:"cost"`
 	Amount         []amountColumn  `toml:"amount"`
+	Exclude        []excludeConfig `toml:"exclude"`
+}
+
+// costConfig is the on-disk shape of the optional [cost] block. Exactly one
+// of PerUnit / Total names the cost-number column; the cost currency comes
+// from Currency or DefaultCurrency. Date (with DateFormat) and Label are
+// optional.
+type costConfig struct {
+	PerUnit         string `toml:"per_unit"`
+	Total           string `toml:"total"`
+	Currency        string `toml:"currency"`
+	DefaultCurrency string `toml:"default_currency"`
+	Date            string `toml:"date"`
+	DateFormat      string `toml:"date_format"`
+	Label           string `toml:"label"`
+}
+
+// excludeConfig is one [[exclude]] rule: Match (required) is a regular
+// expression tested against Col when set, otherwise against every cell.
+type excludeConfig struct {
+	Col   string `toml:"col"`
+	Match string `toml:"match"`
 }
 
 type dateConfig struct {
 	Col    string `toml:"col"`
 	Format string `toml:"format"`
+}
+
+// numberConfig tunes amount parsing; an absent block parses amounts as
+// apd does (commas rejected, '.' decimal point).
+type numberConfig struct {
+	ThousandsSep string     `toml:"thousands_sep"`
+	DecimalSep   string     `toml:"decimal_sep"`
+	Placeholders stringList `toml:"placeholders"`
 }
 
 // accountConfig is the on-disk shape of an account-selecting block
@@ -81,17 +117,30 @@ type payeeConfig struct {
 }
 
 type currencyConfig struct {
-	Col     string            `toml:"col"`
-	Default string            `toml:"default"`
-	Map     map[string]string `toml:"map"`
+	Col        string            `toml:"col"`
+	Default    string            `toml:"default"`
+	FromAmount bool              `toml:"from_amount"`
+	Map        map[string]string `toml:"map"`
 }
 
 type narrationConfig struct {
 	Col       stringList        `toml:"col"`
 	Separator string            `toml:"separator"`
 	Map       map[string]string `toml:"map"`
+	Template  string            `toml:"template"`
 }
 
+// splitConfig is the on-disk shape of the optional [split] block: Pattern
+// is a regular expression whose named capture groups become synthetic
+// columns extracted from Col, referenceable by any field.
+type splitConfig struct {
+	Col     string `toml:"col"`
+	Pattern string `toml:"pattern"`
+}
+
+// amountColumn is the TOML decode target for one [[amount]] entry. It
+// mirrors csvkit.AmountColumn but stays local so csvkit carries no TOML
+// tags; validateShape converts between the two.
 type amountColumn struct {
 	Col    string `toml:"col"`
 	Negate bool   `toml:"negate"`
@@ -103,6 +152,12 @@ type shape struct {
 	compiledMatch *regexp.Regexp // nil when Match was unset
 	delimiter     rune           // default ','
 	skipLines     int
+
+	// headerMatch locates the header past a variable banner; nil for a
+	// fixed header. columns is non-nil only for headerless input, where
+	// it is both the reader's headerless trigger and the column index.
+	headerMatch func([]string) bool
+	columns     map[string]int
 
 	// inputEncoding decodes file bytes to UTF-8 before CSV parsing.
 	// nil means "no transformation"; bytes flow through verbatim
@@ -135,15 +190,53 @@ type shape struct {
 	payeeSep  string
 	payeeMap  map[string]string
 
+	currencyCol        string
+	currencyDefault    string
+	currencyFromAmount bool
+	currencyMap        map[string]string
+
+	narrationCols     []string
+	narrationSep      string
+	narrationMap      map[string]string
+	narrationTemplate *csvkit.NarrationTemplate // nil unless [narration].template set
+
+	amounts      []csvkit.AmountColumn
+	numberFormat csvkit.NumberFormat
+
+	// split, when non-nil, extracts named capture groups from a source
+	// column into synthetic columns referenceable by any field.
+	split *splitRule
+
+	// cost, when non-nil, annotates the primary posting with a CostSpec
+	// built from the row.
+	cost *costRule
+
+	// filters drop statement noise (footnotes, totals) before a row
+	// becomes a directive; empty means no filtering.
+	filters []csvkit.RowFilter
+}
+
+// costRule is the compiled form of [cost]: numberCol holds the cost number
+// (a Total when isTotal, otherwise a per-unit cost), resolved into the cost
+// currency from currencyCol or currencyDefault, with an optional date and
+// label.
+type costRule struct {
+	numberCol       string
+	isTotal         bool
 	currencyCol     string
 	currencyDefault string
-	currencyMap     map[string]string
+	dateCol         string
+	dateFormat      string
+	labelCol        string
+}
 
-	narrationCols []string
-	narrationSep  string
-	narrationMap  map[string]string
-
-	amounts []amountColumn
+// splitRule is the compiled form of [split]: re's named groups become
+// synthetic columns drawn from col. groups holds those names so they are
+// not mistaken for required header columns.
+type splitRule struct {
+	col    string
+	re     *regexp.Regexp
+	groups map[string]bool
 }
 
 // newImporter is the factory function registered under kind "csv". It returns
@@ -175,7 +268,7 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		return nil, fmt.Errorf("shape %q: [date].format is required", name)
 	}
 	// year/month/day required: shorter layouts produce ambiguous beancount dates.
-	if t, err := time.Parse(sc.Date.Format, sc.Date.Format); err != nil || t.Year() != 2006 || t.Month() != time.January || t.Day() != 2 {
+	if !dateLayoutHasYMD(sc.Date.Format) {
 		return nil, fmt.Errorf(`shape %q: [date].format %q must include year, month and day expressed against the layout reference date Jan 2, 2006 (for example "2006-01-02" or "02/01/2006")`, name, sc.Date.Format)
 	}
 
@@ -190,8 +283,8 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		return nil, fmt.Errorf("shape %q: [payee.map] is set but [payee].col is not; the map would never be consulted", name)
 	}
 
-	if sc.Currency.Col == "" && sc.Currency.Default == "" {
-		return nil, fmt.Errorf("shape %q: [currency] requires col or default", name)
+	if sc.Currency.Col == "" && sc.Currency.Default == "" && !sc.Currency.FromAmount {
+		return nil, fmt.Errorf("shape %q: [currency] requires col, default, or from_amount", name)
 	}
 	if sc.Currency.Default != "" && strings.TrimSpace(sc.Currency.Default) == "" {
 		return nil, fmt.Errorf("shape %q: [currency].default is blank", name)
@@ -208,20 +301,62 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 	if len(sc.Narration.Col) == 0 && len(sc.Narration.Map) != 0 {
 		return nil, fmt.Errorf("shape %q: [narration.map] is set but [narration].col is empty; the map would never be consulted", name)
 	}
+	if len(sc.Narration.Col) > 0 && sc.Narration.Template != "" {
+		return nil, fmt.Errorf("shape %q: [narration].col and [narration].template are mutually exclusive", name)
+	}
+
+	if sc.Split.Pattern == "" && sc.Split.Col != "" {
+		return nil, fmt.Errorf("shape %q: [split].col is set without [split].pattern", name)
+	}
+	if sc.Split.Pattern != "" && sc.Split.Col == "" {
+		return nil, fmt.Errorf("shape %q: [split].pattern requires [split].col", name)
+	}
 
 	if len(sc.Amount) == 0 {
 		return nil, fmt.Errorf("shape %q: at least one [[amount]] entry is required", name)
 	}
+	amounts := make([]csvkit.AmountColumn, len(sc.Amount))
 	for i, a := range sc.Amount {
 		if a.Col == "" {
 			return nil, fmt.Errorf("shape %q: amount[%d].col is required", name, i)
 		}
+		amounts[i] = csvkit.AmountColumn{Col: a.Col, Negate: a.Negate}
+	}
+
+	if sc.Number.DecimalSep != "" && sc.Number.DecimalSep == sc.Number.ThousandsSep {
+		return nil, fmt.Errorf("shape %q: [number].decimal_sep and [number].thousands_sep must differ", name)
+	}
+
+	hasColumns := len(sc.Columns) > 0
+	hasHeaderMatch := len(sc.HeaderMatch) > 0
+	if hasColumns && hasHeaderMatch {
+		return nil, fmt.Errorf("shape %q: columns (headerless) and header_match are mutually exclusive", name)
+	}
+	for _, c := range sc.HeaderMatch {
+		if strings.TrimSpace(c) == "" {
+			return nil, fmt.Errorf("shape %q: header_match contains a blank column name", name)
+		}
+	}
+	for col, i := range sc.Columns {
+		if i < 0 {
+			return nil, fmt.Errorf("shape %q: [columns][%q] = %d must be non-negative", name, col, i)
+		}
+	}
+	var columns map[string]int
+	if hasColumns {
+		columns = sc.Columns
+	}
+	var headerMatch func([]string) bool
+	if hasHeaderMatch {
+		headerMatch = headerMatcher([]string(sc.HeaderMatch))
 	}
 
 	// nil == "no map configured" (see shape.accountMap doc).
 	s := &shape{
 		delimiter:             ',',
 		skipLines:             sc.SkipLines,
+		headerMatch:           headerMatch,
+		columns:               columns,
 		dateCol:               sc.Date.Col,
 		dateFormat:            sc.Date.Format,
 		accountCols:           []string(sc.Account.Col),
@@ -237,11 +372,17 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		payeeMap:              nilIfEmpty(sc.Payee.Map),
 		currencyCol:           sc.Currency.Col,
 		currencyDefault:       sc.Currency.Default,
+		currencyFromAmount:    sc.Currency.FromAmount,
 		currencyMap:           nilIfEmpty(sc.Currency.Map),
 		narrationCols:         []string(sc.Narration.Col),
 		narrationSep:          sc.Narration.Separator,
 		narrationMap:          nilIfEmpty(sc.Narration.Map),
-		amounts:               sc.Amount,
+		amounts:               amounts,
+		numberFormat: csvkit.NumberFormat{
+			ThousandsSep: sc.Number.ThousandsSep,
+			DecimalSep:   sc.Number.DecimalSep,
+			Placeholders: []string(sc.Number.Placeholders),
+		},
 	}
 
 	if sc.Match != "" {
@@ -268,7 +409,100 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		}
 		s.inputEncoding = enc
 	}
+	for i, e := range sc.Exclude {
+		if e.Match == "" {
+			return nil, fmt.Errorf("shape %q: [[exclude]][%d].match is required", name, i)
+		}
+		re, err := regexp.Compile(e.Match)
+		if err != nil {
+			return nil, fmt.Errorf("shape %q: [[exclude]][%d].match: %w", name, i, err)
+		}
+		if e.Col != "" {
+			s.filters = append(s.filters, csvkit.ExcludeMatching(e.Col, re))
+		} else {
+			s.filters = append(s.filters, csvkit.ExcludeAnyField(re))
+		}
+	}
+	if sc.Narration.Template != "" {
+		nt, err := csvkit.CompileNarration(sc.Narration.Template)
+		if err != nil {
+			return nil, fmt.Errorf("shape %q: [narration].template: %w", name, err)
+		}
+		s.narrationTemplate = nt
+	}
+	if sc.Split.Pattern != "" {
+		re, err := regexp.Compile(sc.Split.Pattern)
+		if err != nil {
+			return nil, fmt.Errorf("shape %q: [split].pattern: %w", name, err)
+		}
+		groups := namedGroups(re)
+		if len(groups) == 0 {
+			return nil, fmt.Errorf("shape %q: [split].pattern has no named capture groups", name)
+		}
+		s.split = &splitRule{col: sc.Split.Col, re: re, groups: groups}
+	}
+	cr, err := compileCost(name, sc.Cost)
+	if err != nil {
+		return nil, err
+	}
+	s.cost = cr
 	return s, nil
+}
+
+// compileCost validates the [cost] block and returns its compiled rule, or
+// (nil, nil) when [cost] is absent.
+func compileCost(name string, c costConfig) (*costRule, error) {
+	if c == (costConfig{}) {
+		return nil, nil
+	}
+	if (c.PerUnit == "") == (c.Total == "") {
+		return nil, fmt.Errorf("shape %q: [cost] requires exactly one of per_unit or total", name)
+	}
+	if c.Currency == "" && c.DefaultCurrency == "" {
+		return nil, fmt.Errorf("shape %q: [cost] requires currency or default_currency", name)
+	}
+	if c.Date != "" && c.DateFormat == "" {
+		return nil, fmt.Errorf("shape %q: [cost].date requires [cost].date_format", name)
+	}
+	if c.DateFormat != "" {
+		if c.Date == "" {
+			return nil, fmt.Errorf("shape %q: [cost].date_format is set without [cost].date", name)
+		}
+		if !dateLayoutHasYMD(c.DateFormat) {
+			return nil, fmt.Errorf(`shape %q: [cost].date_format %q must include year, month and day expressed against the layout reference date Jan 2, 2006`, name, c.DateFormat)
+		}
+	}
+	cr := &costRule{
+		numberCol:       c.PerUnit,
+		currencyCol:     c.Currency,
+		currencyDefault: c.DefaultCurrency,
+		dateCol:         c.Date,
+		dateFormat:      c.DateFormat,
+		labelCol:        c.Label,
+	}
+	if c.Total != "" {
+		cr.numberCol = c.Total
+		cr.isTotal = true
+	}
+	return cr, nil
+}
+
+// dateLayoutHasYMD reports whether the Go time layout expresses year, month
+// and day against the reference date Jan 2, 2006.
+func dateLayoutHasYMD(format string) bool {
+	t, err := time.Parse(format, format)
+	return err == nil && t.Year() == 2006 && t.Month() == time.January && t.Day() == 2
+}
+
+// namedGroups returns the set of named capture groups declared by re.
+func namedGroups(re *regexp.Regexp) map[string]bool {
+	out := map[string]bool{}
+	for _, n := range re.SubexpNames() {
+		if n != "" {
+			out[n] = true
+		}
+	}
+	return out
 }
 
 // validateAccountSection enforces the common rules for an [account]-like
@@ -303,6 +537,24 @@ func validateAccountSection(name, section string, cfg accountConfig, optional bo
 		}
 	}
 	return nil
+}
+
+// headerMatcher returns a predicate accepting any row that contains every
+// name in required (compared after trimming), used to locate a header that
+// follows a variable-length banner.
+func headerMatcher(required []string) func([]string) bool {
+	return func(row []string) bool {
+		present := make(map[string]bool, len(row))
+		for _, c := range row {
+			present[strings.TrimSpace(c)] = true
+		}
+		for _, r := range required {
+			if !present[r] {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 func nilIfEmpty(m map[string]string) map[string]string {

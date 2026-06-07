@@ -1,12 +1,8 @@
 package csvimp
 
 import (
-	"bufio"
 	"context"
-	"encoding/csv"
-	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"time"
 
@@ -14,6 +10,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer"
 	"github.com/yugui/go-beancount/pkg/importer/importerutil"
+	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
 
 const rowhashKey = "csvimp-rowhash"
@@ -25,11 +22,14 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 	}
 	defer rc.Close()
 
-	rdr, hdr, err := openCSVAtBody(rc, s)
+	hdr, rows, err := s.reader().Records(rc)
 	if err != nil {
 		return importer.Output{}, fmt.Errorf("csvimp: reading header from %q: %w", in.Path, err)
 	}
-	idx := buildColumnIndex(hdr)
+	idx := s.columns
+	if idx == nil {
+		idx = buildColumnIndex(hdr)
+	}
 
 	if diags, ok := checkMissingColumns(in.Path, name, s, idx); !ok {
 		return importer.Output{Diagnostics: diags}, nil
@@ -38,26 +38,22 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 	var (
 		directives []ast.Directive
 		diags      []ast.Diagnostic
-		row        []string
 	)
-	for {
+	for rec, rerr := range rows {
 		if err := ctx.Err(); err != nil {
 			return importer.Output{Directives: directives, Diagnostics: diags}, err
 		}
-		row, err = rdr.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
+		if rerr != nil {
 			return importer.Output{Directives: directives, Diagnostics: diags},
-				fmt.Errorf("csvimp: parsing row in %q: %w", in.Path, err)
+				fmt.Errorf("csvimp: parsing row in %q: %w", in.Path, rerr)
 		}
-		if len(row) == 0 || allBlank(row) {
+		if len(rec.Fields) == 0 || allBlank(rec.Fields) {
 			continue
 		}
-		csvLine, _ := rdr.FieldPos(0)
-		line := csvLine + s.skipLines
-		dir, diag := processRow(in.Path, line, name, s, idx, row, in.Hints)
+		if s.excluded(rec.Fields, idx) {
+			continue
+		}
+		dir, diag := processRow(in.Path, rec.Line, name, s, idx, rec.Fields, in.Hints)
 		if diag != nil {
 			diags = append(diags, *diag)
 		}
@@ -66,6 +62,34 @@ func extractRows(ctx context.Context, in importer.Input, name string, s *shape) 
 		}
 	}
 	return importer.Output{Directives: directives, Diagnostics: diags}, nil
+}
+
+// excluded reports whether any configured [[exclude]] filter drops the
+// record. Filtered rows are skipped silently: they are statement noise
+// (footnotes, totals), not data errors.
+func (s *shape) excluded(fields []string, idx map[string]int) bool {
+	if len(s.filters) == 0 {
+		return false
+	}
+	get := func(col string) string { return fieldAt(fields, idx, col) }
+	for _, f := range s.filters {
+		if f.Skip(fields, get) {
+			return true
+		}
+	}
+	return false
+}
+
+// reader returns a csvkit.Reader configured from s.
+func (s *shape) reader() *csvkit.Reader {
+	return &csvkit.Reader{
+		Delimiter:   s.delimiter,
+		Encoding:    s.inputEncoding,
+		LazyQuotes:  true,
+		SkipLines:   s.skipLines,
+		HeaderMatch: s.headerMatch,
+		Columns:     s.columns,
+	}
 }
 
 func checkMissingColumns(path, name string, s *shape, idx map[string]int) ([]ast.Diagnostic, bool) {
@@ -79,27 +103,6 @@ func checkMissingColumns(path, name string, s *shape, idx map[string]int) ([]ast
 	return diags, len(diags) == 0
 }
 
-// openCSVAtBody returns a csv.Reader positioned past the header and the
-// parsed header row. On success the reader is ready to yield body rows.
-func openCSVAtBody(rc io.Reader, s *shape) (*csv.Reader, []string, error) {
-	if s.inputEncoding != nil {
-		rc = s.inputEncoding.NewDecoder().Reader(rc)
-	}
-	br := bufio.NewReader(rc)
-	if err := skipRawLines(br, s.skipLines); err != nil {
-		return nil, nil, err
-	}
-	rdr := csv.NewReader(br)
-	rdr.Comma = s.delimiter
-	rdr.FieldsPerRecord = -1
-	rdr.LazyQuotes = true
-	hdr, err := rdr.Read()
-	if err != nil {
-		return nil, nil, err
-	}
-	return rdr, hdr, nil
-}
-
 func allBlank(row []string) bool {
 	for _, f := range row {
 		if strings.TrimSpace(f) != "" {
@@ -110,7 +113,13 @@ func allBlank(row []string) bool {
 }
 
 func processRow(path string, line int, name string, s *shape, idx map[string]int, row []string, hints map[string]string) (ast.Directive, *ast.Diagnostic) {
+	// hash the raw row before split augments it: synthetic columns must
+	// not affect the idempotency key.
 	hash := rowHash(name, row)
+
+	if s.split != nil {
+		row, idx = applySplit(s, row, idx)
+	}
 
 	dateRaw := fieldAt(row, idx, s.dateCol)
 	parsedDate, err := time.Parse(s.dateFormat, strings.TrimSpace(dateRaw))
@@ -122,17 +131,17 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 
 	sum, status, badCol := sumAmounts(s, idx, row)
 	switch status {
-	case amountStatusOK:
-	case amountStatusBad:
+	case csvkit.AmountOK:
+	case csvkit.AmountBad:
 		d := rowDiag(DiagBadAmount, path, line,
 			fmt.Sprintf("cannot parse amount column %q: %q", badCol, fieldAt(row, idx, badCol)))
 		return nil, &d
-	case amountStatusAllBlank:
+	case csvkit.AmountAllBlank:
 		d := rowDiag(DiagAllBlankAmount, path, line, "all amount columns blank")
 		return nil, &d
 	}
 
-	currency := resolveCurrency(s, idx, row)
+	currency := resolveCurrency(s, idx, row, sum.CurrencyHint)
 	if currency == "" {
 		d := rowDiag(DiagMissingCurrency, path, line,
 			fmt.Sprintf("no currency: [currency].col=%q [currency].default=%q", s.currencyCol, s.currencyDefault))
@@ -147,24 +156,45 @@ func processRow(path string, line int, name string, s *shape, idx map[string]int
 	counter, counterWarn, hasCounter := resolveCounterAccount(s, idx, row, path, line)
 
 	payee := resolvePayee(s, idx, row)
-	narration := buildNarration(s, idx, row)
+	narration, ndiag := renderNarration(s, idx, row, path, line)
+	if ndiag != nil {
+		return nil, ndiag
+	}
+
+	primary := ast.Posting{
+		Account: ast.Account(account),
+		Amount:  &ast.Amount{Number: sum.Number, Currency: currency},
+	}
+	hasCost := false
+	if s.cost != nil {
+		cs, cdiag := buildCost(s, idx, row, path, line)
+		if cdiag != nil {
+			return nil, cdiag
+		}
+		if cs != nil {
+			primary.Cost = cs
+			hasCost = true
+		}
+	}
 
 	postings := make([]ast.Posting, 0, 2)
-	postings = append(postings, ast.Posting{
-		Account: ast.Account(account),
-		Amount:  &ast.Amount{Number: *sum, Currency: currency},
-	})
+	postings = append(postings, primary)
 	if hasCounter {
-		var neg apd.Decimal
-		if _, err := apd.BaseContext.Neg(&neg, sum); err != nil {
-			d := rowDiag(DiagBadAmount, path, line,
-				fmt.Sprintf("cannot negate amount for counter posting: %v", err))
-			return nil, &d
+		if hasCost {
+			// elided cash leg: beancount balances it against the cost.
+			postings = append(postings, ast.Posting{Account: ast.Account(counter)})
+		} else {
+			var neg apd.Decimal
+			if _, err := apd.BaseContext.Neg(&neg, &sum.Number); err != nil {
+				d := rowDiag(DiagBadAmount, path, line,
+					fmt.Sprintf("cannot negate amount for counter posting: %v", err))
+				return nil, &d
+			}
+			postings = append(postings, ast.Posting{
+				Account: ast.Account(counter),
+				Amount:  &ast.Amount{Number: neg, Currency: currency},
+			})
 		}
-		postings = append(postings, ast.Posting{
-			Account: ast.Account(counter),
-			Amount:  &ast.Amount{Number: neg, Currency: currency},
-		})
 	}
 
 	tx := &ast.Transaction{
@@ -192,58 +222,66 @@ func fieldAt(row []string, idx map[string]int, col string) string {
 // survivors with sep. Returns "" when every cell is blank or cols is
 // empty.
 func joinKey(cols []string, sep string, idx map[string]int, row []string) string {
-	if len(cols) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(cols))
-	for _, c := range cols {
-		v := strings.TrimSpace(fieldAt(row, idx, c))
-		if v == "" {
-			continue
-		}
-		parts = append(parts, v)
-	}
-	return strings.Join(parts, sep)
+	return csvkit.Join(cols, sep, func(c string) string { return fieldAt(row, idx, c) })
 }
 
-type amountStatus int
+// sumAmounts returns the signed sum of the shape's amount columns under
+// its NumberFormat, delegating to csvkit. A negate=true column is
+// subtracted; blank or placeholder cells contribute nothing. When the
+// shape extracts currency from the amount cell, the result's CurrencyHint
+// carries it.
+func sumAmounts(s *shape, idx map[string]int, row []string) (csvkit.Amount, csvkit.AmountStatus, string) {
+	p := csvkit.AmountParser{Format: s.numberFormat, SplitCurrency: s.currencyFromAmount}
+	return p.Sum(s.amounts, func(col string) string { return fieldAt(row, idx, col) })
+}
 
-const (
-	amountStatusOK amountStatus = iota
-	amountStatusBad
-	amountStatusAllBlank
-)
+// buildCost constructs the CostSpec for the primary posting from the row.
+// Returns (nil, nil) when the cost-number cell is blank: the row simply
+// carries no cost. A non-blank but unparseable number, a number with no
+// resolvable cost currency, or an unparseable date yields DiagBadCost.
+func buildCost(s *shape, idx map[string]int, row []string, path string, line int) (*ast.CostSpec, *ast.Diagnostic) {
+	c := s.cost
+	raw := fieldAt(row, idx, c.numberCol)
+	num, blank, err := csvkit.ParseNumber(raw, s.numberFormat)
+	if blank {
+		return nil, nil
+	}
+	if err != nil {
+		d := rowDiag(DiagBadCost, path, line,
+			fmt.Sprintf("cannot parse cost column %q: %q", c.numberCol, raw))
+		return nil, &d
+	}
 
-// sumAmounts returns the signed sum of all amount columns in row. A
-// negate=true column is subtracted. Blank cells contribute 0. Returns
-// amountStatusAllBlank when every amount cell is blank, amountStatusBad
-// (with the offending column name) when a non-blank cell fails decimal
-// parsing.
-func sumAmounts(s *shape, idx map[string]int, row []string) (*apd.Decimal, amountStatus, string) {
-	sum := new(apd.Decimal)
-	allAmountsBlank := true
-	for _, a := range s.amounts {
-		raw := strings.TrimSpace(fieldAt(row, idx, a.Col))
-		if raw == "" {
-			continue
-		}
-		allAmountsBlank = false
-		var v apd.Decimal
-		if _, _, err := apd.BaseContext.SetString(&v, raw); err != nil {
-			return nil, amountStatusBad, a.Col
-		}
-		op := apd.BaseContext.Add
-		if a.Negate {
-			op = apd.BaseContext.Sub
-		}
-		if _, err := op(sum, sum, &v); err != nil {
-			return nil, amountStatusBad, a.Col
+	cur := c.currencyDefault
+	if c.currencyCol != "" {
+		if v := strings.TrimSpace(fieldAt(row, idx, c.currencyCol)); v != "" {
+			cur = v
 		}
 	}
-	if allAmountsBlank {
-		return nil, amountStatusAllBlank, ""
+	if cur == "" {
+		d := rowDiag(DiagBadCost, path, line, "cost has no currency: [cost].currency blank and no default_currency")
+		return nil, &d
 	}
-	return sum, amountStatusOK, ""
+
+	cs := &ast.CostSpec{Currency: cur, Label: strings.TrimSpace(fieldAt(row, idx, c.labelCol))}
+	n := num
+	if c.isTotal {
+		cs.Total = &n
+	} else {
+		cs.PerUnit = &n
+	}
+	if c.dateCol != "" {
+		if dv := strings.TrimSpace(fieldAt(row, idx, c.dateCol)); dv != "" {
+			t, err := time.Parse(c.dateFormat, dv)
+			if err != nil {
+				d := rowDiag(DiagBadCost, path, line,
+					fmt.Sprintf("cannot parse cost date %q with format %q: %v", dv, c.dateFormat, err))
+				return nil, &d
+			}
+			cs.Date = &t
+		}
+	}
+	return cs, nil
 }
 
 // resolveAccount resolves a row's primary beancount account. Priority:
@@ -284,15 +322,21 @@ func resolveAccountDefault(s *shape, path string, line int) (string, *ast.Diagno
 // [account.map]. With no map configured the key is returned verbatim;
 // with a map configured a miss returns DiagUnmappedAccount.
 func resolveAccountFromKey(s *shape, key, path string, line int) (string, *ast.Diagnostic) {
-	if s.accountMap == nil {
-		return key, nil
-	}
-	if mapped, ok := s.accountMap[key]; ok {
+	if mapped, ok := csvkit.ResolveThroughMap(key, s.accountMap, mapMode(s.accountMap)); ok {
 		return mapped, nil
 	}
 	d := rowDiag(DiagUnmappedAccount, path, line,
 		fmt.Sprintf("account key %q from columns %v has no entry in [account.map]", key, s.accountCols))
 	return "", &d
+}
+
+// mapMode selects strict resolution when a translation table is
+// configured and pass-through resolution otherwise.
+func mapMode(m map[string]string) csvkit.MapMode {
+	if m == nil {
+		return csvkit.Verbatim
+	}
+	return csvkit.Strict
 }
 
 // resolveCounterAccount resolves a row's counter (balancing) account
@@ -327,10 +371,7 @@ func resolveCounterAccount(s *shape, idx map[string]int, row []string, path stri
 		}
 		return s.counterAccountDefault, nil, true
 	}
-	if s.counterAccountMap == nil {
-		return key, nil, true
-	}
-	if mapped, ok := s.counterAccountMap[key]; ok {
+	if mapped, ok := csvkit.ResolveThroughMap(key, s.counterAccountMap, mapMode(s.counterAccountMap)); ok {
 		return mapped, nil, true
 	}
 	d := rowWarn(DiagUnmappedCounterAccount, path, line,
@@ -343,22 +384,24 @@ func resolveCounterAccount(s *shape, idx map[string]int, row []string, path stri
 //  1. [currency].col cell when non-blank: when [currency.map] holds the
 //     value, the mapped currency is returned; otherwise the trimmed cell
 //     value is used verbatim (pass-through).
-//  2. [currency].default.
+//  2. hint — a currency extracted from the amount cell (only when
+//     [currency].from_amount is set; empty otherwise).
+//  3. [currency].default.
 //
-// Returns "" when neither the col cell nor the default produces a value;
-// the caller treats that as DiagMissingCurrency.
-func resolveCurrency(s *shape, idx map[string]int, row []string) string {
-	if s.currencyCol == "" {
-		return s.currencyDefault
+// An explicit currency column outranks an amount-cell suffix. Returns ""
+// when no source produces a value; the caller treats that as
+// DiagMissingCurrency.
+func resolveCurrency(s *shape, idx map[string]int, row []string, hint string) string {
+	if s.currencyCol != "" {
+		if v := strings.TrimSpace(fieldAt(row, idx, s.currencyCol)); v != "" {
+			mapped, _ := csvkit.ResolveThroughMap(v, s.currencyMap, csvkit.Verbatim)
+			return mapped
+		}
 	}
-	v := strings.TrimSpace(fieldAt(row, idx, s.currencyCol))
-	if v == "" {
-		return s.currencyDefault
+	if hint != "" {
+		return hint
 	}
-	if mapped, ok := s.currencyMap[v]; ok {
-		return mapped
-	}
-	return v
+	return s.currencyDefault
 }
 
 // resolvePayee resolves a row's payee. Returns "" when [payee].col is
@@ -373,10 +416,8 @@ func resolvePayee(s *shape, idx map[string]int, row []string) string {
 	if v == "" {
 		return ""
 	}
-	if mapped, ok := s.payeeMap[v]; ok {
-		return mapped
-	}
-	return v
+	mapped, _ := csvkit.ResolveThroughMap(v, s.payeeMap, csvkit.Verbatim)
+	return mapped
 }
 
 // buildNarration concatenates the trimmed values of [narration].col with
@@ -394,13 +435,64 @@ func buildNarration(s *shape, idx map[string]int, row []string) string {
 		if v == "" {
 			continue
 		}
-		if mapped, ok := s.narrationMap[v]; ok {
-			v = mapped
-		}
+		// per-cell translation; a mapped "" drops the cell
+		v, _ = csvkit.ResolveThroughMap(v, s.narrationMap, csvkit.Verbatim)
 		if v == "" {
 			continue
 		}
 		parts = append(parts, v)
 	}
 	return strings.Join(parts, s.narrationSep)
+}
+
+// renderNarration produces a row's narration: from [narration].template
+// when configured (a render failure yields DiagBadNarrationTemplate and the
+// row is skipped), otherwise from the concatenation built by buildNarration.
+func renderNarration(s *shape, idx map[string]int, row []string, path string, line int) (string, *ast.Diagnostic) {
+	if s.narrationTemplate == nil {
+		return buildNarration(s, idx, row), nil
+	}
+	out, err := s.narrationTemplate.Render(rowMap(idx, row))
+	if err != nil {
+		d := rowDiag(DiagBadNarrationTemplate, path, line,
+			fmt.Sprintf("[narration].template: %v", err))
+		return "", &d
+	}
+	return out, nil
+}
+
+// applySplit extracts the named capture groups of s.split from its source
+// column and returns row and idx augmented with one synthetic column per
+// group. On no match the inputs are returned unchanged, so a group-named
+// field reads as blank. The originals are never mutated.
+func applySplit(s *shape, row []string, idx map[string]int) ([]string, map[string]int) {
+	groups, ok := csvkit.NamedSubmatches(s.split.re, fieldAt(row, idx, s.split.col))
+	if !ok {
+		return row, idx
+	}
+	aug := make([]string, len(row), len(row)+len(groups))
+	copy(aug, row)
+	aidx := make(map[string]int, len(idx)+len(groups))
+	for k, v := range idx {
+		aidx[k] = v
+	}
+	for name, val := range groups {
+		aidx[name] = len(aug)
+		aug = append(aug, val)
+	}
+	return aug, aidx
+}
+
+// rowMap projects a row into a name-keyed map for template rendering.
+// Columns absent from the row (short rows) map to "".
+func rowMap(idx map[string]int, row []string) map[string]string {
+	m := make(map[string]string, len(idx))
+	for name, i := range idx {
+		if i < len(row) {
+			m[name] = row[i]
+		} else {
+			m[name] = ""
+		}
+	}
+	return m
 }

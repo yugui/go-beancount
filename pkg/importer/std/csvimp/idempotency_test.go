@@ -98,6 +98,46 @@ func TestIdempotency_MultiAccountMultiCol(t *testing.T) {
 	checkIdempotency(t, "multiaccount_multicol")
 }
 
+func TestIdempotency_CommaAmount(t *testing.T) {
+	checkIdempotency(t, "commaamount")
+}
+
+func TestIdempotency_Placeholder(t *testing.T) {
+	checkIdempotency(t, "placeholder")
+}
+
+func TestIdempotency_BOM(t *testing.T) {
+	checkIdempotency(t, "bom")
+}
+
+func TestIdempotency_Exclude(t *testing.T) {
+	checkIdempotency(t, "exclude")
+}
+
+func TestIdempotency_Headerless(t *testing.T) {
+	checkIdempotency(t, "headerless")
+}
+
+func TestIdempotency_Banner(t *testing.T) {
+	checkIdempotency(t, "banner")
+}
+
+func TestIdempotency_CurrencySuffix(t *testing.T) {
+	checkIdempotency(t, "currencysuffix")
+}
+
+func TestIdempotency_Split(t *testing.T) {
+	checkIdempotency(t, "split")
+}
+
+func TestIdempotency_Template(t *testing.T) {
+	checkIdempotency(t, "template")
+}
+
+func TestIdempotency_Cost(t *testing.T) {
+	checkIdempotency(t, "cost")
+}
+
 func checkIdempotency(t *testing.T, shape string) {
 	t.Helper()
 	src := loadFixtureConfig(t, shape)

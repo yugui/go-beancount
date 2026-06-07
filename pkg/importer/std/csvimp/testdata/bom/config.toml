@@ -1,0 +1,19 @@
+[date]
+col    = "Date"
+format = "2006-01-02"
+
+[account]
+default = "Assets:Checking"
+
+[payee]
+col = "Payee"
+
+[currency]
+default = "USD"
+
+[narration]
+col = "Description"
+
+[[amount]]
+col    = "Amount"
+negate = false

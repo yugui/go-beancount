@@ -1,10 +1,8 @@
 package csvimp
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"path/filepath"
 	"strings"
 
@@ -33,6 +31,10 @@ func (i *Importer) Identify(ctx context.Context, in importer.Input) bool {
 	}
 	if i.s.compiledMatch != nil && !i.s.compiledMatch.MatchString(in.Path) {
 		return false
+	}
+	// Headerless input has no header to inspect; gate on path/MIME/match only.
+	if i.s.columns != nil {
+		return true
 	}
 	hdr, ok := readHeader(in, i.s)
 	if !ok {
@@ -70,35 +72,11 @@ func readHeader(in importer.Input, s *shape) ([]string, bool) {
 		return nil, false
 	}
 	defer rc.Close()
-	_, hdr, err := openCSVAtBody(rc, s)
+	hdr, _, err := s.reader().Records(rc)
 	if err != nil {
 		return nil, false
 	}
 	return hdr, true
-}
-
-func skipRawLines(br *bufio.Reader, skipLines int) error {
-	for n := 0; n < skipLines; n++ {
-		if _, err := readLine(br); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// readLine reads one line up to (and including) '\n', strips the
-// trailing CR/LF, and returns the line body. A trailing partial line
-// without a final newline is returned as success; only an EOF with no
-// data returns io.EOF.
-func readLine(br *bufio.Reader) (string, error) {
-	line, err := br.ReadString('\n')
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-	if err == io.EOF && line == "" {
-		return "", io.EOF
-	}
-	return strings.TrimRight(line, "\r\n"), nil
 }
 
 func buildColumnIndex(header []string) map[string]int {
@@ -139,5 +117,35 @@ func requiredColumns(s *shape) []string {
 	}
 	out = append(out, s.accountCols...)
 	out = append(out, s.counterAccountCols...)
-	return out
+	out = append(out, costColumns(s.cost)...)
+	if s.split == nil {
+		return out
+	}
+	// Synthetic split columns are produced per row, not present in the
+	// header; only the split source column is required.
+	out = append(out, s.split.col)
+	// filter in-place: groups[c] is true only for synthetic names, never
+	// the real columns appended above, so writes stay within out's bounds.
+	filtered := out[:0]
+	for _, c := range out {
+		if !s.split.groups[c] {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered
+}
+
+// costColumns returns the header columns a [cost] rule reads. A
+// default-only cost currency contributes no column.
+func costColumns(c *costRule) []string {
+	if c == nil {
+		return nil
+	}
+	cols := []string{c.numberCol}
+	for _, col := range []string{c.currencyCol, c.dateCol, c.labelCol} {
+		if col != "" {
+			cols = append(cols, col)
+		}
+	}
+	return cols
 }
