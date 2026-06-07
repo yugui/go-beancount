@@ -19,6 +19,35 @@ func Column(b *Builder, name string) Key[string] {
 	})
 }
 
+// Columns is a convenience for []Key[string]{Column(b, names[0]), …}: it
+// registers each name as a required leaf column and returns the typed Keys in
+// the same order.
+func Columns(b *Builder, names ...string) []Key[string] {
+	keys := make([]Key[string], len(names))
+	for i, name := range names {
+		keys[i] = Column(b, name)
+	}
+	return keys
+}
+
+// SplitColumns runs re over source and exposes its named capture groups as
+// separate Keys. It is Split(b, source, re) plus a Group(b, split, name) for
+// every non-empty subexpression name in re. The returned map is keyed by group
+// name. SplitColumns calls no Require beyond what source itself does (so split
+// groups are NOT required header columns).
+func SplitColumns(b *Builder, source Key[string], re *regexp.Regexp) map[string]Key[string] {
+	split := Split(b, source, re)
+	names := re.SubexpNames()
+	out := make(map[string]Key[string], len(names))
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		out[name] = Group(b, split, name)
+	}
+	return out
+}
+
 // Const yields v for every row.
 func Const[T any](b *Builder, v T) Key[T] {
 	return AddStep(b, func(*MappingState) (T, *ast.Diagnostic, error) {
@@ -49,23 +78,29 @@ func ParseDate(b *Builder, in Key[string], layout, code string) Key[time.Time] {
 	})
 }
 
+// AmountInput is one numeric contribution to a SumAmounts step.
+type AmountInput struct {
+	Source Key[string]
+	Negate bool
+}
+
 // AmountConfig configures SumAmounts.
 type AmountConfig struct {
-	Cols          []csvkit.AmountColumn
+	Cols          []AmountInput
 	Format        csvkit.NumberFormat
 	SplitCurrency bool
-	// BadCode is the diagnostic code for a non-blank unparseable column; defaults
+	// BadCode is the diagnostic code for a non-blank unparseable input; defaults
 	// to DiagBadAmount.
 	BadCode string
-	// BlankCode is the diagnostic code when every column is blank; defaults to
+	// BlankCode is the diagnostic code when every input is blank; defaults to
 	// DiagAllBlankAmount.
 	BlankCode string
 }
 
-// SumAmounts sums cfg.Cols under cfg.Format via csvkit.AmountParser. It
-// registers each column as required. A non-blank unparseable column soft-fails
-// with cfg.BadCode (default DiagBadAmount); every column blank soft-fails with
-// cfg.BlankCode (default DiagAllBlankAmount).
+// SumAmounts sums cfg.Cols under cfg.Format via csvkit.AmountParser.SumValues.
+// A non-blank unparseable input soft-fails with cfg.BadCode (default
+// DiagBadAmount); every input blank soft-fails with cfg.BlankCode (default
+// DiagAllBlankAmount). Bad inputs are identified by 0-based position.
 func SumAmounts(b *Builder, cfg AmountConfig) Key[csvkit.Amount] {
 	badCode := cfg.BadCode
 	if badCode == "" {
@@ -75,19 +110,21 @@ func SumAmounts(b *Builder, cfg AmountConfig) Key[csvkit.Amount] {
 	if blankCode == "" {
 		blankCode = DiagAllBlankAmount
 	}
-	for _, col := range cfg.Cols {
-		b.Require(col.Col)
-	}
 	p := csvkit.AmountParser{Format: cfg.Format, SplitCurrency: cfg.SplitCurrency}
 	return AddStep(b, func(c *MappingState) (csvkit.Amount, *ast.Diagnostic, error) {
-		sum, status, badCol := p.Sum(cfg.Cols, c.At)
+		vals := make([]csvkit.ValueAmount, len(cfg.Cols))
+		for i, col := range cfg.Cols {
+			v, _ := Value(c, col.Source) // soft-failed source treated as blank, per spec
+			vals[i] = csvkit.ValueAmount{Value: v, Negate: col.Negate}
+		}
+		sum, status, badIdx := p.SumValues(vals)
 		info := c.Info()
 		switch status {
 		case csvkit.AmountOK:
 			return sum, nil, nil
 		case csvkit.AmountBad:
 			diag := ErrorDiag(badCode, info.Path, info.Line,
-				fmt.Sprintf("cannot parse amount column %q: %q", badCol, c.At(badCol)))
+				fmt.Sprintf("cannot parse amount input #%d", badIdx))
 			return csvkit.Amount{}, &diag, nil
 		default: // AmountAllBlank
 			diag := ErrorDiag(blankCode, info.Path, info.Line, "all amount columns blank")
@@ -160,13 +197,29 @@ func JoinKeys(b *Builder, sep string, ins ...Key[string]) Key[string] {
 	})
 }
 
+// joinSources trims each source's Value, drops blank and soft-failed entries,
+// and joins survivors with sep. Used internally by resolver steps.
+func joinSources(c *MappingState, sources []Key[string], sep string) string {
+	parts := make([]string, 0, len(sources))
+	for _, k := range sources {
+		v, d := Value(c, k)
+		if d != nil {
+			continue
+		}
+		if t := strings.TrimSpace(v); t != "" {
+			parts = append(parts, t)
+		}
+	}
+	return strings.Join(parts, sep)
+}
+
 // AccountConfig configures ResolveAccount.
 type AccountConfig struct {
-	Cols    []string
+	Sources []Key[string]
 	Sep     string
 	Default string
 	Map     map[string]string
-	// HintKey, when non-empty, makes Hints[HintKey] take priority over column cells.
+	// HintKey, when non-empty, makes Hints[HintKey] take priority over sources.
 	HintKey string
 	// MissingCode is the soft-fail code when no account can be resolved; defaults
 	// to DiagMissingAccount.
@@ -177,10 +230,10 @@ type AccountConfig struct {
 }
 
 // ResolveAccount mirrors csvimp.resolveAccount: priority Hints[HintKey] (when
-// HintKey != "" and present non-empty) > joined Cols (Strict via Map when Map
-// != nil, else verbatim) > Default. Missing soft-fails with MissingCode
+// HintKey != "" and present non-empty) > joined Sources (Strict via Map when
+// Map != nil, else verbatim) > Default. Missing soft-fails with MissingCode
 // (default DiagMissingAccount); unmapped (Map set, key absent) soft-fails with
-// UnmappedCode (default DiagUnmappedAccount). Registers Cols as required.
+// UnmappedCode (default DiagUnmappedAccount).
 func ResolveAccount(b *Builder, cfg AccountConfig) Key[string] {
 	missingCode := cfg.MissingCode
 	if missingCode == "" {
@@ -189,9 +242,6 @@ func ResolveAccount(b *Builder, cfg AccountConfig) Key[string] {
 	unmappedCode := cfg.UnmappedCode
 	if unmappedCode == "" {
 		unmappedCode = DiagUnmappedAccount
-	}
-	for _, col := range cfg.Cols {
-		b.Require(col)
 	}
 	mapMode := csvkit.Verbatim
 	if cfg.Map != nil {
@@ -205,14 +255,14 @@ func ResolveAccount(b *Builder, cfg AccountConfig) Key[string] {
 				return v, nil, nil
 			}
 		}
-		// priority 2: joined column cells
-		if len(cfg.Cols) > 0 {
-			key := csvkit.Join(cfg.Cols, cfg.Sep, c.At)
+		// priority 2: joined source values
+		if len(cfg.Sources) > 0 {
+			key := joinSources(c, cfg.Sources, cfg.Sep)
 			if key != "" {
 				mapped, ok := csvkit.ResolveThroughMap(key, cfg.Map, mapMode)
 				if !ok {
 					diag := ErrorDiag(unmappedCode, info.Path, info.Line,
-						fmt.Sprintf("account key %q from columns %v has no entry in account map", key, cfg.Cols))
+						fmt.Sprintf("account key %q from sources has no entry in account map", key))
 					return "", &diag, nil
 				}
 				return mapped, nil, nil
@@ -223,14 +273,14 @@ func ResolveAccount(b *Builder, cfg AccountConfig) Key[string] {
 			return cfg.Default, nil, nil
 		}
 		diag := ErrorDiag(missingCode, info.Path, info.Line,
-			`no account: hint empty, column cells blank/absent, and default unset`)
+			`no account: hint empty, sources blank/absent, and default unset`)
 		return "", &diag, nil
 	})
 }
 
 // CounterConfig configures ResolveCounter.
 type CounterConfig struct {
-	Cols    []string
+	Sources []Key[string]
 	Sep     string
 	Default string
 	Map     map[string]string
@@ -244,14 +294,11 @@ type CounterConfig struct {
 // joined key is absent, it soft-fails with a Warning (WarnDiag, UnmappedCode
 // default DiagUnmappedCounterAccount) and yields no account: the row is kept
 // with a single posting. A blank key with no Default yields "" and no
-// diagnostic. Registers Cols as required.
+// diagnostic.
 func ResolveCounter(b *Builder, cfg CounterConfig) Key[string] {
 	unmappedCode := cfg.UnmappedCode
 	if unmappedCode == "" {
 		unmappedCode = DiagUnmappedCounterAccount
-	}
-	for _, col := range cfg.Cols {
-		b.Require(col)
 	}
 	mapMode := csvkit.Verbatim
 	if cfg.Map != nil {
@@ -259,17 +306,17 @@ func ResolveCounter(b *Builder, cfg CounterConfig) Key[string] {
 	}
 	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		info := c.Info()
-		if len(cfg.Cols) == 0 {
+		if len(cfg.Sources) == 0 {
 			return cfg.Default, nil, nil
 		}
-		key := csvkit.Join(cfg.Cols, cfg.Sep, c.At)
+		key := joinSources(c, cfg.Sources, cfg.Sep)
 		if key == "" {
 			return cfg.Default, nil, nil
 		}
 		mapped, ok := csvkit.ResolveThroughMap(key, cfg.Map, mapMode)
 		if !ok {
 			diag := WarnDiag(unmappedCode, info.Path, info.Line,
-				fmt.Sprintf("counter_account key %q from columns %v has no entry in counter_account map", key, cfg.Cols))
+				fmt.Sprintf("counter_account key %q from sources has no entry in counter_account map", key))
 			return "", &diag, nil
 		}
 		return mapped, nil, nil
@@ -278,7 +325,8 @@ func ResolveCounter(b *Builder, cfg CounterConfig) Key[string] {
 
 // CurrencyConfig configures ResolveCurrency.
 type CurrencyConfig struct {
-	Col        string
+	// Source, when non-zero, is read for an explicit currency value.
+	Source     Key[string]
 	Default    string
 	FromAmount bool
 	Map        map[string]string
@@ -289,24 +337,21 @@ type CurrencyConfig struct {
 	MissingCode string
 }
 
-// ResolveCurrency mirrors csvimp.resolveCurrency: priority Col cell (verbatim
-// via Map) > Amount's CurrencyHint (when FromAmount) > Default. Empty result
-// soft-fails with MissingCode (default DiagMissingCurrency). Registers Col
-// when set.
+// ResolveCurrency mirrors csvimp.resolveCurrency: priority Source value (if
+// non-zero Key and trimmed value non-empty; verbatim Map) > Amount's
+// CurrencyHint (when FromAmount) > Default. Empty result soft-fails with
+// MissingCode (default DiagMissingCurrency).
 func ResolveCurrency(b *Builder, cfg CurrencyConfig) Key[string] {
 	missingCode := cfg.MissingCode
 	if missingCode == "" {
 		missingCode = DiagMissingCurrency
 	}
-	if cfg.Col != "" {
-		b.Require(cfg.Col)
-	}
 	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		info := c.Info()
-		// priority 1: explicit column
-		if cfg.Col != "" {
-			if v := strings.TrimSpace(c.At(cfg.Col)); v != "" {
-				mapped, _ := csvkit.ResolveThroughMap(v, cfg.Map, csvkit.Verbatim)
+		// priority 1: explicit source
+		if !isZeroKey(cfg.Source) {
+			if v, _ := Value(c, cfg.Source); strings.TrimSpace(v) != "" { // soft-failed source treated as blank, per spec
+				mapped, _ := csvkit.ResolveThroughMap(strings.TrimSpace(v), cfg.Map, csvkit.Verbatim)
 				return mapped, nil, nil
 			}
 		}
@@ -321,7 +366,7 @@ func ResolveCurrency(b *Builder, cfg CurrencyConfig) Key[string] {
 			return cfg.Default, nil, nil
 		}
 		diag := ErrorDiag(missingCode, info.Path, info.Line,
-			fmt.Sprintf("no currency: col=%q default=%q", cfg.Col, cfg.Default))
+			"no currency: source empty, no amount hint, no default")
 		return "", &diag, nil
 	})
 }
@@ -332,22 +377,20 @@ func isZeroKey[T any](k Key[T]) bool { return k.name == "" }
 
 // PayeeConfig configures ResolvePayee.
 type PayeeConfig struct {
-	Cols []string
-	Sep  string
-	Map  map[string]string
+	Sources []Key[string]
+	Sep     string
+	Map     map[string]string
 }
 
-// ResolvePayee mirrors csvimp.resolvePayee: joined Cols, verbatim Map (a
-// mapped "" suppresses), yields "" when blank. Registers Cols as required.
+// ResolvePayee mirrors csvimp.resolvePayee: joined Sources, verbatim Map (a
+// mapped "" suppresses), yields "" when blank. Soft-failed inputs contribute
+// nothing to the join.
 func ResolvePayee(b *Builder, cfg PayeeConfig) Key[string] {
-	for _, col := range cfg.Cols {
-		b.Require(col)
-	}
 	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
-		if len(cfg.Cols) == 0 {
+		if len(cfg.Sources) == 0 {
 			return "", nil, nil
 		}
-		v := csvkit.Join(cfg.Cols, cfg.Sep, c.At)
+		v := joinSources(c, cfg.Sources, cfg.Sep)
 		if v == "" {
 			return "", nil, nil
 		}
@@ -356,16 +399,18 @@ func ResolvePayee(b *Builder, cfg PayeeConfig) Key[string] {
 	})
 }
 
-// NarrationFromColumns mirrors csvimp.buildNarration: per-cell verbatim Map
-// (mapped "" drops the cell), trim, drop blanks, join with sep. Registers Cols.
-func NarrationFromColumns(b *Builder, cols []string, sep string, m map[string]string) Key[string] {
-	for _, col := range cols {
-		b.Require(col)
-	}
+// NarrationFromSources mirrors csvimp.buildNarration: per-source verbatim Map
+// (mapped "" drops the entry), trim, drop blanks, join with sep. Soft-failed
+// inputs contribute nothing.
+func NarrationFromSources(b *Builder, sources []Key[string], sep string, m map[string]string) Key[string] {
 	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
-		parts := make([]string, 0, len(cols))
-		for _, col := range cols {
-			v := strings.TrimSpace(c.At(col))
+		parts := make([]string, 0, len(sources))
+		for _, src := range sources {
+			v, d := Value(c, src)
+			if d != nil {
+				continue
+			}
+			v = strings.TrimSpace(v)
 			if v == "" {
 				continue
 			}
@@ -380,18 +425,32 @@ func NarrationFromColumns(b *Builder, cols []string, sep string, m map[string]st
 }
 
 // NarrationFromTemplate renders tmpl against the row's indexed columns
-// (MappingState.Row()). A render error soft-fails with code (default
-// DiagBadNarrationTemplate). It registers no columns (template references are
-// best-effort, as in csvimp). Known limitation: the template data is the
-// file's raw column map, not split-group keys; pipelines that combine Split
-// with a template should use NarrationFromColumns or JoinKeys over Group keys
-// instead.
-func NarrationFromTemplate(b *Builder, tmpl *csvkit.NarrationTemplate, code string) Key[string] {
+// (MappingState.Row()) overlaid with any bindings. For each (name, key) in
+// bindings, the trimmed Value of key (when not soft-failed) replaces the
+// same-named raw column in the data map, matching csvimp.applySplit semantics.
+// A render error soft-fails with code (default DiagBadNarrationTemplate).
+//
+// This is the one justified exception to the leaf-only invariant: the set of
+// fields a template references is dynamic (csvkit.CompileNarration does not
+// expose its references), so the step must supply the full row map and let the
+// template engine pick what it needs. Bindings allow split-group and other
+// Key-derived values to participate in template rendering without requiring
+// them to be raw columns.
+func NarrationFromTemplate(b *Builder, tmpl *csvkit.NarrationTemplate,
+	bindings map[string]Key[string], code string) Key[string] {
 	if code == "" {
 		code = DiagBadNarrationTemplate
 	}
 	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
-		out, err := tmpl.Render(c.Row())
+		data := c.Row()
+		for name, key := range bindings {
+			v, d := Value(c, key)
+			if d != nil {
+				continue
+			}
+			data[name] = strings.TrimSpace(v)
+		}
+		out, err := tmpl.Render(data)
 		if err != nil {
 			info := c.Info()
 			diag := ErrorDiag(code, info.Path, info.Line,
@@ -404,68 +463,64 @@ func NarrationFromTemplate(b *Builder, tmpl *csvkit.NarrationTemplate, code stri
 
 // CostConfig configures ResolveCost.
 type CostConfig struct {
-	NumberCol       string
+	Number          Key[string]
 	IsTotal         bool
-	CurrencyCol     string
+	Currency        Key[string]
 	DefaultCurrency string
-	DateCol         string
+	Date            Key[string]
 	DateFormat      string
-	LabelCol        string
+	Label           Key[string]
 	Format          csvkit.NumberFormat
 	// Code is the soft-fail code for any cost error; defaults to DiagBadCost.
 	Code string
 }
 
-// ResolveCost mirrors csvimp.buildCost. A blank number cell yields a nil
+// ResolveCost mirrors csvimp.buildCost. A blank Number Key value yields a nil
 // *ast.CostSpec (no cost, not an error). A non-blank unparseable number, a
 // number with no resolvable currency, or an unparseable date soft-fails with
-// Code (default DiagBadCost). Registers NumberCol (+ CurrencyCol/DateCol/
-// LabelCol when set) as required.
+// Code (default DiagBadCost). A zero Currency/Date/Label Key means "not
+// configured".
 func ResolveCost(b *Builder, cfg CostConfig) Key[*ast.CostSpec] {
 	code := cfg.Code
 	if code == "" {
 		code = DiagBadCost
 	}
-	b.Require(cfg.NumberCol)
-	if cfg.CurrencyCol != "" {
-		b.Require(cfg.CurrencyCol)
-	}
-	if cfg.DateCol != "" {
-		b.Require(cfg.DateCol)
-	}
-	if cfg.LabelCol != "" {
-		b.Require(cfg.LabelCol)
-	}
 	return AddStep(b, func(c *MappingState) (*ast.CostSpec, *ast.Diagnostic, error) {
 		info := c.Info()
-		raw := c.At(cfg.NumberCol)
-		num, blank, err := csvkit.ParseNumber(raw, cfg.Format)
+
+		var rawNum string
+		if !isZeroKey(cfg.Number) {
+			rawNum, _ = Value(c, cfg.Number) // soft-failed source treated as blank, per spec
+		}
+		num, blank, err := csvkit.ParseNumber(rawNum, cfg.Format)
 		if blank {
 			return nil, nil, nil
 		}
 		if err != nil {
 			diag := ErrorDiag(code, info.Path, info.Line,
-				fmt.Sprintf("cannot parse cost column %q: %q", cfg.NumberCol, raw))
+				fmt.Sprintf("cannot parse cost number: %q", rawNum))
 			return nil, &diag, nil
 		}
 
 		cur := cfg.DefaultCurrency
-		if cfg.CurrencyCol != "" {
-			if v := strings.TrimSpace(c.At(cfg.CurrencyCol)); v != "" {
-				cur = v
+		if !isZeroKey(cfg.Currency) {
+			if v, _ := Value(c, cfg.Currency); strings.TrimSpace(v) != "" { // soft-failed source treated as blank, per spec
+				cur = strings.TrimSpace(v)
 			}
 		}
 		if cur == "" {
 			diag := ErrorDiag(code, info.Path, info.Line,
-				"cost has no currency: currency column blank and no default_currency")
+				"cost has no currency: currency source blank and no default_currency")
 			return nil, &diag, nil
 		}
 
 		cs := &ast.CostSpec{
 			Currency: cur,
 		}
-		if cfg.LabelCol != "" {
-			cs.Label = strings.TrimSpace(c.At(cfg.LabelCol))
+		if !isZeroKey(cfg.Label) {
+			if v, _ := Value(c, cfg.Label); strings.TrimSpace(v) != "" { // soft-failed source treated as blank, per spec
+				cs.Label = strings.TrimSpace(v)
+			}
 		}
 		n := num
 		if cfg.IsTotal {
@@ -474,12 +529,13 @@ func ResolveCost(b *Builder, cfg CostConfig) Key[*ast.CostSpec] {
 			cs.PerUnit = &n
 		}
 
-		if cfg.DateCol != "" {
-			if dv := strings.TrimSpace(c.At(cfg.DateCol)); dv != "" {
-				t, err := time.Parse(cfg.DateFormat, dv)
+		if !isZeroKey(cfg.Date) {
+			if dv, _ := Value(c, cfg.Date); strings.TrimSpace(dv) != "" { // soft-failed source treated as blank, per spec
+				t, err := time.Parse(cfg.DateFormat, strings.TrimSpace(dv))
 				if err != nil {
 					diag := ErrorDiag(code, info.Path, info.Line,
-						fmt.Sprintf("cannot parse cost date %q with format %q: %v", dv, cfg.DateFormat, err))
+						fmt.Sprintf("cannot parse cost date %q with format %q: %v",
+							strings.TrimSpace(dv), cfg.DateFormat, err))
 					return nil, &diag, nil
 				}
 				cs.Date = &t

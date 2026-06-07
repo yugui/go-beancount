@@ -3,10 +3,12 @@ package csvbase_test
 import (
 	"context"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/apd/v3"
+	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer/std/csvbase"
 	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
@@ -75,6 +77,134 @@ func TestColumn_RegistersRequired(t *testing.T) {
 	req := p.Required()
 	if len(req) != 1 || req[0] != "Memo" {
 		t.Errorf("Required() = %v, want [Memo]", req)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Columns
+// ---------------------------------------------------------------------------
+
+func TestColumns_SameAsIndividualColumn(t *testing.T) {
+	b := csvbase.NewBuilder()
+	keys := csvbase.Columns(b, "A", "B", "C")
+
+	var gotA, gotB, gotC string
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		gotA, _ = csvbase.Value(c, keys[0])
+		gotB, _ = csvbase.Value(c, keys[1])
+		gotC, _ = csvbase.Value(c, keys[2])
+		return nil, nil, nil
+	})
+	rec := rowCtx("A", "alpha", "B", "beta", "C", "gamma")
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if gotA != "alpha" || gotB != "beta" || gotC != "gamma" {
+		t.Errorf("Columns values = (%q, %q, %q), want (alpha, beta, gamma)", gotA, gotB, gotC)
+	}
+	req := p.Required()
+	wantReq := []string{"A", "B", "C"}
+	if diff := cmp.Diff(wantReq, req); diff != "" {
+		t.Errorf("Required() mismatch (-want +got):\n%s", diff)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SplitColumns
+// ---------------------------------------------------------------------------
+
+func TestSplitColumns_MatchYieldsGroupKeys(t *testing.T) {
+	re := regexp.MustCompile(`(?P<payee>.+?) / (?P<memo>.+)`)
+	b := csvbase.NewBuilder()
+	detail := csvbase.Column(b, "Detail")
+	groups := csvbase.SplitColumns(b, detail, re)
+
+	var gotPayee, gotMemo string
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		gotPayee, _ = csvbase.Value(c, groups["payee"])
+		gotMemo, _ = csvbase.Value(c, groups["memo"])
+		return nil, nil, nil
+	})
+	rec := rowCtx("Detail", "Amazon / Books")
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if gotPayee != "Amazon" {
+		t.Errorf("payee group = %q, want %q", gotPayee, "Amazon")
+	}
+	if gotMemo != "Books" {
+		t.Errorf("memo group = %q, want %q", gotMemo, "Books")
+	}
+}
+
+func TestSplitColumns_NoMatch_GroupsReadEmpty(t *testing.T) {
+	re := regexp.MustCompile(`(?P<payee>.+?) / (?P<memo>.+)`)
+	b := csvbase.NewBuilder()
+	detail := csvbase.Column(b, "Detail")
+	groups := csvbase.SplitColumns(b, detail, re)
+
+	var gotPayee, gotMemo string
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		gotPayee, _ = csvbase.Value(c, groups["payee"])
+		gotMemo, _ = csvbase.Value(c, groups["memo"])
+		return nil, nil, nil
+	})
+	rec := rowCtx("Detail", "no separator here")
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if gotPayee != "" {
+		t.Errorf("no-match payee group = %q, want %q", gotPayee, "")
+	}
+	if gotMemo != "" {
+		t.Errorf("no-match memo group = %q, want %q", gotMemo, "")
+	}
+}
+
+func TestSplitColumns_RequiredOnlySourceColumn(t *testing.T) {
+	re := regexp.MustCompile(`(?P<payee>.+?) / (?P<memo>.+)`)
+	b := csvbase.NewBuilder()
+	detail := csvbase.Column(b, "Detail")
+	csvbase.SplitColumns(b, detail, re)
+	p := b.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		return nil, nil, nil
+	})
+	req := p.Required()
+	if len(req) != 1 || req[0] != "Detail" {
+		t.Errorf("Required() = %v, want [Detail] (groups are not required columns)", req)
+	}
+}
+
+func TestSplitColumns_FeedsResolverSteps(t *testing.T) {
+	// Verifies that a SplitColumns group key feeds standard resolver steps.
+	re := regexp.MustCompile(`(?P<payee>[^|]+)\|(?P<cat>.+)`)
+	b := csvbase.NewBuilder()
+	detail := csvbase.Column(b, "Detail")
+	groups := csvbase.SplitColumns(b, detail, re)
+
+	payKey := csvbase.ResolvePayee(b, csvbase.PayeeConfig{
+		Sources: []csvbase.Key[string]{groups["payee"]},
+	})
+	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{
+		Sources: []csvbase.Key[string]{groups["cat"]},
+		Map:     map[string]string{"food": "Expenses:Food"},
+	})
+
+	var gotPayee, gotAcc string
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		gotPayee, _ = csvbase.Value(c, payKey)
+		gotAcc, _ = csvbase.Value(c, accKey)
+		return nil, nil, nil
+	})
+	rec := rowCtx("Detail", "Amazon|food")
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if gotPayee != "Amazon" {
+		t.Errorf("payee = %q, want %q", gotPayee, "Amazon")
+	}
+	if gotAcc != "Expenses:Food" {
+		t.Errorf("account = %q, want %q", gotAcc, "Expenses:Food")
 	}
 }
 
@@ -178,8 +308,12 @@ func TestParseDate_PropagatesSoftFail(t *testing.T) {
 
 func TestSumAmounts_OK(t *testing.T) {
 	b := csvbase.NewBuilder()
+	cols := csvbase.Columns(b, "Debit", "Credit")
 	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Debit", Negate: true}, {Col: "Credit"}},
+		Cols: []csvbase.AmountInput{
+			{Source: cols[0], Negate: true},
+			{Source: cols[1]},
+		},
 	})
 	var got csvkit.Amount
 	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
@@ -200,7 +334,7 @@ func TestSumAmounts_OK(t *testing.T) {
 func TestSumAmounts_ThousandsSep(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:   []csvkit.AmountColumn{{Col: "Amount"}},
+		Cols:   []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
 		Format: csvkit.NumberFormat{ThousandsSep: ","},
 	})
 	var got csvkit.Amount
@@ -221,7 +355,7 @@ func TestSumAmounts_ThousandsSep(t *testing.T) {
 func TestSumAmounts_Placeholders(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:   []csvkit.AmountColumn{{Col: "Amount"}},
+		Cols:   []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
 		Format: csvkit.NumberFormat{Placeholders: []string{"-"}},
 	})
 	var gotD *ast.Diagnostic
@@ -242,7 +376,7 @@ func TestSumAmounts_Placeholders(t *testing.T) {
 func TestSumAmounts_AmountBad(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amt"}},
+		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
 	})
 	var gotD *ast.Diagnostic
 	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
@@ -258,10 +392,37 @@ func TestSumAmounts_AmountBad(t *testing.T) {
 	}
 }
 
+func TestSumAmounts_AmountBad_MessageByPosition(t *testing.T) {
+	// The bad-input diagnostic must identify the entry by position (#N), not by column name.
+	b := csvbase.NewBuilder()
+	cols := csvbase.Columns(b, "Good", "Bad")
+	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
+		Cols: []csvbase.AmountInput{
+			{Source: cols[0]},
+			{Source: cols[1]},
+		},
+	})
+	var gotD *ast.Diagnostic
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		_, gotD = csvbase.Value(c, k)
+		return nil, nil, nil
+	})
+	rec := rowCtx("Good", "10", "Bad", "not-a-number")
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if gotD == nil || gotD.Code != csvbase.DiagBadAmount {
+		t.Errorf("diag = %v, want DiagBadAmount", gotD)
+	}
+	if !strings.Contains(gotD.Message, "#1") {
+		t.Errorf("diag message %q should contain %q (0-based index of bad input)", gotD.Message, "#1")
+	}
+}
+
 func TestSumAmounts_AllBlank(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvkit.AmountColumn{{Col: "Amt"}},
+		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
 	})
 	var gotD *ast.Diagnostic
 	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
@@ -280,7 +441,7 @@ func TestSumAmounts_AllBlank(t *testing.T) {
 func TestSumAmounts_SplitCurrencyHint(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvkit.AmountColumn{{Col: "Amt"}},
+		Cols:          []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
 		SplitCurrency: true,
 	})
 	var got csvkit.Amount
@@ -478,7 +639,7 @@ func TestResolveAccount_HintOverride(t *testing.T) {
 		},
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveAccount(b, csvbase.AccountConfig{
-				Cols:    []string{"Cat"},
+				Sources: csvbase.Columns(b, "Cat"),
 				Map:     map[string]string{"col-val": "Expenses:Food"},
 				HintKey: "account",
 				Default: "Expenses:Default",
@@ -497,8 +658,8 @@ func TestResolveAccount_ColMapHit(t *testing.T) {
 	v, d := singleString(t, rowCtx("Cat", "food"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveAccount(b, csvbase.AccountConfig{
-				Cols: []string{"Cat"},
-				Map:  map[string]string{"food": "Expenses:Food"},
+				Sources: csvbase.Columns(b, "Cat"),
+				Map:     map[string]string{"food": "Expenses:Food"},
 			})
 		},
 	)
@@ -514,8 +675,8 @@ func TestResolveAccount_Unmapped(t *testing.T) {
 	_, d := singleString(t, rowCtx("Cat", "unknown"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveAccount(b, csvbase.AccountConfig{
-				Cols: []string{"Cat"},
-				Map:  map[string]string{"food": "Expenses:Food"},
+				Sources: csvbase.Columns(b, "Cat"),
+				Map:     map[string]string{"food": "Expenses:Food"},
 			})
 		},
 	)
@@ -531,7 +692,7 @@ func TestResolveAccount_VerbatimNoMap(t *testing.T) {
 	v, d := singleString(t, rowCtx("Cat", "Expenses:Custom"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveAccount(b, csvbase.AccountConfig{
-				Cols: []string{"Cat"},
+				Sources: csvbase.Columns(b, "Cat"),
 				// no Map: verbatim passthrough
 				Default: "Expenses:Default",
 			})
@@ -549,7 +710,7 @@ func TestResolveAccount_DefaultFallback(t *testing.T) {
 	v, d := singleString(t, rowCtx("Cat", ""), // blank col => fall to default
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveAccount(b, csvbase.AccountConfig{
-				Cols:    []string{"Cat"},
+				Sources: csvbase.Columns(b, "Cat"),
 				Default: "Expenses:Default",
 			})
 		},
@@ -566,7 +727,7 @@ func TestResolveAccount_Missing(t *testing.T) {
 	_, d := singleString(t, rowCtx("Cat", ""),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveAccount(b, csvbase.AccountConfig{
-				Cols: []string{"Cat"},
+				Sources: csvbase.Columns(b, "Cat"),
 				// no Map, no Default
 			})
 		},
@@ -584,8 +745,8 @@ func TestResolveCounter_MapHit(t *testing.T) {
 	v, d := singleString(t, rowCtx("Type", "income"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveCounter(b, csvbase.CounterConfig{
-				Cols: []string{"Type"},
-				Map:  map[string]string{"income": "Income:Salary"},
+				Sources: csvbase.Columns(b, "Type"),
+				Map:     map[string]string{"income": "Income:Salary"},
 			})
 		},
 	)
@@ -601,8 +762,8 @@ func TestResolveCounter_UnmappedWarning(t *testing.T) {
 	v, d := singleString(t, rowCtx("Type", "mystery"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveCounter(b, csvbase.CounterConfig{
-				Cols: []string{"Type"},
-				Map:  map[string]string{"income": "Income:Salary"},
+				Sources: csvbase.Columns(b, "Type"),
+				Map:     map[string]string{"income": "Income:Salary"},
 			})
 		},
 	)
@@ -621,8 +782,8 @@ func TestResolveCounter_BlankYieldsEmpty(t *testing.T) {
 	v, d := singleString(t, rowCtx("Type", ""),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveCounter(b, csvbase.CounterConfig{
-				Cols: []string{"Type"},
-				Map:  map[string]string{"income": "Income:Salary"},
+				Sources: csvbase.Columns(b, "Type"),
+				Map:     map[string]string{"income": "Income:Salary"},
 			})
 		},
 	)
@@ -638,7 +799,7 @@ func TestResolveCounter_Default(t *testing.T) {
 	v, d := singleString(t, rowCtx("Type", ""),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveCounter(b, csvbase.CounterConfig{
-				Cols:    []string{"Type"},
+				Sources: csvbase.Columns(b, "Type"),
 				Default: "Expenses:Unknown",
 			})
 		},
@@ -658,11 +819,11 @@ func TestResolveCounter_Default(t *testing.T) {
 func TestResolveCurrency_ColPrecedence(t *testing.T) {
 	b := csvbase.NewBuilder()
 	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvkit.AmountColumn{{Col: "Amt"}},
+		Cols:          []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
 		SplitCurrency: true,
 	})
 	k := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
-		Col:        "Cur",
+		Source:     csvbase.Column(b, "Cur"),
 		Default:    "USD",
 		FromAmount: true,
 		Amount:     amtKey,
@@ -672,7 +833,7 @@ func TestResolveCurrency_ColPrecedence(t *testing.T) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
-	// Col has explicit "EUR" and amount hint would be "JPY"; Col wins
+	// Source has explicit "EUR" and amount hint would be "JPY"; Source wins
 	rec := rowCtx("Cur", "EUR", "Amt", "1000 JPY")
 	if _, _, err := p.Map(context.Background(), rec); err != nil {
 		t.Fatalf("Map: %v", err)
@@ -685,7 +846,7 @@ func TestResolveCurrency_ColPrecedence(t *testing.T) {
 func TestResolveCurrency_AmountHint(t *testing.T) {
 	b := csvbase.NewBuilder()
 	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvkit.AmountColumn{{Col: "Amt"}},
+		Cols:          []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
 		SplitCurrency: true,
 	})
 	k := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
@@ -711,7 +872,7 @@ func TestResolveCurrency_Default(t *testing.T) {
 	v, d := singleString(t, rowCtx("Cur", ""),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
-				Col:     "Cur",
+				Source:  csvbase.Column(b, "Cur"),
 				Default: "USD",
 			})
 		},
@@ -728,8 +889,8 @@ func TestResolveCurrency_MapVerbatim(t *testing.T) {
 	v, d := singleString(t, rowCtx("Cur", "yen"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
-				Col: "Cur",
-				Map: map[string]string{"yen": "JPY"},
+				Source: csvbase.Column(b, "Cur"),
+				Map:    map[string]string{"yen": "JPY"},
 			})
 		},
 	)
@@ -745,7 +906,7 @@ func TestResolveCurrency_Empty_SoftFail(t *testing.T) {
 	_, d := singleString(t, rowCtx("Cur", ""),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
-				Col: "Cur",
+				Source: csvbase.Column(b, "Cur"),
 				// no Default, no FromAmount
 			})
 		},
@@ -763,8 +924,8 @@ func TestResolvePayee_JoinMap(t *testing.T) {
 	v, d := singleString(t, rowCtx("Name", "amazon"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolvePayee(b, csvbase.PayeeConfig{
-				Cols: []string{"Name"},
-				Map:  map[string]string{"amazon": "Amazon"},
+				Sources: csvbase.Columns(b, "Name"),
+				Map:     map[string]string{"amazon": "Amazon"},
 			})
 		},
 	)
@@ -781,8 +942,8 @@ func TestResolvePayee_MappedEmptySuppresses(t *testing.T) {
 	v, d := singleString(t, rowCtx("Name", "noise"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolvePayee(b, csvbase.PayeeConfig{
-				Cols: []string{"Name"},
-				Map:  map[string]string{"noise": ""},
+				Sources: csvbase.Columns(b, "Name"),
+				Map:     map[string]string{"noise": ""},
 			})
 		},
 	)
@@ -798,7 +959,7 @@ func TestResolvePayee_BlankYieldsEmpty(t *testing.T) {
 	v, d := singleString(t, rowCtx("Name", ""),
 		func(b *csvbase.Builder) csvbase.Key[string] {
 			return csvbase.ResolvePayee(b, csvbase.PayeeConfig{
-				Cols: []string{"Name"},
+				Sources: csvbase.Columns(b, "Name"),
 			})
 		},
 	)
@@ -811,13 +972,13 @@ func TestResolvePayee_BlankYieldsEmpty(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// NarrationFromColumns
+// NarrationFromSources
 // ---------------------------------------------------------------------------
 
-func TestNarrationFromColumns_PerCellMapDropBlank(t *testing.T) {
+func TestNarrationFromSources_PerCellMapDropBlank(t *testing.T) {
 	v, d := singleString(t, rowCtx("A", "keep", "B", "noise", "C", "  also  "),
 		func(b *csvbase.Builder) csvbase.Key[string] {
-			return csvbase.NarrationFromColumns(b, []string{"A", "B", "C"}, " | ",
+			return csvbase.NarrationFromSources(b, csvbase.Columns(b, "A", "B", "C"), " | ",
 				map[string]string{"noise": ""}) // "noise" => "" => dropped
 		},
 	)
@@ -840,7 +1001,7 @@ func TestNarrationFromTemplate_OK(t *testing.T) {
 	}
 	v, d := singleString(t, rowCtx("Payee", "Amazon", "Memo", "Book"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
-			return csvbase.NarrationFromTemplate(b, tmpl, "")
+			return csvbase.NarrationFromTemplate(b, tmpl, nil, "")
 		},
 	)
 	if d != nil {
@@ -858,11 +1019,93 @@ func TestNarrationFromTemplate_UnknownRef(t *testing.T) {
 	}
 	_, d := singleString(t, rowCtx("Payee", "X"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
-			return csvbase.NarrationFromTemplate(b, tmpl, "")
+			return csvbase.NarrationFromTemplate(b, tmpl, nil, "")
 		},
 	)
 	if d == nil || d.Code != csvbase.DiagBadNarrationTemplate {
 		t.Errorf("diag = %v, want DiagBadNarrationTemplate", d)
+	}
+}
+
+func TestNarrationFromTemplate_BindingOverlaysRawColumn(t *testing.T) {
+	// A binding name shadows a same-named raw column.
+	tmpl, err := csvkit.CompileNarration("{{.Desc}}")
+	if err != nil {
+		t.Fatalf("CompileNarration: %v", err)
+	}
+	b := csvbase.NewBuilder()
+	// The raw column "Detail" holds "Amazon|Books order". The regex captures
+	// everything before "|" as the group "Desc", yielding "Amazon". The binding
+	// key "Desc" overlays the raw-column data map under that name, so the template
+	// renders "Amazon" (from the split group) even though the only raw column is
+	// "Detail", not "Desc".
+	detail := csvbase.Column(b, "Detail")
+	groups := csvbase.SplitColumns(b, detail, regexp.MustCompile(`(?P<Desc>.+)\|.+`))
+
+	narrKey := csvbase.NarrationFromTemplate(b, tmpl,
+		map[string]csvbase.Key[string]{"Desc": groups["Desc"]}, "")
+
+	var got string
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		got, _ = csvbase.Value(c, narrKey)
+		return nil, nil, nil
+	})
+	rec := rowCtx("Detail", "Amazon|Books order")
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if got != "Amazon" {
+		t.Errorf("narration = %q, want %q (binding must shadow raw column)", got, "Amazon")
+	}
+}
+
+func TestNarrationFromTemplate_BindingRendersOverlaidValue(t *testing.T) {
+	// A binding key's value is rendered by the template; no raw column named
+	// "vendor" exists in the row.
+	tmpl, err := csvkit.CompileNarration("{{.vendor}}")
+	if err != nil {
+		t.Fatalf("CompileNarration: %v", err)
+	}
+	b := csvbase.NewBuilder()
+	vendorKey := csvbase.Const(b, "Acme")
+
+	narrKey := csvbase.NarrationFromTemplate(b, tmpl,
+		map[string]csvbase.Key[string]{"vendor": vendorKey}, "")
+
+	var got string
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		got, _ = csvbase.Value(c, narrKey)
+		return nil, nil, nil
+	})
+	rec := csvbase.RowContext{Fields: []string{}, Index: map[string]int{}}
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if got != "Acme" {
+		t.Errorf("narration = %q, want %q", got, "Acme")
+	}
+}
+
+func TestNarrationFromTemplate_BindingNoRequireHeader(t *testing.T) {
+	// A template referencing only a binding name does NOT require that name as a
+	// raw header column. Required() should only list "Detail".
+	tmpl, err := csvkit.CompileNarration("{{.SyntheticKey}}")
+	if err != nil {
+		t.Fatalf("CompileNarration: %v", err)
+	}
+	b := csvbase.NewBuilder()
+	detail := csvbase.Column(b, "Detail")
+	groups := csvbase.SplitColumns(b, detail, regexp.MustCompile(`(?P<SyntheticKey>.+)`))
+
+	csvbase.NarrationFromTemplate(b, tmpl,
+		map[string]csvbase.Key[string]{"SyntheticKey": groups["SyntheticKey"]}, "")
+
+	p := b.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		return nil, nil, nil
+	})
+	req := p.Required()
+	if len(req) != 1 || req[0] != "Detail" {
+		t.Errorf("Required() = %v, want [Detail] (SyntheticKey is not a raw column)", req)
 	}
 }
 
@@ -873,7 +1116,7 @@ func TestNarrationFromTemplate_UnknownRef(t *testing.T) {
 func TestResolveCost_BlankYieldsNil(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol:       "CostNum",
+		Number:          csvbase.Column(b, "CostNum"),
 		DefaultCurrency: "USD",
 	})
 	var got *ast.CostSpec
@@ -893,7 +1136,7 @@ func TestResolveCost_BlankYieldsNil(t *testing.T) {
 func TestResolveCost_PerUnit(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol:       "CostNum",
+		Number:          csvbase.Column(b, "CostNum"),
 		DefaultCurrency: "USD",
 	})
 	var got *ast.CostSpec
@@ -926,7 +1169,7 @@ func TestResolveCost_PerUnit(t *testing.T) {
 func TestResolveCost_Total(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol:       "CostNum",
+		Number:          csvbase.Column(b, "CostNum"),
 		IsTotal:         true,
 		DefaultCurrency: "USD",
 	})
@@ -947,8 +1190,8 @@ func TestResolveCost_Total(t *testing.T) {
 func TestResolveCost_CurrencyFromCol(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol:   "CostNum",
-		CurrencyCol: "CostCur",
+		Number:   csvbase.Column(b, "CostNum"),
+		Currency: csvbase.Column(b, "CostCur"),
 	})
 	var got *ast.CostSpec
 	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
@@ -967,9 +1210,9 @@ func TestResolveCost_CurrencyFromCol(t *testing.T) {
 func TestResolveCost_DateParsed(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol:       "CostNum",
+		Number:          csvbase.Column(b, "CostNum"),
 		DefaultCurrency: "USD",
-		DateCol:         "AcqDate",
+		Date:            csvbase.Column(b, "AcqDate"),
 		DateFormat:      "2006-01-02",
 	})
 	var got *ast.CostSpec
@@ -993,7 +1236,7 @@ func TestResolveCost_DateParsed(t *testing.T) {
 func TestResolveCost_BadNumber(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol:       "CostNum",
+		Number:          csvbase.Column(b, "CostNum"),
 		DefaultCurrency: "USD",
 	})
 	var gotD *ast.Diagnostic
@@ -1011,11 +1254,11 @@ func TestResolveCost_BadNumber(t *testing.T) {
 }
 
 func TestResolveCost_NoCurrency_DiagBadCost(t *testing.T) {
-	// Non-blank number but no CurrencyCol and no DefaultCurrency => DiagBadCost.
+	// Non-blank number but no Currency key and no DefaultCurrency => DiagBadCost.
 	b := csvbase.NewBuilder()
 	k := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol: "CostNum",
-		// no CurrencyCol, no DefaultCurrency
+		Number: csvbase.Column(b, "CostNum"),
+		// no Currency, no DefaultCurrency
 	})
 	var gotD *ast.Diagnostic
 	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
@@ -1035,9 +1278,9 @@ func TestResolveCost_BadDate_DiagBadCost(t *testing.T) {
 	// Valid number and currency, but unparseable date cell => DiagBadCost.
 	b := csvbase.NewBuilder()
 	k := csvbase.ResolveCost(b, csvbase.CostConfig{
-		NumberCol:       "CostNum",
+		Number:          csvbase.Column(b, "CostNum"),
 		DefaultCurrency: "USD",
-		DateCol:         "AcqDate",
+		Date:            csvbase.Column(b, "AcqDate"),
 		DateFormat:      "2006-01-02",
 	})
 	var gotD *ast.Diagnostic
@@ -1059,10 +1302,10 @@ func TestResolveCost_BadDate_DiagBadCost(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSumAmounts_CustomBadCode(t *testing.T) {
-	// BadCode override: a non-blank unparseable column should use the custom code.
+	// BadCode override: a non-blank unparseable input should use the custom code.
 	b := csvbase.NewBuilder()
 	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:    []csvkit.AmountColumn{{Col: "Amt"}},
+		Cols:    []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
 		BadCode: "my-bad-amount",
 	})
 	var gotD *ast.Diagnostic

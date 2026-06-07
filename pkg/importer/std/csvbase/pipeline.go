@@ -45,7 +45,9 @@ func NewBuilder() *Builder {
 }
 
 // Require records header columns that must be present for the pipeline to run.
-// Duplicates are deduplicated; insertion order is preserved.
+// Duplicates are deduplicated; insertion order is preserved. Standard library
+// steps do not call Require; it is exposed so that third-party AddStep leaves
+// can register raw columns themselves.
 func (b *Builder) Require(cols ...string) {
 	for _, col := range cols {
 		if _, ok := b.seen[col]; ok {

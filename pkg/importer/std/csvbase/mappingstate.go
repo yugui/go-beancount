@@ -45,6 +45,10 @@ func Value[T any](c *MappingState, k Key[T]) (T, *ast.Diagnostic) {
 
 // At returns the raw cell named col, or "" when the column is absent or the
 // row is too short. It does not trim; callers trim as needed.
+//
+// Per the leaf-only invariant, only Column (and leaf wrappers around it) and
+// NarrationFromTemplate call At directly; all standard resolver steps read
+// prior outputs via Value instead.
 func (c *MappingState) At(col string) string {
 	return fieldAt(c.raw, c.index, col)
 }
@@ -56,6 +60,10 @@ func (c *MappingState) Info() RowInfo {
 
 // Row returns a fresh map of every indexed column name to its raw cell value
 // ("" for columns past a short row).
+//
+// Per the leaf-only invariant, only NarrationFromTemplate calls Row directly
+// (to supply the full data map to the template engine); all other standard
+// steps read prior outputs via Value instead.
 func (c *MappingState) Row() map[string]string {
 	m := make(map[string]string, len(c.index))
 	for name, i := range c.index {
