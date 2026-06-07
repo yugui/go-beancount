@@ -3,9 +3,11 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "csvbase",
     srcs = [
+        "cells.go",
         "diag.go",
         "doc.go",
         "driver.go",
+        "pipeline.go",
         "rowhash.go",
     ],
     importpath = "github.com/yugui/go-beancount/pkg/importer/std/csvbase",
@@ -21,8 +23,10 @@ go_library(
 go_test(
     name = "csvbase_test",
     srcs = [
+        "cells_test.go",
         "diag_test.go",
         "driver_test.go",
+        "pipeline_test.go",
         "rowhash_test.go",
     ],
     race = "on",
