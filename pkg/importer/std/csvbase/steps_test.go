@@ -3,7 +3,6 @@ package csvbase_test
 import (
 	"context"
 	"regexp"
-	"strings"
 	"testing"
 	"time"
 
@@ -299,166 +298,6 @@ func TestParseDate_PropagatesSoftFail(t *testing.T) {
 	}
 	if gotD == nil || gotD.Code != "upstream-err" {
 		t.Errorf("propagated diag = %v, want upstream-err", gotD)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// SumAmounts
-// ---------------------------------------------------------------------------
-
-func TestSumAmounts_OK(t *testing.T) {
-	b := csvbase.NewBuilder()
-	cols := csvbase.Columns(b, "Debit", "Credit")
-	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{
-			{Source: cols[0], Negate: true},
-			{Source: cols[1]},
-		},
-	})
-	var got csvkit.Amount
-	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		got, _ = csvbase.Value(c, k)
-		return nil, nil, nil
-	})
-	// Credit 100, Debit 30 => 100 - 30 = 70
-	rec := rowCtx("Debit", "30", "Credit", "100")
-	if _, _, err := p.Map(context.Background(), rec); err != nil {
-		t.Fatalf("Map: %v", err)
-	}
-	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "70")
-	if got.Number.Cmp(want) != 0 {
-		t.Errorf("amount = %v, want 70", got.Number)
-	}
-}
-
-func TestSumAmounts_ThousandsSep(t *testing.T) {
-	b := csvbase.NewBuilder()
-	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:   []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-		Format: csvkit.NumberFormat{ThousandsSep: ","},
-	})
-	var got csvkit.Amount
-	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		got, _ = csvbase.Value(c, k)
-		return nil, nil, nil
-	})
-	rec := rowCtx("Amount", "1,234.56")
-	if _, _, err := p.Map(context.Background(), rec); err != nil {
-		t.Fatalf("Map: %v", err)
-	}
-	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "1234.56")
-	if got.Number.Cmp(want) != 0 {
-		t.Errorf("amount = %v, want 1234.56", got.Number)
-	}
-}
-
-func TestSumAmounts_Placeholders(t *testing.T) {
-	b := csvbase.NewBuilder()
-	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:   []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-		Format: csvkit.NumberFormat{Placeholders: []string{"-"}},
-	})
-	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		_, gotD = csvbase.Value(c, k)
-		return nil, nil, nil
-	})
-	// "-" is a placeholder => AmountAllBlank
-	rec := rowCtx("Amount", "-")
-	if _, _, err := p.Map(context.Background(), rec); err != nil {
-		t.Fatalf("Map: %v", err)
-	}
-	if gotD == nil || gotD.Code != csvbase.DiagAllBlankAmount {
-		t.Errorf("diag = %v, want DiagAllBlankAmount", gotD)
-	}
-}
-
-func TestSumAmounts_AmountBad(t *testing.T) {
-	b := csvbase.NewBuilder()
-	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
-	})
-	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		_, gotD = csvbase.Value(c, k)
-		return nil, nil, nil
-	})
-	rec := rowCtx("Amt", "not-a-number")
-	if _, _, err := p.Map(context.Background(), rec); err != nil {
-		t.Fatalf("Map: %v", err)
-	}
-	if gotD == nil || gotD.Code != csvbase.DiagBadAmount {
-		t.Errorf("diag = %v, want DiagBadAmount", gotD)
-	}
-}
-
-func TestSumAmounts_AmountBad_MessageByPosition(t *testing.T) {
-	// The bad-input diagnostic must identify the entry by position (#N), not by column name.
-	b := csvbase.NewBuilder()
-	cols := csvbase.Columns(b, "Good", "Bad")
-	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{
-			{Source: cols[0]},
-			{Source: cols[1]},
-		},
-	})
-	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		_, gotD = csvbase.Value(c, k)
-		return nil, nil, nil
-	})
-	rec := rowCtx("Good", "10", "Bad", "not-a-number")
-	if _, _, err := p.Map(context.Background(), rec); err != nil {
-		t.Fatalf("Map: %v", err)
-	}
-	if gotD == nil || gotD.Code != csvbase.DiagBadAmount {
-		t.Errorf("diag = %v, want DiagBadAmount", gotD)
-	}
-	if !strings.Contains(gotD.Message, "#1") {
-		t.Errorf("diag message %q should contain %q (0-based index of bad input)", gotD.Message, "#1")
-	}
-}
-
-func TestSumAmounts_AllBlank(t *testing.T) {
-	b := csvbase.NewBuilder()
-	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
-	})
-	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		_, gotD = csvbase.Value(c, k)
-		return nil, nil, nil
-	})
-	rec := rowCtx("Amt", "")
-	if _, _, err := p.Map(context.Background(), rec); err != nil {
-		t.Fatalf("Map: %v", err)
-	}
-	if gotD == nil || gotD.Code != csvbase.DiagAllBlankAmount {
-		t.Errorf("diag = %v, want DiagAllBlankAmount", gotD)
-	}
-}
-
-func TestSumAmounts_SplitCurrencyHint(t *testing.T) {
-	b := csvbase.NewBuilder()
-	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
-		SplitCurrency: true,
-	})
-	var got csvkit.Amount
-	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		got, _ = csvbase.Value(c, k)
-		return nil, nil, nil
-	})
-	rec := rowCtx("Amt", "1000 JPY")
-	if _, _, err := p.Map(context.Background(), rec); err != nil {
-		t.Fatalf("Map: %v", err)
-	}
-	if got.CurrencyHint != "JPY" {
-		t.Errorf("CurrencyHint = %q, want %q", got.CurrencyHint, "JPY")
-	}
-	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "1000")
-	if got.Number.Cmp(want) != 0 {
-		t.Errorf("amount = %v, want 1000", got.Number)
 	}
 }
 
@@ -818,10 +657,8 @@ func TestResolveCounter_Default(t *testing.T) {
 
 func TestResolveCurrency_ColPrecedence(t *testing.T) {
 	b := csvbase.NewBuilder()
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
-		SplitCurrency: true,
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amt"),
+		csvbase.ParseAmountConfig{SplitCurrency: true})
 	k := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
 		Source:     csvbase.Column(b, "Cur"),
 		Default:    "USD",
@@ -845,10 +682,8 @@ func TestResolveCurrency_ColPrecedence(t *testing.T) {
 
 func TestResolveCurrency_AmountHint(t *testing.T) {
 	b := csvbase.NewBuilder()
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
-		SplitCurrency: true,
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amt"),
+		csvbase.ParseAmountConfig{SplitCurrency: true})
 	k := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
 		FromAmount: true,
 		Default:    "USD",
@@ -1294,31 +1129,6 @@ func TestResolveCost_BadDate_DiagBadCost(t *testing.T) {
 	}
 	if gotD == nil || gotD.Code != csvbase.DiagBadCost {
 		t.Errorf("ResolveCost() diag = %v, want DiagBadCost", gotD)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// SumAmounts — custom BadCode override
-// ---------------------------------------------------------------------------
-
-func TestSumAmounts_CustomBadCode(t *testing.T) {
-	// BadCode override: a non-blank unparseable input should use the custom code.
-	b := csvbase.NewBuilder()
-	k := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:    []csvbase.AmountInput{{Source: csvbase.Column(b, "Amt")}},
-		BadCode: "my-bad-amount",
-	})
-	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		_, gotD = csvbase.Value(c, k)
-		return nil, nil, nil
-	})
-	rec := rowCtx("Amt", "not-a-number")
-	if _, _, err := p.Map(context.Background(), rec); err != nil {
-		t.Fatalf("Map: %v", err)
-	}
-	if gotD == nil || gotD.Code != "my-bad-amount" {
-		t.Errorf("SumAmounts() diag code = %v, want %q", gotD, "my-bad-amount")
 	}
 }
 

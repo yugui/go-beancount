@@ -79,61 +79,6 @@ func ParseDate(b *Builder, in Key[string], layout, code string) Key[time.Time] {
 	})
 }
 
-// AmountInput is one numeric contribution to a SumAmounts step.
-type AmountInput struct {
-	Source Key[string]
-	Negate bool
-}
-
-// AmountConfig configures SumAmounts.
-type AmountConfig struct {
-	Cols          []AmountInput
-	Format        csvkit.NumberFormat
-	SplitCurrency bool
-	// BadCode is the diagnostic code for a non-blank unparseable input; defaults
-	// to DiagBadAmount.
-	BadCode string
-	// BlankCode is the diagnostic code when every input is blank; defaults to
-	// DiagAllBlankAmount.
-	BlankCode string
-}
-
-// SumAmounts sums cfg.Cols under cfg.Format via csvkit.AmountParser.SumValues.
-// A non-blank unparseable input soft-fails with cfg.BadCode (default
-// DiagBadAmount); every input blank soft-fails with cfg.BlankCode (default
-// DiagAllBlankAmount). Bad inputs are identified by 0-based position.
-func SumAmounts(b *Builder, cfg AmountConfig) Key[csvkit.Amount] {
-	badCode := cfg.BadCode
-	if badCode == "" {
-		badCode = DiagBadAmount
-	}
-	blankCode := cfg.BlankCode
-	if blankCode == "" {
-		blankCode = DiagAllBlankAmount
-	}
-	p := csvkit.AmountParser{Format: cfg.Format, SplitCurrency: cfg.SplitCurrency}
-	return AddStep(b, func(c *MappingState) (csvkit.Amount, *ast.Diagnostic, error) {
-		vals := make([]csvkit.ValueAmount, len(cfg.Cols))
-		for i, col := range cfg.Cols {
-			v, _ := Value(c, col.Source) // soft-failed source treated as blank, per spec
-			vals[i] = csvkit.ValueAmount{Value: v, Negate: col.Negate}
-		}
-		sum, status, badIdx := p.SumValues(vals)
-		info := c.Info()
-		switch status {
-		case csvkit.AmountOK:
-			return sum, nil, nil
-		case csvkit.AmountBad:
-			diag := ErrorDiag(badCode, info.Path, info.Line,
-				fmt.Sprintf("cannot parse amount input #%d", badIdx))
-			return csvkit.Amount{}, &diag, nil
-		default: // AmountAllBlank
-			diag := ErrorDiag(blankCode, info.Path, info.Line, "all amount columns blank")
-			return csvkit.Amount{}, &diag, nil
-		}
-	})
-}
-
 // Split runs re over in and yields its named capture groups. On no match it
 // yields an empty map (so Group reads ""), mirroring csvimp. A soft-failed
 // input propagates. It registers no required columns (in already did).
@@ -545,7 +490,7 @@ type CurrencyConfig struct {
 	FromAmount bool
 	Map        map[string]string
 	// Amount is the source of CurrencyHint when FromAmount is true.
-	Amount Key[csvkit.Amount]
+	Amount Key[*csvkit.Amount]
 	// MissingCode is the soft-fail code when no currency resolves; defaults to
 	// DiagMissingCurrency.
 	MissingCode string
@@ -571,7 +516,7 @@ func ResolveCurrency(b *Builder, cfg CurrencyConfig) Key[string] {
 		}
 		// priority 2: currency hint from amount
 		if cfg.FromAmount && !isZeroKey(cfg.Amount) {
-			if amt, _ := Value(c, cfg.Amount); amt.CurrencyHint != "" {
+			if amt, _ := Value(c, cfg.Amount); amt != nil && amt.CurrencyHint != "" {
 				return amt.CurrencyHint, nil, nil
 			}
 		}

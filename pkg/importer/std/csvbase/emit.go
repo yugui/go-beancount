@@ -22,13 +22,14 @@ type MetaField struct {
 // required (a zero Key panics in EmitTransaction). Currency and Account are
 // required at runtime (a soft-fail diagnostic or an empty value drops the
 // row). Counter, Cost, Payee, Narration, Tags, Links, and Meta are optional
-// (zero Keys are ignored).
+// (zero Keys are ignored). A nil Amount value drops the row with
+// MissingAmountCode (default DiagAllBlankAmount).
 type TxConfig struct {
 	Date      Key[time.Time]
 	Flag      byte // 0 selects '*'
 	Payee     Key[string]
 	Narration Key[string]
-	Amount    Key[csvkit.Amount]
+	Amount    Key[*csvkit.Amount]
 	Currency  Key[string]
 	Account   Key[string]
 	Counter   Key[string]
@@ -36,6 +37,8 @@ type TxConfig struct {
 	Tags      []Key[string]
 	Links     []Key[string]
 	Meta      []MetaField
+	// MissingAmountCode overrides DiagAllBlankAmount when the Amount value is nil.
+	MissingAmountCode string
 	// MissingCurrencyCode overrides DiagMissingCurrency for the empty-value drop.
 	MissingCurrencyCode string
 	// MissingAccountCode overrides DiagMissingAccount for the empty-value drop.
@@ -44,15 +47,20 @@ type TxConfig struct {
 
 // EmitTransaction returns an EmitFunc that assembles one Transaction per row
 // from the pre-resolved keys in cfg. It panics if Date or Amount is a zero Key
-// (programmer error). Currency and Account soft-fails or empty values drop the
-// row; Counter soft-fail is a warning that keeps the row with a single posting;
-// all other required-field soft-fails drop the row.
+// (programmer error). A nil Amount value drops the row with MissingAmountCode
+// (default DiagAllBlankAmount). Currency and Account soft-fails or empty values
+// drop the row; Counter soft-fail is a warning that keeps the row with a single
+// posting; all other required-field soft-fails drop the row.
 func EmitTransaction(cfg TxConfig) EmitFunc {
 	if isZeroKey(cfg.Date) {
 		panic("csvbase: EmitTransaction: Date key is zero")
 	}
 	if isZeroKey(cfg.Amount) {
 		panic("csvbase: EmitTransaction: Amount key is zero")
+	}
+	missingAmountCode := cfg.MissingAmountCode
+	if missingAmountCode == "" {
+		missingAmountCode = DiagAllBlankAmount
 	}
 	missingCurrencyCode := cfg.MissingCurrencyCode
 	if missingCurrencyCode == "" {
@@ -75,10 +83,15 @@ func EmitTransaction(cfg TxConfig) EmitFunc {
 			return nil, []ast.Diagnostic{*d}, nil
 		}
 
-		amt, d := Value(c, cfg.Amount)
+		amtPtr, d := Value(c, cfg.Amount)
 		if d != nil {
 			return nil, []ast.Diagnostic{*d}, nil
 		}
+		if amtPtr == nil {
+			diag := ErrorDiag(missingAmountCode, info.Path, info.Line, "amount is absent")
+			return nil, []ast.Diagnostic{diag}, nil
+		}
+		amt := amtPtr
 
 		currency, d := Value(c, cfg.Currency)
 		if d != nil {

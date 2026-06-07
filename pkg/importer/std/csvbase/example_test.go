@@ -25,9 +25,7 @@ func TestExample_HappyPathWithRowHash(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{
 		Sources: csvbase.Columns(b, "Cat"),
@@ -96,9 +94,7 @@ func TestExample_SplitGroups(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
 
@@ -145,9 +141,7 @@ func TestExample_HeaderMatchBanner(t *testing.T) {
 
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
 
@@ -200,9 +194,7 @@ func TestExample_Headerless(t *testing.T) {
 
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
 
@@ -249,9 +241,7 @@ func TestExample_ExcludeFilter(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
 
@@ -291,9 +281,7 @@ func TestExample_CostElision(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Units")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Units"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "STOCK"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Assets:Brokerage"})
 	ctrKey := csvbase.ResolveCounter(b, csvbase.CounterConfig{Default: "Assets:Cash"})
@@ -346,9 +334,7 @@ func TestExample_AccountMapStrict_Unmapped(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{
 		Sources: csvbase.Columns(b, "Cat"),
@@ -391,9 +377,7 @@ func TestExample_CounterMapStrict_Unmapped(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Assets:Bank"})
 	ctrKey := csvbase.ResolveCounter(b, csvbase.CounterConfig{
@@ -446,10 +430,7 @@ func TestExample_CurrencyFromAmountSuffix(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-		SplitCurrency: true,
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{SplitCurrency: true})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{
 		FromAmount: true,
 		Amount:     amtKey,
@@ -493,9 +474,7 @@ func TestExample_FinalizeHook(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
 
@@ -542,9 +521,7 @@ func TestExample_RowHashStability(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{Default: "Expenses:Misc"})
 
@@ -605,9 +582,7 @@ func TestExample_AccountHintOverride(t *testing.T) {
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amtKey := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	curKey := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{Default: "USD"})
 	accKey := csvbase.ResolveAccount(b, csvbase.AccountConfig{
 		Sources: csvbase.Columns(b, "Cat"),
@@ -674,9 +649,7 @@ func Example() {
 `
 	b := csvbase.NewBuilder()
 	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amount := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	narration := csvbase.NarrationFromSources(b, csvbase.Columns(b, "Description"), " ", nil)
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:      date,
@@ -707,13 +680,10 @@ func Example_debitCredit() {
 `
 	b := csvbase.NewBuilder()
 	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	debitCredit := csvbase.Columns(b, "Debit", "Credit")
-	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{
-			{Source: debitCredit[0], Negate: true},
-			{Source: debitCredit[1]},
-		},
-	})
+	amount := csvbase.AddAmounts(b,
+		csvbase.ParseAmount(b, csvbase.Column(b, "Credit"), csvbase.ParseAmountConfig{}),
+		csvbase.NegateAmount(b, csvbase.ParseAmount(b, csvbase.Column(b, "Debit"), csvbase.ParseAmountConfig{})),
+		"")
 	payee := csvbase.ResolvePayee(b, csvbase.PayeeConfig{
 		Sources: csvbase.Columns(b, "Payee"),
 	})
@@ -766,10 +736,7 @@ Total,,2100 JPY
 	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
 	groups := csvbase.SplitColumns(b, csvbase.Column(b, "Detail"),
 		regexp.MustCompile(`^(?P<payee>[^|]+)\|(?P<memo>.+)$`))
-	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols:          []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-		SplitCurrency: true,
-	})
+	amount := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{SplitCurrency: true})
 	currency := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{FromAmount: true, Amount: amount})
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:      date,
@@ -804,9 +771,7 @@ func Example_templateWithSplit() {
 `
 	b := csvbase.NewBuilder()
 	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
-	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
-		Cols: []csvbase.AmountInput{{Source: csvbase.Column(b, "Amount")}},
-	})
+	amount := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{})
 	groups := csvbase.SplitColumns(b, csvbase.Column(b, "Detail"),
 		regexp.MustCompile(`^(?P<vendor>[^|]+)\|(?P<ref>.+)$`))
 
