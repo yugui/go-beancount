@@ -14,14 +14,14 @@ import (
 // yields its raw (untrimmed) cell value for every row.
 func Column(b *Builder, name string) Key[string] {
 	b.Require(name)
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
-		return c.Field(name), nil, nil
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		return c.At(name), nil, nil
 	})
 }
 
 // Const yields v for every row.
 func Const[T any](b *Builder, v T) Key[T] {
-	return AddStep(b, func(*Cells) (T, *ast.Diagnostic, error) {
+	return AddStep(b, func(*MappingState) (T, *ast.Diagnostic, error) {
 		return v, nil, nil
 	})
 }
@@ -33,7 +33,7 @@ func ParseDate(b *Builder, in Key[string], layout, code string) Key[time.Time] {
 	if code == "" {
 		code = DiagBadDate
 	}
-	return AddStep(b, func(c *Cells) (time.Time, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (time.Time, *ast.Diagnostic, error) {
 		raw, d := Value(c, in)
 		if d != nil {
 			return time.Time{}, d, nil
@@ -79,15 +79,15 @@ func SumAmounts(b *Builder, cfg AmountConfig) Key[csvkit.Amount] {
 		b.Require(col.Col)
 	}
 	p := csvkit.AmountParser{Format: cfg.Format, SplitCurrency: cfg.SplitCurrency}
-	return AddStep(b, func(c *Cells) (csvkit.Amount, *ast.Diagnostic, error) {
-		sum, status, badCol := p.Sum(cfg.Cols, c.Field)
+	return AddStep(b, func(c *MappingState) (csvkit.Amount, *ast.Diagnostic, error) {
+		sum, status, badCol := p.Sum(cfg.Cols, c.At)
 		info := c.Info()
 		switch status {
 		case csvkit.AmountOK:
 			return sum, nil, nil
 		case csvkit.AmountBad:
 			diag := ErrorDiag(badCode, info.Path, info.Line,
-				fmt.Sprintf("cannot parse amount column %q: %q", badCol, c.Field(badCol)))
+				fmt.Sprintf("cannot parse amount column %q: %q", badCol, c.At(badCol)))
 			return csvkit.Amount{}, &diag, nil
 		default: // AmountAllBlank
 			diag := ErrorDiag(blankCode, info.Path, info.Line, "all amount columns blank")
@@ -100,7 +100,7 @@ func SumAmounts(b *Builder, cfg AmountConfig) Key[csvkit.Amount] {
 // yields an empty map (so Group reads ""), mirroring csvimp. A soft-failed
 // input propagates. It registers no required columns (in already did).
 func Split(b *Builder, in Key[string], re *regexp.Regexp) Key[map[string]string] {
-	return AddStep(b, func(c *Cells) (map[string]string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (map[string]string, *ast.Diagnostic, error) {
 		raw, d := Value(c, in)
 		if d != nil {
 			return nil, d, nil
@@ -116,7 +116,7 @@ func Split(b *Builder, in Key[string], re *regexp.Regexp) Key[map[string]string]
 // Group yields the named group from a Split result, or "" when absent or the
 // split produced no match.
 func Group(b *Builder, split Key[map[string]string], name string) Key[string] {
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		m, d := Value(c, split)
 		if d != nil {
 			return "", d, nil
@@ -129,7 +129,7 @@ func Group(b *Builder, split Key[map[string]string], name string) Key[string] {
 // code; with csvkit.Verbatim a miss passes the value through. A soft-failed
 // input propagates.
 func MapValue(b *Builder, in Key[string], m map[string]string, mode csvkit.MapMode, code string) Key[string] {
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		raw, d := Value(c, in)
 		if d != nil {
 			return "", d, nil
@@ -148,7 +148,7 @@ func MapValue(b *Builder, in Key[string], m map[string]string, mode csvkit.MapMo
 // JoinKeys trims each input's value, drops blanks, and joins survivors with
 // sep (csvkit.Join semantics). Soft-failed inputs are treated as blank.
 func JoinKeys(b *Builder, sep string, ins ...Key[string]) Key[string] {
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		parts := make([]string, 0, len(ins))
 		for _, k := range ins {
 			v, _ := Value(c, k)
@@ -197,7 +197,7 @@ func ResolveAccount(b *Builder, cfg AccountConfig) Key[string] {
 	if cfg.Map != nil {
 		mapMode = csvkit.Strict
 	}
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		info := c.Info()
 		// priority 1: hint override
 		if cfg.HintKey != "" {
@@ -207,7 +207,7 @@ func ResolveAccount(b *Builder, cfg AccountConfig) Key[string] {
 		}
 		// priority 2: joined column cells
 		if len(cfg.Cols) > 0 {
-			key := csvkit.Join(cfg.Cols, cfg.Sep, c.Field)
+			key := csvkit.Join(cfg.Cols, cfg.Sep, c.At)
 			if key != "" {
 				mapped, ok := csvkit.ResolveThroughMap(key, cfg.Map, mapMode)
 				if !ok {
@@ -257,12 +257,12 @@ func ResolveCounter(b *Builder, cfg CounterConfig) Key[string] {
 	if cfg.Map != nil {
 		mapMode = csvkit.Strict
 	}
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		info := c.Info()
 		if len(cfg.Cols) == 0 {
 			return cfg.Default, nil, nil
 		}
-		key := csvkit.Join(cfg.Cols, cfg.Sep, c.Field)
+		key := csvkit.Join(cfg.Cols, cfg.Sep, c.At)
 		if key == "" {
 			return cfg.Default, nil, nil
 		}
@@ -301,11 +301,11 @@ func ResolveCurrency(b *Builder, cfg CurrencyConfig) Key[string] {
 	if cfg.Col != "" {
 		b.Require(cfg.Col)
 	}
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		info := c.Info()
 		// priority 1: explicit column
 		if cfg.Col != "" {
-			if v := strings.TrimSpace(c.Field(cfg.Col)); v != "" {
+			if v := strings.TrimSpace(c.At(cfg.Col)); v != "" {
 				mapped, _ := csvkit.ResolveThroughMap(v, cfg.Map, csvkit.Verbatim)
 				return mapped, nil, nil
 			}
@@ -343,11 +343,11 @@ func ResolvePayee(b *Builder, cfg PayeeConfig) Key[string] {
 	for _, col := range cfg.Cols {
 		b.Require(col)
 	}
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		if len(cfg.Cols) == 0 {
 			return "", nil, nil
 		}
-		v := csvkit.Join(cfg.Cols, cfg.Sep, c.Field)
+		v := csvkit.Join(cfg.Cols, cfg.Sep, c.At)
 		if v == "" {
 			return "", nil, nil
 		}
@@ -362,10 +362,10 @@ func NarrationFromColumns(b *Builder, cols []string, sep string, m map[string]st
 	for _, col := range cols {
 		b.Require(col)
 	}
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		parts := make([]string, 0, len(cols))
 		for _, col := range cols {
-			v := strings.TrimSpace(c.Field(col))
+			v := strings.TrimSpace(c.At(col))
 			if v == "" {
 				continue
 			}
@@ -380,7 +380,7 @@ func NarrationFromColumns(b *Builder, cols []string, sep string, m map[string]st
 }
 
 // NarrationFromTemplate renders tmpl against the row's indexed columns
-// (Cells.Row()). A render error soft-fails with code (default
+// (MappingState.Row()). A render error soft-fails with code (default
 // DiagBadNarrationTemplate). It registers no columns (template references are
 // best-effort, as in csvimp). Known limitation: the template data is the
 // file's raw column map, not split-group keys; pipelines that combine Split
@@ -390,7 +390,7 @@ func NarrationFromTemplate(b *Builder, tmpl *csvkit.NarrationTemplate, code stri
 	if code == "" {
 		code = DiagBadNarrationTemplate
 	}
-	return AddStep(b, func(c *Cells) (string, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		out, err := tmpl.Render(c.Row())
 		if err != nil {
 			info := c.Info()
@@ -436,9 +436,9 @@ func ResolveCost(b *Builder, cfg CostConfig) Key[*ast.CostSpec] {
 	if cfg.LabelCol != "" {
 		b.Require(cfg.LabelCol)
 	}
-	return AddStep(b, func(c *Cells) (*ast.CostSpec, *ast.Diagnostic, error) {
+	return AddStep(b, func(c *MappingState) (*ast.CostSpec, *ast.Diagnostic, error) {
 		info := c.Info()
-		raw := c.Field(cfg.NumberCol)
+		raw := c.At(cfg.NumberCol)
 		num, blank, err := csvkit.ParseNumber(raw, cfg.Format)
 		if blank {
 			return nil, nil, nil
@@ -451,7 +451,7 @@ func ResolveCost(b *Builder, cfg CostConfig) Key[*ast.CostSpec] {
 
 		cur := cfg.DefaultCurrency
 		if cfg.CurrencyCol != "" {
-			if v := strings.TrimSpace(c.Field(cfg.CurrencyCol)); v != "" {
+			if v := strings.TrimSpace(c.At(cfg.CurrencyCol)); v != "" {
 				cur = v
 			}
 		}
@@ -465,7 +465,7 @@ func ResolveCost(b *Builder, cfg CostConfig) Key[*ast.CostSpec] {
 			Currency: cur,
 		}
 		if cfg.LabelCol != "" {
-			cs.Label = strings.TrimSpace(c.Field(cfg.LabelCol))
+			cs.Label = strings.TrimSpace(c.At(cfg.LabelCol))
 		}
 		n := num
 		if cfg.IsTotal {
@@ -475,7 +475,7 @@ func ResolveCost(b *Builder, cfg CostConfig) Key[*ast.CostSpec] {
 		}
 
 		if cfg.DateCol != "" {
-			if dv := strings.TrimSpace(c.Field(cfg.DateCol)); dv != "" {
+			if dv := strings.TrimSpace(c.At(cfg.DateCol)); dv != "" {
 				t, err := time.Parse(cfg.DateFormat, dv)
 				if err != nil {
 					diag := ErrorDiag(code, info.Path, info.Line,

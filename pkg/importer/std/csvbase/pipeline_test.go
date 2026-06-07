@@ -15,18 +15,18 @@ import (
 // produced by an earlier step via Value.
 func TestInsertionOrderEvaluation(t *testing.T) {
 	b := csvbase.NewBuilder()
-	kFirst := csvbase.AddStep(b, func(*csvbase.Cells) (int, *ast.Diagnostic, error) {
+	kFirst := csvbase.AddStep(b, func(*csvbase.MappingState) (int, *ast.Diagnostic, error) {
 		return 10, nil, nil
 	})
 	var secondSaw int
-	kSecond := csvbase.AddStep(b, func(c *csvbase.Cells) (int, *ast.Diagnostic, error) {
+	kSecond := csvbase.AddStep(b, func(c *csvbase.MappingState) (int, *ast.Diagnostic, error) {
 		v, _ := csvbase.Value(c, kFirst)
 		secondSaw = v
 		return v * 2, nil, nil
 	})
 
 	var finalVal int
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		finalVal, _ = csvbase.Value(c, kSecond)
 		return nil, nil, nil
 	})
@@ -50,12 +50,12 @@ func TestSoftFailPropagation(t *testing.T) {
 	softDiag := csvbase.ErrorDiag("test-soft", "/f.csv", 3, "soft failure")
 
 	b := csvbase.NewBuilder()
-	kA := csvbase.AddStep(b, func(*csvbase.Cells) (string, *ast.Diagnostic, error) {
+	kA := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		return "", &softDiag, nil
 	})
 
 	// Step B propagates A's diagnostic as its own soft-fail.
-	kB := csvbase.AddStep(b, func(c *csvbase.Cells) (string, *ast.Diagnostic, error) {
+	kB := csvbase.AddStep(b, func(c *csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		v, d := csvbase.Value(c, kA)
 		if v != "" {
 			unexpected := csvbase.ErrorDiag("unexpected-value", "", 0, "expected zero")
@@ -64,7 +64,7 @@ func TestSoftFailPropagation(t *testing.T) {
 		return "", d, nil
 	})
 
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, d := csvbase.Value(c, kB)
 		if d != nil {
 			return nil, []ast.Diagnostic{*d}, nil
@@ -92,10 +92,10 @@ func TestHardError(t *testing.T) {
 	emitCalled := false
 
 	b := csvbase.NewBuilder()
-	csvbase.AddStep(b, func(*csvbase.Cells) (string, *ast.Diagnostic, error) {
+	csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		return "", nil, boom
 	})
-	p := b.Emit(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		emitCalled = true
 		return nil, nil, nil
 	})
@@ -126,7 +126,7 @@ func TestEmitDispositions(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("emit", func(t *testing.T) {
-		p := newPipeline(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+		p := newPipeline(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 			return []ast.Directive{&ast.Note{Comment: "ok"}}, nil, nil
 		})
 		dirs, diags, err := p.Map(ctx, rec)
@@ -142,7 +142,7 @@ func TestEmitDispositions(t *testing.T) {
 	})
 
 	t.Run("skip", func(t *testing.T) {
-		p := newPipeline(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+		p := newPipeline(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 			return nil, nil, nil
 		})
 		dirs, diags, err := p.Map(ctx, rec)
@@ -159,7 +159,7 @@ func TestEmitDispositions(t *testing.T) {
 
 	t.Run("drop-with-diag", func(t *testing.T) {
 		dg := csvbase.ErrorDiag("drop-code", "", 0, "dropped")
-		p := newPipeline(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+		p := newPipeline(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 			return nil, []ast.Diagnostic{dg}, nil
 		})
 		dirs, diags, err := p.Map(ctx, rec)
@@ -178,7 +178,7 @@ func TestEmitDispositions(t *testing.T) {
 
 	t.Run("emit+warn", func(t *testing.T) {
 		dg := csvbase.WarnDiag("warn-code", "", 0, "warning")
-		p := newPipeline(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+		p := newPipeline(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 			return []ast.Directive{&ast.Note{Comment: "kept"}}, []ast.Diagnostic{dg}, nil
 		})
 		dirs, diags, err := p.Map(ctx, rec)
@@ -202,7 +202,7 @@ func TestRequired(t *testing.T) {
 	b := csvbase.NewBuilder()
 	b.Require("C", "A", "B")
 	b.Require("A", "D") // A is a dup; D is new
-	p := b.Emit(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		return nil, nil, nil
 	})
 
@@ -221,8 +221,8 @@ func TestRequired(t *testing.T) {
 
 	// Keys from AddStep that did NOT call Require are absent.
 	b2 := csvbase.NewBuilder()
-	csvbase.AddStep(b2, func(*csvbase.Cells) (string, *ast.Diagnostic, error) { return "", nil, nil })
-	p2 := b2.Emit(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	csvbase.AddStep(b2, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) { return "", nil, nil })
+	p2 := b2.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		return nil, nil, nil
 	})
 	if r := p2.Required(); len(r) != 0 {
@@ -235,13 +235,13 @@ func TestRequired(t *testing.T) {
 func TestEmitFreezes(t *testing.T) {
 	b := csvbase.NewBuilder()
 	b.Require("X")
-	p := b.Emit(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		return nil, nil, nil
 	})
 
 	// Add more steps and required columns after Emit.
 	b.Require("Y", "Z")
-	csvbase.AddStep(b, func(*csvbase.Cells) (string, *ast.Diagnostic, error) { return "", nil, nil })
+	csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) { return "", nil, nil })
 
 	req := p.Required()
 	if len(req) != 1 || req[0] != "X" {
@@ -254,13 +254,13 @@ func TestEmitFreezes(t *testing.T) {
 func TestPipelineEndToEnd(t *testing.T) {
 	b := csvbase.NewBuilder()
 	b.Require("Name", "Score")
-	kName := csvbase.AddStep(b, func(c *csvbase.Cells) (string, *ast.Diagnostic, error) {
-		return c.Field("Name"), nil, nil
+	kName := csvbase.AddStep(b, func(c *csvbase.MappingState) (string, *ast.Diagnostic, error) {
+		return c.At("Name"), nil, nil
 	})
-	kScore := csvbase.AddStep(b, func(c *csvbase.Cells) (string, *ast.Diagnostic, error) {
-		return c.Field("Score"), nil, nil
+	kScore := csvbase.AddStep(b, func(c *csvbase.MappingState) (string, *ast.Diagnostic, error) {
+		return c.At("Score"), nil, nil
 	})
-	pipeline := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	pipeline := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		name, _ := csvbase.Value(c, kName)
 		score, _ := csvbase.Value(c, kScore)
 		return []ast.Directive{&ast.Note{Comment: name + ":" + score}}, nil, nil
@@ -303,10 +303,10 @@ func TestPipelineEndToEnd(t *testing.T) {
 func TestPipelineConcurrency(t *testing.T) {
 	b := csvbase.NewBuilder()
 	b.Require("Val")
-	kVal := csvbase.AddStep(b, func(c *csvbase.Cells) (string, *ast.Diagnostic, error) {
-		return c.Field("Val"), nil, nil
+	kVal := csvbase.AddStep(b, func(c *csvbase.MappingState) (string, *ast.Diagnostic, error) {
+		return c.At("Val"), nil, nil
 	})
-	pipeline := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	pipeline := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		v, _ := csvbase.Value(c, kVal)
 		return []ast.Directive{&ast.Note{Comment: v}}, nil, nil
 	})

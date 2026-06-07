@@ -35,7 +35,7 @@ func singleString(t *testing.T, rec csvbase.RowContext, build func(*csvbase.Buil
 	k := build(b)
 	var gotV string
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		gotV, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -53,7 +53,7 @@ func TestColumn_RawValue(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.Column(b, "Memo")
 	var got string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -69,7 +69,7 @@ func TestColumn_RawValue(t *testing.T) {
 func TestColumn_RegistersRequired(t *testing.T) {
 	b := csvbase.NewBuilder()
 	csvbase.Column(b, "Memo")
-	p := b.Emit(func(_ context.Context, _ *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		return nil, nil, nil
 	})
 	req := p.Required()
@@ -86,7 +86,7 @@ func TestConst(t *testing.T) {
 	b := csvbase.NewBuilder()
 	k := csvbase.Const(b, 42)
 	var got int
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -109,7 +109,7 @@ func TestParseDate_OK(t *testing.T) {
 	k := csvbase.ParseDate(b, raw, "2006-01-02", "")
 	var got time.Time
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -131,7 +131,7 @@ func TestParseDate_Bad_DefaultCode(t *testing.T) {
 	raw := csvbase.Column(b, "Date")
 	k := csvbase.ParseDate(b, raw, "2006-01-02", "")
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -153,13 +153,13 @@ func TestParseDate_Bad_DefaultCode(t *testing.T) {
 func TestParseDate_PropagatesSoftFail(t *testing.T) {
 	// If the upstream Column step soft-fails, ParseDate propagates the diag.
 	b := csvbase.NewBuilder()
-	upstream := csvbase.AddStep(b, func(*csvbase.Cells) (string, *ast.Diagnostic, error) {
+	upstream := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		d := csvbase.ErrorDiag("upstream-err", "/f.csv", 1, "upstream")
 		return "", &d, nil
 	})
 	k := csvbase.ParseDate(b, upstream, "2006-01-02", "")
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -182,7 +182,7 @@ func TestSumAmounts_OK(t *testing.T) {
 		Cols: []csvkit.AmountColumn{{Col: "Debit", Negate: true}, {Col: "Credit"}},
 	})
 	var got csvkit.Amount
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -204,7 +204,7 @@ func TestSumAmounts_ThousandsSep(t *testing.T) {
 		Format: csvkit.NumberFormat{ThousandsSep: ","},
 	})
 	var got csvkit.Amount
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -225,7 +225,7 @@ func TestSumAmounts_Placeholders(t *testing.T) {
 		Format: csvkit.NumberFormat{Placeholders: []string{"-"}},
 	})
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -245,7 +245,7 @@ func TestSumAmounts_AmountBad(t *testing.T) {
 		Cols: []csvkit.AmountColumn{{Col: "Amt"}},
 	})
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -264,7 +264,7 @@ func TestSumAmounts_AllBlank(t *testing.T) {
 		Cols: []csvkit.AmountColumn{{Col: "Amt"}},
 	})
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -284,7 +284,7 @@ func TestSumAmounts_SplitCurrencyHint(t *testing.T) {
 		SplitCurrency: true,
 	})
 	var got csvkit.Amount
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -314,7 +314,7 @@ func TestSplit_Match(t *testing.T) {
 	kMemo := csvbase.Group(b, sp, "memo")
 
 	var gotPayee, gotMemo string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		gotPayee, _ = csvbase.Value(c, kPayee)
 		gotMemo, _ = csvbase.Value(c, kMemo)
 		return nil, nil, nil
@@ -339,7 +339,7 @@ func TestSplit_NoMatch(t *testing.T) {
 	kPayee := csvbase.Group(b, sp, "payee")
 
 	var got string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, kPayee)
 		return nil, nil, nil
 	})
@@ -360,7 +360,7 @@ func TestGroup_Absent(t *testing.T) {
 	kMissing := csvbase.Group(b, sp, "nonexistent")
 
 	var got string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, kMissing)
 		return nil, nil, nil
 	})
@@ -428,7 +428,7 @@ func TestJoinKeys_TrimDropBlank(t *testing.T) {
 	kj := csvbase.JoinKeys(b, "-", k1, k2, k3)
 
 	var got string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, kj)
 		return nil, nil, nil
 	})
@@ -444,7 +444,7 @@ func TestJoinKeys_TrimDropBlank(t *testing.T) {
 
 func TestJoinKeys_SoftFailedTreatedBlank(t *testing.T) {
 	b := csvbase.NewBuilder()
-	failing := csvbase.AddStep(b, func(*csvbase.Cells) (string, *ast.Diagnostic, error) {
+	failing := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		d := csvbase.ErrorDiag("fail", "", 0, "x")
 		return "", &d, nil
 	})
@@ -452,7 +452,7 @@ func TestJoinKeys_SoftFailedTreatedBlank(t *testing.T) {
 	kj := csvbase.JoinKeys(b, "-", failing, ok)
 
 	var got string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, kj)
 		return nil, nil, nil
 	})
@@ -668,7 +668,7 @@ func TestResolveCurrency_ColPrecedence(t *testing.T) {
 		Amount:     amtKey,
 	})
 	var got string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -694,7 +694,7 @@ func TestResolveCurrency_AmountHint(t *testing.T) {
 		Amount:     amtKey,
 	})
 	var got string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -877,7 +877,7 @@ func TestResolveCost_BlankYieldsNil(t *testing.T) {
 		DefaultCurrency: "USD",
 	})
 	var got *ast.CostSpec
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -897,7 +897,7 @@ func TestResolveCost_PerUnit(t *testing.T) {
 		DefaultCurrency: "USD",
 	})
 	var got *ast.CostSpec
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -931,7 +931,7 @@ func TestResolveCost_Total(t *testing.T) {
 		DefaultCurrency: "USD",
 	})
 	var got *ast.CostSpec
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -951,7 +951,7 @@ func TestResolveCost_CurrencyFromCol(t *testing.T) {
 		CurrencyCol: "CostCur",
 	})
 	var got *ast.CostSpec
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -973,7 +973,7 @@ func TestResolveCost_DateParsed(t *testing.T) {
 		DateFormat:      "2006-01-02",
 	})
 	var got *ast.CostSpec
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got, _ = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -997,7 +997,7 @@ func TestResolveCost_BadNumber(t *testing.T) {
 		DefaultCurrency: "USD",
 	})
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -1018,7 +1018,7 @@ func TestResolveCost_NoCurrency_DiagBadCost(t *testing.T) {
 		// no CurrencyCol, no DefaultCurrency
 	})
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -1041,7 +1041,7 @@ func TestResolveCost_BadDate_DiagBadCost(t *testing.T) {
 		DateFormat:      "2006-01-02",
 	})
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})
@@ -1066,7 +1066,7 @@ func TestSumAmounts_CustomBadCode(t *testing.T) {
 		BadCode: "my-bad-amount",
 	})
 	var gotD *ast.Diagnostic
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		_, gotD = csvbase.Value(c, k)
 		return nil, nil, nil
 	})

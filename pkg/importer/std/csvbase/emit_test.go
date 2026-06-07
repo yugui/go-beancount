@@ -387,13 +387,13 @@ func emptyRec() csvbase.RowContext {
 }
 
 func fixedDateKey(b *csvbase.Builder, t time.Time) csvbase.Key[time.Time] {
-	return csvbase.AddStep(b, func(*csvbase.Cells) (time.Time, *ast.Diagnostic, error) {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (time.Time, *ast.Diagnostic, error) {
 		return t, nil, nil
 	})
 }
 
 func failingDateKey(b *csvbase.Builder) csvbase.Key[time.Time] {
-	return csvbase.AddStep(b, func(*csvbase.Cells) (time.Time, *ast.Diagnostic, error) {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (time.Time, *ast.Diagnostic, error) {
 		d := csvbase.ErrorDiag("date-fail", "/f.csv", 1, "bad date")
 		return time.Time{}, &d, nil
 	})
@@ -401,20 +401,20 @@ func failingDateKey(b *csvbase.Builder) csvbase.Key[time.Time] {
 
 func fixedAmountKey(b *csvbase.Builder, num string) csvbase.Key[csvkit.Amount] {
 	n, _, _ := apd.BaseContext.SetString(new(apd.Decimal), num)
-	return csvbase.AddStep(b, func(*csvbase.Cells) (csvkit.Amount, *ast.Diagnostic, error) {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (csvkit.Amount, *ast.Diagnostic, error) {
 		return csvkit.Amount{Number: *n}, nil, nil
 	})
 }
 
 func failingAmountKey(b *csvbase.Builder) csvbase.Key[csvkit.Amount] {
-	return csvbase.AddStep(b, func(*csvbase.Cells) (csvkit.Amount, *ast.Diagnostic, error) {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (csvkit.Amount, *ast.Diagnostic, error) {
 		d := csvbase.ErrorDiag("amount-fail", "/f.csv", 1, "bad amount")
 		return csvkit.Amount{}, &d, nil
 	})
 }
 
 func failingStringKey(b *csvbase.Builder, code string) csvbase.Key[string] {
-	return csvbase.AddStep(b, func(*csvbase.Cells) (string, *ast.Diagnostic, error) {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		d := csvbase.ErrorDiag(code, "/f.csv", 1, "fail")
 		return "", &d, nil
 	})
@@ -422,7 +422,7 @@ func failingStringKey(b *csvbase.Builder, code string) csvbase.Key[string] {
 
 // warnStringKey produces a warning-severity soft-fail.
 func warnStringKey(b *csvbase.Builder, code string) csvbase.Key[string] {
-	return csvbase.AddStep(b, func(*csvbase.Cells) (string, *ast.Diagnostic, error) {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		d := csvbase.WarnDiag(code, "/f.csv", 1, "warn")
 		return "", &d, nil
 	})
@@ -430,13 +430,13 @@ func warnStringKey(b *csvbase.Builder, code string) csvbase.Key[string] {
 
 func fixedCostKey(b *csvbase.Builder) csvbase.Key[*ast.CostSpec] {
 	n, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "100")
-	return csvbase.AddStep(b, func(*csvbase.Cells) (*ast.CostSpec, *ast.Diagnostic, error) {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (*ast.CostSpec, *ast.Diagnostic, error) {
 		return &ast.CostSpec{PerUnit: n, Currency: "USD"}, nil, nil
 	})
 }
 
 func failingCostKey(b *csvbase.Builder, code string) csvbase.Key[*ast.CostSpec] {
-	return csvbase.AddStep(b, func(*csvbase.Cells) (*ast.CostSpec, *ast.Diagnostic, error) {
+	return csvbase.AddStep(b, func(*csvbase.MappingState) (*ast.CostSpec, *ast.Diagnostic, error) {
 		d := csvbase.ErrorDiag(code, "/f.csv", 1, "fail")
 		return nil, &d, nil
 	})

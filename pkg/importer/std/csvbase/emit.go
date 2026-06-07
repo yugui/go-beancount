@@ -67,7 +67,7 @@ func EmitTransaction(cfg TxConfig) EmitFunc {
 		flag = '*'
 	}
 
-	return func(_ context.Context, c *Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	return func(_ context.Context, c *MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		info := c.Info()
 
 		date, d := Value(c, cfg.Date)

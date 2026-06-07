@@ -13,7 +13,7 @@
 //
 // [Builder] accumulates typed build steps; [AddStep] registers one step and
 // returns a [Key]. During [Pipeline.Map] each step's eval function receives
-// a [Cells] and may read prior steps' outputs via [Value]. A step returns
+// a [MappingState] and may read prior steps' outputs via [Value]. A step returns
 // (value, nil, nil) on success, (zero, diag, nil) to soft-fail (attaching
 // the [ast.Diagnostic] to the key for downstream steps to inspect), or
 // (_,_,err) for a hard error that aborts the row. [Builder.Emit] freezes the

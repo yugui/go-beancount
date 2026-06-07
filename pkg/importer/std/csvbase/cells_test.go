@@ -22,16 +22,16 @@ func TestValue_RoundTrips(t *testing.T) {
 	wantPoint := point{3, 7}
 
 	b := csvbase.NewBuilder()
-	kStr := csvbase.AddStep(b, func(*csvbase.Cells) (string, *ast.Diagnostic, error) {
+	kStr := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		return wantStr, nil, nil
 	})
-	kInt := csvbase.AddStep(b, func(*csvbase.Cells) (int, *ast.Diagnostic, error) {
+	kInt := csvbase.AddStep(b, func(*csvbase.MappingState) (int, *ast.Diagnostic, error) {
 		return wantInt, nil, nil
 	})
-	kTime := csvbase.AddStep(b, func(*csvbase.Cells) (time.Time, *ast.Diagnostic, error) {
+	kTime := csvbase.AddStep(b, func(*csvbase.MappingState) (time.Time, *ast.Diagnostic, error) {
 		return wantTime, nil, nil
 	})
-	kPoint := csvbase.AddStep(b, func(*csvbase.Cells) (point, *ast.Diagnostic, error) {
+	kPoint := csvbase.AddStep(b, func(*csvbase.MappingState) (point, *ast.Diagnostic, error) {
 		return wantPoint, nil, nil
 	})
 
@@ -39,7 +39,7 @@ func TestValue_RoundTrips(t *testing.T) {
 	var gotInt int
 	var gotTime time.Time
 	var gotPoint point
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		gotStr, _ = csvbase.Value(c, kStr)
 		gotInt, _ = csvbase.Value(c, kInt)
 		gotTime, _ = csvbase.Value(c, kTime)
@@ -69,12 +69,12 @@ func TestValue_RoundTrips(t *testing.T) {
 // produced by the pipeline (e.g., created from a different builder).
 func TestValue_AbsentKey(t *testing.T) {
 	otherBuilder := csvbase.NewBuilder()
-	orphan := csvbase.AddStep(otherBuilder, func(*csvbase.Cells) (string, *ast.Diagnostic, error) {
+	orphan := csvbase.AddStep(otherBuilder, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
 		return "orphan", nil, nil
 	})
 
 	b := csvbase.NewBuilder()
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		v, diag := csvbase.Value(c, orphan)
 		if v != "" || diag != nil {
 			t.Errorf("absent key: got (%q, %v), want (\"\", nil)", v, diag)
@@ -87,15 +87,15 @@ func TestValue_AbsentKey(t *testing.T) {
 	}
 }
 
-// TestCells_Field verifies Field returns raw cell values and "" for absent or
+// TestMappingState_At verifies At returns raw cell values and "" for absent or
 // out-of-range columns.
-func TestCells_Field(t *testing.T) {
+func TestMappingState_At(t *testing.T) {
 	b := csvbase.NewBuilder()
 	var gotA, gotMissing, gotShort string
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
-		gotA = c.Field("A")
-		gotMissing = c.Field("Z")
-		gotShort = c.Field("B")
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		gotA = c.At("A")
+		gotMissing = c.At("Z")
+		gotShort = c.At("B")
 		return nil, nil, nil
 	})
 
@@ -108,22 +108,22 @@ func TestCells_Field(t *testing.T) {
 		t.Fatalf("Map: %v", err)
 	}
 	if gotA != "alpha" {
-		t.Errorf("Field(A) = %q, want %q", gotA, "alpha")
+		t.Errorf("At(A) = %q, want %q", gotA, "alpha")
 	}
 	if gotMissing != "" {
-		t.Errorf("Field(Z) = %q, want %q", gotMissing, "")
+		t.Errorf("At(Z) = %q, want %q", gotMissing, "")
 	}
 	if gotShort != "" {
-		t.Errorf("Field(B) short row = %q, want %q", gotShort, "")
+		t.Errorf("At(B) short row = %q, want %q", gotShort, "")
 	}
 }
 
-// TestCells_Info verifies Info fields match the RowContext.
-func TestCells_Info(t *testing.T) {
+// TestMappingState_Info verifies Info fields match the RowContext.
+func TestMappingState_Info(t *testing.T) {
 	hints := map[string]string{"account": "Expenses:Food"}
 	b := csvbase.NewBuilder()
 	var got csvbase.RowInfo
-	p := b.Emit(func(_ context.Context, c *csvbase.Cells) ([]ast.Directive, []ast.Diagnostic, error) {
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		got = c.Info()
 		return nil, nil, nil
 	})

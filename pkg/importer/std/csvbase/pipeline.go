@@ -21,12 +21,12 @@ type RowInfo struct {
 // ([d],[warn],nil) emit+warn; (_,_,err) fatal. Row metadata is available via
 // c.Info(). It must be safe for concurrent use (called once per row, possibly
 // from concurrent Extract calls).
-type EmitFunc func(ctx context.Context, c *Cells) ([]ast.Directive, []ast.Diagnostic, error)
+type EmitFunc func(ctx context.Context, c *MappingState) ([]ast.Directive, []ast.Diagnostic, error)
 
 // step is an internal build step: an eval function over any-typed results.
 type step struct {
 	name string
-	eval func(c *Cells) (any, *ast.Diagnostic, error)
+	eval func(c *MappingState) (any, *ast.Diagnostic, error)
 }
 
 // Builder accumulates build steps and required columns for one Pipeline. It is
@@ -58,18 +58,18 @@ func (b *Builder) Require(cols ...string) {
 
 // AddStep registers a build step and returns a typed Key for its output. eval
 // is run once per row, in the order steps were added; it reads earlier steps
-// via Value and raw cells via the Cells accessors. eval returns (value, nil,
-// nil) on success, (zero, diag, nil) to soft-fail (attach diag to this key),
-// or (_, _, err) to fail the whole row mapping (fatal). eval must be safe for
-// concurrent use. This is the generic extension point on which standard and
-// third-party steps are built.
-func AddStep[T any](b *Builder, eval func(c *Cells) (T, *ast.Diagnostic, error)) Key[T] {
+// via Value and raw cells via the MappingState accessors. eval returns (value,
+// nil, nil) on success, (zero, diag, nil) to soft-fail (attach diag to this
+// key), or (_, _, err) to fail the whole row mapping (fatal). eval must be
+// safe for concurrent use. This is the generic extension point on which
+// standard and third-party steps are built.
+func AddStep[T any](b *Builder, eval func(c *MappingState) (T, *ast.Diagnostic, error)) Key[T] {
 	b.counter++
 	name := fmt.Sprintf("step-%d", b.counter)
 	k := Key[T]{name: name}
 	b.steps = append(b.steps, step{
 		name: name,
-		eval: func(c *Cells) (any, *ast.Diagnostic, error) {
+		eval: func(c *MappingState) (any, *ast.Diagnostic, error) {
 			v, diag, err := eval(c)
 			if err != nil {
 				return nil, nil, err
@@ -96,8 +96,8 @@ func (b *Builder) Emit(emit EmitFunc) *Pipeline {
 }
 
 // Pipeline is a RowMapper that evaluates a fixed sequence of build steps into
-// a Cells, then calls its emit callback. It is immutable and safe for
-// concurrent use (each Map call uses its own Cells).
+// a MappingState, then calls its emit callback. It is immutable and safe for
+// concurrent use (each Map call uses its own MappingState).
 type Pipeline struct {
 	steps    []step
 	required []string
@@ -119,8 +119,8 @@ func (p *Pipeline) Required() []string {
 // not called); soft-failed steps store their diagnostic for the emit callback
 // to act on.
 func (p *Pipeline) Map(ctx context.Context, rec RowContext) ([]ast.Directive, []ast.Diagnostic, error) {
-	c := &Cells{
-		fields:  rec.Fields,
+	c := &MappingState{
+		raw:     rec.Fields,
 		index:   rec.Index,
 		info:    RowInfo{Path: rec.Path, Line: rec.Line, Hints: rec.Hints},
 		results: make(map[string]result, len(p.steps)),
