@@ -23,11 +23,14 @@
 //
 // Ready-made step constructors cover the common field-resolution patterns:
 //
-//   - Primitive steps: [Column], [Columns], [Const], [ParseDate], [SumAmounts],
-//     [Split], [SplitColumns], [Group], [MapValue], [JoinKeys].
-//   - Business-logic resolver steps (mirror csvimp semantics): [ResolveAccount],
-//     [ResolveCounter], [ResolveCurrency], [ResolvePayee],
-//     [NarrationFromSources], [NarrationFromTemplate], [ResolveCost].
+//   - Column reading: [Column], [Columns], [Split], [SplitColumns], [Group].
+//   - Value construction: [Const], [Hint], [JoinKeys], [MapValue], [MapEach].
+//   - Flow control: [Coalesce], [Require], [DiagAsWarning].
+//   - Parsing: [ParseDate], [ParseAmount], [NegateAmount], [AddAmounts], [CurrencyHint].
+//   - Narration: [NarrationFromTemplate].
+//
+// Callers compose these primitives to express any resolution logic. For cases
+// not covered by the primitives, [AddStep] registers an arbitrary typed step.
 //
 // [EmitTransaction] consumes a [TxConfig] of pre-resolved keys and assembles
 // the standard primary+counter+cost transaction, handling soft-fail drop/keep
