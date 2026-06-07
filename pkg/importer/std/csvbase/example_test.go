@@ -35,6 +35,7 @@ func TestExample_HappyPathWithRowHash(t *testing.T) {
 				csvkit.Strict, csvbase.DiagUnmappedAccount),
 		),
 		csvbase.DiagMissingAccount)
+	// Empty map: every Cat misses (warning), Coalesce falls through to the Const default.
 	ctrKey := csvbase.Coalesce(b,
 		csvbase.DiagAsWarning(b,
 			csvbase.MapValue(b,
@@ -300,9 +301,14 @@ func TestExample_CostElision(t *testing.T) {
 				"cannot parse cost number")
 			return nil, &diag, nil
 		}
-		cur := strings.TrimSpace(rawNum)
+		cur := ""
 		if v, _ := csvbase.Value(c, costCurCol); strings.TrimSpace(v) != "" {
 			cur = strings.TrimSpace(v)
+		}
+		if cur == "" {
+			info := c.Info()
+			diag := csvbase.ErrorDiag(csvbase.DiagBadCost, info.Path, info.Line, "cost currency missing")
+			return nil, &diag, nil
 		}
 		return &ast.CostSpec{PerUnit: &num, Currency: cur}, nil, nil
 	})
@@ -443,15 +449,19 @@ func TestExample_CounterMapStrict_Unmapped(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestExample_CurrencyFromAmountSuffix(t *testing.T) {
-	const csv = `Date,Amount
-2024-03-01,1000 JPY
+	// CSV has no Cur column (blank), so Coalesce falls through to CurrencyHint ("JPY" from suffix).
+	const csv = `Date,Amount,Cur
+2024-03-01,1000 JPY,
 `
 	b := csvbase.NewBuilder()
 	dateKey := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
 	amtKey := csvbase.ParseAmount(b, csvbase.Column(b, "Amount"), csvbase.ParseAmountConfig{SplitCurrency: true})
+	// Explicit Cur column wins when non-blank; hint from amount suffix is the fallback; USD is the last resort.
 	curKey := csvbase.Require(b,
 		csvbase.Coalesce(b,
+			csvbase.MapValue(b, csvbase.Column(b, "Cur"), nil, csvkit.Verbatim, ""),
 			csvbase.CurrencyHint(b, amtKey),
+			csvbase.Const(b, "USD"),
 		),
 		csvbase.DiagMissingCurrency)
 
@@ -707,6 +717,7 @@ func Example_debitCredit() {
 		"Salary": "Income:Salary",
 		"Rent":   "Expenses:Rent",
 	}
+	// Const("") here means "no counter posting" when the map misses (EmitTransaction skips empty Counter).
 	counter := csvbase.Coalesce(b,
 		csvbase.DiagAsWarning(b,
 			csvbase.MapValue(b,

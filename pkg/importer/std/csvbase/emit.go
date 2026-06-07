@@ -23,7 +23,9 @@ type MetaField struct {
 // required at runtime (a soft-fail diagnostic or an empty value drops the
 // row). Counter, Cost, Payee, Narration, Tags, Links, and Meta are optional
 // (zero Keys are ignored). A nil Amount value drops the row with
-// MissingAmountCode (default DiagAllBlankAmount).
+// MissingAmountCode (default DiagAllBlankAmount). MissingAmountCode,
+// MissingCurrencyCode, and MissingAccountCode override the default diagnostic
+// codes emitted when Amount/Currency/Account resolve to an empty value.
 type TxConfig struct {
 	Date      Key[time.Time]
 	Flag      byte // 0 selects '*'
@@ -83,15 +85,14 @@ func EmitTransaction(cfg TxConfig) EmitFunc {
 			return nil, []ast.Diagnostic{*d}, nil
 		}
 
-		amtPtr, d := Value(c, cfg.Amount)
+		amt, d := Value(c, cfg.Amount)
 		if d != nil {
 			return nil, []ast.Diagnostic{*d}, nil
 		}
-		if amtPtr == nil {
+		if amt == nil {
 			diag := ErrorDiag(missingAmountCode, info.Path, info.Line, "amount is absent")
 			return nil, []ast.Diagnostic{diag}, nil
 		}
-		amt := amtPtr
 
 		currency, d := Value(c, cfg.Currency)
 		if d != nil {

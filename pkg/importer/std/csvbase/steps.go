@@ -190,11 +190,15 @@ func Require(b *Builder, in Key[string], code string) Key[string] {
 }
 
 // CurrencyHint extracts the CurrencyHint string from amt. Returns "" when
-// amt's value is nil, has no hint, or amt soft-failed.
+// amt's value is nil, has no hint, or amt soft-failed. Soft-fails are
+// intentionally swallowed (rather than propagated) so the absent-amount case
+// and the parse-failed case both produce an empty hint; use Coalesce or
+// Require downstream to handle absence.
 func CurrencyHint(b *Builder, amt Key[*csvkit.Amount]) Key[string] {
 	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		v, d := Value(c, amt)
 		if d != nil {
+			// swallows soft-fail intentionally
 			return "", nil, nil
 		}
 		if v == nil {
@@ -211,21 +215,7 @@ func CurrencyHint(b *Builder, amt Key[*csvkit.Amount]) Key[string] {
 func MapEach(b *Builder, ins []Key[string], m map[string]string, mode csvkit.MapMode, code string) []Key[string] {
 	out := make([]Key[string], len(ins))
 	for i, in := range ins {
-		in := in
-		out[i] = AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
-			raw, d := Value(c, in)
-			if d != nil {
-				return "", d, nil
-			}
-			mapped, ok := csvkit.ResolveThroughMap(raw, m, mode)
-			if !ok {
-				info := c.Info()
-				diag := ErrorDiag(code, info.Path, info.Line,
-					fmt.Sprintf("key %q has no entry in map", raw))
-				return "", &diag, nil
-			}
-			return mapped, nil, nil
-		})
+		out[i] = MapValue(b, in, m, mode, code)
 	}
 	return out
 }
@@ -252,8 +242,8 @@ func DiagAsWarning[T any](b *Builder, in Key[T], newCode string) Key[T] {
 type ParseAmountConfig struct {
 	Format        csvkit.NumberFormat
 	SplitCurrency bool
-	// Code is the diagnostic code for a non-blank unparseable value; defaults
-	// to DiagBadAmount.
+	// Code is the diagnostic code for a non-blank unparseable value; ""
+	// selects DiagBadAmount.
 	Code string
 }
 
@@ -312,41 +302,41 @@ func NegateAmount(b *Builder, in Key[*csvkit.Amount]) Key[*csvkit.Amount] {
 	})
 }
 
-// AddAmounts returns a+c. nil is the additive identity: AddAmounts(nil,nil)=nil,
-// AddAmounts(nil,v)=v, AddAmounts(v,nil)=v. Conflicting non-empty CurrencyHints
-// soft-fail with code (default DiagBadAmount). A soft-failed input propagates
-// its diagnostic.
-func AddAmounts(b *Builder, a, c Key[*csvkit.Amount], code string) Key[*csvkit.Amount] {
+// AddAmounts returns lhs+rhs. nil is the additive identity:
+// AddAmounts(nil,nil)=nil, AddAmounts(nil,v)=v, AddAmounts(v,nil)=v.
+// Conflicting non-empty CurrencyHints soft-fail with code (default
+// DiagBadAmount). A soft-failed input propagates its diagnostic.
+func AddAmounts(b *Builder, lhs, rhs Key[*csvkit.Amount], code string) Key[*csvkit.Amount] {
 	if code == "" {
 		code = DiagBadAmount
 	}
 	return AddStep(b, func(ms *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
-		av, ad := Value(ms, a)
-		if ad != nil {
-			return nil, ad, nil
+		lv, ld := Value(ms, lhs)
+		if ld != nil {
+			return nil, ld, nil
 		}
-		cv, cd := Value(ms, c)
-		if cd != nil {
-			return nil, cd, nil
+		rv, rd := Value(ms, rhs)
+		if rd != nil {
+			return nil, rd, nil
 		}
-		if av == nil {
-			return cv, nil, nil
+		if lv == nil {
+			return rv, nil, nil
 		}
-		if cv == nil {
-			return av, nil, nil
+		if rv == nil {
+			return lv, nil, nil
 		}
-		hint := av.CurrencyHint
-		if cv.CurrencyHint != "" {
-			if hint != "" && hint != cv.CurrencyHint {
+		hint := lv.CurrencyHint
+		if rv.CurrencyHint != "" {
+			if hint != "" && hint != rv.CurrencyHint {
 				info := ms.Info()
 				diag := ErrorDiag(code, info.Path, info.Line,
-					fmt.Sprintf("conflicting currency hints: %q vs %q", hint, cv.CurrencyHint))
+					fmt.Sprintf("conflicting currency hints: %q vs %q", hint, rv.CurrencyHint))
 				return nil, &diag, nil
 			}
-			hint = cv.CurrencyHint
+			hint = rv.CurrencyHint
 		}
 		var sum apd.Decimal
-		if _, err := apd.BaseContext.Add(&sum, &av.Number, &cv.Number); err != nil {
+		if _, err := apd.BaseContext.Add(&sum, &lv.Number, &rv.Number); err != nil {
 			info := ms.Info()
 			diag := ErrorDiag(code, info.Path, info.Line,
 				fmt.Sprintf("cannot add amounts: %v", err))

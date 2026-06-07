@@ -874,6 +874,26 @@ func TestDiagAsWarning_ErrorToWarning(t *testing.T) {
 	}
 }
 
+func TestDiagAsWarning_WarningInputAlsoRewrites(t *testing.T) {
+	_, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			warnKey := csvbase.AddStep(b, func(*csvbase.MappingState) (string, *ast.Diagnostic, error) {
+				diag := ast.Diagnostic{Severity: ast.Warning, Code: "old", Message: "w"}
+				return "", &diag, nil
+			})
+			return csvbase.DiagAsWarning(b, warnKey, "new")
+		})
+	if d == nil {
+		t.Fatal("expected diag, got nil")
+	}
+	if d.Severity != ast.Warning {
+		t.Errorf("severity = %v, want Warning", d.Severity)
+	}
+	if d.Code != "new" {
+		t.Errorf("code = %q, want %q", d.Code, "new")
+	}
+}
+
 func TestDiagAsWarning_SuccessPassesThrough(t *testing.T) {
 	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
 		func(b *csvbase.Builder) csvbase.Key[string] {
@@ -1001,6 +1021,26 @@ func TestNegateAmount_NegatesValue(t *testing.T) {
 	}
 }
 
+func TestNegateAmount_PreservesHint(t *testing.T) {
+	n, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "100")
+	v, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			src := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return &csvkit.Amount{Number: *n, CurrencyHint: "JPY"}, nil, nil
+			})
+			return csvbase.NegateAmount(b, src)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v == nil {
+		t.Fatal("NegateAmount returned nil")
+	}
+	if v.CurrencyHint != "JPY" {
+		t.Errorf("NegateAmount CurrencyHint = %q, want JPY", v.CurrencyHint)
+	}
+}
+
 func TestNegateAmount_NilYieldsNil(t *testing.T) {
 	v, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
 		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
@@ -1072,6 +1112,27 @@ func TestAddAmounts_NilPlusV(t *testing.T) {
 	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "30")
 	if v.Number.Cmp(want) != 0 {
 		t.Errorf("AddAmounts(nil,v) = %v, want 30", v.Number)
+	}
+}
+
+func TestAddAmounts_VPlusNil(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("Amt", "30"),
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			parsed := csvbase.ParseAmount(b, csvbase.Column(b, "Amt"), csvbase.ParseAmountConfig{})
+			nilKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			return csvbase.AddAmounts(b, parsed, nilKey, "")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v == nil {
+		t.Fatal("AddAmounts(v,nil) = nil, want v")
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "30")
+	if v.Number.Cmp(want) != 0 {
+		t.Errorf("AddAmounts(v,nil) = %v, want 30", v.Number)
 	}
 }
 
