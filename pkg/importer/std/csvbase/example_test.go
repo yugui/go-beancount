@@ -2,6 +2,7 @@ package csvbase_test
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -637,4 +638,190 @@ func TestExample_AccountHintOverride(t *testing.T) {
 	if string(tx.Postings[0].Account) != "Assets:Override" {
 		t.Errorf("account = %q, want Assets:Override", tx.Postings[0].Account)
 	}
+}
+
+// printDirectives renders an Extract result deterministically for the runnable
+// examples below: one line per transaction (date, flag, payee, narration)
+// followed by its postings, then any diagnostic codes.
+func printDirectives(out importer.Output) {
+	for _, d := range out.Directives {
+		tx, ok := d.(*ast.Transaction)
+		if !ok {
+			fmt.Printf("%T\n", d)
+			continue
+		}
+		fmt.Printf("%s %c %q %q\n", tx.Date.Format("2006-01-02"), tx.Flag, tx.Payee, tx.Narration)
+		for _, p := range tx.Postings {
+			if p.Amount != nil {
+				fmt.Printf("  %s  %s %s\n", p.Account, p.Amount.Number.String(), p.Amount.Currency)
+			} else {
+				fmt.Printf("  %s\n", p.Account)
+			}
+		}
+	}
+	for _, dg := range out.Diagnostics {
+		fmt.Printf("! %s\n", dg.Code)
+	}
+}
+
+// Example shows the simplest wiring: parse a date, sum one amount column, and
+// post it against fixed accounts. Each transaction field is a Key produced by a
+// step constructor (here Const supplies a constant account and currency); the
+// Driver drives Identify/Extract and EmitTransaction assembles the directive.
+func Example() {
+	const csv = `Date,Description,Amount
+2024-01-05,Coffee,4.50
+`
+	b := csvbase.NewBuilder()
+	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
+	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
+		Cols: []csvkit.AmountColumn{{Col: "Amount"}},
+	})
+	narration := csvbase.NarrationFromColumns(b, []string{"Description"}, " ", nil)
+	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
+		Date:      date,
+		Amount:    amount,
+		Narration: narration,
+		Currency:  csvbase.Const(b, "USD"),
+		Account:   csvbase.Const(b, "Assets:Cash"),
+	}))
+
+	d, _ := csvbase.New("simple", csvbase.Config{Mapper: pipeline})
+	out, _ := d.Extract(context.Background(), inputStr("/coffee.csv", csv))
+	printDirectives(out)
+
+	// Output:
+	// 2024-01-05 * "" "Coffee"
+	//   Assets:Cash  4.50 USD
+}
+
+// Example_debitCredit shows a typical bank statement: a debit and a credit
+// column net into a single signed amount, the bank account is fixed, and the
+// counter (category) account comes from a lookup map. EmitTransaction adds the
+// balancing posting with the negated amount.
+func Example_debitCredit() {
+	const csv = `Date,Payee,Debit,Credit,Category
+2024-02-10,Acme Cafe,12.00,,Coffee
+2024-02-11,Paycheck,,3000.00,Salary
+2024-02-12,Rent Co,1500.00,,Rent
+`
+	b := csvbase.NewBuilder()
+	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
+	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
+		Cols: []csvkit.AmountColumn{{Col: "Debit", Negate: true}, {Col: "Credit"}},
+	})
+	payee := csvbase.ResolvePayee(b, csvbase.PayeeConfig{Cols: []string{"Payee"}})
+	counter := csvbase.ResolveCounter(b, csvbase.CounterConfig{
+		Cols: []string{"Category"},
+		Map: map[string]string{
+			"Coffee": "Expenses:Food",
+			"Salary": "Income:Salary",
+			"Rent":   "Expenses:Rent",
+		},
+	})
+	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
+		Date:     date,
+		Amount:   amount,
+		Payee:    payee,
+		Currency: csvbase.Const(b, "USD"),
+		Account:  csvbase.Const(b, "Assets:Checking"),
+		Counter:  counter,
+	}))
+
+	d, _ := csvbase.New("bank", csvbase.Config{Mapper: pipeline})
+	out, _ := d.Extract(context.Background(), inputStr("/bank.csv", csv))
+	printDirectives(out)
+
+	// Output:
+	// 2024-02-10 * "Acme Cafe" ""
+	//   Assets:Checking  -12.00 USD
+	//   Expenses:Food  12.00 USD
+	// 2024-02-11 * "Paycheck" ""
+	//   Assets:Checking  3000.00 USD
+	//   Income:Salary  -3000.00 USD
+	// 2024-02-12 * "Rent Co" ""
+	//   Assets:Checking  -1500.00 USD
+	//   Expenses:Rent  1500.00 USD
+}
+
+// Example_splitAndFilter shows several advanced features together: a banner
+// line skipped before the header, a Detail column split by regular expression
+// into payee and memo groups (fed straight to the transaction as Keys), the
+// currency taken from a suffix on the amount cell, and a totals row dropped by
+// an exclude filter on the Driver.
+func Example_splitAndFilter() {
+	const csv = `# Bank export
+Date,Detail,Amount
+2024-04-01,Amazon|Books order,1500 JPY
+2024-04-02,Starbucks|Latte,600 JPY
+Total,,2100 JPY
+`
+	b := csvbase.NewBuilder()
+	date := csvbase.ParseDate(b, csvbase.Column(b, "Date"), "2006-01-02", "")
+	detail := csvbase.Split(b, csvbase.Column(b, "Detail"),
+		regexp.MustCompile(`^(?P<payee>[^|]+)\|(?P<memo>.+)$`))
+	amount := csvbase.SumAmounts(b, csvbase.AmountConfig{
+		Cols:          []csvkit.AmountColumn{{Col: "Amount"}},
+		SplitCurrency: true,
+	})
+	currency := csvbase.ResolveCurrency(b, csvbase.CurrencyConfig{FromAmount: true, Amount: amount})
+	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
+		Date:      date,
+		Amount:    amount,
+		Currency:  currency,
+		Account:   csvbase.Const(b, "Assets:Cash"),
+		Payee:     csvbase.Group(b, detail, "payee"),
+		Narration: csvbase.Group(b, detail, "memo"),
+	}))
+
+	d, _ := csvbase.New("statement", csvbase.Config{
+		Reader:  csvkit.Reader{SkipLines: 1},
+		Mapper:  pipeline,
+		Filters: []csvkit.RowFilter{csvkit.ExcludeMatching("Date", regexp.MustCompile(`^Total`))},
+	})
+	out, _ := d.Extract(context.Background(), inputStr("/statement.csv", csv))
+	printDirectives(out)
+
+	// Output:
+	// 2024-04-01 * "Amazon" "Books order"
+	//   Assets:Cash  1500 JPY
+	// 2024-04-02 * "Starbucks" "Latte"
+	//   Assets:Cash  600 JPY
+}
+
+// Example_lowLevelMapper shows that the framework layers are optional: the
+// Driver can run a plain MapperFunc with no pipeline at all, extracting cells by
+// hand and reusing csvkit building blocks (here ParseNumber) directly.
+func Example_lowLevelMapper() {
+	const csv = `Date,Memo,Amount
+2024-05-01,Lunch,9.00
+`
+	mapper := csvbase.MapperFunc(
+		[]string{"Date", "Memo", "Amount"},
+		func(_ context.Context, rec csvbase.RowContext) ([]ast.Directive, []ast.Diagnostic, error) {
+			get := func(col string) string { return rec.Fields[rec.Index[col]] }
+			date, err := time.Parse("2006-01-02", get("Date"))
+			if err != nil {
+				return nil, []ast.Diagnostic{csvbase.ErrorDiag(csvbase.DiagBadDate, rec.Path, rec.Line, "bad date")}, nil
+			}
+			num, _, _ := csvkit.ParseNumber(get("Amount"), csvkit.NumberFormat{})
+			tx := &ast.Transaction{
+				Date:      date,
+				Flag:      '*',
+				Narration: get("Memo"),
+				Postings: []ast.Posting{{
+					Account: "Assets:Cash",
+					Amount:  &ast.Amount{Number: num, Currency: "USD"},
+				}},
+			}
+			return []ast.Directive{tx}, nil, nil
+		})
+
+	d, _ := csvbase.New("manual", csvbase.Config{Mapper: mapper})
+	out, _ := d.Extract(context.Background(), inputStr("/manual.csv", csv))
+	printDirectives(out)
+
+	// Output:
+	// 2024-05-01 * "" "Lunch"
+	//   Assets:Cash  9.00 USD
 }
