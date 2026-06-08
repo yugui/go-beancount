@@ -52,6 +52,9 @@ func TestCompile_Parity(t *testing.T) {
 		"multiaccount_multicol",
 		"placeholder",
 		"translations",
+		"cost",
+		"split",
+		"template",
 	}
 	for _, shape := range fixtures {
 		t.Run(shape, func(t *testing.T) {
@@ -402,25 +405,81 @@ default = "Assets:Checking"
 	}
 }
 
-// TestCompile_RejectsAdvancedFeatures verifies that compile refuses a shape
-// using split, cost, or narration-template (the core slice's contract
-// boundary): each must return a non-nil error rather than silently producing
-// partial output.
-func TestCompile_RejectsAdvancedFeatures(t *testing.T) {
-	for _, shape := range []string{"cost", "split", "template"} {
-		t.Run(shape, func(t *testing.T) {
-			src := loadFixtureConfig(t, shape)
-			var sc shapeConfig
-			if err := permissiveDecoder(src)(&sc); err != nil {
-				t.Fatalf("decode: %v", err)
-			}
-			s, err := validateShape(shape, sc)
-			if err != nil {
-				t.Fatalf("validateShape: %v", err)
-			}
-			if _, err := compile(shape, s); err == nil {
-				t.Errorf("compile(%s) error = nil, want non-nil (advanced feature not yet supported)", shape)
-			}
-		})
+// TestCompile_BadCost verifies that an unparseable cost number soft-fails with
+// csvbase-bad-cost and drops the row.
+func TestCompile_BadCost(t *testing.T) {
+	const toml = wiringBase + `
+[account]
+default = "Assets:Checking"
+
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+`
+	out := runCompiled(t, "test", toml, "Date,Amount,Price\n2024-01-01,10.00,not-a-number\n", nil)
+	if len(out.Directives) != 0 {
+		t.Fatalf("got %d directives, want 0", len(out.Directives))
+	}
+	if len(out.Diagnostics) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(out.Diagnostics), out.Diagnostics)
+	}
+	if got := out.Diagnostics[0].Code; got != csvbase.DiagBadCost {
+		t.Errorf("code = %q, want %q", got, csvbase.DiagBadCost)
+	}
+	if out.Diagnostics[0].Severity != ast.Error {
+		t.Errorf("severity = %v, want Error", out.Diagnostics[0].Severity)
+	}
+}
+
+// TestCompile_CostMissingCurrency verifies that a cost whose currency column is
+// blank with no default_currency soft-fails with csvbase-bad-cost and drops the
+// row. The posting currency still resolves (via [currency].default) so the
+// failure is specifically the cost currency.
+func TestCompile_CostMissingCurrency(t *testing.T) {
+	const toml = wiringBase + `
+[account]
+default = "Assets:Broker:Stock"
+
+[cost]
+per_unit = "Price"
+currency = "CostCur"
+`
+	out := runCompiled(t, "test", toml, "Date,Amount,Price,CostCur\n2024-01-01,10.00,150.00,\n", nil)
+	if len(out.Directives) != 0 {
+		t.Fatalf("got %d directives, want 0", len(out.Directives))
+	}
+	if len(out.Diagnostics) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %+v", len(out.Diagnostics), out.Diagnostics)
+	}
+	if got := out.Diagnostics[0].Code; got != csvbase.DiagBadCost {
+		t.Errorf("code = %q, want %q", got, csvbase.DiagBadCost)
+	}
+	if out.Diagnostics[0].Severity != ast.Error {
+		t.Errorf("severity = %v, want Error", out.Diagnostics[0].Severity)
+	}
+}
+
+// TestCompile_CostBlankNumberNoCost verifies that a blank cost-number cell
+// yields no cost: the transaction is emitted with a bare primary posting (no
+// cost annotation) and no diagnostic.
+func TestCompile_CostBlankNumberNoCost(t *testing.T) {
+	const toml = wiringBase + `
+[account]
+default = "Assets:Broker:Stock"
+
+[cost]
+per_unit         = "Price"
+default_currency = "USD"
+`
+	out := runCompiled(t, "test", toml, "Date,Amount,Price\n2024-01-01,10.00,\n", nil)
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	if len(out.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1", len(out.Directives))
+	}
+	tx := out.Directives[0].(*ast.Transaction)
+	if tx.Postings[0].Cost != nil {
+		t.Errorf("primary posting cost = %v, want nil (blank cost number)", tx.Postings[0].Cost)
 	}
 }
