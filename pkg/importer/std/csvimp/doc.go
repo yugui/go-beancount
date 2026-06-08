@@ -1,6 +1,6 @@
 // Package csvimp is the reference CSV/TSV importer. It registers an
 // [importer.Factory] under the kind "csv"; each factory call produces
-// one fully-configured [*Importer] for a single CSV/TSV shape.
+// one fully-configured importer for a single CSV/TSV shape.
 //
 // # Configuration
 //
@@ -36,7 +36,7 @@
 //
 //	# Configuring [account.map] switches account resolution into strict
 //	# mode: an [account].col cell whose value is absent from this map
-//	# emits DiagUnmappedAccount and skips the row. With no map (or with
+//	# emits csvbase-unmapped-account and skips the row. With no map (or with
 //	# the map omitted), cell values are used verbatim.
 //	[account.map]
 //	"chk-1234" = "Assets:Checking"
@@ -139,7 +139,7 @@
 // When any of [account].col, [counter_account].col, [payee].col,
 // [currency].col, or every column in [narration].col is configured, the
 // column is required for Identify to return true and for Extract to
-// succeed without DiagMissingColumn. Files whose header lacks one of
+// succeed without csvbase-missing-column. Files whose header lacks one of
 // these columns are skipped by Dispatch even when [account].default
 // (etc.) could in principle process every row.
 //
@@ -151,7 +151,7 @@
 // rejects such configurations at configure time.
 //
 // Multiple CSV shapes (e.g. one per bank account) are handled by
-// constructing separate [*Importer] instances via the factory and
+// constructing separate importer instances via the factory and
 // registering them in an [importer.Registry]; [importer.Dispatch]
 // walks instances in declaration order.
 //
@@ -175,7 +175,7 @@
 //     In headerless mode no header row is consumed and Identify cannot
 //     inspect column names, so dispatch falls back to the path/MIME gate
 //     and match regex alone. A required column absent from [columns]
-//     surfaces as DiagMissingColumn at Extract time.
+//     surfaces as csvbase-missing-column at Extract time.
 //
 // header_match and [columns] are mutually exclusive; either may combine
 // with skip_lines.
@@ -221,15 +221,15 @@
 //  1. Hints["account"] (CLI/caller override).
 //  2. joined [account].col cells when non-empty:
 //     - with [account.map] set: strict lookup; a miss emits
-//     DiagUnmappedAccount and skips the row.
+//     csvbase-unmapped-account and skips the row.
 //     - without [account.map]: joined value is used verbatim.
 //  3. [account].default.
-//  4. Otherwise: DiagMissingAccount.
+//  4. Otherwise: csvbase-missing-account.
 //
 // Counter account (only when [counter_account] is configured):
 //  1. joined [counter_account].col cells when non-empty:
 //     - with [counter_account.map] set: strict lookup; a miss emits
-//     DiagUnmappedCounterAccount as a warning and falls back to a
+//     csvbase-unmapped-counter-account as a warning and falls back to a
 //     single posting (the row is still emitted).
 //     - without [counter_account.map]: joined value is used verbatim.
 //  2. [counter_account].default.
@@ -246,9 +246,9 @@
 //  2. with [currency].from_amount set, a currency token split off the
 //     amount cell (e.g. "1,000 JPY" yields JPY). An explicit [currency].col
 //     outranks this; conflicting suffixes across multiple amount columns
-//     are a DiagBadAmount.
+//     are a csvbase-bad-amount.
 //  3. [currency].default.
-//  4. Otherwise: DiagMissingCurrency.
+//  4. Otherwise: csvbase-missing-currency.
 //
 // Payee:
 //  1. joined [payee].col cells when non-empty: [payee.map] lookup or
@@ -277,7 +277,7 @@
 //
 // [narration].template renders the narration from the row's columns with a
 // restricted Go text/template (functions: trim, upper, lower, default;
-// referencing an unknown column is a per-row DiagBadNarrationTemplate that
+// referencing an unknown column is a per-row csvbase-bad-template that
 // skips the row). It is mutually exclusive with [narration].col and is
 // validated at configure time. Split groups are visible to the template.
 //
@@ -292,27 +292,27 @@
 // with the [number] format. A blank cost cell leaves the row without a cost
 // (so mixed statements with non-trade rows are tolerated); an unparseable
 // number or date, or a cost with no resolvable currency, is a per-row
-// DiagBadCost. When a cost is present and [counter_account] is configured,
+// csvbase-bad-cost. When a cost is present and [counter_account] is configured,
 // the counter posting is emitted without an amount so beancount balances
 // the cash leg against the cost.
 //
 // # Diagnostics
 //
 // Most diagnostics carry [ast.Error] severity and cause csvimp to skip
-// the offending row; DiagUnmappedCounterAccount carries [ast.Warning]
+// the offending row; csvbase-unmapped-counter-account carries [ast.Warning]
 // and the row is still emitted (with a single posting). csvimp never
 // aborts the whole Extract on a per-row problem.
 //
-//   - DiagBadDate                 — date cell did not parse under [date].format.
-//   - DiagBadAmount               — an amount cell held a non-blank, unparseable value.
-//   - DiagAllBlankAmount          — every amount cell on the row was blank.
-//   - DiagMissingCurrency         — neither [currency].col cell nor [currency].default yielded a value.
-//   - DiagMissingAccount          — no account source produced a value.
-//   - DiagUnmappedAccount         — [account].col cell missing from [account.map] in strict mode.
-//   - DiagUnmappedCounterAccount  — [counter_account].col cell missing from [counter_account.map] in strict mode (warning; row kept).
-//   - DiagMissingColumn           — a required column was absent from the header at Extract time.
-//   - DiagBadNarrationTemplate    — [narration].template failed to render for the row (e.g. unknown column).
-//   - DiagBadCost                 — [cost] could not be built (unparseable number/date, or no cost currency).
+//   - csvbase-bad-date                 — date cell did not parse under [date].format.
+//   - csvbase-bad-amount               — an amount cell held a non-blank, unparseable value.
+//   - csvbase-all-blank-amount         — every amount cell on the row was blank.
+//   - csvbase-missing-currency         — neither [currency].col cell nor [currency].default yielded a value.
+//   - csvbase-missing-account          — no account source produced a value.
+//   - csvbase-unmapped-account         — [account].col cell missing from [account.map] in strict mode.
+//   - csvbase-unmapped-counter-account — [counter_account].col cell missing from [counter_account.map] in strict mode (warning; row kept).
+//   - csvbase-missing-column           — a required column was absent from the header at Extract time.
+//   - csvbase-bad-template             — [narration].template failed to render for the row (e.g. unknown column).
+//   - csvbase-bad-cost                 — [cost] could not be built (unparseable number/date, or no cost currency).
 //
 // # Identity metadata
 //
@@ -333,7 +333,7 @@
 //
 // # Concurrency
 //
-// An Importer's state is frozen at construction. Identify and Extract
+// The importer's state is frozen at construction. Identify and Extract
 // are safe for concurrent invocation on the same value with no external
 // synchronisation.
 package csvimp

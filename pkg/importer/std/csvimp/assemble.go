@@ -11,6 +11,17 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
 
+const rowhashKey = "csvimp-rowhash"
+
+// mapMode selects strict resolution when a translation table is configured and
+// pass-through resolution otherwise.
+func mapMode(m map[string]string) csvkit.MapMode {
+	if m == nil {
+		return csvkit.Verbatim
+	}
+	return csvkit.Strict
+}
+
 // assembler holds builder state for a single compile call.
 type assembler struct {
 	b    *csvbase.Builder
@@ -145,7 +156,14 @@ func compile(name string, s *shape) (*csvbase.Driver, error) {
 	}
 
 	return csvbase.New(name, csvbase.Config{
-		Reader:  *s.reader(),
+		Reader: csvkit.Reader{
+			Delimiter:   s.delimiter,
+			Encoding:    s.inputEncoding,
+			LazyQuotes:  true,
+			SkipLines:   s.skipLines,
+			HeaderMatch: s.headerMatch,
+			Columns:     s.columns,
+		},
 		Gate:    gate,
 		Mapper:  pipeline,
 		Filters: s.filters,
