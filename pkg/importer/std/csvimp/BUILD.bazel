@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "csvimp",
     srcs = [
+        "assemble.go",
         "config.go",
         "csvimp.go",
         "diag.go",
@@ -16,6 +17,7 @@ go_library(
         "//pkg/ast",
         "//pkg/importer",
         "//pkg/importer/importerutil",
+        "//pkg/importer/std/csvbase",
         "//pkg/importer/std/csvkit",
         "@com_github_cockroachdb_apd_v3//:apd",
         "@org_golang_x_text//encoding",
@@ -26,6 +28,7 @@ go_library(
 go_test(
     name = "csvimp_test",
     srcs = [
+        "assemble_test.go",
         "concurrency_test.go",
         "config_test.go",
         "csvimp_test.go",
@@ -40,6 +43,7 @@ go_test(
     deps = [
         "//pkg/ast",
         "//pkg/importer",
+        "//pkg/importer/std/csvbase",
         "//pkg/printer",
         "@com_github_burntsushi_toml//:toml",
         "@com_github_google_go_cmp//cmp",
