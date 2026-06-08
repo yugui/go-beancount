@@ -108,14 +108,18 @@ func Group(b *Builder, split Key[map[string]string], name string) Key[string] {
 	})
 }
 
-// MapValue translates in through m. With csvkit.Strict a miss soft-fails with
-// code; with csvkit.Verbatim a miss passes the value through. A soft-failed
-// input propagates.
+// MapValue translates in through m. A blank (TrimSpace-empty) input yields ""
+// without consulting m (no miss). With csvkit.Strict a non-blank miss
+// soft-fails with code; with csvkit.Verbatim a non-blank miss passes the
+// value through. A soft-failed input propagates.
 func MapValue(b *Builder, in Key[string], m map[string]string, mode csvkit.MapMode, code string) Key[string] {
 	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
 		raw, d := Value(c, in)
 		if d != nil {
 			return "", d, nil
+		}
+		if strings.TrimSpace(raw) == "" {
+			return "", nil, nil
 		}
 		mapped, ok := csvkit.ResolveThroughMap(raw, m, mode)
 		if !ok {
@@ -186,6 +190,40 @@ func Require(b *Builder, in Key[string], code string) Key[string] {
 			return "", &diag, nil
 		}
 		return t, nil, nil
+	})
+}
+
+// Trim returns a Key yielding the TrimSpace of in's value. A soft-failed input
+// propagates its diagnostic unchanged.
+func Trim(b *Builder, in Key[string]) Key[string] {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			return "", d, nil
+		}
+		return strings.TrimSpace(v), nil, nil
+	})
+}
+
+// Else returns primary's trimmed value when primary succeeds and is non-blank
+// (after TrimSpace). When primary succeeds but is blank, Else returns
+// fallback's trimmed value and propagates a fallback soft-fail. When primary
+// itself soft-fails, Else propagates primary's diagnostic without consulting
+// fallback. Unlike Coalesce, a primary soft-fail is never swallowed.
+func Else(b *Builder, primary, fallback Key[string]) Key[string] {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		pv, pd := Value(c, primary)
+		if pd != nil {
+			return "", pd, nil
+		}
+		if t := strings.TrimSpace(pv); t != "" {
+			return t, nil, nil
+		}
+		fv, fd := Value(c, fallback)
+		if fd != nil {
+			return "", fd, nil
+		}
+		return strings.TrimSpace(fv), nil, nil
 	})
 }
 

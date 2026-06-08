@@ -24,8 +24,8 @@
 // Ready-made step constructors cover the common field-resolution patterns:
 //
 //   - Column reading: [Column], [Columns], [Row], [Split], [SplitColumns], [Group].
-//   - Value construction: [Const], [Hint], [JoinKeys], [MapValue], [MapEach].
-//   - Flow control: [Coalesce], [Require], [DiagAsWarning].
+//   - Value construction: [Const], [Hint], [JoinKeys], [Trim], [MapValue], [MapEach].
+//   - Flow control: [Coalesce], [Else], [Require], [DiagAsWarning].
 //   - Parsing: [ParseDate], [ParseAmount], [NegateAmount], [AddAmounts], [CurrencyHint].
 //   - Templating: [Merge], [Template].
 //
