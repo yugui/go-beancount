@@ -15,11 +15,11 @@ import (
 )
 
 // TestFactory_EncodingResolvesIANAName checks that a valid IANA charset
-// name compiles to a non-nil decoder on the shape. We inspect the
-// unexported field directly: the encoding decision is internal state
-// the public API only exposes indirectly via Extract on byte streams,
-// so a direct assertion keeps the test surface small (CLAUDE.md
-// unexported-test exception: package-internal building block test).
+// name compiles to a non-nil decoder on the shape. The encoding decision
+// is internal state the public API exposes only indirectly via Extract on
+// byte streams, so a direct assertion via configuredShape keeps the test
+// surface small (CLAUDE.md unexported-test exception: package-internal
+// building block test).
 func TestFactory_EncodingResolvesIANAName(t *testing.T) {
 	cases := []string{
 		"Shift_JIS",
@@ -33,8 +33,8 @@ func TestFactory_EncodingResolvesIANAName(t *testing.T) {
 			src := `
 encoding = "` + name + `"
 ` + simpleTOML
-			imp := newConfigured(t, src)
-			if imp.s.inputEncoding == nil {
+			s := configuredShape(t, permissiveDecoder(src))
+			if s.inputEncoding == nil {
 				t.Errorf("encoding %q: shape.inputEncoding is nil, want non-nil", name)
 			}
 		})
@@ -42,9 +42,9 @@ encoding = "` + name + `"
 }
 
 func TestFactory_EncodingUnsetLeavesNil(t *testing.T) {
-	imp := newConfigured(t, simpleTOML)
-	if imp.s.inputEncoding != nil {
-		t.Errorf("default shape.inputEncoding = %v, want nil", imp.s.inputEncoding)
+	s := configuredShape(t, permissiveDecoder(simpleTOML))
+	if s.inputEncoding != nil {
+		t.Errorf("default shape.inputEncoding = %v, want nil", s.inputEncoding)
 	}
 }
 

@@ -240,8 +240,8 @@ type splitRule struct {
 }
 
 // newImporter is the factory function registered under kind "csv". It returns
-// one [*Importer] bound to name, or (nil, err) with the error prefixed
-// "csvimp: configure: " on any failure.
+// a compiled [*csvbase.Driver] bound to name, or (nil, err) with the error
+// prefixed "csvimp: configure: " on any failure.
 func newImporter(name string, decode func(dest any) error) (importer.Importer, error) {
 	if decode == nil {
 		return nil, fmt.Errorf("csvimp: configure: nil decoder")
@@ -254,7 +254,11 @@ func newImporter(name string, decode func(dest any) error) (importer.Importer, e
 	if err != nil {
 		return nil, fmt.Errorf("csvimp: configure: %w", err)
 	}
-	return &Importer{name: name, s: s}, nil
+	drv, err := compile(name, s)
+	if err != nil {
+		return nil, fmt.Errorf("csvimp: configure: %w", err)
+	}
+	return drv, nil
 }
 
 // validateShape validates sc and returns a compiled shape. The TOML paths

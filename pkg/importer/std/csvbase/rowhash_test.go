@@ -173,6 +173,31 @@ func TestRowHash_RawFieldsNotMapperTransformed(t *testing.T) {
 	}
 }
 
+func TestRowHash_FieldBoundarySeparatorPreventsCollision(t *testing.T) {
+	d, err := csvbase.New("rh-test", csvbase.Config{
+		Mapper:  csvbase.MapperFunc([]string{"A"}, emitNote),
+		RowHash: &csvbase.RowHash{},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// ["ab","cd"] and ["a","bcd"] have the same field concatenation but differ
+	// at the field boundary; the unit separator must keep their hashes distinct.
+	out1, err := d.Extract(context.Background(), inputStr("/f.csv", "A,B\nab,cd\n"))
+	if err != nil {
+		t.Fatalf("Extract (ab,cd): %v", err)
+	}
+	out2, err := d.Extract(context.Background(), inputStr("/f.csv", "A,B\na,bcd\n"))
+	if err != nil {
+		t.Fatalf("Extract (a,bcd): %v", err)
+	}
+	h1 := out1.Directives[0].(*ast.Note).Meta.Props[csvbase.DefaultRowHashKey].String
+	h2 := out2.Directives[0].(*ast.Note).Meta.Props[csvbase.DefaultRowHashKey].String
+	if h1 == h2 {
+		t.Errorf("hashes should differ at the field boundary, both = %q", h1)
+	}
+}
+
 // emitNote is a minimal mapper that emits one *ast.Note per data row.
 func emitNote(_ context.Context, rec csvbase.RowContext) ([]ast.Directive, []ast.Diagnostic, error) {
 	return []ast.Directive{&ast.Note{Comment: rec.Fields[0]}}, nil, nil

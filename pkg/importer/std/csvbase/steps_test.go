@@ -1223,3 +1223,133 @@ func TestAddAmounts_ConflictingHintSoftFails(t *testing.T) {
 		t.Errorf("conflicting hints diag = %v, want conflict-code", d)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Trim
+// ---------------------------------------------------------------------------
+
+func TestTrim_NonBlankTrimmed(t *testing.T) {
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			return csvbase.Trim(b, csvbase.Const(b, "  hello  "))
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "hello" {
+		t.Errorf("Trim = %q, want %q", v, "hello")
+	}
+}
+
+func TestTrim_SoftFailPropagates(t *testing.T) {
+	_, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			failing := csvbase.Require(b, csvbase.Const(b, ""), "trim-upstream-fail")
+			return csvbase.Trim(b, failing)
+		})
+	if d == nil || d.Code != "trim-upstream-fail" {
+		t.Errorf("Trim soft-fail propagated diag = %v, want trim-upstream-fail", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Else
+// ---------------------------------------------------------------------------
+
+func TestElse_PrimaryNonBlank(t *testing.T) {
+	// Primary is non-blank: returns primary's trimmed value.
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			return csvbase.Else(b, csvbase.Const(b, "  primary  "), csvbase.Const(b, "fallback"))
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "primary" {
+		t.Errorf("Else(non-blank primary) = %q, want %q", v, "primary")
+	}
+}
+
+func TestElse_PrimaryBlankFallbackNonBlank(t *testing.T) {
+	// Primary is blank, fallback is non-blank: returns fallback's trimmed value.
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			return csvbase.Else(b, csvbase.Const(b, ""), csvbase.Const(b, "  fallback  "))
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "fallback" {
+		t.Errorf("Else(blank primary, non-blank fallback) = %q, want %q", v, "fallback")
+	}
+}
+
+func TestElse_PrimarySoftFailPropagated(t *testing.T) {
+	// Primary soft-fails: propagates primary's diagnostic without consulting fallback.
+	_, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			failing := csvbase.Require(b, csvbase.Const(b, ""), "primary-fail")
+			return csvbase.Else(b, failing, csvbase.Const(b, "fallback-value"))
+		})
+	if d == nil || d.Code != "primary-fail" {
+		t.Errorf("Else(primary soft-fail) diag = %v, want primary-fail", d)
+	}
+}
+
+func TestElse_PrimaryBlankFallbackSoftFail(t *testing.T) {
+	// Primary is blank, fallback soft-fails: propagates fallback's diagnostic.
+	_, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			failingFallback := csvbase.Require(b, csvbase.Const(b, ""), "fallback-fail")
+			return csvbase.Else(b, csvbase.Const(b, ""), failingFallback)
+		})
+	if d == nil || d.Code != "fallback-fail" {
+		t.Errorf("Else(blank primary, fallback soft-fail) diag = %v, want fallback-fail", d)
+	}
+}
+
+func TestElse_BothBlankYieldsEmpty(t *testing.T) {
+	// Primary is blank, fallback is blank: returns "".
+	v, d := singleString(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[string] {
+			return csvbase.Else(b, csvbase.Const(b, ""), csvbase.Const(b, "   "))
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != "" {
+		t.Errorf("Else(both blank) = %q, want %q", v, "")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MapValue refinement (blank input short-circuit)
+// ---------------------------------------------------------------------------
+
+func TestMapValue_StrictBlankYieldsEmpty(t *testing.T) {
+	// Blank input yields "" with no diagnostic (new short-circuit, not a miss).
+	v, d := singleString(t, rowCtx("X", ""), func(b *csvbase.Builder) csvbase.Key[string] {
+		in := csvbase.Column(b, "X")
+		return csvbase.MapValue(b, in, map[string]string{"": "should-not-match"}, csvkit.Strict, "test-miss")
+	})
+	if d != nil {
+		t.Errorf("MapValue(Strict, blank) diag = %v, want nil", d)
+	}
+	if v != "" {
+		t.Errorf("MapValue(Strict, blank) = %q, want %q", v, "")
+	}
+}
+
+func TestMapValue_VerbatimBlankYieldsEmpty(t *testing.T) {
+	// Verbatim blank input also yields "" (regression guard).
+	v, d := singleString(t, rowCtx("X", ""), func(b *csvbase.Builder) csvbase.Key[string] {
+		in := csvbase.Column(b, "X")
+		return csvbase.MapValue(b, in, nil, csvkit.Verbatim, "")
+	})
+	if d != nil {
+		t.Errorf("MapValue(Verbatim, blank) diag = %v, want nil", d)
+	}
+	if v != "" {
+		t.Errorf("MapValue(Verbatim, blank) = %q, want %q", v, "")
+	}
+}
