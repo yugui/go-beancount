@@ -350,37 +350,66 @@ func AddAmounts(b *Builder, lhs, rhs Key[*csvkit.Amount], code string) Key[*csvk
 // not produced by any AddStep call.
 func isZeroKey[T any](k Key[T]) bool { return k.name == "" }
 
-// NarrationFromTemplate renders tmpl against the row's indexed columns
-// (MappingState.Row()) overlaid with any bindings. For each (name, key) in
-// bindings, the trimmed Value of key (when not soft-failed) replaces the
-// same-named raw column in the data map, matching csvimp.applySplit semantics.
-// A render error soft-fails with code (default DiagBadNarrationTemplate).
+// Row returns a leaf Key that yields a fresh map of every indexed column name
+// to its raw (untrimmed) cell value for each row. Unlike Column it registers no
+// required header columns, so a template fed from Row does not force its
+// referenced columns to be present.
 //
-// This is the one justified exception to the leaf-only invariant: the set of
-// fields a template references is dynamic (csvkit.CompileNarration does not
-// expose its references), so the step must supply the full row map and let the
-// template engine pick what it needs. Bindings allow split-group and other
-// Key-derived values to participate in template rendering without requiring
-// them to be raw columns.
-func NarrationFromTemplate(b *Builder, tmpl *csvkit.NarrationTemplate,
-	bindings map[string]Key[string], code string) Key[string] {
-	if code == "" {
-		code = DiagBadNarrationTemplate
-	}
-	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
-		data := c.Row()
-		for name, key := range bindings {
-			v, d := Value(c, key)
-			if d != nil {
+// Row joins Column as a leaf under the leaf-only invariant: it is the typed
+// entry point for steps (such as Template) that consume the whole row as a map
+// without reading raw cells themselves.
+func Row(b *Builder) Key[map[string]string] {
+	return AddStep(b, func(c *MappingState) (map[string]string, *ast.Diagnostic, error) {
+		return c.Row(), nil, nil
+	})
+}
+
+// Merge overlays over onto a copy of base's map, yielding a new map Key. For
+// each (name, key) in over, the trimmed Value of key replaces the same-named
+// entry when key did not soft-fail; a soft-failed binding is skipped, leaving
+// base's entry intact. This reproduces csvimp.applySplit semantics, letting
+// split-group and other Key-derived values shadow raw columns before a Template
+// renders. A soft-failed base propagates its diagnostic.
+func Merge(b *Builder, base Key[map[string]string], over map[string]Key[string]) Key[map[string]string] {
+	return AddStep(b, func(c *MappingState) (map[string]string, *ast.Diagnostic, error) {
+		src, d := Value(c, base)
+		if d != nil {
+			return nil, d, nil
+		}
+		out := make(map[string]string, len(src)+len(over))
+		for k, v := range src {
+			out[k] = v
+		}
+		for name, key := range over {
+			v, vd := Value(c, key)
+			if vd != nil {
 				continue
 			}
-			data[name] = strings.TrimSpace(v)
+			out[name] = strings.TrimSpace(v)
 		}
-		out, err := tmpl.Render(data)
+		return out, nil, nil
+	})
+}
+
+// Template renders tmpl against the column map yielded by data. A render error
+// (e.g. a reference to a column absent from the map) soft-fails with
+// DiagBadTemplate. A soft-failed data propagates its diagnostic.
+//
+// Template reads only data via Value; the raw row reaches it through the Row
+// leaf, so Template upholds the leaf-only invariant. Compose it as
+// Template(b, tmpl, Row(b)) for the plain case, or
+// Template(b, tmpl, Merge(b, Row(b), bindings)) to overlay Key-derived values.
+func Template(b *Builder, tmpl *csvkit.Template, data Key[map[string]string]) Key[string] {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		m, d := Value(c, data)
+		if d != nil {
+			return "", d, nil
+		}
+		out, err := tmpl.Render(m)
 		if err != nil {
 			info := c.Info()
-			diag := ErrorDiag(code, info.Path, info.Line,
-				fmt.Sprintf("narration template: %v", err))
+			diag := ErrorDiag(DiagBadTemplate, info.Path, info.Line,
+				fmt.Sprintf("template: %v", err))
 			return "", &diag, nil
 		}
 		return out, nil, nil

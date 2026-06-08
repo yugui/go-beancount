@@ -463,59 +463,88 @@ func TestJoinKeys_SoftFailedTreatedBlank(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// NarrationFromTemplate
+// Row / Merge / Template
 // ---------------------------------------------------------------------------
 
-func TestNarrationFromTemplate_OK(t *testing.T) {
-	tmpl, err := csvkit.CompileNarration("{{.Payee}} — {{.Memo}}")
+func TestRow_YieldsRawColumns(t *testing.T) {
+	b := csvbase.NewBuilder()
+	rowKey := csvbase.Row(b)
+
+	var got map[string]string
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		got, _ = csvbase.Value(c, rowKey)
+		return nil, nil, nil
+	})
+	if _, _, err := p.Map(context.Background(), rowCtx("Payee", "Amazon", "Memo", "Book")); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if got["Payee"] != "Amazon" || got["Memo"] != "Book" {
+		t.Errorf("Row() = %v, want Payee=Amazon Memo=Book", got)
+	}
+}
+
+func TestRow_RequiresNoColumns(t *testing.T) {
+	// Row reads whatever columns exist but registers none as required.
+	b := csvbase.NewBuilder()
+	csvbase.Row(b)
+	p := b.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		return nil, nil, nil
+	})
+	if req := p.Required(); len(req) != 0 {
+		t.Errorf("Required() = %v, want [] (Row registers no header columns)", req)
+	}
+}
+
+func TestTemplate_OK(t *testing.T) {
+	tmpl, err := csvkit.CompileTemplate("{{.Payee}} — {{.Memo}}")
 	if err != nil {
-		t.Fatalf("CompileNarration: %v", err)
+		t.Fatalf("CompileTemplate: %v", err)
 	}
 	v, d := singleString(t, rowCtx("Payee", "Amazon", "Memo", "Book"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
-			return csvbase.NarrationFromTemplate(b, tmpl, nil, "")
+			return csvbase.Template(b, tmpl, csvbase.Row(b))
 		},
 	)
 	if d != nil {
 		t.Fatalf("unexpected diag: %v", d)
 	}
 	if v != "Amazon — Book" {
-		t.Errorf("narration = %q, want %q", v, "Amazon — Book")
+		t.Errorf("rendered = %q, want %q", v, "Amazon — Book")
 	}
 }
 
-func TestNarrationFromTemplate_UnknownRef(t *testing.T) {
-	tmpl, err := csvkit.CompileNarration("{{.NoSuchCol}}")
+func TestTemplate_UnknownRef(t *testing.T) {
+	tmpl, err := csvkit.CompileTemplate("{{.NoSuchCol}}")
 	if err != nil {
-		t.Fatalf("CompileNarration: %v", err)
+		t.Fatalf("CompileTemplate: %v", err)
 	}
 	_, d := singleString(t, rowCtx("Payee", "X"),
 		func(b *csvbase.Builder) csvbase.Key[string] {
-			return csvbase.NarrationFromTemplate(b, tmpl, nil, "")
+			return csvbase.Template(b, tmpl, csvbase.Row(b))
 		},
 	)
-	if d == nil || d.Code != csvbase.DiagBadNarrationTemplate {
-		t.Errorf("diag = %v, want DiagBadNarrationTemplate", d)
+	if d == nil || d.Code != csvbase.DiagBadTemplate {
+		t.Errorf("diag = %v, want DiagBadTemplate", d)
 	}
 }
 
-func TestNarrationFromTemplate_BindingOverlaysRawColumn(t *testing.T) {
-	// A binding name shadows a same-named raw column.
-	tmpl, err := csvkit.CompileNarration("{{.Desc}}")
+func TestMerge_OverlaysRawColumn(t *testing.T) {
+	// An overlaid name shadows a same-named raw column.
+	tmpl, err := csvkit.CompileTemplate("{{.Desc}}")
 	if err != nil {
-		t.Fatalf("CompileNarration: %v", err)
+		t.Fatalf("CompileTemplate: %v", err)
 	}
 	b := csvbase.NewBuilder()
 	// The raw column "Detail" holds "Amazon|Books order". The regex captures
-	// everything before "|" as the group "Desc", yielding "Amazon". The binding
-	// key "Desc" overlays the raw-column data map under that name, so the template
-	// renders "Amazon" (from the split group) even though the only raw column is
-	// "Detail", not "Desc".
+	// everything before "|" as the group "Desc", yielding "Amazon". Merge overlays
+	// the split-group key under the name "Desc", so the template renders "Amazon"
+	// even though the only raw column is "Detail", not "Desc".
 	detail := csvbase.Column(b, "Detail")
 	groups := csvbase.SplitColumns(b, detail, regexp.MustCompile(`(?P<Desc>.+)\|.+`))
 
-	narrKey := csvbase.NarrationFromTemplate(b, tmpl,
-		map[string]csvbase.Key[string]{"Desc": groups["Desc"]}, "")
+	narrKey := csvbase.Template(b, tmpl,
+		csvbase.Merge(b, csvbase.Row(b),
+			map[string]csvbase.Key[string]{"Desc": groups["Desc"]}))
 
 	var got string
 	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
@@ -527,22 +556,23 @@ func TestNarrationFromTemplate_BindingOverlaysRawColumn(t *testing.T) {
 		t.Fatalf("Map: %v", err)
 	}
 	if got != "Amazon" {
-		t.Errorf("narration = %q, want %q (binding must shadow raw column)", got, "Amazon")
+		t.Errorf("rendered = %q, want %q (overlay must shadow raw column)", got, "Amazon")
 	}
 }
 
-func TestNarrationFromTemplate_BindingRendersOverlaidValue(t *testing.T) {
-	// A binding key's value is rendered by the template; no raw column named
+func TestMerge_RendersOverlaidValue(t *testing.T) {
+	// An overlaid key's value is rendered by the template; no raw column named
 	// "vendor" exists in the row.
-	tmpl, err := csvkit.CompileNarration("{{.vendor}}")
+	tmpl, err := csvkit.CompileTemplate("{{.vendor}}")
 	if err != nil {
-		t.Fatalf("CompileNarration: %v", err)
+		t.Fatalf("CompileTemplate: %v", err)
 	}
 	b := csvbase.NewBuilder()
 	vendorKey := csvbase.Const(b, "Acme")
 
-	narrKey := csvbase.NarrationFromTemplate(b, tmpl,
-		map[string]csvbase.Key[string]{"vendor": vendorKey}, "")
+	narrKey := csvbase.Template(b, tmpl,
+		csvbase.Merge(b, csvbase.Row(b),
+			map[string]csvbase.Key[string]{"vendor": vendorKey}))
 
 	var got string
 	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
@@ -554,23 +584,45 @@ func TestNarrationFromTemplate_BindingRendersOverlaidValue(t *testing.T) {
 		t.Fatalf("Map: %v", err)
 	}
 	if got != "Acme" {
-		t.Errorf("narration = %q, want %q", got, "Acme")
+		t.Errorf("rendered = %q, want %q", got, "Acme")
 	}
 }
 
-func TestNarrationFromTemplate_BindingNoRequireHeader(t *testing.T) {
-	// A template referencing only a binding name does NOT require that name as a
-	// raw header column. Required() should only list "Detail".
-	tmpl, err := csvkit.CompileNarration("{{.SyntheticKey}}")
+func TestMerge_SoftFailedBindingKeepsBase(t *testing.T) {
+	// A soft-failed overlay is skipped, leaving the base map's entry intact.
+	b := csvbase.NewBuilder()
+	base := csvbase.Const(b, map[string]string{"k": "base"})
+	failed := csvbase.Require(b, csvbase.Const(b, ""), csvbase.DiagMissingColumn)
+	merged := csvbase.Merge(b, base, map[string]csvbase.Key[string]{"k": failed})
+
+	var got map[string]string
+	p := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		got, _ = csvbase.Value(c, merged)
+		return nil, nil, nil
+	})
+	rec := csvbase.RowContext{Fields: []string{}, Index: map[string]int{}}
+	if _, _, err := p.Map(context.Background(), rec); err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	if got["k"] != "base" {
+		t.Errorf("merged[k] = %q, want %q (soft-failed overlay must not overwrite base)", got["k"], "base")
+	}
+}
+
+func TestMerge_NoRequireHeader(t *testing.T) {
+	// A template referencing only an overlaid name does NOT require that name as
+	// a raw header column. Required() should only list "Detail".
+	tmpl, err := csvkit.CompileTemplate("{{.SyntheticKey}}")
 	if err != nil {
-		t.Fatalf("CompileNarration: %v", err)
+		t.Fatalf("CompileTemplate: %v", err)
 	}
 	b := csvbase.NewBuilder()
 	detail := csvbase.Column(b, "Detail")
 	groups := csvbase.SplitColumns(b, detail, regexp.MustCompile(`(?P<SyntheticKey>.+)`))
 
-	csvbase.NarrationFromTemplate(b, tmpl,
-		map[string]csvbase.Key[string]{"SyntheticKey": groups["SyntheticKey"]}, "")
+	csvbase.Template(b, tmpl,
+		csvbase.Merge(b, csvbase.Row(b),
+			map[string]csvbase.Key[string]{"SyntheticKey": groups["SyntheticKey"]}))
 
 	p := b.Emit(func(_ context.Context, _ *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
 		return nil, nil, nil
