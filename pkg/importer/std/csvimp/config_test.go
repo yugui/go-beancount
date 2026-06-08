@@ -39,6 +39,25 @@ func permissiveDecoder(src string) func(dest any) error {
 	}
 }
 
+// configuredShape decodes through decode and returns the validated shape,
+// the same value newImporter compiles. Tests use it to assert on compiled
+// shape fields without depending on the importer's concrete type. Direct
+// access to the unexported *shape is justified per the CLAUDE.md exception:
+// the compiled encoding/field decisions are internal state not observable
+// through the exported API without disproportionate CSV-fixture ceremony.
+func configuredShape(t *testing.T, decode func(dest any) error) *shape {
+	t.Helper()
+	var sc shapeConfig
+	if err := decode(&sc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	s, err := validateShape("test", sc)
+	if err != nil {
+		t.Fatalf("validateShape: %v", err)
+	}
+	return s
+}
+
 func TestFactory_HappyPath(t *testing.T) {
 	imp, err := newImporter("test", tomlDecoder(simpleTOML))
 	if err != nil {
@@ -500,11 +519,7 @@ col = "Amount"
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			imp, err := newImporter("test", tomlDecoder(tc.src))
-			if err != nil {
-				t.Fatalf("newImporter: %v", err)
-			}
-			tc.check(t, imp.(*Importer).s)
+			tc.check(t, configuredShape(t, tomlDecoder(tc.src)))
 		})
 	}
 }
@@ -617,11 +632,7 @@ default = "USD"
 [[amount]]
 col = "Amount"
 `
-	imp, err := newImporter("test", tomlDecoder(src))
-	if err != nil {
-		t.Fatalf("newImporter: %v", err)
-	}
-	s := imp.(*Importer).s
+	s := configuredShape(t, tomlDecoder(src))
 	if len(s.counterAccountCols) != 0 || s.counterAccountDefault != "" {
 		t.Errorf("expected counter_account unconfigured, got cols=%v default=%q",
 			s.counterAccountCols, s.counterAccountDefault)

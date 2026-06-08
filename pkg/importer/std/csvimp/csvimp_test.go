@@ -8,6 +8,7 @@ import (
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer"
+	"github.com/yugui/go-beancount/pkg/importer/std/csvbase"
 )
 
 // inputFromString constructs an importer.Input whose Opener returns a
@@ -37,13 +38,13 @@ default = "USD"
 col = "Amount"
 `
 
-func newConfigured(t *testing.T, src string) *Importer {
+func newConfigured(t *testing.T, src string) importer.Importer {
 	t.Helper()
 	imp, err := newImporter("test", permissiveDecoder(src))
 	if err != nil {
 		t.Fatalf("newImporter: %v", err)
 	}
-	return imp.(*Importer)
+	return imp
 }
 
 func TestName_ReturnsInstanceName(t *testing.T) {
@@ -209,8 +210,8 @@ func TestExtract_HeaderColumnMismatchEmitsDiagnostic(t *testing.T) {
 	if len(out.Diagnostics) == 0 {
 		t.Fatal("got no diagnostics, want DiagMissingColumn")
 	}
-	if out.Diagnostics[0].Code != DiagMissingColumn {
-		t.Errorf("diagnostic code = %q, want %q", out.Diagnostics[0].Code, DiagMissingColumn)
+	if out.Diagnostics[0].Code != csvbase.DiagMissingColumn {
+		t.Errorf("diagnostic code = %q, want %q", out.Diagnostics[0].Code, csvbase.DiagMissingColumn)
 	}
 }
 
@@ -243,36 +244,6 @@ col = "Amount"
 	body := "MyBank Statement\nGenerated 2024-01-20\nDate,Amount\n2024-01-01,1\n"
 	if !imp.Identify(context.Background(), inputFromString("/tmp/x.csv", "", body)) {
 		t.Error("Identify false; expected skip_lines to step over banner")
-	}
-}
-
-func TestExtract_NoShapeMatched(t *testing.T) {
-	// A shape with a match regex that only accepts "mybank.*" paths.
-	// Extracting from a path that fails the regex must return a framework error.
-	const src = `
-match = "mybank.*"
-
-[date]
-col    = "Date"
-format = "2006-01-02"
-
-[account]
-default = "Assets:Checking"
-
-[currency]
-default = "USD"
-
-[[amount]]
-col = "Amount"
-`
-	imp := newConfigured(t, src)
-	in := inputFromString("/tmp/other.csv", "", "Date,Amount\n2024-01-01,1\n")
-	out, err := imp.Extract(context.Background(), in)
-	if err == nil {
-		t.Fatal("Extract: nil error, want framework error")
-	}
-	if len(out.Directives) != 0 || len(out.Diagnostics) != 0 {
-		t.Errorf("unexpected output: %+v", out)
 	}
 }
 

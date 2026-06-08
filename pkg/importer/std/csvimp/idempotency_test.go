@@ -52,11 +52,10 @@ func printDirectives(t *testing.T, dirs []ast.Directive) string {
 
 func runOnce(t *testing.T, instanceName, src string, in importer.Input) []ast.Directive {
 	t.Helper()
-	raw, err := newImporter(instanceName, permissiveDecoder(src))
+	imp, err := newImporter(instanceName, permissiveDecoder(src))
 	if err != nil {
 		t.Fatalf("newImporter: %v", err)
 	}
-	imp := raw.(*Importer)
 	if !imp.Identify(context.Background(), in) {
 		t.Fatal("Identify returned false")
 	}
@@ -152,11 +151,10 @@ func checkIdempotency(t *testing.T, shape string) {
 
 	// Re-run on the same Importer instance: immutability means repeated
 	// Extract calls on the same value must produce identical output.
-	raw, err := newImporter(shape, permissiveDecoder(src))
+	imp, err := newImporter(shape, permissiveDecoder(src))
 	if err != nil {
 		t.Fatalf("newImporter: %v", err)
 	}
-	imp := raw.(*Importer)
 	if !imp.Identify(context.Background(), in) {
 		t.Fatal("Identify false")
 	}

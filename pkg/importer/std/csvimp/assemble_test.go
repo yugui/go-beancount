@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,77 +12,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer/std/csvbase"
 )
 
-func compileFixture(t *testing.T, shape string) *csvbase.Driver {
-	t.Helper()
-	src := loadFixtureConfig(t, shape)
-	var sc shapeConfig
-	if err := permissiveDecoder(src)(&sc); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	s, err := validateShape(shape, sc)
-	if err != nil {
-		t.Fatalf("validateShape: %v", err)
-	}
-	drv, err := compile(shape, s)
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-	return drv
-}
-
-// TestCompile_Parity runs compile() against each core fixture and asserts that
-// Identify is true, Extract produces zero diagnostics, and the printed output
-// matches expected.beancount exactly. This proves the csvbase path reproduces
-// the established golden output for the core feature set.
-func TestCompile_Parity(t *testing.T) {
-	fixtures := []string{
-		"simple",
-		"debitcredit",
-		"banner",
-		"bom",
-		"commaamount",
-		"counteraccount",
-		"counteraccount_multicol",
-		"currencysuffix",
-		"exclude",
-		"headerless",
-		"multiaccount",
-		"multiaccount_multicol",
-		"placeholder",
-		"translations",
-		"cost",
-		"split",
-		"template",
-	}
-	for _, shape := range fixtures {
-		t.Run(shape, func(t *testing.T) {
-			drv := compileFixture(t, shape)
-			in := fixtureInput(t, shape)
-
-			if !drv.Identify(context.Background(), in) {
-				t.Fatal("Identify returned false")
-			}
-
-			out, err := drv.Extract(context.Background(), in)
-			if err != nil {
-				t.Fatalf("Extract: %v", err)
-			}
-			if len(out.Diagnostics) != 0 {
-				t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
-			}
-
-			got := printDirectives(t, out.Directives)
-			expPath := filepath.Join("testdata", shape, "expected.beancount")
-			exp, err := os.ReadFile(expPath)
-			if err != nil {
-				t.Fatalf("read golden file %s: %v", expPath, err)
-			}
-			if got != string(exp) {
-				t.Errorf("output differs from %s:\ngot:\n%s\nwant:\n%s", expPath, got, exp)
-			}
-		})
-	}
-}
+// Golden-output parity across every fixture is covered by the TestIdempotency_*
+// tests in idempotency_test.go, which run the production newImporter path; the
+// tests here exercise the per-row drop/keep/warn branches that the all-valid
+// fixtures cannot reach.
 
 // runCompiled decodes tomlSrc into a shape, compiles it, builds an
 // importer.Input from csv, asserts Identify is true, and returns Extract output.

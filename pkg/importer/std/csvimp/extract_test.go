@@ -10,9 +10,10 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer"
+	"github.com/yugui/go-beancount/pkg/importer/std/csvbase"
 )
 
-func extract(t *testing.T, imp *Importer, in importer.Input) importer.Output {
+func extract(t *testing.T, imp importer.Importer, in importer.Input) importer.Output {
 	t.Helper()
 	out, err := imp.Extract(context.Background(), in)
 	if err != nil {
@@ -241,7 +242,7 @@ func TestExtract_DiagMissingAccount(t *testing.T) {
 	if len(out.Directives) != 0 {
 		t.Errorf("got %d directives, want 0", len(out.Directives))
 	}
-	mustOneDiag(t, out, DiagMissingAccount)
+	mustOneDiag(t, out, csvbase.DiagMissingAccount)
 }
 
 // blankCurrencyCellTOML configures [currency].col but no default. A row
@@ -267,7 +268,7 @@ func TestExtract_DiagMissingCurrency(t *testing.T) {
 	if len(out.Directives) != 0 {
 		t.Errorf("got %d directives, want 0", len(out.Directives))
 	}
-	mustOneDiag(t, out, DiagMissingCurrency)
+	mustOneDiag(t, out, csvbase.DiagMissingCurrency)
 }
 
 func TestExtract_DiagBadDate(t *testing.T) {
@@ -276,7 +277,7 @@ func TestExtract_DiagBadDate(t *testing.T) {
 	if len(out.Directives) != 0 {
 		t.Errorf("got %d directives, want 0", len(out.Directives))
 	}
-	mustOneDiag(t, out, DiagBadDate)
+	mustOneDiag(t, out, csvbase.DiagBadDate)
 }
 
 func TestExtract_DiagBadAmount(t *testing.T) {
@@ -285,7 +286,7 @@ func TestExtract_DiagBadAmount(t *testing.T) {
 	if len(out.Directives) != 0 {
 		t.Errorf("got %d directives, want 0", len(out.Directives))
 	}
-	mustOneDiag(t, out, DiagBadAmount)
+	mustOneDiag(t, out, csvbase.DiagBadAmount)
 }
 
 func TestExtract_DiagAllBlankAmount(t *testing.T) {
@@ -295,7 +296,7 @@ func TestExtract_DiagAllBlankAmount(t *testing.T) {
 	if len(out.Directives) != 0 {
 		t.Errorf("got %d directives, want 0", len(out.Directives))
 	}
-	mustOneDiag(t, out, DiagAllBlankAmount)
+	mustOneDiag(t, out, csvbase.DiagAllBlankAmount)
 }
 
 func mustOneDiag(t *testing.T, out importer.Output, wantCode string) {
@@ -369,7 +370,7 @@ func TestExtract_DiagMissingColumn_StatefulOpener(t *testing.T) {
 	if len(out.Directives) != 0 {
 		t.Errorf("got %d directives, want 0", len(out.Directives))
 	}
-	mustOneDiag(t, out, DiagMissingColumn)
+	mustOneDiag(t, out, csvbase.DiagMissingColumn)
 }
 
 func TestExtract_DiagLineNumberAccountsForSkipLines(t *testing.T) {
@@ -767,7 +768,7 @@ func TestExtract_DiagUnmappedAccount(t *testing.T) {
 	if len(out.Directives) != 0 {
 		t.Errorf("got %d directives, want 0", len(out.Directives))
 	}
-	mustOneDiag(t, out, DiagUnmappedAccount)
+	mustOneDiag(t, out, csvbase.DiagUnmappedAccount)
 }
 
 // accountColVerbatimTOML configures [account].col without [account.map].
@@ -1012,8 +1013,8 @@ func TestExtract_DiagUnmappedCounterAccountIsWarning(t *testing.T) {
 		t.Fatalf("got %d diagnostics, want 1: %+v", len(out.Diagnostics), out.Diagnostics)
 	}
 	d := out.Diagnostics[0]
-	if d.Code != DiagUnmappedCounterAccount {
-		t.Errorf("diag code = %q, want %q", d.Code, DiagUnmappedCounterAccount)
+	if d.Code != csvbase.DiagUnmappedCounterAccount {
+		t.Errorf("diag code = %q, want %q", d.Code, csvbase.DiagUnmappedCounterAccount)
 	}
 	if d.Severity != ast.Warning {
 		t.Errorf("diag severity = %v, want Warning", d.Severity)
