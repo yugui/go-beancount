@@ -44,8 +44,8 @@ func TestExample_HappyPathWithRowHash(t *testing.T) {
 			csvbase.DiagUnmappedCounterAccount),
 		csvbase.Const(b, "Assets:Bank"))
 	payKey := csvbase.JoinKeys(b, " ", csvbase.Columns(b, "Desc")...)
-	tmpl, _ := csvkit.CompileNarration("{{.Desc}}")
-	narrKey := csvbase.NarrationFromTemplate(b, tmpl, nil, "")
+	tmpl, _ := csvkit.CompileTemplate("{{.Desc}}")
+	narrKey := csvbase.Template(b, tmpl, csvbase.Row(b))
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:      dateKey,
@@ -793,7 +793,7 @@ Total,,2100 JPY
 	//   Assets:Cash  600 JPY
 }
 
-// Example_templateWithSplit shows NarrationFromTemplate with bindings: a split
+// Example_templateWithSplit shows Template over Merge(Row, overlay): a split
 // group's value is made available to the template under a custom name, so the
 // template can reference it without that name being a raw header column.
 func Example_templateWithSplit() {
@@ -806,12 +806,12 @@ func Example_templateWithSplit() {
 	groups := csvbase.SplitColumns(b, csvbase.Column(b, "Detail"),
 		regexp.MustCompile(`^(?P<vendor>[^|]+)\|(?P<ref>.+)$`))
 
-	tmpl, _ := csvkit.CompileNarration("{{.vendor}} — {{.ref}}")
-	narration := csvbase.NarrationFromTemplate(b, tmpl,
-		map[string]csvbase.Key[string]{
+	tmpl, _ := csvkit.CompileTemplate("{{.vendor}} — {{.ref}}")
+	narration := csvbase.Template(b, tmpl,
+		csvbase.Merge(b, csvbase.Row(b), map[string]csvbase.Key[string]{
 			"vendor": groups["vendor"],
 			"ref":    groups["ref"],
-		}, "")
+		}))
 
 	pipeline := b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
 		Date:      date,

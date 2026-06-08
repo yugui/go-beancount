@@ -6,10 +6,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
 
-func TestNarrationTemplate(t *testing.T) {
-	nt, err := csvkit.CompileNarration(`{{.Payee}}{{if .Memo}} ({{.Memo}}){{end}}`)
+func TestTemplate(t *testing.T) {
+	nt, err := csvkit.CompileTemplate(`{{.Payee}}{{if .Memo}} ({{.Memo}}){{end}}`)
 	if err != nil {
-		t.Fatalf("CompileNarration: %v", err)
+		t.Fatalf("CompileTemplate: %v", err)
 	}
 
 	cases := []struct {
@@ -33,10 +33,10 @@ func TestNarrationTemplate(t *testing.T) {
 	}
 }
 
-func TestNarrationTemplateFuncs(t *testing.T) {
-	nt, err := csvkit.CompileNarration(`{{upper (trim .Desc)}}/{{default "n/a" .Note}}`)
+func TestTemplateFuncs(t *testing.T) {
+	nt, err := csvkit.CompileTemplate(`{{upper (trim .Desc)}}/{{default "n/a" .Note}}`)
 	if err != nil {
-		t.Fatalf("CompileNarration: %v", err)
+		t.Fatalf("CompileTemplate: %v", err)
 	}
 	got, err := nt.Render(map[string]string{"Desc": "  buy  ", "Note": ""})
 	if err != nil {
@@ -47,16 +47,16 @@ func TestNarrationTemplateFuncs(t *testing.T) {
 	}
 }
 
-func TestNarrationTemplateCompileError(t *testing.T) {
-	if _, err := csvkit.CompileNarration(`{{.Unterminated`); err == nil {
-		t.Error("CompileNarration() err = nil, want parse error")
+func TestTemplateCompileError(t *testing.T) {
+	if _, err := csvkit.CompileTemplate(`{{.Unterminated`); err == nil {
+		t.Error("CompileTemplate() err = nil, want parse error")
 	}
 }
 
-func TestNarrationTemplateMissingKeyError(t *testing.T) {
-	nt, err := csvkit.CompileNarration(`{{.Unknown}}`)
+func TestTemplateMissingKeyError(t *testing.T) {
+	nt, err := csvkit.CompileTemplate(`{{.Unknown}}`)
 	if err != nil {
-		t.Fatalf("CompileNarration: %v", err)
+		t.Fatalf("CompileTemplate: %v", err)
 	}
 	if _, err := nt.Render(map[string]string{"Payee": "x"}); err == nil {
 		t.Error("Render() err = nil for unknown key, want error")

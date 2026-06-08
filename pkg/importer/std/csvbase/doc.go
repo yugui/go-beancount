@@ -23,11 +23,11 @@
 //
 // Ready-made step constructors cover the common field-resolution patterns:
 //
-//   - Column reading: [Column], [Columns], [Split], [SplitColumns], [Group].
+//   - Column reading: [Column], [Columns], [Row], [Split], [SplitColumns], [Group].
 //   - Value construction: [Const], [Hint], [JoinKeys], [MapValue], [MapEach].
 //   - Flow control: [Coalesce], [Require], [DiagAsWarning].
 //   - Parsing: [ParseDate], [ParseAmount], [NegateAmount], [AddAmounts], [CurrencyHint].
-//   - Narration: [NarrationFromTemplate].
+//   - Templating: [Merge], [Template].
 //
 // Callers compose these primitives to express any resolution logic. For cases
 // not covered by the primitives, [AddStep] registers an arbitrary typed step.
@@ -39,10 +39,11 @@
 //
 // # Leaf-only invariant
 //
-// The only steps that read raw row cells ([MappingState.At] / [Builder.Require])
-// are leaves: [Column] (and the [Columns] / [SplitColumns] conveniences built on
-// it), [NarrationFromTemplate] (justified exception — see its doc comment), and
-// any third-party step a caller writes via [AddStep]. Every standard resolver
-// step takes [Key] source(s) and returns a [Key], so values from raw columns,
-// split groups, maps, joins, and other steps are interchangeable.
+// The only steps that read raw row cells ([MappingState.At] / [MappingState.Row]
+// / [Builder.Require]) are leaves: [Column] (and the [Columns] / [SplitColumns]
+// conveniences built on it), [Row] (the whole row as a map), and any third-party
+// step a caller writes via [AddStep]. Every standard resolver step — [Template]
+// and [Merge] included — takes [Key] source(s) and returns a [Key], so values
+// from raw columns, split groups, maps, joins, and other steps are
+// interchangeable.
 package csvbase

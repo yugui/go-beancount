@@ -34,9 +34,9 @@ const DiagUnmappedAccount = "csvbase-unmapped-account"
 // from a strict counter map; the row is kept with a single posting. Severity: Warning.
 const DiagUnmappedCounterAccount = "csvbase-unmapped-counter-account"
 
-// DiagBadNarrationTemplate signals that a narration template failed to render
-// for the row. Severity: Error.
-const DiagBadNarrationTemplate = "csvbase-bad-narration-template"
+// DiagBadTemplate signals that a Template failed to render for the row.
+// Severity: Error.
+const DiagBadTemplate = "csvbase-bad-template"
 
 // DiagBadCost signals that the cost spec could not be built: unparseable
 // number, missing currency, or unparseable date. Severity: Error.

@@ -198,7 +198,7 @@ type shape struct {
 	narrationCols     []string
 	narrationSep      string
 	narrationMap      map[string]string
-	narrationTemplate *csvkit.NarrationTemplate // nil unless [narration].template set
+	narrationTemplate *csvkit.Template // nil unless [narration].template set
 
 	amounts      []csvkit.AmountColumn
 	numberFormat csvkit.NumberFormat
@@ -424,7 +424,7 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		}
 	}
 	if sc.Narration.Template != "" {
-		nt, err := csvkit.CompileNarration(sc.Narration.Template)
+		nt, err := csvkit.CompileTemplate(sc.Narration.Template)
 		if err != nil {
 			return nil, fmt.Errorf("shape %q: [narration].template: %w", name, err)
 		}
