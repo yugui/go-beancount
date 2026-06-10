@@ -91,7 +91,7 @@ func (s *Server) handleRename(ctx context.Context, reply jsonrpc2.Replier, raw j
 	}
 
 	changes := map[uri.URI][]protocol.TextEdit{}
-	for _, fname := range s.renameFileSet(ctx, docURI.Filename()) {
+	for _, fname := range s.ledgerFileSet(ctx, docURI.Filename()) {
 		fsrc := s.sourceBytesFor(fname)
 		if fsrc == nil {
 			continue
@@ -173,11 +173,12 @@ func collectRenameEdits(src []byte, kind syntax.TokenKind, oldName, newName stri
 	return edits
 }
 
-// renameFileSet returns the absolute paths of every file the rename must scan:
-// all files in the current ledger snapshot plus current, deduplicated. current
-// guarantees the edited document is covered even when it is not (yet) part of
-// the ledger.
-func (s *Server) renameFileSet(ctx context.Context, current string) []string {
+// ledgerFileSet returns the absolute paths of every file in the current ledger
+// snapshot plus current: current appears first (guaranteeing the document being
+// edited is covered), followed by snapshot files in order. Results are
+// deduplicated; an empty current string is ignored. Snapshot errors are logged
+// and treated as non-fatal.
+func (s *Server) ledgerFileSet(ctx context.Context, current string) []string {
 	seen := map[string]bool{}
 	var files []string
 	add := func(name string) {
@@ -195,7 +196,7 @@ func (s *Server) renameFileSet(ctx context.Context, current string) []string {
 	s.mu.Unlock()
 	if sess != nil {
 		if ledger, err := sess.Snapshot(ctx); err != nil {
-			s.logger.Printf("handleRename: snapshot error: %v", err)
+			s.logger.Printf("ledgerFileSet: snapshot error: %v", err)
 		} else if ledger != nil {
 			for _, f := range ledger.Files {
 				add(f.Filename)
