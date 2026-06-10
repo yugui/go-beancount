@@ -16,10 +16,11 @@ import (
 // commodity, tag, or link under the cursor across all ledger files. For
 // accounts and commodities ReferenceContext.IncludeDeclaration controls whether
 // the declaring open/commodity directive token is included; for tags and links
-// it is a no-op. Only occurrences backed by a real source position are returned.
-// The result is a sorted, deduplicated []protocol.Location; it is never null
-// and never a JSON-RPC error for a well-formed request. An empty slice means no
-// occurrences.
+// it is a no-op. Only source-backed occurrences are returned: Snapshot runs
+// booking and plugins, so the ledger may hold synthetic directives with no
+// navigable source. The result is a sorted, deduplicated []protocol.Location;
+// it is never null and never a JSON-RPC error for a well-formed request. An
+// empty slice means no occurrences.
 func (s *Server) handleReferences(ctx context.Context, reply jsonrpc2.Replier, raw json.RawMessage) error {
 	var params protocol.ReferenceParams
 	if err := json.Unmarshal(raw, &params); err != nil {
@@ -125,7 +126,9 @@ func (s *Server) referencesForToken(kind syntax.TokenKind, name string, files []
 // directive has a real source span backed by readable bytes; and (B) one
 // location per TAG/LINK token inside a PushtagDirective or PoptagDirective node,
 // found by re-walking the concrete syntax. IncludeDeclaration does not apply to
-// tags or links.
+// tags or links. Tags/links use the lowered AST .Tags/.Links (not a token
+// re-walk) so that pushtag/poptag-implied tags on otherwise-untagged directives
+// are found.
 func (s *Server) referencesForTagLink(kind syntax.TokenKind, name string, files []string, ledger *ast.Ledger) []protocol.Location {
 	var locations []protocol.Location
 
@@ -146,6 +149,10 @@ func (s *Server) referencesForTagLink(kind syntax.TokenKind, name string, files 
 			continue
 		}
 		fname := span.Start.Filename
+		// Filters zero-span synthetics (e.g. inventory-reduced postings). Not a
+		// general synthetic filter: a span-copying synthetic (pad/plugin.go) would
+		// slip through — safe only because pad-synthesized transactions carry no
+		// tags/links. Revisit if a span-copying plugin emits tag/link-bearing directives.
 		if fname == "" {
 			continue
 		}
