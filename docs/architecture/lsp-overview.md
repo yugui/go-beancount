@@ -149,3 +149,20 @@ ContextKind classification uses line-prefix lexical heuristics rather than parsi
 partial buffer as a CST. Incomplete-input CST behavior is not contractually stable, and
 misclassification under this approach degrades to "no completion" rather than wrong
 completion — a strictly better failure mode for editor UX.
+
+## textDocument/references resolution strategy
+
+Account and commodity references resolve via a CST token re-walk over the concrete
+syntax of each ledger file. This structurally excludes booking-inferred and
+plugin-synthesized values: there is no lexical token for them, so they are correctly
+absent from results. Tag and link references resolve via the lowered AST `.Tags`/`.Links`
+fields instead, so that pushtag/poptag-implied tags on otherwise-untagged directives are
+captured. Because `Snapshot` runs the full `pkg/loader` pipeline — including pad
+synthesis and inventory booking — the ledger may contain synthetic directives with no
+real source position. A position-safety guard (`span.Start.Filename == ""`) filters these
+before emitting a location.
+
+Recomputing pushtag/poptag scope from the CST to give every tag a real source position
+was considered and rejected: it would duplicate the tag-merge logic already in
+`ast/lower.go` and be fragile against future lowering changes. The shipped approach
+trusts the AST for tag membership and relies on the position guard to exclude synthetics.

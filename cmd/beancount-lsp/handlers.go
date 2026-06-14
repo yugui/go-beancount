@@ -58,6 +58,7 @@ func (s *Server) handleInitialize(ctx context.Context, reply jsonrpc2.Replier, r
 			DocumentRangeFormattingProvider: true,
 			DocumentSymbolProvider:          true,
 			DefinitionProvider:              true,
+			ReferencesProvider:              true,
 			RenameProvider:                  &protocol.RenameOptions{PrepareProvider: true},
 			CodeActionProvider: &protocol.CodeActionOptions{
 				CodeActionKinds: []protocol.CodeActionKind{protocol.RefactorRewrite},
