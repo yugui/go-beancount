@@ -1,0 +1,73 @@
+2022-12-01 open Assets:Bank:Checking
+2022-12-01 open Expenses:Coffee
+2022-12-01 open Expenses:Groceries
+2022-12-01 open Expenses:Gas
+2022-12-01 open Expenses:Subscriptions
+2022-12-01 open Expenses:Phone
+2022-12-01 open Income:Salary
+
+2023-01-03 * "Starbucks" "Morning coffee"
+  Assets:Bank:Checking  -4.50 USD
+  Expenses:Coffee         4.50 USD
+2023-01-09 * "Starbucks" "Latte"
+  Assets:Bank:Checking  -5.25 USD
+  Expenses:Coffee         5.25 USD
+2023-01-17 * "Starbucks" "Cold brew"
+  Assets:Bank:Checking  -4.75 USD
+  Expenses:Coffee         4.75 USD
+2023-01-24 * "Starbucks" "Espresso"
+  Assets:Bank:Checking  -3.50 USD
+  Expenses:Coffee         3.50 USD
+
+2023-01-05 * "Whole Foods Market" "Weekly groceries"
+  Assets:Bank:Checking  -62.30 USD
+  Expenses:Groceries      62.30 USD
+2023-01-19 * "Whole Foods Market" "Produce and dairy"
+  Assets:Bank:Checking  -48.10 USD
+  Expenses:Groceries      48.10 USD
+2023-01-12 * "Trader Joes" "Groceries run"
+  Assets:Bank:Checking  -33.40 USD
+  Expenses:Groceries      33.40 USD
+2023-01-26 * "Trader Joes" "Snacks and wine"
+  Assets:Bank:Checking  -41.20 USD
+  Expenses:Groceries      41.20 USD
+
+2023-01-07 * "Shell" "Fuel"
+  Assets:Bank:Checking  -45.00 USD
+  Expenses:Gas            45.00 USD
+2023-01-21 * "Shell" "Gas fill up"
+  Assets:Bank:Checking  -52.00 USD
+  Expenses:Gas            52.00 USD
+2023-02-04 * "Shell" "Fuel top up"
+  Assets:Bank:Checking  -38.00 USD
+  Expenses:Gas            38.00 USD
+
+2023-01-15 * "Netflix" "Monthly subscription"
+  Assets:Bank:Checking  -15.99 USD
+  Expenses:Subscriptions  15.99 USD
+2023-02-15 * "Netflix" "Monthly subscription"
+  Assets:Bank:Checking  -15.99 USD
+  Expenses:Subscriptions  15.99 USD
+2023-03-15 * "Netflix" "Monthly subscription"
+  Assets:Bank:Checking  -15.99 USD
+  Expenses:Subscriptions  15.99 USD
+
+2023-01-20 * "Verizon Wireless" "Phone bill"
+  Assets:Bank:Checking  -70.00 USD
+  Expenses:Phone          70.00 USD
+2023-02-20 * "Verizon Wireless" "Phone bill"
+  Assets:Bank:Checking  -70.00 USD
+  Expenses:Phone          70.00 USD
+2023-03-20 * "Verizon Wireless" "Phone bill"
+  Assets:Bank:Checking  -70.00 USD
+  Expenses:Phone          70.00 USD
+
+2023-01-31 * "Acme Corp" "Monthly salary"
+  Assets:Bank:Checking   3000.00 USD
+  Income:Salary         -3000.00 USD
+2023-02-28 * "Acme Corp" "Monthly salary"
+  Assets:Bank:Checking   3000.00 USD
+  Income:Salary         -3000.00 USD
+2023-03-31 * "Acme Corp" "Monthly salary"
+  Assets:Bank:Checking   3000.00 USD
+  Income:Salary         -3000.00 USD
