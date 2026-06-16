@@ -55,7 +55,7 @@ func (h *Hook) Apply(ctx context.Context, in hook.HookInput) (hook.HookResult, e
 	out := make([]ast.Directive, len(in.Directives))
 	var diags []ast.Diagnostic
 	for i, d := range in.Directives {
-		if i > 0 && i%64 == 0 {
+		if i > 0 && i%64 == 0 { // amortize ctx.Err cost
 			if err := ctx.Err(); err != nil {
 				return hook.HookResult{Directives: out[:i], Diagnostics: diags}, err
 			}
@@ -72,6 +72,7 @@ func (h *Hook) Apply(ctx context.Context, in hook.HookInput) (hook.HookResult, e
 			diags = append(diags, abstainDiag(tx, pred, ok))
 			continue
 		}
+		// "" → counterpart inherits the source posting's currency.
 		out[i] = importerutil.BalanceWith(tx, string(pred.Account), "")
 	}
 	return hook.HookResult{Directives: out, Diagnostics: diags}, nil

@@ -25,6 +25,15 @@ func example(label, date string, f predict.Features) predict.Example {
 	return predict.Example{Features: f, Label: ast.Account(label), Date: mustDate(date)}
 }
 
+func mustPredict(t *testing.T, p predict.Predictor, q predict.Features) predict.Prediction {
+	t.Helper()
+	pred, ok := p.Predict(q)
+	if !ok {
+		t.Fatalf("Predict abstained, want a prediction")
+	}
+	return pred
+}
+
 func TestPredictTopMatch(t *testing.T) {
 	p := predict.NewKNNPredictor([]predict.Example{
 		example("Expenses:Coffee", "2024-01-01", feat("", "", "payee:starbucks", "payee:coffee")),
@@ -69,13 +78,13 @@ func TestPredictExactAmountBonus(t *testing.T) {
 	query := feat("5.00", "USD", "payee:cafe")
 
 	// With the default bonus, the exact 5.00 USD match tips the tie to Tea.
-	got, _ := predict.NewKNNPredictor(examples).Predict(query)
+	got := mustPredict(t, predict.NewKNNPredictor(examples), query)
 	if got.Account != "Expenses:Tea" {
 		t.Errorf("with bonus Account = %q, want Expenses:Tea", got.Account)
 	}
 
 	// With the bonus disabled the text tie breaks deterministically (lexical).
-	got0, _ := predict.NewKNNPredictor(examples, predict.WithExactAmountBonus(0)).Predict(query)
+	got0 := mustPredict(t, predict.NewKNNPredictor(examples, predict.WithExactAmountBonus(0)), query)
 	if got0.Account != "Expenses:Coffee" {
 		t.Errorf("no bonus Account = %q, want Expenses:Coffee (lexical tie-break)", got0.Account)
 	}
@@ -90,12 +99,12 @@ func TestPredictMinSupport(t *testing.T) {
 	}
 	query := feat("", "", "payee:y")
 
-	got, _ := predict.NewKNNPredictor(examples).Predict(query)
+	got := mustPredict(t, predict.NewKNNPredictor(examples), query)
 	if got.Account != "Expenses:Solo" {
 		t.Errorf("minSupport=1 Account = %q, want Expenses:Solo", got.Account)
 	}
 
-	got2, _ := predict.NewKNNPredictor(examples, predict.WithMinSupport(2)).Predict(query)
+	got2 := mustPredict(t, predict.NewKNNPredictor(examples, predict.WithMinSupport(2)), query)
 	if got2.Account != "Expenses:Multi" {
 		t.Errorf("minSupport=2 Account = %q, want Expenses:Multi (Solo excluded)", got2.Account)
 	}
@@ -106,7 +115,7 @@ func TestPredictMargin(t *testing.T) {
 	solo := predict.NewKNNPredictor([]predict.Example{
 		example("Expenses:Only", "2024-01-01", feat("", "", "payee:z")),
 	})
-	got, _ := solo.Predict(feat("", "", "payee:z"))
+	got := mustPredict(t, solo, feat("", "", "payee:z"))
 	if got.Margin != 1.0 {
 		t.Errorf("single-account Margin = %v, want 1.0", got.Margin)
 	}
@@ -116,7 +125,7 @@ func TestPredictMargin(t *testing.T) {
 		example("Expenses:A", "2024-01-01", feat("", "", "payee:z")),
 		example("Expenses:B", "2024-01-01", feat("", "", "payee:z")),
 	}, predict.WithExactAmountBonus(0))
-	gotTie, _ := tie.Predict(feat("", "", "payee:z"))
+	gotTie := mustPredict(t, tie, feat("", "", "payee:z"))
 	if gotTie.Margin != 0 {
 		t.Errorf("tie Margin = %v, want 0", gotTie.Margin)
 	}
@@ -129,9 +138,9 @@ func TestPredictDeterministic(t *testing.T) {
 		example("Expenses:C", "2024-01-02", feat("", "", "payee:z", "payee:w")),
 	}
 	p := predict.NewKNNPredictor(examples)
-	first, _ := p.Predict(feat("", "", "payee:z"))
+	first := mustPredict(t, p, feat("", "", "payee:z"))
 	for i := 0; i < 50; i++ {
-		got, _ := p.Predict(feat("", "", "payee:z"))
+		got := mustPredict(t, p, feat("", "", "payee:z"))
 		if diff := cmp.Diff(first, got, cmpOpts); diff != "" {
 			t.Fatalf("Predict nondeterministic on repeat (-first +got):\n%s", diff)
 		}

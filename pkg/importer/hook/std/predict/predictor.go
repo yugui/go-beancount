@@ -35,8 +35,10 @@ type Prediction struct {
 
 // Evidence describes the closest supporting example, for diagnostics.
 type Evidence struct {
-	Score float64   // cosine similarity of the closest supporting example
-	Date  time.Time // that example's transaction date
+	// Score is the cosine similarity of the closest supporting example.
+	Score float64
+	// Date is that example's transaction date.
+	Date time.Time
 }
 
 // KNNOption configures [NewKNNPredictor].
@@ -144,7 +146,7 @@ func normalizedVector(terms []Term, idf map[string]float64, query bool) map[stri
 	for _, w := range vec {
 		sum += w * w
 	}
-	if sum == 0 {
+	if sum == 0 { // degenerate; drop
 		return nil
 	}
 	norm := math.Sqrt(sum)

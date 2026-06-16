@@ -96,11 +96,12 @@ func TestExtractFeaturesSign(t *testing.T) {
 		amount  *ast.Amount
 		want    predict.Sign
 		signTok string
+		wantAbs string // "" means AmountAbs should be nil
 	}{
-		{"debit", amt("9.99", "USD"), predict.SignDebit, "sign:debit"},
-		{"credit", amt("-9.99", "USD"), predict.SignCredit, "sign:credit"},
-		{"zero", amt("0", "USD"), predict.SignZero, "sign:zero"},
-		{"absent", nil, predict.SignZero, "sign:zero"},
+		{"debit", amt("9.99", "USD"), predict.SignDebit, "sign:debit", "9.99"},
+		{"credit", amt("-9.99", "USD"), predict.SignCredit, "sign:credit", "9.99"},
+		{"zero", amt("0", "USD"), predict.SignZero, "sign:zero", "0"},
+		{"absent", nil, predict.SignZero, "sign:zero", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -122,8 +123,12 @@ func TestExtractFeaturesSign(t *testing.T) {
 			if !hasToken(c.signTok) {
 				t.Errorf("missing sign token %q", c.signTok)
 			}
-			if c.amount == nil && got.AmountAbs != nil {
-				t.Errorf("AmountAbs = %v, want nil for absent amount", got.AmountAbs)
+			if c.wantAbs == "" {
+				if got.AmountAbs != nil {
+					t.Errorf("AmountAbs = %v, want nil", got.AmountAbs)
+				}
+			} else if got.AmountAbs == nil || got.AmountAbs.Cmp(decPtr(c.wantAbs)) != 0 {
+				t.Errorf("AmountAbs = %v, want %s", got.AmountAbs, c.wantAbs)
 			}
 		})
 	}

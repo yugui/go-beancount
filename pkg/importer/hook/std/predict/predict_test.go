@@ -53,6 +53,15 @@ func apply(t *testing.T, h *predict.Hook, ds ...ast.Directive) hook.HookResult {
 	return res
 }
 
+func mustTxn(t *testing.T, d ast.Directive) *ast.Transaction {
+	t.Helper()
+	tx, ok := d.(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive is %T, want *ast.Transaction", d)
+	}
+	return tx
+}
+
 const ledgerConfig = `ledger = "testdata/train.beancount"`
 
 func TestApplyFillsKnownMerchant(t *testing.T) {
@@ -81,7 +90,7 @@ func TestApplyAbstainsOnUnknown(t *testing.T) {
 	h := newPredictHook(t, ledgerConfig)
 	res := apply(t, h, singleLeg("Xyzzy Unknown", "mysterious", "-7.00"))
 
-	tx := res.Directives[0].(*ast.Transaction)
+	tx := mustTxn(t, res.Directives[0])
 	if len(tx.Postings) != 1 {
 		t.Errorf("postings = %d, want 1 (left unbalanced)", len(tx.Postings))
 	}
@@ -97,7 +106,7 @@ func TestApplyNeverPredictsClosedAccount(t *testing.T) {
 	h := newPredictHook(t, ledgerConfig)
 	res := apply(t, h, singleLeg("Defunct Vendor", "old purchase", "-9.00"))
 
-	tx := res.Directives[0].(*ast.Transaction)
+	tx := mustTxn(t, res.Directives[0])
 	if len(tx.Postings) != 1 {
 		t.Errorf("postings = %d, want 1 (closed Expenses:Defunct must not be predicted)", len(tx.Postings))
 	}
@@ -117,7 +126,7 @@ func TestApplyPassesThroughNonFillable(t *testing.T) {
 	open := &ast.Open{Date: mustDate("2024-01-01"), Account: "Assets:New"}
 	res := apply(t, h, twoLeg, open)
 
-	if got := res.Directives[0].(*ast.Transaction); len(got.Postings) != 2 {
+	if got := mustTxn(t, res.Directives[0]); len(got.Postings) != 2 {
 		t.Errorf("two-leg txn postings = %d, want 2 (unchanged)", len(got.Postings))
 	}
 	if _, ok := res.Directives[1].(*ast.Open); !ok {
@@ -141,7 +150,7 @@ func TestApplyHighThresholdAbstains(t *testing.T) {
 	// An unreachable confidence threshold forces abstention even for an exact match.
 	h := newPredictHook(t, ledgerConfig+"\nmin_confidence = 0.99\nmin_margin = 0.99")
 	res := apply(t, h, singleLeg("Starbucks", "Morning coffee", "-4.50"))
-	tx := res.Directives[0].(*ast.Transaction)
+	tx := mustTxn(t, res.Directives[0])
 	if len(tx.Postings) != 1 {
 		t.Errorf("postings = %d, want 1 (high threshold abstains)", len(tx.Postings))
 	}

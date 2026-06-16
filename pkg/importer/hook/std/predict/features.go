@@ -125,7 +125,7 @@ func ExtractFeatures(txn *ast.Transaction, knownIdx int, tok Tokenizer, fw Field
 	f := Features{Terms: acc.terms(), Sign: s}
 	if known.Amount != nil {
 		abs := new(apd.Decimal)
-		_, _ = apd.BaseContext.Abs(abs, &known.Amount.Number)
+		_, _ = apd.BaseContext.Abs(abs, &known.Amount.Number) // infallible on a finite decimal
 		f.AmountAbs = abs
 		f.Currency = known.Amount.Currency
 	}

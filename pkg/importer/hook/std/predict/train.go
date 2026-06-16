@@ -27,7 +27,8 @@ type Example struct {
 // an income/expense-only entry), both orientations are emitted. All other
 // transaction shapes are skipped. Examples are ordered by Ledger.All(), and
 // within a two-orientation transaction the posting[0]-as-known Example comes
-// first. The result is nil when no transaction is eligible.
+// first. The result is nil when no transaction is eligible. A nil ledger is
+// treated as empty.
 func ExtractExamples(l *ast.Ledger, tok Tokenizer, fw FieldWeights) []Example {
 	var out []Example
 	for _, d := range l.All() {
