@@ -1,5 +1,3 @@
-// Package predict provides a hook that infers the counter account of
-// single-leg transactions from previously observed ledger entries.
 package predict
 
 import (

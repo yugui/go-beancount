@@ -463,7 +463,13 @@ min_support = 1                        # 0 → default 1
   accounts from data; a hand-coded boost is redundant and could fight the learned signal.
 - (2) Default abstain thresholds (min_confidence / min_margin).
 
-**RESOLVED (orchestrator + user):** recorded below.
+**RESOLVED (orchestrator + user):**
+- Domain-constraint boost **dropped** from v1 — redundant with the learned
+  `sign:`/`acct:` features; revisit only if eval shows direction errors.
+- Default thresholds: `min_confidence = 0.30`, `min_margin = 0.10` (config-overridable,
+  retuned in Step 5 eval).
+- Open filter realized at corpus level: examples whose Label is not currently Open are
+  dropped before indexing, so a closed account is never predicted.
 
 ---
 
