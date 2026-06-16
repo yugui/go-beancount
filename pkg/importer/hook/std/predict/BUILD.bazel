@@ -4,6 +4,7 @@ go_library(
     name = "predict",
     srcs = [
         "features.go",
+        "predictor.go",
         "tokenizer.go",
         "train.go",
     ],
@@ -22,6 +23,7 @@ go_test(
     name = "predict_test",
     srcs = [
         "features_test.go",
+        "predictor_test.go",
         "tokenizer_test.go",
         "train_test.go",
     ],

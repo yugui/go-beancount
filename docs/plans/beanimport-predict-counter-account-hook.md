@@ -299,6 +299,77 @@ no map-iteration order observable.
 - 決定的 tie-break（account 名辞書順 + recency）。
 - TF-IDF/cosine の数値は apd 不要（float64 で可、確率でなく順序が本質）。
 
+### Detailed Design
+
+#### Contract (LOCKED — Step 4 binds to these types)
+
+Package `predict`, file `predictor.go`.
+
+```go
+// Predictor infers the counter account for a query Features built from the
+// import's single known posting. It is the extension point for alternative
+// learners (e.g. Naive Bayes). The default is k-NN over TF-IDF cosine.
+type Predictor interface {
+    // Predict returns the best counter-account candidate and ok=true, or
+    // ok=false when no basis exists (empty corpus or query shares no in-vocab
+    // term). The caller (hook) applies confidence/margin thresholds.
+    Predict(q Features) (Prediction, bool)
+}
+
+// Prediction is the predictor's verdict for one query.
+// Confidence and Margin are both in [0,1] and orthogonal: Confidence answers
+// "is the closest past match similar enough?" (max cosine over the winning
+// account's neighbors); Margin answers "is the winner clearly ahead?"
+// (normalized weighted-vote gap between the top-1 and top-2 accounts).
+type Prediction struct {
+    Account    ast.Account
+    Confidence float64
+    Margin     float64
+    Evidence   Evidence
+}
+
+// Evidence describes the closest supporting neighbor, for diagnostics.
+type Evidence struct {
+    Score float64   // cosine similarity of the closest supporting example
+    Date  time.Time // that example's transaction date
+}
+
+func NewKNNPredictor(examples []Example, opts ...KNNOption) Predictor
+
+type KNNOption func(*knnConfig)
+func WithK(k int) KNNOption                  // neighbors considered (default 10)
+func WithExactAmountBonus(b float64) KNNOption // sim bonus on exact |amount|+currency match (default 0.25)
+func WithMinSupport(n int) KNNOption         // min examples for an account to be a candidate (default 1)
+```
+
+#### Suggested Internals (ADVISORY)
+- **Vectorize**: vocab + df over all examples. `idf(t)=log((1+N)/(1+df))+1` (smoothed).
+  Each example/query vector = map token→(Term.Weight × idf), then L2-normalize.
+  Field weights already folded into Term.Weight (Step 2), so they scale similarity.
+  No df-pruning (RESOLVED): IDF softly down-weights common tokens and Step-1 already
+  collapses numeric/reference noise to `#num`; singletons are kept because they drive
+  exact once-seen-merchant matches in k-NN.
+- **Predict**: cosine = dot of normalized sparse vectors over shared tokens. Per example
+  add exact-amount bonus when q.AmountAbs == ex.AmountAbs (apd Cmp==0) and currencies
+  match. Take top-K by similarity; aggregate per-account distance-weighted vote
+  (weight = similarity). Winner = max vote. Confidence = max raw cosine among winner's
+  neighbors. Margin = (vote1−vote2)/vote1. Evidence = winner's closest neighbor.
+- **min-support**: accounts with < minSupport total examples are not candidates.
+- **Determinism**: stable tie-break — equal vote → more recent example Date, then
+  account-name byte order. No map-iteration order observable (sort candidate accounts).
+  Recency is tie-break ONLY (not a scoring weight; recency weighting is out of v1 scope).
+- float64 throughout; apd only for the exact-amount equality check.
+
+#### Recommendation + rationale
+k-NN over TF-IDF cosine directly realizes "based on similar ledger data" and needs no
+training beyond indexing. Confidence = best-match cosine keeps abstain conservative:
+an exact-amount-only match with low text similarity will not clear the confidence
+threshold, so the amount bonus only re-ranks already-similar candidates rather than
+fabricating confidence. Margin guards against ties between plausible accounts.
+
+**RESOLVED (orchestrator + user):** df-pruning dropped from v1 (no minDocFreq/maxDocFreq
+options) — rely on IDF + Step-1 `#num` collapse; keep singletons for exact-merchant match.
+
 ---
 
 ## Step 4 — Hook 本体 + config + 登録
