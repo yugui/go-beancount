@@ -2,11 +2,17 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
     name = "predict",
-    srcs = ["tokenizer.go"],
+    srcs = [
+        "features.go",
+        "tokenizer.go",
+        "train.go",
+    ],
     importpath = "github.com/yugui/go-beancount/pkg/importer/hook/std/predict",
     visibility = ["//visibility:public"],
     deps = [
+        "//pkg/ast",
         "@com_github_clipperhouse_uax29_v2//words",
+        "@com_github_cockroachdb_apd_v3//:apd",
         "@org_golang_x_text//cases",
         "@org_golang_x_text//unicode/norm",
     ],
@@ -14,9 +20,15 @@ go_library(
 
 go_test(
     name = "predict_test",
-    srcs = ["tokenizer_test.go"],
+    srcs = [
+        "features_test.go",
+        "tokenizer_test.go",
+        "train_test.go",
+    ],
     deps = [
         ":predict",
+        "//pkg/ast",
+        "@com_github_cockroachdb_apd_v3//:apd",
         "@com_github_google_go_cmp//cmp",
     ],
 )

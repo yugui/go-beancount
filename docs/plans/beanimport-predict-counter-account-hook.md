@@ -197,6 +197,84 @@ namespacing deferred to Step 2 respects layering. Bazel: pulls
 - 決定的。`Tokenizer` interface 経由でトークン化（Step 1 と疎結合）。
 - 学習例抽出は exported な型/関数の最小面で表現（test は観測可能挙動を対象）。
 
+### Detailed Design
+
+#### Contract  (LOCKED — Step 3/4 bind to these types)
+
+Package `predict`, files `features.go` + `train.go`.
+
+```go
+type Sign int8
+const ( SignZero Sign = iota; SignDebit; SignCredit )
+
+// Term: one namespaced feature token + accumulated weight (>0).
+// Token = field prefix (payee: / narr: / meta.<k>: / acct: / sign:) + raw term.
+// Weight = sum of per-occurrence field weights within one transaction.
+type Term struct { Token string; Weight float64 }
+
+// Features: deterministic namespaced weighted-token view of a txn from the
+// vantage of one known posting. Terms sorted by Token, deduped (weights summed).
+// Amount signal out-of-band: AmountAbs/Currency/Sign carried separately so the
+// magnitude does not pollute the text vector (only the derived sign: token is in Terms).
+type Features struct {
+    Terms     []Term
+    AmountAbs *apd.Decimal // |known posting amount|, nil if absent
+    Currency  string
+    Sign      Sign
+}
+
+type FieldWeights struct { Payee, Narration, Metadata, Account, Sign float64 }
+func DefaultFieldWeights() FieldWeights // Payee 3.0, Narration 1.5, Metadata <see RESOLVED>, Account 0.75, Sign 0.5
+
+// ExtractFeatures builds Features for txn from the posting at knownIdx
+// (the account whose counterpart is predicted). Tokenizes Payee/Narration/
+// MetaString via tok, namespaces + weights per fw, emits acct: <see RESOLVED
+// granularity> + one sign: token. Panics if knownIdx out of range. No aliasing
+// of txn memory; deterministic.
+func ExtractFeatures(txn *ast.Transaction, knownIdx int, tok Tokenizer, fw FieldWeights) Features
+
+// Example: one supervised instance. Date available to Step 3 for recency tie-break.
+type Example struct { Features Features; Label ast.Account; Date time.Time }
+
+// ExtractExamples walks l in canonical order. Eligible txn (v1) = exactly 2
+// postings, both Amount non-nil (structural; no net-zero check). Orientation
+// per RESOLVED policy. Other shapes skipped. Deterministic order (Ledger.All(),
+// posting[0]-known first). nil when no eligible txn.
+func ExtractExamples(l *ast.Ledger, tok Tokenizer, fw FieldWeights) []Example
+
+// OpenAccounts: set of accounts Open and not Closed as of end of l, folding
+// Open/Close in canonical order. Empty non-nil map for nil/empty ledger.
+func OpenAccounts(l *ast.Ledger) map[ast.Account]bool
+```
+
+**Namespacing (LOCKED):** prefixes exactly `payee:` `narr:` `meta.<k>:` `acct:`
+`sign:`. `sign:` ∈ {sign:debit, sign:credit, sign:zero}. Step 3 must tolerate
+unknown prefixes (forward-compat). **Determinism (LOCKED):** Terms sorted byte
+order, metadata keys sorted before tokenization, example order follows Ledger.All();
+no map-iteration order observable.
+
+#### Suggested Internals (ADVISORY)
+- eligibility: `len==2 && both Amount!=nil`（pkg/inventory は使わない）。
+- `isSourceLike(a)`: root==Assets||Liabilities。
+- sign: `apd.Decimal.Sign()`（nil→SignZero）。AmountAbs: `apd.BaseContext.Abs` で新規確保（aliasしない）。
+- 蓄積: 内部 `map[string]float64` で namespaced token を合算 → sorted `[]Term` に flush。
+- metadata: `MetaString` のみ、key を sort してから、prefix `meta.<k>:`。Tags/Links/その他 kind は v1 対象外。
+- OpenAccounts: `l.All()` 一巡、Open→set、Close→delete。
+
+#### Alternatives & Recommendation
+(a) orientation, (b) acct: 粒度, (c) []Term vs map, (d) balance厳密性 — planner は
+低ノイズ側（source-side-only+fallback / ancestor-prefix / []Term / structural）を推奨。
+詳細は planner 出力（本セクションで要約）。
+
+**RESOLVED (orchestrator + user):**
+- orientation = **source-side 優先 + fallback**: 2-posting txn で root が Assets/
+  Liabilities の posting を known とし 1 例。両方 source-like（振替）or どちらも違う
+  （Income↔Expenses 等）の時のみ両方向 2 例。
+- acct: 粒度 = **全 ancestor prefix**（acct:Assets, acct:Assets:Bank,
+  acct:Assets:Bank:Checking …）。
+- `DefaultFieldWeights.Metadata = 0.5`（MetaString を低 weight で使用。config で 0 可）。
+- (c) Features=[]Term sorted/dedup, (d) structural eligibility は orchestrator 判断で lock。
+
 ---
 
 ## Step 3 — k-NN / TF-IDF Predictor + 既定実装
