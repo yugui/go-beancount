@@ -398,6 +398,73 @@ options) — rely on IDF + Step-1 `#num` collapse; keep singletons for exact-mer
 - `Apply` は in.Directives を mutate しない（hook ABI 準拠）。並行呼び出し安全。
 - 決定的出力。exported symbol に doc comment。
 
+### Detailed Design
+
+#### Contract (LOCKED)
+
+Package `predict`, files `predict.go` (Hook) + `config.go` (Factory) + `doc.go` (init).
+
+```go
+// DiagAbstain is emitted (Warning) when a single-leg transaction is left
+// unbalanced because the predictor had no basis or did not clear the
+// confidence/margin thresholds.
+const DiagAbstain = "predict-abstain"
+
+// Hook fills the counter account of single-leg transactions from a learned
+// model of an existing ledger. Its state is frozen at construction; Apply is
+// safe for concurrent use.
+type Hook struct { /* unexported */ }
+func (h *Hook) Name() string
+func (h *Hook) Apply(ctx context.Context, in hook.HookInput) (hook.HookResult, error)
+```
+
+TOML config schema (decoded by the registered Factory under kind `predict`):
+
+```toml
+[[hook]]
+kind = "predict"
+name = "default"
+ledger = "/path/to/main.beancount"   # REQUIRED
+min_confidence = 0.30                  # default <see RESOLVED>
+min_margin = 0.10                      # default <see RESOLVED>
+k = 10                                 # predictor neighbors (0 → default 10)
+exact_amount_bonus = 0.25              # unset → predictor default 0.25
+min_support = 1                        # 0 → default 1
+  [hook.fields]                        # per-field weight overrides (unset → DefaultFieldWeights)
+  payee = 3.0
+  narration = 1.5
+  metadata = 0.5
+  account = 0.75
+  sign = 0.5
+```
+
+#### Suggested Internals (ADVISORY)
+- **Factory `newHook(name, decode)`**: decode config; `ledger` required (else error).
+  `loader.LoadFile(context.Background(), cfg.Ledger)` → ledger (return error on failure).
+  Build tokenizer = `NewDefaultTokenizer()`; `fw` = DefaultFieldWeights with config
+  overrides; `examples = ExtractExamples(led, tok, fw)`; `open = OpenAccounts(led)`;
+  **filter examples to those whose Label ∈ open** (closed accounts never predicted);
+  `pred = NewKNNPredictor(examples, opts…)`. Store tok, pred, fw, thresholds, name.
+- **Apply**: for each directive — passthrough unless it is a `*ast.Transaction` with
+  exactly one posting whose Amount != nil. For such a txn: `q = ExtractFeatures(txn, 0,
+  tok, fw)`; `pred.Predict(q)`. If !ok OR Confidence < minConfidence OR Margin <
+  minMargin → emit `DiagAbstain` Warning, passthrough unchanged. Else →
+  `importerutil.BalanceWith(txn, string(pred.Account), "")` (counterpart inherits
+  source currency). MUST NOT mutate in.Directives (BalanceWith deep-clones). Amortize
+  ctx.Err() check like classify.
+- **Open filter** realized at the corpus level (b): drop closed-label examples before
+  indexing, so prediction can never name a closed account.
+- **Registration**: `doc.go` `init()` → `hook.RegisterFactory("predict", hook.FactoryFunc(newHook))`.
+  `cmd/beanimport/main.go` adds a blank import; `cmd/beanimport/BUILD.bazel` adds the dep.
+
+#### Material decisions for user (recorded in RESOLVED)
+- (1) Explicit source-account/sign **domain-constraint boost**: proposed DROP — the
+  `sign:` and `acct:` features already let the predictor learn direction-appropriate
+  accounts from data; a hand-coded boost is redundant and could fight the learned signal.
+- (2) Default abstain thresholds (min_confidence / min_margin).
+
+**RESOLVED (orchestrator + user):** recorded below.
+
 ---
 
 ## Step 5 — eval harness + e2e + Bazel/Gazelle 整備
