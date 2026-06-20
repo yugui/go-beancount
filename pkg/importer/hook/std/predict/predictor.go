@@ -122,8 +122,12 @@ type knnConfig struct {
 	recencyHalfLife float64 // days; <=0 disables decay
 }
 
+// featureVec is a sparse, L2-normalized TF-IDF feature vector keyed by
+// namespaced token. A nil or empty value represents "no features".
+type featureVec map[string]float64
+
 type exampleVec struct {
-	vec       map[string]float64
+	vec       featureVec
 	label     ast.Account
 	date      time.Time
 	amountAbs *apd.Decimal
@@ -137,12 +141,12 @@ type knnPredictor struct {
 	support map[ast.Account]int
 }
 
-// normalizedVector builds the L2-normalized TF-IDF vector of terms. When
+// normalizedVector builds the L2-normalized TF-IDF featureVec of terms. When
 // query is true, tokens absent from idf (out of vocabulary) are dropped; for
 // training vectors every token is in idf by construction. Returns nil for an
 // empty or zero-norm vector.
-func normalizedVector(terms []Term, idf map[string]float64, query bool) map[string]float64 {
-	vec := make(map[string]float64, len(terms))
+func normalizedVector(terms []Term, idf map[string]float64, query bool) featureVec {
+	vec := make(featureVec, len(terms))
 	for _, t := range terms {
 		w, ok := idf[t.Token]
 		if query && !ok {
@@ -214,14 +218,14 @@ type neighbor struct {
 // similarity (descending), breaking ties by more-recent date then account name.
 // Each neighbor's adj carries the exact-amount bonus and the recency-decay
 // weight; raw is the undecayed cosine and remains the basis of Confidence.
-func (p *knnPredictor) nearest(q Features, qvec map[string]float64) []neighbor {
+func (p *knnPredictor) nearest(q Features, qvec featureVec) []neighbor {
 	var ns []neighbor
 	for i := range p.vecs {
 		ev := &p.vecs[i]
 		if ev.vec == nil || p.support[ev.label] < p.cfg.minSupport {
 			continue
 		}
-		raw := dot(qvec, ev.vec)
+		raw := qvec.dot(ev.vec)
 		if raw <= 0 {
 			continue
 		}
@@ -279,10 +283,9 @@ func aggregate(neighbors []neighbor) (map[ast.Account]*accAgg, []ast.Account) {
 	return aggs, order
 }
 
-// dot is the inner product of two sparse vectors. With both vectors
-// L2-normalized it is the cosine similarity, in [0,1] since all weights are
-// non-negative.
-func dot(a, b map[string]float64) float64 {
+// dot is the inner product of two feature vectors. With both L2-normalized it
+// is the cosine similarity, in [0,1] since all weights are non-negative.
+func (a featureVec) dot(b featureVec) float64 {
 	if len(a) > len(b) {
 		a, b = b, a
 	}
