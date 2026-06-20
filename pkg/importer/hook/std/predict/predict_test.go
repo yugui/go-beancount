@@ -78,8 +78,9 @@ func TestApplyFillsKnownMerchant(t *testing.T) {
 	if tx.Postings[1].Account != "Expenses:Coffee" {
 		t.Errorf("counter account = %q, want Expenses:Coffee", tx.Postings[1].Account)
 	}
-	if got := tx.Postings[1].Amount; got == nil || got.Number.Cmp(decPtr("4.50")) != 0 || got.Currency != "USD" {
-		t.Errorf("counter amount = %v, want 4.50 USD", got)
+	// The counter is an auto-posting: its amount is left for booking to interpolate.
+	if got := tx.Postings[1].Amount; got != nil {
+		t.Errorf("counter amount = %v, want nil (auto-posting)", got)
 	}
 	if len(res.Diagnostics) != 0 {
 		t.Errorf("diagnostics = %v, want none on fill", res.Diagnostics)

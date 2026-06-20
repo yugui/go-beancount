@@ -41,12 +41,13 @@
 //   - Non-Transaction directives, and transactions that are not single-leg with
 //     an amount, pass through unchanged.
 //   - A single-leg transaction is classified. When the prediction clears both
-//     min_confidence and min_margin, a counterpart posting with the predicted
-//     account is appended via
-//     [github.com/yugui/go-beancount/pkg/importer/importerutil.BalanceWith].
-//     Otherwise the transaction is left unbalanced and a [DiagAbstain] Warning
-//     is emitted, so a downstream validation surfaces it to the user rather than
-//     a low-confidence guess silently balancing it.
+//     min_confidence and min_margin, a counterpart posting naming the predicted
+//     account is appended with its amount elided (an auto-posting); the
+//     redundant negation of the source amount is left for booking to
+//     interpolate on the next load. Otherwise the transaction is left
+//     unbalanced and a [DiagAbstain] Warning is emitted, so a downstream
+//     validation surfaces it to the user rather than a low-confidence guess
+//     silently balancing it.
 //
 // # Concurrency
 //

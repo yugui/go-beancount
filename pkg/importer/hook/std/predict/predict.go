@@ -6,7 +6,6 @@ import (
 
 	"github.com/yugui/go-beancount/pkg/ast"
 	"github.com/yugui/go-beancount/pkg/importer/hook"
-	"github.com/yugui/go-beancount/pkg/importer/importerutil"
 )
 
 // DiagAbstain is emitted as a Warning when a fillable single-leg transaction is
@@ -31,11 +30,12 @@ func (h *Hook) Name() string { return h.name }
 
 // Apply replaces each single-leg *ast.Transaction (one posting with an amount)
 // with its two-leg form when the predictor's confidence and margin clear the
-// configured thresholds, using the predicted counter account and the source
-// posting's currency. Transactions that miss the thresholds, or for which the
-// predictor has no basis, emit a [DiagAbstain] Warning and pass through
-// unchanged. All other directives pass through unchanged. Apply does not mutate
-// in.Directives.
+// configured thresholds, by appending a counterpart posting that names the
+// predicted account with no amount (an auto-posting); booking interpolates the
+// redundant counter amount on the next load. Transactions that miss the
+// thresholds, or for which the predictor has no basis, emit a [DiagAbstain]
+// Warning and pass through unchanged. All other directives pass through
+// unchanged. Apply does not mutate in.Directives.
 func (h *Hook) Apply(ctx context.Context, in hook.HookInput) (hook.HookResult, error) {
 	if err := ctx.Err(); err != nil {
 		return hook.HookResult{}, err
@@ -72,8 +72,11 @@ func (h *Hook) Apply(ctx context.Context, in hook.HookInput) (hook.HookResult, e
 			diags = append(diags, abstainDiag(tx, pred, ok))
 			continue
 		}
-		// "" → counterpart inherits the source posting's currency.
-		out[i] = importerutil.BalanceWith(tx, string(pred.Account), "")
+		// Fill the counter as an auto-posting: its amount is the redundant
+		// negation of the source, left for booking to interpolate.
+		filled := tx.Clone()
+		filled.Postings = append(filled.Postings, ast.Posting{Account: pred.Account})
+		out[i] = filled
 	}
 	return hook.HookResult{Directives: out, Diagnostics: diags}, nil
 }
