@@ -19,6 +19,7 @@ import (
 	"github.com/yugui/go-beancount/pkg/printer"
 
 	_ "github.com/yugui/go-beancount/pkg/importer/hook/std/classify"
+	_ "github.com/yugui/go-beancount/pkg/importer/hook/std/predict"
 	_ "github.com/yugui/go-beancount/pkg/importer/std/csvimp"
 )
 

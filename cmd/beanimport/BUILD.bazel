@@ -17,6 +17,7 @@ go_library(
         "//pkg/importer",
         "//pkg/importer/hook",
         "//pkg/importer/hook/std/classify",
+        "//pkg/importer/hook/std/predict",
         "//pkg/importer/std/csvimp",
         "//pkg/printer",
         "@com_github_burntsushi_toml//:toml",

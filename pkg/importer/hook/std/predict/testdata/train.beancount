@@ -1,0 +1,31 @@
+2023-01-01 open Assets:Bank:Checking
+2023-01-01 open Expenses:Coffee
+2023-01-01 open Expenses:Groceries
+2023-01-01 open Income:Salary
+2023-01-01 open Expenses:Defunct
+
+2023-02-01 * "Starbucks" "Morning coffee"
+  Assets:Bank:Checking  -4.50 USD
+  Expenses:Coffee         4.50 USD
+
+2023-02-05 * "Starbucks" "Afternoon latte"
+  Assets:Bank:Checking  -5.00 USD
+  Expenses:Coffee         5.00 USD
+
+2023-02-08 * "Blue Bottle" "Pour over coffee"
+  Assets:Bank:Checking  -6.00 USD
+  Expenses:Coffee         6.00 USD
+
+2023-02-10 * "Whole Foods" "Weekly groceries"
+  Assets:Bank:Checking  -52.00 USD
+  Expenses:Groceries      52.00 USD
+
+2023-02-12 * "Trader Joes" "Groceries run"
+  Assets:Bank:Checking  -33.00 USD
+  Expenses:Groceries      33.00 USD
+
+2023-02-15 * "Defunct Vendor" "old purchase"
+  Assets:Bank:Checking  -9.00 USD
+  Expenses:Defunct        9.00 USD
+
+2023-12-31 close Expenses:Defunct

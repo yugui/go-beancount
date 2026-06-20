@@ -5,6 +5,7 @@ go 1.25.11
 require (
 	github.com/BurntSushi/toml v1.4.1-0.20240526193622-a339e1f7089c
 	github.com/bazelbuild/rules_go v0.60.0
+	github.com/clipperhouse/uax29/v2 v2.2.0
 	github.com/cockroachdb/apd/v3 v3.2.3
 	github.com/google/go-cmp v0.7.0
 	github.com/mattn/go-runewidth v0.0.23
@@ -16,7 +17,6 @@ require (
 )
 
 require (
-	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.3.4 // indirect
 	go.lsp.dev/pkg v0.0.0-20210717090340-384b27a52fb2 // indirect
