@@ -11,9 +11,11 @@
 // import-source leg (Assets/Liabilities) is the known side and the counter leg
 // its label. Text (payee, narration, string metadata), the known account, and
 // the amount sign become namespaced, weighted tokens; the absolute amount is
-// matched separately as a re-ranking bonus for recurring entries. Examples whose
-// label is not currently open are dropped, so a closed account is never
-// predicted.
+// matched separately as a re-ranking bonus for recurring entries. Each
+// neighbor's contribution to ranking and voting decays exponentially with the
+// age of its example date relative to the query, with a configurable half-life
+// (default one year). Examples whose label is not currently open are dropped,
+// so a closed account is never predicted.
 //
 // # Configuration
 //
@@ -26,6 +28,7 @@
 //	k = 10                                 # predictor neighbors (default 10)
 //	exact_amount_bonus = 0.25              # default 0.25
 //	min_support = 1                        # default 1
+//	recency_half_life_days = 365           # default 365; 0 disables decay
 //	  [hook.fields]                        # per-field weight overrides
 //	  payee = 3.0
 //	  narration = 1.5

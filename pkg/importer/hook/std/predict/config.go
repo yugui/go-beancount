@@ -17,13 +17,14 @@ const (
 // config is the TOML-decoded representation of one predict instance. Pointer
 // fields distinguish an unset key (use the default) from an explicit zero.
 type config struct {
-	Ledger           string       `toml:"ledger"`
-	MinConfidence    *float64     `toml:"min_confidence"`
-	MinMargin        *float64     `toml:"min_margin"`
-	K                int          `toml:"k"`
-	ExactAmountBonus *float64     `toml:"exact_amount_bonus"`
-	MinSupport       int          `toml:"min_support"`
-	Fields           fieldsConfig `toml:"fields"`
+	Ledger              string       `toml:"ledger"`
+	MinConfidence       *float64     `toml:"min_confidence"`
+	MinMargin           *float64     `toml:"min_margin"`
+	K                   int          `toml:"k"`
+	ExactAmountBonus    *float64     `toml:"exact_amount_bonus"`
+	MinSupport          int          `toml:"min_support"`
+	RecencyHalfLifeDays *float64     `toml:"recency_half_life_days"`
+	Fields              fieldsConfig `toml:"fields"`
 }
 
 type fieldsConfig struct {
@@ -67,6 +68,9 @@ func newHook(name string, decode func(dest any) error) (hook.Hook, error) {
 	}
 	if cfg.ExactAmountBonus != nil {
 		opts = append(opts, WithExactAmountBonus(*cfg.ExactAmountBonus))
+	}
+	if cfg.RecencyHalfLifeDays != nil {
+		opts = append(opts, WithRecencyHalfLife(*cfg.RecencyHalfLifeDays))
 	}
 
 	return &Hook{

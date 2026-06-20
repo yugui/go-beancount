@@ -41,6 +41,7 @@ func amt(num, cur string) *ast.Amount {
 
 func TestExtractFeatures(t *testing.T) {
 	txn := &ast.Transaction{
+		Date:      mustDate("2024-03-15"),
 		Payee:     "Acme Store",
 		Narration: "coffee beans",
 		Tags:      []string{"trip"},  // must be ignored
@@ -72,6 +73,7 @@ func TestExtractFeatures(t *testing.T) {
 		AmountAbs: decPtr("5.00"),
 		Currency:  "USD",
 		Sign:      predict.SignCredit,
+		Date:      mustDate("2024-03-15"),
 	}
 	if diff := cmp.Diff(want, got, cmpOpts); diff != "" {
 		t.Errorf("ExtractFeatures (-want +got):\n%s", diff)

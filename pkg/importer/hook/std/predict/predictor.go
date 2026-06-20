@@ -56,12 +56,22 @@ func WithExactAmountBonus(b float64) KNNOption { return func(c *knnConfig) { c.e
 // have to be a candidate (default 1).
 func WithMinSupport(n int) KNNOption { return func(c *knnConfig) { c.minSupport = n } }
 
+// WithRecencyHalfLife sets the half-life (in days) of the recency weight
+// applied to each neighbor's contribution: a neighbor whose example date is
+// halfLife days older than the query date contributes 50% of its similarity
+// to both ranking and voting. A non-positive value disables recency weighting
+// (all neighbors weighted equally). The query's reported Confidence is the
+// undecayed raw cosine and is unaffected. Default 365 (one year).
+func WithRecencyHalfLife(days float64) KNNOption {
+	return func(c *knnConfig) { c.recencyHalfLife = days }
+}
+
 // NewKNNPredictor builds a k-NN / TF-IDF predictor over examples. Construction
 // indexes the corpus (computes IDF and L2-normalized term vectors); there is no
 // iterative training. The returned Predictor is immutable and safe for
 // concurrent use.
 func NewKNNPredictor(examples []Example, opts ...KNNOption) Predictor {
-	cfg := knnConfig{k: 10, exactBonus: 0.25, minSupport: 1}
+	cfg := knnConfig{k: 10, exactBonus: 0.25, minSupport: 1, recencyHalfLife: 365}
 	for _, o := range opts {
 		o(&cfg)
 	}
@@ -106,9 +116,10 @@ func NewKNNPredictor(examples []Example, opts ...KNNOption) Predictor {
 }
 
 type knnConfig struct {
-	k          int
-	exactBonus float64
-	minSupport int
+	k               int
+	exactBonus      float64
+	minSupport      int
+	recencyHalfLife float64 // days; <=0 disables decay
 }
 
 type exampleVec struct {
@@ -201,6 +212,8 @@ type neighbor struct {
 
 // nearest returns the top-k eligible neighbors of the query, sorted by adjusted
 // similarity (descending), breaking ties by more-recent date then account name.
+// Each neighbor's adj carries the exact-amount bonus and the recency-decay
+// weight; raw is the undecayed cosine and remains the basis of Confidence.
 func (p *knnPredictor) nearest(q Features, qvec map[string]float64) []neighbor {
 	var ns []neighbor
 	for i := range p.vecs {
@@ -216,6 +229,7 @@ func (p *knnPredictor) nearest(q Features, qvec map[string]float64) []neighbor {
 		if exactAmountMatch(q, ev) {
 			adj += p.cfg.exactBonus
 		}
+		adj *= recencyWeight(q.Date, ev.date, p.cfg.recencyHalfLife)
 		ns = append(ns, neighbor{adj: adj, raw: raw, label: ev.label, date: ev.date})
 	}
 	sort.Slice(ns, func(i, j int) bool {
@@ -284,4 +298,19 @@ func exactAmountMatch(q Features, ev *exampleVec) bool {
 		return false
 	}
 	return q.AmountAbs.Cmp(ev.amountAbs) == 0
+}
+
+// recencyWeight returns the multiplier applied to a neighbor's contribution
+// given a query and example date pair. It returns 1.0 (no decay) when the
+// half-life is non-positive, when either date is zero, or when the example
+// is at-or-after the query date.
+func recencyWeight(q, ex time.Time, halfLife float64) float64 {
+	if halfLife <= 0 || q.IsZero() || ex.IsZero() {
+		return 1.0
+	}
+	dt := q.Sub(ex).Hours() / 24.0
+	if dt <= 0 {
+		return 1.0
+	}
+	return math.Exp2(-dt / halfLife)
 }

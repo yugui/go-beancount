@@ -2,6 +2,7 @@ package predict
 
 import (
 	"sort"
+	"time"
 
 	"github.com/cockroachdb/apd/v3"
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -40,11 +41,16 @@ type Term struct {
 // amount, nil when absent), Currency (the known posting's currency, or ""), and
 // Sign are not encoded as Terms — except the derived sign: token — so the
 // magnitude never pollutes the text vector.
+//
+// Date is the transaction's date. The predictor uses the gap between a query
+// Features' Date and each indexed example's Date for recency-aware weighting.
+// A zero Date disables that weighting for the query.
 type Features struct {
 	Terms     []Term
 	AmountAbs *apd.Decimal
 	Currency  string
 	Sign      Sign
+	Date      time.Time
 }
 
 // FieldWeights assigns a per-field multiplier to the tokens each transaction
@@ -122,7 +128,7 @@ func ExtractFeatures(txn *ast.Transaction, knownIdx int, tok Tokenizer, fw Field
 		acc.add("sign:"+s.token(), fw.Sign)
 	}
 
-	f := Features{Terms: acc.terms(), Sign: s}
+	f := Features{Terms: acc.terms(), Sign: s, Date: txn.Date}
 	if known.Amount != nil {
 		abs := new(apd.Decimal)
 		_, _ = apd.BaseContext.Abs(abs, &known.Amount.Number) // infallible on a finite decimal
