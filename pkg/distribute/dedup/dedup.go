@@ -12,30 +12,38 @@
 //
 // # Equivalence
 //
-// Two directives are equivalent under an OR of two rules:
+// Each query reports the strongest of four layered match rules, applied
+// in priority order (see [MatchKind]):
 //
-//   - AST equality, computed via go-cmp with every [ast.Span] value
-//     ignored, the routing-override metadata key stripped from both
-//     sides, [apd.Decimal] compared numerically, posting order
-//     canonicalized, and a narrow set of free-text fields normalized
-//     (NFKC + Unicode whitespace removal). The free-text scope is
-//     intentionally narrow: Transaction.Narration, Transaction.Payee,
-//     Note.Comment, and MetaString-typed metadata values. Identifier-
-//     bearing strings (account names, currency codes, tag/link
-//     names, metadata keys, file paths, plugin/query/custom names)
-//     stay byte-exact, since silently collapsing identifier variants
-//     would mask routing mistakes.
-//   - Metadata-key equality: for each key in eqKeys, both directives
-//     carry that key with equal values. Useful when an upstream
-//     importer already stamps a stable id like "import-id".
+//   - id conflict — a key in MatchParams.IDKeys is present on both
+//     directives with differing values. This proves the two are
+//     distinct events and vetoes every weaker rule, so look-alike
+//     directives carrying conflicting stable ids never collapse.
+//   - id equality ([MatchID]) — such a key is present on both with
+//     equal values. Useful when an upstream importer stamps a stable id
+//     like "import-id" that survives reformatting.
+//   - structural AST equality ([MatchExact]) — go-cmp equality with
+//     every [ast.Span] ignored, ALL metadata ignored (identity-bearing
+//     metadata is the id layer's job; everything else is annotation),
+//     [apd.Decimal] compared numerically, posting order canonicalized,
+//     and Transaction.Narration / Transaction.Payee / Note.Comment
+//     NFKC-normalized. Identifier-bearing strings (accounts, currencies,
+//     tags, links) stay byte-exact.
+//   - structural similarity ([MatchStructural]) — same posting multiset
+//     under account + absolute amount + currency (the absolute value
+//     absorbs a transfer's sign flip) within MatchParams.DateWindowDays.
 //
-// AST equality does not bridge auto-posting differences: if importer A
-// emits all postings explicitly while importer B leaves one
-// amount-elided for beancount to auto-balance, the two transactions
-// have differently-shaped []Posting lists and compare unequal under
-// AST equality. Metadata-key equality is the cross-source escape
-// hatch — attach a stable id and pass the key in the eqKeys argument
-// to [Index.InDestination] / [Index.InOtherActive].
+// [MatchExact] and [MatchStructural] both tolerate the single
+// auto-balanced (amount-elided) posting beancount allows per
+// transaction: it is matched by account alone, since the balance
+// constraint fixes its amount once the other postings line up. This
+// bridges the common case where one source states every posting
+// explicitly while another leaves a leg for beancount to auto-balance.
+//
+// [MatchID] and [MatchExact] are equivalence relations and safe to skip
+// on. [MatchStructural] is non-transitive (the date window breaks
+// transitivity) and is review-only — callers must not skip on it. See
+// [MatchKind.SkipCapable].
 //
 // # Scopes
 //
@@ -60,23 +68,42 @@ import (
 	"github.com/yugui/go-beancount/pkg/distribute/comment"
 )
 
-// DefaultOverrideMetaKey is the built-in metadata key whose entry is
-// stripped before AST equality. Callers can override it via
-// WithOverrideMetaKey when the user has reconfigured the routing-override
-// key in [routes.transaction].
-const DefaultOverrideMetaKey = "route-account"
-
-// MatchKind identifies which equivalence rule fired for a query.
+// MatchKind identifies which match rule fired for a query, ordered by
+// strength. A larger value is not "stronger"; use [MatchKind.SkipCapable]
+// to tell skip-safe (equivalence-relation) matches from review-only ones.
 type MatchKind int
 
 const (
 	// MatchNone indicates the query did not match any indexed entry.
 	MatchNone MatchKind = iota
-	// MatchAST indicates a Span-and-override-key-stripped AST equality match.
-	MatchAST
-	// MatchMeta indicates a metadata-key equality match against eqKeys.
-	MatchMeta
+	// MatchID indicates an id-key equality match (MatchParams.IDKeys).
+	MatchID
+	// MatchExact indicates a Span-and-metadata-stripped AST equality match.
+	MatchExact
+	// MatchStructural indicates an account+absolute-amount posting-multiset
+	// match within the configured date window. Non-transitive: review-only.
+	MatchStructural
+	// MatchFuzzy is reserved for a future similarity-based match. Like
+	// MatchStructural it is review-only.
+	MatchFuzzy
 )
+
+// SkipCapable reports whether a match of this kind is an equivalence
+// relation and therefore safe to drop the incoming directive on
+// (skip). Non-transitive kinds are review-only: the caller should keep
+// the directive but mark it for review rather than skipping it.
+func (k MatchKind) SkipCapable() bool {
+	return k == MatchID || k == MatchExact
+}
+
+// MatchParams carries the per-query tunables that govern matching.
+// IDKeys names the metadata keys treated as stable identity (equal
+// value ⇒ same; conflicting value ⇒ distinct). DateWindowDays bounds
+// the structural rule; zero disables it.
+type MatchParams struct {
+	IDKeys         []string
+	DateWindowDays int
+}
 
 // Index is the queryable equivalence index. Every path argument is a
 // Config.Root-relative path (the same form route.Decide returns); the
@@ -84,11 +111,11 @@ const (
 type Index interface {
 	// InDestination reports whether path already contains an equivalent
 	// directive — active OR commented-out — to d.
-	InDestination(path string, d ast.Directive, eqKeys []string) (matched bool, kind MatchKind)
+	InDestination(path string, d ast.Directive, p MatchParams) (matched bool, kind MatchKind)
 	// InOtherActive reports whether any active equivalent of d exists
 	// under a path other than path. Commented-out entries elsewhere are
 	// ignored — they are notes, not the canonical record.
-	InOtherActive(path string, d ast.Directive, eqKeys []string) (matched bool, kind MatchKind)
+	InOtherActive(path string, d ast.Directive, p MatchParams) (matched bool, kind MatchKind)
 	// Add records d under path with the given commented flag so that
 	// subsequent queries see it.
 	Add(path string, d ast.Directive, commented bool)
@@ -98,23 +125,7 @@ type Index interface {
 // can land without a signature change.
 type Option func(*options)
 
-type options struct {
-	overrideMetaKey string
-}
-
-// WithOverrideMetaKey overrides the default metadata key
-// (DefaultOverrideMetaKey) stripped from AST equality comparisons. The
-// empty string is treated as "not set" — passing it leaves the default
-// in place. To disable stripping entirely, callers must explicitly opt
-// into a future flag; today, stripping always uses some non-empty key.
-func WithOverrideMetaKey(key string) Option {
-	return func(o *options) {
-		if key == "" {
-			return
-		}
-		o.overrideMetaKey = key
-	}
-}
+type options struct{}
 
 // indexEntry is one directive recorded in the index.
 type indexEntry struct {
@@ -127,28 +138,27 @@ type indexEntry struct {
 // is acceptable at the expected scale (tens of files, thousands of
 // directives).
 type memoryIndex struct {
-	entries         []indexEntry
-	overrideMetaKey string
+	entries []indexEntry
 }
 
-func (m *memoryIndex) InDestination(path string, d ast.Directive, eqKeys []string) (bool, MatchKind) {
+func (m *memoryIndex) InDestination(path string, d ast.Directive, p MatchParams) (bool, MatchKind) {
 	for _, e := range m.entries {
 		if e.path != path {
 			continue
 		}
-		if k := equivalent(e.directive, d, m.overrideMetaKey, eqKeys); k != MatchNone {
+		if k := equivalent(e.directive, d, p); k != MatchNone {
 			return true, k
 		}
 	}
 	return false, MatchNone
 }
 
-func (m *memoryIndex) InOtherActive(path string, d ast.Directive, eqKeys []string) (bool, MatchKind) {
+func (m *memoryIndex) InOtherActive(path string, d ast.Directive, p MatchParams) (bool, MatchKind) {
 	for _, e := range m.entries {
 		if e.path == path || e.commented {
 			continue
 		}
-		if k := equivalent(e.directive, d, m.overrideMetaKey, eqKeys); k != MatchNone {
+		if k := equivalent(e.directive, d, p); k != MatchNone {
 			return true, k
 		}
 	}
@@ -180,7 +190,7 @@ func BuildIndex(ctx context.Context, ledgerRoot, configRoot string, opts ...Opti
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
-	o := options{overrideMetaKey: DefaultOverrideMetaKey}
+	var o options
 	for _, fn := range opts {
 		fn(&o)
 	}
@@ -195,7 +205,7 @@ func BuildIndex(ctx context.Context, ledgerRoot, configRoot string, opts ...Opti
 		return nil, nil, fmt.Errorf("dedup: loading ledger %q: %w", ledgerRoot, err)
 	}
 
-	idx := &memoryIndex{overrideMetaKey: o.overrideMetaKey}
+	idx := &memoryIndex{}
 	for _, file := range ledger.Files {
 		if err := ctx.Err(); err != nil {
 			return nil, ledger.Diagnostics, err

@@ -485,7 +485,7 @@ template = "auto/{account}/{date}.beancount"
 	}
 }
 
-func TestRun_EquivalenceMetaKeysSkipsByMetaMatch(t *testing.T) {
+func TestRun_IDKeysMatchCommentsCrossPath(t *testing.T) {
 	openLine := `2024-01-10 open Assets:Bank USD
   import-id: "abc"
 `
@@ -493,13 +493,13 @@ func TestRun_EquivalenceMetaKeysSkipsByMetaMatch(t *testing.T) {
 		"transactions/Assets/Bank/202401.beancount": openLine,
 	})
 	cfgPath := writeConfig(t, `
-[routes.account]
-equivalence_meta_keys = ["import-id"]
+[routes.transaction]
+id_keys = ["import-id"]
 `)
-	// Different account, same import-id → meta-key match against the
+	// Different account, same import-id → id-key match against the
 	// active entry under transactions/Assets/Other path. We probe a
-	// different account so the AST-equality branch can't fire (different
-	// account values), forcing the meta branch to be the only path.
+	// different account so the exact-equality branch can't fire (different
+	// account values), forcing the id branch to be the only path.
 	probe := `2024-02-20 open Assets:Other USD
   import-id: "abc"
 `
@@ -514,7 +514,7 @@ equivalence_meta_keys = ["import-id"]
 		t.Fatalf("read other dest: %v", err)
 	}
 	// Because import-id matched against the seeded active entry under a
-	// different path, this directive must land commented-out (Rule 2).
+	// different path, this directive must land commented-out.
 	if !strings.Contains(string(got), "; 2024-02-20 open Assets:Other") {
 		t.Errorf("expected commented Open at other dest, got: %q", string(got))
 	}

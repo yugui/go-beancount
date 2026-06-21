@@ -43,11 +43,26 @@ func txn(narration, payee string, postings ...ast.Posting) *ast.Transaction {
 	}
 }
 
+// txnOn is like txn but with an explicit date, for date-window tests.
+func txnOn(date time.Time, narration string, postings ...ast.Posting) *ast.Transaction {
+	return &ast.Transaction{
+		Date:      date,
+		Flag:      '*',
+		Narration: narration,
+		Postings:  postings,
+	}
+}
+
 // posting constructs a single ast.Posting with an explicit amount.
 // Callers needing posting-level metadata, cost, price, or a flag
 // fill those fields on the returned value.
 func posting(account ast.Account, num apd.Decimal, currency string) ast.Posting {
 	return ast.Posting{Account: account, Amount: &ast.Amount{Number: num, Currency: currency}}
+}
+
+// elided constructs an amount-elided (auto-balanced) posting.
+func elided(account ast.Account) ast.Posting {
+	return ast.Posting{Account: account}
 }
 
 func mustDate(t *testing.T, s string) time.Time {
@@ -85,6 +100,11 @@ func writeFile(t *testing.T, dir, relPath, contents string) string {
 	return abs
 }
 
+// idMeta builds directive metadata carrying a single id-style string key.
+func idMeta(key, value string) ast.Metadata {
+	return ast.Metadata{Props: map[string]ast.MetaValue{key: {Kind: ast.MetaString, String: value}}}
+}
+
 func TestBuildIndex_RecordsActive(t *testing.T) {
 	root := t.TempDir()
 	ledgerPath := writeFile(t, root, "main.beancount", `2024-01-15 price USD 110 JPY
@@ -97,9 +117,9 @@ func TestBuildIndex_RecordsActive(t *testing.T) {
 		t.Errorf("diagnostics = %+v, want none", diags)
 	}
 	d := mustParse(t, "2024-01-15 price USD 110 JPY\n")
-	matched, kind := idx.InDestination("main.beancount", d, nil)
-	if !matched || kind != MatchAST {
-		t.Errorf("InDestination: matched=%v kind=%v, want true MatchAST", matched, kind)
+	matched, kind := idx.InDestination("main.beancount", d, MatchParams{})
+	if !matched || kind != MatchExact {
+		t.Errorf("InDestination: matched=%v kind=%v, want true MatchExact", matched, kind)
 	}
 }
 
@@ -112,12 +132,12 @@ func TestBuildIndex_RecordsCommented(t *testing.T) {
 		t.Fatalf("BuildIndex: %v", err)
 	}
 	d := mustParse(t, "2024-01-15 price USD 110 JPY\n")
-	matched, kind := idx.InDestination("main.beancount", d, nil)
-	if !matched || kind != MatchAST {
-		t.Errorf("InDestination over commented: matched=%v kind=%v, want true MatchAST", matched, kind)
+	matched, kind := idx.InDestination("main.beancount", d, MatchParams{})
+	if !matched || kind != MatchExact {
+		t.Errorf("InDestination over commented: matched=%v kind=%v, want true MatchExact", matched, kind)
 	}
 	// Commented entries elsewhere must not satisfy InOtherActive.
-	matched, _ = idx.InOtherActive("other.beancount", d, nil)
+	matched, _ = idx.InOtherActive("other.beancount", d, MatchParams{})
 	if matched {
 		t.Errorf("InOtherActive matched a commented entry; want false")
 	}
@@ -127,8 +147,6 @@ func TestBuildIndex_PathCanonicalization(t *testing.T) {
 	configRoot := t.TempDir()
 	outsideDir := t.TempDir()
 
-	// Write the active price into a file outside configRoot, then a
-	// root ledger inside configRoot that includes it via absolute path.
 	outsidePath := writeFile(t, outsideDir, "elsewhere.beancount", `2024-01-15 price USD 110 JPY
 `)
 	rootLedger := writeFile(t, configRoot, "main.beancount", `include "`+outsidePath+`"
@@ -141,16 +159,11 @@ func TestBuildIndex_PathCanonicalization(t *testing.T) {
 
 	d := mustParse(t, "2024-01-15 price USD 110 JPY\n")
 
-	// The included file is outside configRoot, so its key is `..`-prefixed.
-	// A query for any in-root path must miss it under InDestination.
-	matched, _ := idx.InDestination("quotes/USD/202401.beancount", d, nil)
+	matched, _ := idx.InDestination("quotes/USD/202401.beancount", d, MatchParams{})
 	if matched {
 		t.Errorf("InDestination from in-root path matched an outside-root entry; want false")
 	}
-	// But InOtherActive should still see the active outside entry: the
-	// key differs from the queried path, satisfying the "elsewhere"
-	// scope, and outside-root files are walked just like in-root ones.
-	matched, _ = idx.InOtherActive("quotes/USD/202401.beancount", d, nil)
+	matched, _ = idx.InOtherActive("quotes/USD/202401.beancount", d, MatchParams{})
 	if !matched {
 		t.Errorf("InOtherActive did not see the outside-root active entry; want true")
 	}
@@ -175,136 +188,190 @@ func TestBuildIndex_ContextCancellation(t *testing.T) {
 	}
 }
 
-func TestEqualityOpts_IgnoresSpan(t *testing.T) {
+func TestEquivalent_IgnoresSpan(t *testing.T) {
 	a := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
 	a.Span = ast.Span{Start: ast.Position{Filename: "x.beancount", Line: 1}}
 	b := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
 	b.Span = ast.Span{Start: ast.Position{Filename: "y.beancount", Line: 99}}
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent ignoring Span: got %v, want MatchAST", k)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent ignoring Span: got %v, want MatchExact", k)
 	}
 }
 
-func TestEqualityOpts_IgnoresOverrideKey(t *testing.T) {
+// TestEquivalent_MetadataIgnored pins the central change: metadata other
+// than the configured id keys is annotation, not identity. Two
+// directives that differ only in (non-id) metadata are MatchExact, so a
+// re-import of a user-annotated directive deduplicates.
+func TestEquivalent_MetadataIgnored(t *testing.T) {
 	a := &ast.Open{
 		Date:    mustDate(t, "2024-01-15"),
 		Account: "Assets:A",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"route-account": {Kind: ast.MetaString, String: "Assets:Other"}}},
+		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"note": {Kind: ast.MetaString, String: "hand-added"}, "route-account": {Kind: ast.MetaString, String: "Assets:Other"}}},
 	}
 	b := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent ignoring override key (nil meta): got %v, want MatchAST", k)
-	}
-	// Two directives that disagree only on the override key value also compare equal.
-	c := &ast.Open{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"route-account": {Kind: ast.MetaString, String: "Assets:X"}}},
-	}
-	if k := equivalent(a, c, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent with both override keys: got %v, want MatchAST", k)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent ignoring non-id metadata: got %v, want MatchExact", k)
 	}
 }
 
-func TestEquivalent_MetaKeyMatch(t *testing.T) {
-	a := &ast.Open{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"import-id": {Kind: ast.MetaString, String: "abc"}}},
-	}
-	b := &ast.Open{
-		Date:    mustDate(t, "2024-02-20"),
-		Account: "Assets:B",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"import-id": {Kind: ast.MetaString, String: "abc"}}},
-	}
-	if k := equivalent(a, b, "route-account", []string{"import-id"}); k != MatchMeta {
-		t.Errorf("equivalent with import-id match: got %v, want MatchMeta", k)
-	}
-	// Different values must not match.
-	b.Meta.Props["import-id"] = ast.MetaValue{Kind: ast.MetaString, String: "xyz"}
-	if k := equivalent(a, b, "route-account", []string{"import-id"}); k != MatchNone {
-		t.Errorf("equivalent with differing import-id: got %v, want MatchNone", k)
+// TestEquivalent_PostingMetadataIgnored confirms posting-level metadata
+// is also outside identity.
+func TestEquivalent_PostingMetadataIgnored(t *testing.T) {
+	pa := posting("Expenses:Food", dec(t, "1"), "USD")
+	pa.Meta = ast.Metadata{Props: map[string]ast.MetaValue{"src": {Kind: ast.MetaString, String: "A"}}}
+	pb := posting("Expenses:Food", dec(t, "1"), "USD")
+	pb.Meta = ast.Metadata{Props: map[string]ast.MetaValue{"src": {Kind: ast.MetaString, String: "B"}}}
+	cash := posting("Assets:Cash", dec(t, "-1"), "USD")
+	a := txn("x", "", pa, cash)
+	b := txn("x", "", pb, cash)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent ignoring posting metadata: got %v, want MatchExact", k)
 	}
 }
 
-func TestIndex_InOtherActiveScope(t *testing.T) {
-	idx := &memoryIndex{}
-	d := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
-	idx.Add("Q.beancount", d, false)
-
-	probe := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
-	if matched, _ := idx.InOtherActive("P.beancount", probe, nil); !matched {
-		t.Error("InOtherActive: active entry at Q should match query at P")
-	}
-
-	idx2 := &memoryIndex{}
-	idx2.Add("Q.beancount", d, true)
-	if matched, _ := idx2.InOtherActive("P.beancount", probe, nil); matched {
-		t.Error("InOtherActive: commented entry at Q must not match query at P")
+// TestEquivalent_IDEqual covers MatchID: an equal id-key value makes two
+// otherwise-different directives equivalent.
+func TestEquivalent_IDEqual(t *testing.T) {
+	a := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A", Meta: idMeta("import-id", "abc")}
+	b := &ast.Open{Date: mustDate(t, "2024-02-20"), Account: "Assets:B", Meta: idMeta("import-id", "abc")}
+	if k := equivalent(a, b, MatchParams{IDKeys: []string{"import-id"}}); k != MatchID {
+		t.Errorf("equivalent with equal import-id: got %v, want MatchID", k)
 	}
 }
 
-func TestIndex_AddAffectsSubsequentQueries(t *testing.T) {
-	idx := &memoryIndex{}
-	d := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
-	if matched, _ := idx.InDestination("P.beancount", d, nil); matched {
-		t.Fatal("InDestination on empty index: matched=true, want false")
+// TestEquivalent_IDConflictVetoes is the S7 guard: two structurally
+// identical directives carrying conflicting id keys are proven distinct
+// and must NOT match, even though their content is identical.
+func TestEquivalent_IDConflictVetoes(t *testing.T) {
+	a := txn("coffee", "", posting("Assets:Cash", dec(t, "-1000"), "JPY"), posting("Expenses:Food", dec(t, "1000"), "JPY"))
+	b := txn("coffee", "", posting("Assets:Cash", dec(t, "-1000"), "JPY"), posting("Expenses:Food", dec(t, "1000"), "JPY"))
+	a.Meta = idMeta("fitid", "row-1")
+	b.Meta = idMeta("fitid", "row-2")
+	if k := equivalent(a, b, MatchParams{IDKeys: []string{"fitid"}}); k != MatchNone {
+		t.Errorf("equivalent with conflicting fitid on identical txns: got %v, want MatchNone (veto)", k)
 	}
-
-	idx.Add("P.beancount", d, false)
-	if matched, kind := idx.InDestination("P.beancount", d, nil); !matched || kind != MatchAST {
-		t.Errorf("after Add(active): matched=%v kind=%v, want true MatchAST", matched, kind)
-	}
-
-	idx2 := &memoryIndex{}
-	idx2.Add("P.beancount", d, true)
-	if matched, kind := idx2.InDestination("P.beancount", d, nil); !matched || kind != MatchAST {
-		t.Errorf("after Add(commented): matched=%v kind=%v, want true MatchAST", matched, kind)
-	}
-}
-
-// Sanity: the MatchKind String form is not part of the API but making
-// failures readable helps debug; the test keeps it import-less by
-// using a simple compare against raw integers.
-func TestMatchKindValues(t *testing.T) {
-	if MatchNone != 0 || MatchAST != 1 || MatchMeta != 2 {
-		t.Errorf("MatchKind iota drifted: None=%d AST=%d Meta=%d", MatchNone, MatchAST, MatchMeta)
+	// Without the id key configured, the veto does not apply: identical
+	// content is MatchExact.
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent without id keys: got %v, want MatchExact", k)
 	}
 }
 
-func TestBuildIndex_WithOverrideMetaKey(t *testing.T) {
-	root := t.TempDir()
-	// The seeded directive carries an "x-route" metadata entry; the input
-	// probe lacks one. With the default override key ("route-account")
-	// the two would NOT compare equal because x-route differs from no
-	// metadata. Configuring "x-route" as the override key strips it
-	// before comparison and the two become equivalent.
-	ledgerPath := writeFile(t, root, "main.beancount", `2024-01-15 open Assets:A
-  x-route: "Assets:Other"
-`)
-	probe := mustParse(t, "2024-01-15 open Assets:A\n")
+// TestEquivalent_IDConflictBeatsEqual confirms a conflict on one key
+// wins over equality on another.
+func TestEquivalent_IDConflictBeatsEqual(t *testing.T) {
+	a := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A", Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+		"import-id": {Kind: ast.MetaString, String: "same"},
+		"fitid":     {Kind: ast.MetaString, String: "row-1"},
+	}}}
+	b := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A", Meta: ast.Metadata{Props: map[string]ast.MetaValue{
+		"import-id": {Kind: ast.MetaString, String: "same"},
+		"fitid":     {Kind: ast.MetaString, String: "row-2"},
+	}}}
+	if k := equivalent(a, b, MatchParams{IDKeys: []string{"import-id", "fitid"}}); k != MatchNone {
+		t.Errorf("equivalent with one equal and one conflicting id key: got %v, want MatchNone", k)
+	}
+}
 
-	withDefault, _, err := BuildIndex(context.Background(), ledgerPath, root)
-	if err != nil {
-		t.Fatalf("BuildIndex (default key): %v", err)
+// TestEquivalent_IDNormalizesMetaString verifies the id layer normalizes
+// MetaString values, so two sources stamping the same human-readable id
+// with different formatting still match.
+func TestEquivalent_IDNormalizesMetaString(t *testing.T) {
+	const fullABC123 = "ＡＢＣ１２３" // "ＡＢＣ１２３" (full-width "ABC123")
+	a := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A", Meta: idMeta("import-id", "ABC 123")}
+	b := &ast.Open{Date: mustDate(t, "2024-02-20"), Account: "Assets:B", Meta: idMeta("import-id", fullABC123)}
+	if k := equivalent(a, b, MatchParams{IDKeys: []string{"import-id"}}); k != MatchID {
+		t.Errorf("equivalent across normalized MetaString import-id: got %v, want MatchID", k)
 	}
-	if matched, _ := withDefault.InDestination("main.beancount", probe, nil); matched {
-		t.Error("InDestination with default override key matched a directive carrying x-route; want false")
-	}
+}
 
-	withCustom, _, err := BuildIndex(context.Background(), ledgerPath, root, WithOverrideMetaKey("x-route"))
-	if err != nil {
-		t.Fatalf("BuildIndex (custom key): %v", err)
+// TestEquivalent_StructuralTransfer covers MatchStructural: the two
+// perspectives of a transfer (postings with swapped signs) match under
+// account + absolute amount within the date window, as a review-only
+// (non-skip) result.
+func TestEquivalent_StructuralTransfer(t *testing.T) {
+	a := txnOn(mustDate(t, "2024-03-01"), "to savings",
+		posting("Assets:Checking", dec(t, "-100"), "USD"),
+		posting("Assets:Savings", dec(t, "100"), "USD"),
+	)
+	b := txnOn(mustDate(t, "2024-03-02"), "from checking",
+		posting("Assets:Checking", dec(t, "100"), "USD"),
+		posting("Assets:Savings", dec(t, "-100"), "USD"),
+	)
+	if k := equivalent(a, b, MatchParams{DateWindowDays: 3}); k != MatchStructural {
+		t.Errorf("equivalent across transfer perspectives within window: got %v, want MatchStructural", k)
 	}
-	if matched, kind := withCustom.InDestination("main.beancount", probe, nil); !matched || kind != MatchAST {
-		t.Errorf("InDestination with custom override key x-route: matched=%v kind=%v, want true MatchAST", matched, kind)
+	if MatchStructural.SkipCapable() {
+		t.Error("MatchStructural.SkipCapable() = true, want false (review-only)")
+	}
+	// Outside the window: no match.
+	c := txnOn(mustDate(t, "2024-03-20"), "from checking",
+		posting("Assets:Checking", dec(t, "100"), "USD"),
+		posting("Assets:Savings", dec(t, "-100"), "USD"),
+	)
+	if k := equivalent(a, c, MatchParams{DateWindowDays: 3}); k != MatchNone {
+		t.Errorf("equivalent outside date window: got %v, want MatchNone", k)
+	}
+	// Window unset (0): the structural rule is disabled.
+	if k := equivalent(a, b, MatchParams{}); k != MatchNone {
+		t.Errorf("equivalent with structural rule disabled: got %v, want MatchNone", k)
+	}
+}
+
+// TestEquivalent_StructuralDistinctAmounts confirms the structural rule
+// does not bridge transactions with different amounts.
+func TestEquivalent_StructuralDistinctAmounts(t *testing.T) {
+	a := txnOn(mustDate(t, "2024-03-01"), "x",
+		posting("Assets:A", dec(t, "-100"), "USD"), posting("Assets:B", dec(t, "100"), "USD"))
+	b := txnOn(mustDate(t, "2024-03-01"), "x",
+		posting("Assets:A", dec(t, "-90"), "USD"), posting("Assets:B", dec(t, "90"), "USD"))
+	if k := equivalent(a, b, MatchParams{DateWindowDays: 3}); k != MatchNone {
+		t.Errorf("equivalent across differing amounts: got %v, want MatchNone", k)
+	}
+}
+
+// TestEquivalent_AutoPostingExact is the auto-balanced posting case for
+// MatchExact: an input that elides one leg matches a fully-booked ledger
+// entry, and the result is skip-capable.
+func TestEquivalent_AutoPostingExact(t *testing.T) {
+	input := txn("groceries", "",
+		posting("Assets:Cash", dec(t, "-50"), "USD"),
+		elided("Expenses:Food"),
+	)
+	booked := txn("groceries", "",
+		posting("Assets:Cash", dec(t, "-50"), "USD"),
+		posting("Expenses:Food", dec(t, "50"), "USD"),
+	)
+	if k := equivalent(input, booked, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent with one elided posting vs booked: got %v, want MatchExact", k)
+	}
+	if !MatchExact.SkipCapable() {
+		t.Error("MatchExact.SkipCapable() = false, want true")
+	}
+	// The elided leg's account must match the booked leftover; a different
+	// account is a genuine difference.
+	other := txn("groceries", "",
+		posting("Assets:Cash", dec(t, "-50"), "USD"),
+		posting("Expenses:Travel", dec(t, "50"), "USD"),
+	)
+	if k := equivalent(input, other, MatchParams{}); k != MatchNone {
+		t.Errorf("equivalent with elided account mismatch: got %v, want MatchNone", k)
+	}
+}
+
+// TestEquivalent_TwoElidedPostings confirms the fail-safe: beancount
+// permits at most one elided posting per transaction, so two elided
+// postings on one side never match.
+func TestEquivalent_TwoElidedPostings(t *testing.T) {
+	a := txn("x", "", posting("Assets:Cash", dec(t, "-50"), "USD"), elided("Expenses:A"), elided("Expenses:B"))
+	b := txn("x", "", posting("Assets:Cash", dec(t, "-50"), "USD"), posting("Expenses:A", dec(t, "25"), "USD"), posting("Expenses:B", dec(t, "25"), "USD"))
+	if k := equivalent(a, b, MatchParams{}); k != MatchNone {
+		t.Errorf("equivalent with two elided postings: got %v, want MatchNone", k)
 	}
 }
 
 // TestEquivalent_PostingOrderSwap verifies that two transactions whose
-// postings differ only in emission order compare equal. This is the
-// minimum dedup property when the same transaction comes from two
-// importers that disagree on which leg to emit first.
+// postings differ only in emission order compare equal.
 func TestEquivalent_PostingOrderSwap(t *testing.T) {
 	d := dec(t, "100")
 	dn := dec(t, "-100")
@@ -316,269 +383,102 @@ func TestEquivalent_PostingOrderSwap(t *testing.T) {
 		posting("Assets:Cash", dn, "USD"),
 		posting("Expenses:Food", d, "USD"),
 	)
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across posting swap: got %v, want MatchAST", k)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent across posting swap: got %v, want MatchExact", k)
 	}
 }
 
-// TestEquivalent_PostingMetaDifferent verifies the canonicalization
-// does not collapse postings whose Meta differs — only field-level
-// equality is granted, not posting deduplication.
-func TestEquivalent_PostingMetaDifferent(t *testing.T) {
-	d := dec(t, "100")
-	dn := dec(t, "-100")
-	pa := posting("Expenses:Food", d, "USD")
-	pa.Meta = ast.Metadata{Props: map[string]ast.MetaValue{"src": {Kind: ast.MetaString, String: "A"}}}
-	pb := posting("Expenses:Food", d, "USD")
-	pb.Meta = ast.Metadata{Props: map[string]ast.MetaValue{"src": {Kind: ast.MetaString, String: "B"}}}
-	cash := posting("Assets:Cash", dn, "USD")
-	a := txn("x", "", pa, cash)
-	b := txn("x", "", pb, cash)
-	if k := equivalent(a, b, "route-account", nil); k != MatchNone {
-		t.Errorf("equivalent with diverging posting Meta: got %v, want MatchNone", k)
+// TestEquivalent_MultisetSameAccount verifies multiset matching pairs
+// same-account postings by amount: a swap across importers still pairs
+// correctly.
+func TestEquivalent_MultisetSameAccount(t *testing.T) {
+	build := func(firstNum, secondNum string) *ast.Transaction {
+		return txn("x", "",
+			posting("Expenses:Food", dec(t, firstNum), "USD"),
+			posting("Expenses:Food", dec(t, secondNum), "USD"),
+			posting("Assets:Cash", dec(t, "-3"), "USD"),
+		)
+	}
+	a := build("1", "2")
+	b := build("2", "1")
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent across multiset-equal swap: got %v, want MatchExact", k)
+	}
+	// A genuine amount difference at the shared account is not equal.
+	c := build("1", "3")
+	if k := equivalent(a, c, MatchParams{}); k != MatchNone {
+		t.Errorf("equivalent across differing same-account amounts: got %v, want MatchNone", k)
 	}
 }
 
-// nfcCafe and nfdCafe spell "café" precomposed and as base+combining
-// codepoints. Constructing the NFD form via norm.NFD.String keeps the
-// distinction explicit and immune to editor normalization that would
-// otherwise silently rewrite the source bytes and break the test
-// premise.
-const nfcCafe = "caf\u00e9" // "café"
-
-var nfdCafe = norm.NFD.String(nfcCafe)
-
-// TestEquivalent_NarrationNFC_NFD covers the most common Unicode
-// normalization mismatch — the same character emitted as a precomposed
-// codepoint by one source and as base + combining mark by another.
 func TestEquivalent_NarrationNFC_NFD(t *testing.T) {
 	a := txn(nfcCafe, "", posting("Assets:A", dec(t, "1"), "USD"))
 	b := txn(nfdCafe, "", posting("Assets:A", dec(t, "1"), "USD"))
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across NFC/NFD narration: got %v, want MatchAST", k)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent across NFC/NFD narration: got %v, want MatchExact", k)
 	}
 }
 
-// TestEquivalent_NarrationFullWidth verifies NFKC behavior: full-width
-// Latin and digit characters fold to their half-width equivalents.
-// The full-width string is built from \u escapes so the test does not
-// rely on rare glyphs surviving editor round-trips.
 func TestEquivalent_NarrationFullWidth(t *testing.T) {
-	const fullWidth = "\uff21\uff22\uff23\uff11\uff12\uff13" // "ＡＢＣ１２３" (full-width "ABC123")
+	const fullWidth = "ＡＢＣ１２３" // "ＡＢＣ１２３" (full-width "ABC123")
 	a := txn("ABC123", "", posting("Assets:A", dec(t, "1"), "USD"))
 	b := txn(fullWidth, "", posting("Assets:A", dec(t, "1"), "USD"))
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across full-width narration: got %v, want MatchAST", k)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent across full-width narration: got %v, want MatchExact", k)
 	}
 }
 
-// TestEquivalent_NarrationIdeographicSpace verifies that Unicode
-// whitespace (here U+3000 IDEOGRAPHIC SPACE) is stripped before
-// comparison — including whitespace embedded inside the string, not
-// just at its edges. The ideographic space is written as \u3000 so
-// the intent is unambiguous; an ASCII space looks identical in many
-// editors.
 func TestEquivalent_NarrationIdeographicSpace(t *testing.T) {
 	a := txn("Foo Bar", "", posting("Assets:A", dec(t, "1"), "USD"))
-	b := txn("Foo\u3000Bar", "", posting("Assets:A", dec(t, "1"), "USD")) // "Foo<U+3000 IDEOGRAPHIC SPACE>Bar"
+	b := txn("Foo　Bar", "", posting("Assets:A", dec(t, "1"), "USD")) // "Foo<U+3000 IDEOGRAPHIC SPACE>Bar"
 	c := txn("FooBar", "", posting("Assets:A", dec(t, "1"), "USD"))
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across ASCII vs ideographic space: got %v, want MatchAST", k)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent across ASCII vs ideographic space: got %v, want MatchExact", k)
 	}
-	if k := equivalent(a, c, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across embedded vs no whitespace: got %v, want MatchAST", k)
+	if k := equivalent(a, c, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent across embedded vs no whitespace: got %v, want MatchExact", k)
 	}
 }
 
-// TestEquivalent_PayeeNFC_NFD pins normalization on Transaction.Payee,
-// which lives behind a different FilterPath branch than Narration.
 func TestEquivalent_PayeeNFC_NFD(t *testing.T) {
 	a := txn("x", nfcCafe, posting("Assets:A", dec(t, "1"), "USD"))
 	b := txn("x", nfdCafe, posting("Assets:A", dec(t, "1"), "USD"))
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across NFC/NFD payee: got %v, want MatchAST", k)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent across NFC/NFD payee: got %v, want MatchExact", k)
 	}
 }
 
-// TestEquivalent_NoteCommentNormalized exercises the noteType branch
-// of freeTextCmp. Without this test that branch is unreachable from
-// the suite, and a regression that mis-scopes the FilterPath would go
-// undetected.
 func TestEquivalent_NoteCommentNormalized(t *testing.T) {
-	a := &ast.Note{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Comment: nfcCafe + " visit",
-	}
-	b := &ast.Note{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Comment: nfdCafe + "\u3000visit", // NFD "café" + <U+3000 IDEOGRAPHIC SPACE> + "visit"
-	}
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across normalized Note.Comment: got %v, want MatchAST", k)
+	a := &ast.Note{Date: mustDate(t, "2024-01-15"), Account: "Assets:A", Comment: nfcCafe + " visit"}
+	b := &ast.Note{Date: mustDate(t, "2024-01-15"), Account: "Assets:A", Comment: nfdCafe + "　visit"}
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent across normalized Note.Comment: got %v, want MatchExact", k)
 	}
 }
 
-// TestEquivalent_AccountUnicodeNotCollapsed confirms the
-// normalization scope: account names are identifiers, so two postings
-// whose accounts differ only in NFC vs NFD encoding must NOT compare
-// equal — collapsing them would mask routing mistakes.
+// TestEquivalent_AccountUnicodeNotCollapsed confirms account names are
+// identifiers: NFC vs NFD must NOT compare equal.
 func TestEquivalent_AccountUnicodeNotCollapsed(t *testing.T) {
 	a := txn("x", "", posting(ast.Account("Assets:"+nfcCafe), dec(t, "1"), "USD"))
 	b := txn("x", "", posting(ast.Account("Assets:"+nfdCafe), dec(t, "1"), "USD"))
-	if k := equivalent(a, b, "route-account", nil); k != MatchNone {
+	if k := equivalent(a, b, MatchParams{}); k != MatchNone {
 		t.Errorf("equivalent across account NFC/NFD: got %v, want MatchNone (account is an identifier)", k)
 	}
 }
 
 // TestEquivalent_CurrencyFullWidth confirms currency codes are
-// treated as identifiers — full-width vs half-width must not compare
-// equal even though both render the same.
+// identifiers — full-width vs half-width must not compare equal.
 func TestEquivalent_CurrencyFullWidth(t *testing.T) {
-	const fullUSD = "\uff35\uff33\uff24" // "ＵＳＤ" (full-width "USD")
+	const fullUSD = "ＵＳＤ" // "ＵＳＤ" (full-width "USD")
 	a := txn("x", "", posting("Assets:A", dec(t, "1"), "USD"))
 	b := txn("x", "", posting("Assets:A", dec(t, "1"), fullUSD))
-	if k := equivalent(a, b, "route-account", nil); k != MatchNone {
+	if k := equivalent(a, b, MatchParams{}); k != MatchNone {
 		t.Errorf("equivalent across currency NFKC: got %v, want MatchNone", k)
 	}
 }
 
-// TestEquivalent_MetaStringWhitespace verifies that MetaString values
-// inside metadata get the same normalization as top-level free-text
-// fields — both AST equality and meta-key matching paths must agree on
-// what counts as the same string.
-func TestEquivalent_MetaStringWhitespace(t *testing.T) {
-	a := &ast.Open{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"note": {Kind: ast.MetaString, String: "Hello World"}}},
-	}
-	b := &ast.Open{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"note": {Kind: ast.MetaString, String: "Hello\u3000World"}}}, // "Hello<U+3000 IDEOGRAPHIC SPACE>World"
-	}
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across MetaString whitespace: got %v, want MatchAST", k)
-	}
-}
-
-// TestEquivalent_PostingMetaStringNormalized verifies that the
-// per-key normalization in metadataEqual fires on Posting.Meta as
-// well as directive Meta — both go through the type-keyed Metadata
-// Comparer, but a regression that special-cased one location could
-// silently lose the other.
-func TestEquivalent_PostingMetaStringNormalized(t *testing.T) {
-	pa := posting("Expenses:Food", dec(t, "1"), "USD")
-	pa.Meta = ast.Metadata{Props: map[string]ast.MetaValue{"note": {Kind: ast.MetaString, String: nfcCafe}}}
-	pb := posting("Expenses:Food", dec(t, "1"), "USD")
-	pb.Meta = ast.Metadata{Props: map[string]ast.MetaValue{"note": {Kind: ast.MetaString, String: nfdCafe + "\u3000"}}} // NFD "café" + trailing <U+3000 IDEOGRAPHIC SPACE>
-	cash := posting("Assets:Cash", dec(t, "-1"), "USD")
-	a := txn("x", "", pa, cash)
-	b := txn("x", "", pb, cash)
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across normalized posting MetaString: got %v, want MatchAST", k)
-	}
-}
-
-// TestEquivalent_MetaTagWhitespace confirms identifier-bearing
-// MetaValue kinds (MetaTag here) stay byte-exact: a tag carrying
-// whitespace differs from one without, since tag identifiers cannot
-// contain whitespace anyway and any difference is meaningful.
-func TestEquivalent_MetaTagWhitespace(t *testing.T) {
-	a := &ast.Open{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"t": {Kind: ast.MetaTag, String: "ab"}}},
-	}
-	b := &ast.Open{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"t": {Kind: ast.MetaTag, String: "a b"}}},
-	}
-	if k := equivalent(a, b, "route-account", nil); k != MatchNone {
-		t.Errorf("equivalent across MetaTag whitespace: got %v, want MatchNone (tag is an identifier)", k)
-	}
-}
-
-// TestEquivalent_NonStringMetaKindsByteExact confirms that
-// MetaAccount, MetaCurrency, and MetaLink — which carry strings that
-// look free-text-ish but are identifiers — do not get normalized.
-// Without these checks a regression that broadened the MetaString
-// branch in metaValueEqual would go unnoticed.
-func TestEquivalent_NonStringMetaKindsByteExact(t *testing.T) {
-	cases := []struct {
-		name string
-		a, b ast.MetaValue
-	}{
-		{
-			name: "MetaAccount NFC vs NFD",
-			a:    ast.MetaValue{Kind: ast.MetaAccount, String: "Assets:" + nfcCafe},
-			b:    ast.MetaValue{Kind: ast.MetaAccount, String: "Assets:" + nfdCafe},
-		},
-		{
-			name: "MetaCurrency full-width",
-			a:    ast.MetaValue{Kind: ast.MetaCurrency, String: "USD"},
-			b:    ast.MetaValue{Kind: ast.MetaCurrency, String: "\uff35\uff33\uff24"}, // "ＵＳＤ" (full-width "USD")
-		},
-		{
-			name: "MetaLink whitespace",
-			a:    ast.MetaValue{Kind: ast.MetaLink, String: "id-1"},
-			b:    ast.MetaValue{Kind: ast.MetaLink, String: "id-1\u3000"}, // "id-1" + trailing <U+3000 IDEOGRAPHIC SPACE>
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			a := &ast.Open{
-				Date:    mustDate(t, "2024-01-15"),
-				Account: "Assets:A",
-				Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"k": tc.a}},
-			}
-			b := &ast.Open{
-				Date:    mustDate(t, "2024-01-15"),
-				Account: "Assets:A",
-				Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"k": tc.b}},
-			}
-			if k := equivalent(a, b, "route-account", nil); k != MatchNone {
-				t.Errorf("equivalent(%s): got %v, want MatchNone", tc.name, k)
-			}
-		})
-	}
-}
-
-// TestEquivalent_TagsLinksByteExact confirms Transaction.Tags and
-// Transaction.Links remain byte-exact. They're string-typed but
-// identifiers, intentionally outside the freeTextCmp scope; a
-// regression that added them would silently flip semantics.
-func TestEquivalent_TagsLinksByteExact(t *testing.T) {
-	bare := func() *ast.Transaction {
-		return txn("x", "", posting("Assets:A", dec(t, "1"), "USD"))
-	}
-	t.Run("Tags", func(t *testing.T) {
-		a := bare()
-		a.Tags = []string{"trip-" + nfcCafe}
-		b := bare()
-		b.Tags = []string{"trip-" + nfdCafe}
-		if k := equivalent(a, b, "route-account", nil); k != MatchNone {
-			t.Errorf("equivalent across tag NFC/NFD: got %v, want MatchNone (tag is an identifier)", k)
-		}
-	})
-	t.Run("Links", func(t *testing.T) {
-		a := bare()
-		a.Links = []string{"\uff21\uff22"} // "ＡＢ" (full-width "AB")
-		b := bare()
-		b.Links = []string{"AB"}
-		if k := equivalent(a, b, "route-account", nil); k != MatchNone {
-			t.Errorf("equivalent across link full-width: got %v, want MatchNone (link is an identifier)", k)
-		}
-	})
-}
-
-// TestEquivalent_CostDifference confirms postings differing only in
-// cost spec stay distinguishable. postingKey writes Cost components,
-// so two transactions whose only difference is Cost.Label or
-// Cost.Date must not collapse.
+// TestEquivalent_CostDifference confirms postings differing only in cost
+// spec stay distinguishable under MatchExact.
 func TestEquivalent_CostDifference(t *testing.T) {
 	cash := posting("Assets:Cash", dec(t, "-10"), "USD")
 	stock := func(cost *ast.CostSpec) ast.Posting {
@@ -589,7 +489,7 @@ func TestEquivalent_CostDifference(t *testing.T) {
 	t.Run("Label", func(t *testing.T) {
 		a := txn("buy", "", stock(&ast.CostSpec{PerUnit: decp(t, "10"), Currency: "USD", Label: "lot-A"}), cash)
 		b := txn("buy", "", stock(&ast.CostSpec{PerUnit: decp(t, "10"), Currency: "USD", Label: "lot-B"}), cash)
-		if k := equivalent(a, b, "route-account", nil); k != MatchNone {
+		if k := equivalent(a, b, MatchParams{}); k != MatchNone {
 			t.Errorf("equivalent across diverging Cost.Label: got %v, want MatchNone", k)
 		}
 	})
@@ -598,15 +498,14 @@ func TestEquivalent_CostDifference(t *testing.T) {
 		tB := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 		a := txn("buy", "", stock(&ast.CostSpec{PerUnit: decp(t, "10"), Currency: "USD", Date: &tA}), cash)
 		b := txn("buy", "", stock(&ast.CostSpec{PerUnit: decp(t, "10"), Currency: "USD", Date: &tB}), cash)
-		if k := equivalent(a, b, "route-account", nil); k != MatchNone {
+		if k := equivalent(a, b, MatchParams{}); k != MatchNone {
 			t.Errorf("equivalent across diverging Cost.Date: got %v, want MatchNone", k)
 		}
 	})
 }
 
 // TestEquivalent_PriceDifference pins that postings differing only in
-// price annotation (per-unit vs total marker, or amount) remain
-// distinguishable.
+// price annotation remain distinguishable.
 func TestEquivalent_PriceDifference(t *testing.T) {
 	cash := posting("Assets:Cash", dec(t, "-1.10"), "USD")
 	leg := func(price *ast.PriceAnnotation) ast.Posting {
@@ -617,21 +516,21 @@ func TestEquivalent_PriceDifference(t *testing.T) {
 	t.Run("IsTotal", func(t *testing.T) {
 		a := txn("fx", "", leg(&ast.PriceAnnotation{Amount: ast.Amount{Number: dec(t, "1.10"), Currency: "USD"}, IsTotal: false}), cash)
 		b := txn("fx", "", leg(&ast.PriceAnnotation{Amount: ast.Amount{Number: dec(t, "1.10"), Currency: "USD"}, IsTotal: true}), cash)
-		if k := equivalent(a, b, "route-account", nil); k != MatchNone {
+		if k := equivalent(a, b, MatchParams{}); k != MatchNone {
 			t.Errorf("equivalent across diverging Price.IsTotal: got %v, want MatchNone", k)
 		}
 	})
 	t.Run("Amount", func(t *testing.T) {
 		a := txn("fx", "", leg(&ast.PriceAnnotation{Amount: ast.Amount{Number: dec(t, "1.10"), Currency: "USD"}, IsTotal: false}), cash)
 		b := txn("fx", "", leg(&ast.PriceAnnotation{Amount: ast.Amount{Number: dec(t, "1.20"), Currency: "USD"}, IsTotal: false}), cash)
-		if k := equivalent(a, b, "route-account", nil); k != MatchNone {
+		if k := equivalent(a, b, MatchParams{}); k != MatchNone {
 			t.Errorf("equivalent across diverging Price amount: got %v, want MatchNone", k)
 		}
 	})
 }
 
-// TestEquivalent_PostingFlagDifference confirms posting flags ('*',
-// '!') participate in equality.
+// TestEquivalent_PostingFlagDifference confirms posting flags participate
+// in MatchExact equality.
 func TestEquivalent_PostingFlagDifference(t *testing.T) {
 	pa := posting("Expenses:Food", dec(t, "1"), "USD")
 	pa.Flag = '*'
@@ -640,67 +539,96 @@ func TestEquivalent_PostingFlagDifference(t *testing.T) {
 	cash := posting("Assets:Cash", dec(t, "-1"), "USD")
 	a := txn("x", "", pa, cash)
 	b := txn("x", "", pb, cash)
-	if k := equivalent(a, b, "route-account", nil); k != MatchNone {
+	if k := equivalent(a, b, MatchParams{}); k != MatchNone {
 		t.Errorf("equivalent across diverging posting flag: got %v, want MatchNone", k)
 	}
 }
 
-// TestEquivalent_MultisetSameAccountMeta is the regression test for
-// the postingKey contract: two postings against the same account
-// with diverging Meta must sort to distinct positions, so a
-// multiset-equal swap across importers still pairs correctly. With a
-// value-blind postingKey, both postings would collide at the same
-// key and stable sort would preserve input order, mispairing them
-// after swap.
-func TestEquivalent_MultisetSameAccountMeta(t *testing.T) {
-	build := func(srcFirst, srcSecond string) *ast.Transaction {
-		first := posting("Expenses:Food", dec(t, "1"), "USD")
-		first.Meta = ast.Metadata{Props: map[string]ast.MetaValue{"src": {Kind: ast.MetaString, String: srcFirst}}}
-		second := posting("Expenses:Food", dec(t, "1"), "USD")
-		second.Meta = ast.Metadata{Props: map[string]ast.MetaValue{"src": {Kind: ast.MetaString, String: srcSecond}}}
-		cash := posting("Assets:Cash", dec(t, "-2"), "USD")
-		return txn("x", "", first, second, cash)
+// TestEquivalent_TagsLinksByteExact confirms Transaction.Tags and Links
+// remain byte-exact identifiers.
+func TestEquivalent_TagsLinksByteExact(t *testing.T) {
+	bare := func() *ast.Transaction {
+		return txn("x", "", posting("Assets:A", dec(t, "1"), "USD"))
 	}
-	a := build("A", "B")
-	b := build("B", "A")
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent across multiset-equal swap with diverging Meta: got %v, want MatchAST", k)
-	}
+	t.Run("Tags", func(t *testing.T) {
+		a := bare()
+		a.Tags = []string{"trip-" + nfcCafe}
+		b := bare()
+		b.Tags = []string{"trip-" + nfdCafe}
+		if k := equivalent(a, b, MatchParams{}); k != MatchNone {
+			t.Errorf("equivalent across tag NFC/NFD: got %v, want MatchNone (tag is an identifier)", k)
+		}
+	})
+	t.Run("Links", func(t *testing.T) {
+		a := bare()
+		a.Links = []string{"ＡＢ"} // "ＡＢ" (full-width "AB")
+		b := bare()
+		b.Links = []string{"AB"}
+		if k := equivalent(a, b, MatchParams{}); k != MatchNone {
+			t.Errorf("equivalent across link full-width: got %v, want MatchNone (link is an identifier)", k)
+		}
+	})
 }
 
-// TestEquivalent_EmptyPostings exercises the degenerate cases at the
-// boundary of sortPostings: zero or one posting must not panic and
-// must compare correctly.
 func TestEquivalent_EmptyPostings(t *testing.T) {
 	a := txn("x", "")
 	b := txn("x", "")
-	if k := equivalent(a, b, "route-account", nil); k != MatchAST {
-		t.Errorf("equivalent on empty postings: got %v, want MatchAST", k)
+	if k := equivalent(a, b, MatchParams{}); k != MatchExact {
+		t.Errorf("equivalent on empty postings: got %v, want MatchExact", k)
 	}
 	c := txn("x", "", posting("Assets:A", dec(t, "1"), "USD"))
-	if k := equivalent(a, c, "route-account", nil); k != MatchNone {
+	if k := equivalent(a, c, MatchParams{}); k != MatchNone {
 		t.Errorf("equivalent on empty vs one-posting: got %v, want MatchNone", k)
 	}
 }
 
-// TestMetaMatch_NormalizesMetaString verifies that the cross-source
-// meta-key dedup path also normalizes MetaString values, so two
-// importers writing the same human-readable id with different
-// formatting still match.
-func TestMetaMatch_NormalizesMetaString(t *testing.T) {
-	const fullABC123 = "\uff21\uff22\uff23\uff11\uff12\uff13" // "ＡＢＣ１２３" (full-width "ABC123")
-	a := &ast.Open{
-		Date:    mustDate(t, "2024-01-15"),
-		Account: "Assets:A",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"import-id": {Kind: ast.MetaString, String: "ABC 123"}}},
+func TestIndex_InOtherActiveScope(t *testing.T) {
+	idx := &memoryIndex{}
+	d := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
+	idx.Add("Q.beancount", d, false)
+
+	probe := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
+	if matched, _ := idx.InOtherActive("P.beancount", probe, MatchParams{}); !matched {
+		t.Error("InOtherActive: active entry at Q should match query at P")
 	}
-	b := &ast.Open{
-		Date:    mustDate(t, "2024-02-20"),
-		Account: "Assets:B",
-		Meta:    ast.Metadata{Props: map[string]ast.MetaValue{"import-id": {Kind: ast.MetaString, String: fullABC123}}},
+
+	idx2 := &memoryIndex{}
+	idx2.Add("Q.beancount", d, true)
+	if matched, _ := idx2.InOtherActive("P.beancount", probe, MatchParams{}); matched {
+		t.Error("InOtherActive: commented entry at Q must not match query at P")
 	}
-	if k := equivalent(a, b, "route-account", []string{"import-id"}); k != MatchMeta {
-		t.Errorf("equivalent across normalized MetaString import-id: got %v, want MatchMeta", k)
+}
+
+func TestIndex_AddAffectsSubsequentQueries(t *testing.T) {
+	idx := &memoryIndex{}
+	d := &ast.Open{Date: mustDate(t, "2024-01-15"), Account: "Assets:A"}
+	if matched, _ := idx.InDestination("P.beancount", d, MatchParams{}); matched {
+		t.Fatal("InDestination on empty index: matched=true, want false")
+	}
+
+	idx.Add("P.beancount", d, false)
+	if matched, kind := idx.InDestination("P.beancount", d, MatchParams{}); !matched || kind != MatchExact {
+		t.Errorf("after Add(active): matched=%v kind=%v, want true MatchExact", matched, kind)
+	}
+
+	idx2 := &memoryIndex{}
+	idx2.Add("P.beancount", d, true)
+	if matched, kind := idx2.InDestination("P.beancount", d, MatchParams{}); !matched || kind != MatchExact {
+		t.Errorf("after Add(commented): matched=%v kind=%v, want true MatchExact", matched, kind)
+	}
+}
+
+// TestMatchKindValues pins the iota order and the skip-capability split.
+func TestMatchKindValues(t *testing.T) {
+	if MatchNone != 0 || MatchID != 1 || MatchExact != 2 || MatchStructural != 3 || MatchFuzzy != 4 {
+		t.Errorf("MatchKind iota drifted: None=%d ID=%d Exact=%d Structural=%d Fuzzy=%d",
+			MatchNone, MatchID, MatchExact, MatchStructural, MatchFuzzy)
+	}
+	skip := map[MatchKind]bool{MatchID: true, MatchExact: true}
+	for _, k := range []MatchKind{MatchNone, MatchID, MatchExact, MatchStructural, MatchFuzzy} {
+		if got := k.SkipCapable(); got != skip[k] {
+			t.Errorf("MatchKind(%d).SkipCapable() = %v, want %v", k, got, skip[k])
+		}
 	}
 }
 
@@ -724,3 +652,10 @@ func TestBuildIndex_SurfacesDiagnostics(t *testing.T) {
 		t.Errorf("expected error diagnostic for unresolved include; got %+v", diags)
 	}
 }
+
+// nfcCafe and nfdCafe spell "café" precomposed and as base+combining
+// codepoints. Constructing the NFD form via norm.NFD.String keeps the
+// distinction explicit and immune to editor normalization.
+const nfcCafe = "café" // "café"
+
+var nfdCafe = norm.NFD.String(nfcCafe)

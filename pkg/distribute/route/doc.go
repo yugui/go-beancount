@@ -90,8 +90,9 @@
 // but not "Assets:JPN". Ties resolve in TOML order. Commodity
 // overrides match by exact-string equality.
 //
-// EquivalenceMetaKeys is *[]string (rather than []string) so callers
-// can distinguish "not declared" from "declared as empty". On an
-// override, a non-nil empty slice silences inherited keys; a nil
-// pointer falls back to the parent scope.
+// DateWindowDays is *int (rather than int) so callers can distinguish
+// "not declared" from an explicit value, including 0 (which disables the
+// structural dedup rule for the matching accounts). On an override a
+// non-nil value replaces the inherited window; a nil pointer falls back
+// to the parent scope.
 package route

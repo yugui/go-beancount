@@ -44,7 +44,7 @@ type Decision struct {
 	Path                              string
 	Order                             OrderKind
 	StripMetaKeys                     []string
-	EqMetaKeys                        []string
+	DateWindowDays                    int
 	Format                            []format.Option
 	BlankLinesBetweenDirectives       int
 	InsertBlankLinesBetweenDirectives bool
@@ -66,30 +66,27 @@ type FormatSection struct {
 
 // AccountSection holds the [routes.account] configuration. Empty string
 // fields mean "inherit the built-in default" (template, file_pattern,
-// order). EquivalenceMetaKeys is a *[]string so the loader can
-// distinguish "absent" (nil) from "explicitly empty" (non-nil empty);
-// the latter silences inherited keys when used on an override.
+// order). DateWindowDays is a *int so the loader can distinguish
+// "absent" (nil) from an explicit value (including 0, which disables
+// the structural dedup rule for matching accounts).
 type AccountSection struct {
-	Template            string            `toml:"template"`
-	FilePattern         string            `toml:"file_pattern"`
-	Order               string            `toml:"order"`
-	EquivalenceMetaKeys *[]string         `toml:"equivalence_meta_keys"`
-	Format              FormatSection     `toml:"format"`
-	Overrides           []AccountOverride `toml:"override"`
+	Template       string            `toml:"template"`
+	FilePattern    string            `toml:"file_pattern"`
+	Order          string            `toml:"order"`
+	DateWindowDays *int              `toml:"date_window_days"`
+	Format         FormatSection     `toml:"format"`
+	Overrides      []AccountOverride `toml:"override"`
 }
 
 // PriceSection holds the [routes.price] configuration. Empty string
 // fields mean "inherit the built-in default" (template, file_pattern,
-// order). EquivalenceMetaKeys is a *[]string so the loader can
-// distinguish "absent" (nil) from "explicitly empty" (non-nil empty);
-// the latter silences inherited keys when used on an override.
+// order).
 type PriceSection struct {
-	Template            string              `toml:"template"`
-	FilePattern         string              `toml:"file_pattern"`
-	Order               string              `toml:"order"`
-	EquivalenceMetaKeys *[]string           `toml:"equivalence_meta_keys"`
-	Format              FormatSection       `toml:"format"`
-	Overrides           []CommodityOverride `toml:"override"`
+	Template    string              `toml:"template"`
+	FilePattern string              `toml:"file_pattern"`
+	Order       string              `toml:"order"`
+	Format      FormatSection       `toml:"format"`
+	Overrides   []CommodityOverride `toml:"override"`
 }
 
 // TransactionSection holds the [routes.transaction] config.
@@ -98,36 +95,43 @@ type PriceSection struct {
 // account when neither the transaction-level nor a posting-level
 // override key is set; OverrideMetaKey names the metadata key
 // inspected for those overrides (default DefaultOverrideMetaKey).
+//
+// IDKeys names the metadata keys treated as stable identity for
+// deduplication. Identity is a property of the importing source rather
+// than the destination account, so the keys are configured once here
+// (globally) rather than per route. An equal value under any listed key
+// proves two directives are the same; a conflicting value proves they
+// are distinct.
 type TransactionSection struct {
-	DefaultStrategy string `toml:"default_strategy"`
-	OverrideMetaKey string `toml:"override_meta_key"`
+	DefaultStrategy string   `toml:"default_strategy"`
+	OverrideMetaKey string   `toml:"override_meta_key"`
+	IDKeys          []string `toml:"id_keys"`
 }
 
 // AccountOverride matches accounts whose segments begin with Prefix. A
 // match at segment boundaries is required: prefix "Assets:JP" matches
 // "Assets:JP" and "Assets:JP:Cash" but not "Assets:JPN".
 //
-// EquivalenceMetaKeys is *[]string so callers can distinguish "no
-// override declared" (nil) from "override declared as empty" (non-nil
-// empty slice); the second case silences inherited keys.
+// DateWindowDays is *int so callers can distinguish "no override
+// declared" (nil) from an explicit value (including 0, which disables
+// the structural dedup rule for the matching accounts).
 type AccountOverride struct {
-	Prefix              string        `toml:"prefix"`
-	Template            string        `toml:"template"`
-	FilePattern         string        `toml:"file_pattern"`
-	Order               string        `toml:"order"`
-	TxnStrategy         string        `toml:"txn_strategy"`
-	EquivalenceMetaKeys *[]string     `toml:"equivalence_meta_keys"`
-	Format              FormatSection `toml:"format"`
+	Prefix         string        `toml:"prefix"`
+	Template       string        `toml:"template"`
+	FilePattern    string        `toml:"file_pattern"`
+	Order          string        `toml:"order"`
+	TxnStrategy    string        `toml:"txn_strategy"`
+	DateWindowDays *int          `toml:"date_window_days"`
+	Format         FormatSection `toml:"format"`
 }
 
 // CommodityOverride matches a commodity by exact-string equality.
 type CommodityOverride struct {
-	Commodity           string        `toml:"commodity"`
-	Template            string        `toml:"template"`
-	FilePattern         string        `toml:"file_pattern"`
-	Order               string        `toml:"order"`
-	EquivalenceMetaKeys *[]string     `toml:"equivalence_meta_keys"`
-	Format              FormatSection `toml:"format"`
+	Commodity   string        `toml:"commodity"`
+	Template    string        `toml:"template"`
+	FilePattern string        `toml:"file_pattern"`
+	Order       string        `toml:"order"`
+	Format      FormatSection `toml:"format"`
 }
 
 // Routes mirrors the [routes] table of the TOML schema. Keeping the four
@@ -206,26 +210,26 @@ func decideAccount(cfg *Config, a ast.Account, date time.Time) Decision {
 	override := longestAccountOverride(cfg.Routes.Account.Overrides, a)
 	var (
 		oTemplate, oFilePattern, oOrder string
-		oEqKeys                         *[]string
+		oDateWindow                     *int
 		oFormat                         FormatSection
 	)
 	if override != nil {
 		oTemplate = override.Template
 		oFilePattern = override.FilePattern
 		oOrder = override.Order
-		oEqKeys = override.EquivalenceMetaKeys
+		oDateWindow = override.DateWindowDays
 		oFormat = override.Format
 	}
 	template := firstNonEmpty(oTemplate, cfg.Routes.Account.Template, defaultAccountTemplate)
 	filePattern := firstNonEmpty(oFilePattern, cfg.Routes.Account.FilePattern, defaultFilePattern)
 	order := firstNonEmpty(oOrder, cfg.Routes.Account.Order, defaultOrder)
-	eqKeys := resolveEqKeys(oEqKeys, cfg.Routes.Account.EquivalenceMetaKeys)
+	dateWindow := resolveDateWindow(oDateWindow, cfg.Routes.Account.DateWindowDays)
 
 	resolved := resolveFormat(cfg.Routes.Format, cfg.Routes.Account.Format, oFormat)
 	return Decision{
 		Path:                              expandAccountTemplate(template, a, date, filePattern),
 		Order:                             orderKindFromString(order),
-		EqMetaKeys:                        eqKeys,
+		DateWindowDays:                    dateWindow,
 		Format:                            resolved.options(),
 		BlankLinesBetweenDirectives:       resolved.BlankLinesBetweenDirectives,
 		InsertBlankLinesBetweenDirectives: resolved.InsertBlankLinesBetweenDirectives,
@@ -238,26 +242,22 @@ func decidePrice(cfg *Config, commodity string, date time.Time) Decision {
 	override := commodityOverrideFor(cfg.Routes.Price.Overrides, commodity)
 	var (
 		oTemplate, oFilePattern, oOrder string
-		oEqKeys                         *[]string
 		oFormat                         FormatSection
 	)
 	if override != nil {
 		oTemplate = override.Template
 		oFilePattern = override.FilePattern
 		oOrder = override.Order
-		oEqKeys = override.EquivalenceMetaKeys
 		oFormat = override.Format
 	}
 	template := firstNonEmpty(oTemplate, cfg.Routes.Price.Template, defaultPriceTemplate)
 	filePattern := firstNonEmpty(oFilePattern, cfg.Routes.Price.FilePattern, defaultFilePattern)
 	order := firstNonEmpty(oOrder, cfg.Routes.Price.Order, defaultOrder)
-	eqKeys := resolveEqKeys(oEqKeys, cfg.Routes.Price.EquivalenceMetaKeys)
 
 	resolved := resolveFormat(cfg.Routes.Format, cfg.Routes.Price.Format, oFormat)
 	return Decision{
 		Path:                              expandCommodityTemplate(template, commodity, date, filePattern),
 		Order:                             orderKindFromString(order),
-		EqMetaKeys:                        eqKeys,
 		Format:                            resolved.options(),
 		BlankLinesBetweenDirectives:       resolved.BlankLinesBetweenDirectives,
 		InsertBlankLinesBetweenDirectives: resolved.InsertBlankLinesBetweenDirectives,
@@ -433,24 +433,18 @@ func pickByStrategy(strategy string, postings []ast.Posting) (ast.Account, bool)
 	return "", false
 }
 
-// resolveEqKeys implements replacement (not concatenation) inheritance:
-// when the override declares its own slice (even an empty one), it
-// silences the inherited value entirely.
-func resolveEqKeys(override, parent *[]string) []string {
+// resolveDateWindow implements replacement inheritance for the
+// structural-dedup date window: an override value (including an explicit
+// 0, which disables the rule) takes precedence over the section value,
+// which takes precedence over the built-in default of 0 (disabled).
+func resolveDateWindow(override, parent *int) int {
 	if override != nil {
-		if len(*override) == 0 {
-			return nil
-		}
-		out := make([]string, len(*override))
-		copy(out, *override)
-		return out
+		return *override
 	}
-	if parent == nil || len(*parent) == 0 {
-		return nil
+	if parent != nil {
+		return *parent
 	}
-	out := make([]string, len(*parent))
-	copy(out, *parent)
-	return out
+	return 0
 }
 
 // orderKindFromString converts a validated order literal to an OrderKind.

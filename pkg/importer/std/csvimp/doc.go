@@ -320,7 +320,8 @@
 // "csvimp-rowhash": the first 8 bytes of SHA-256 over
 // instance-name || RS || trimmed-field0 || US || trimmed-field1 || …,
 // hex-encoded as 16 lowercase characters. Callers using
-// pkg/distribute/dedup may list this key in eqKeys for cross-run
+// pkg/distribute/dedup may list this key in id_keys
+// ([routes.transaction] in the route config) for cross-run
 // deduplication. The hash is computed over the raw CSV row before any
 // translation map is applied, so toggling a map does not invalidate
 // existing rowhashes.
