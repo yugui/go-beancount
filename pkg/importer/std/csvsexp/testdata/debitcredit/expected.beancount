@@ -1,0 +1,6 @@
+2024-02-01 * "ATM" "Cash withdrawal / Branch 5"
+  Assets:JapaneseBank                      -5000 JPY
+2024-02-02 * "Employer" "Salary / February"
+  Assets:JapaneseBank                     300000 JPY
+2024-02-15 * "Utility" "Electric bill"
+  Assets:JapaneseBank                      -8500 JPY

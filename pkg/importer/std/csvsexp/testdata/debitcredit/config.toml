@@ -1,0 +1,14 @@
+kind = "csv-sexp"
+name = "debitcredit"
+program = '''
+(csv-import
+  (let* ((date (parse-date (column "Date") "2006-01-02"))
+         (amt  (add-amounts
+                 (negate-amount (parse-amount (column "Withdrawal")))
+                 (parse-amount (column "Deposit"))))
+         (narr (join-keys " / " (trim (column "Description")) (trim (column "Memo")))))
+    (emit-transaction
+      :date date :amount amt :currency (const "JPY")
+      :account (const "Assets:JapaneseBank")
+      :payee (column "Payee") :narration narr)))
+'''

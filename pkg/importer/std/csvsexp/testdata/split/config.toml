@@ -1,0 +1,14 @@
+kind = "csv-sexp"
+name = "split"
+program = '''
+(csv-import
+  (let* ((parts (split (column "Detail")
+                  (regex "^(?P<payee>[^|]+)\\|(?P<memo>.*)$")))
+         (date  (parse-date (column "Date") "2006-01-02"))
+         (amt   (parse-amount (column "Amount"))))
+    (emit-transaction
+      :date date :amount amt :currency (const "USD")
+      :account (const "Assets:Checking")
+      :payee (group parts "payee")
+      :narration (group parts "memo"))))
+'''
