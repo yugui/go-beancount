@@ -2,8 +2,6 @@ package dedup
 
 import (
 	"reflect"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -28,192 +26,38 @@ var (
 	noteType        = reflect.TypeOf((*ast.Note)(nil)).Elem()
 )
 
-// equalityOpts returns the cmp options that implement the package
-// doc's AST equality rule: an IgnoreTypes(ast.Span{}) so Spans drop
-// out everywhere they appear, a Metadata Comparer that strips
-// overrideMetaKey, decimalCmp for numeric apd.Decimal comparison,
-// the sortPostings Transformer for posting-order canonicalization,
-// and freeTextCmp for the narrow free-text normalization. overrideMetaKey
-// names the single metadata key whose entry is stripped before
-// comparison (typically the transaction routing-override key).
-//
-// Metadata is compared via a dedicated Comparer rather than
-// cmpopts.IgnoreMapEntries because filtering a single-entry map down
-// to zero entries leaves an empty (non-nil) map, which cmp does not
-// treat as equal to a nil map even with cmpopts.EquateEmpty; the
-// Comparer makes {overrideMetaKey: X} and the nil map compare equal.
-// decimalCmp is required because [apd.Decimal]'s underlying big.Int
-// has unexported fields cmp cannot reflect into.
-func equalityOpts(overrideMetaKey string) cmp.Options {
-	return cmp.Options{
-		cmpopts.IgnoreTypes(ast.Span{}),
-		cmp.Comparer(func(a, b ast.Metadata) bool {
-			return metadataEqual(a, b, overrideMetaKey)
-		}),
-		decimalCmp,
-		sortPostings,
-		freeTextCmp,
-	}
+// exactOpts implements the MatchExact rule (M1+M2): structural AST
+// equality with source location and all metadata removed from the
+// comparison. Span is ignored everywhere it appears; Metadata is
+// ignored everywhere it appears (directive- and posting-level), because
+// identity-bearing metadata is handled separately by the id layer
+// (idCompare) and every other metadata entry is treated as a pure
+// annotation. apd.Decimal is compared numerically. Narration / Payee /
+// Note.Comment are NFKC-normalized. Posting lists are compared by
+// postingsExactEqual, which canonicalizes order and tolerates one
+// auto-balanced posting per side.
+var exactOpts = cmp.Options{
+	cmpopts.IgnoreTypes(ast.Span{}, ast.Metadata{}),
+	decimalCmp,
+	freeTextCmp,
+	cmp.Comparer(func(a, b []ast.Posting) bool { return postingsExactEqual(a, b) }),
 }
 
-// sortPostings reorders []ast.Posting into a canonical order so two
-// transactions whose postings differ only in emission order compare
-// equal. The transformer is keyed on []ast.Posting; that slice type
-// appears in the AST only as Transaction.Postings, so the type-wide
-// rule has no other effect. cmp re-enters the transformer's output,
-// so the Span / Metadata / Decimal / free-text rules continue to
-// apply to each Posting after sorting.
-//
-// The comparator calls postingKey per invocation rather than
-// pre-computing a parallel []string of keys. Real ledgers are
-// dominated by 2-posting transactions where insertion sort issues a
-// single compare and per-call costs exactly two key constructions —
-// the same number a precompute pass would do, with one fewer slice
-// allocation.
-var sortPostings = cmp.Transformer("dedup.sortPostings", func(ps []ast.Posting) []ast.Posting {
-	out := append([]ast.Posting(nil), ps...)
-	sort.SliceStable(out, func(i, j int) bool { return postingKey(out[i]) < postingKey(out[j]) })
-	return out
-})
-
-// postingKey produces a deterministic ordering key for a posting,
-// covering every field that participates in equality. The key serves
-// two purposes:
-//
-//  1. It puts truly-distinct postings into distinct sort positions, so
-//     that two transactions whose postings are the same multiset land
-//     on the same canonical order across both sides — which is the
-//     whole point of sortPostings.
-//  2. It uses the *normalized* form for content that goes through
-//     normalizeFreeText (MetaString values), so two postings whose
-//     Meta differs only in encoding still sort to the same position.
-//
-// False collisions (two distinct postings producing the same key) are
-// fine: cmp walks the sorted slices pairwise after the Transformer
-// runs, and the existing Span/Metadata/Decimal options catch any
-// remaining difference. The danger is the inverse — equivalent
-// postings ending up at different sort positions — which would cause
-// cmp to pair them with the wrong neighbour and report a false
-// inequality. Every field that is checked by cmp must therefore feed
-// into the key.
-func postingKey(p ast.Posting) string {
-	var b strings.Builder
-	b.WriteByte(p.Flag)
-	b.WriteByte('|')
-	b.WriteString(string(p.Account))
-	b.WriteByte('|')
-	if p.Amount != nil {
-		b.WriteString(p.Amount.Number.String())
-		b.WriteByte(':')
-		b.WriteString(p.Amount.Currency)
-	}
-	b.WriteByte('|')
-	if p.Cost != nil {
-		if pu := p.Cost.GetPerUnit(); pu != nil {
-			b.WriteString(pu.Number.String())
-			b.WriteByte(':')
-			b.WriteString(pu.Currency)
-		}
-		b.WriteByte('/')
-		if tot := p.Cost.GetTotal(); tot != nil {
-			b.WriteString(tot.Number.String())
-			b.WriteByte(':')
-			b.WriteString(tot.Currency)
-		}
-		b.WriteByte('/')
-		if d, ok := p.Cost.GetDate(); ok {
-			b.WriteString(d.Format(time.RFC3339))
-		}
-		b.WriteByte('/')
-		b.WriteString(p.Cost.GetLabel())
-	}
-	b.WriteByte('|')
-	if p.Price != nil {
-		if p.Price.IsTotal {
-			b.WriteByte('T')
-		} else {
-			b.WriteByte('U')
-		}
-		b.WriteString(p.Price.Amount.Number.String())
-		b.WriteByte(':')
-		b.WriteString(p.Price.Amount.Currency)
-	}
-	b.WriteByte('|')
-	writeMetaKeyPairs(&b, p.Meta.Props)
-	return b.String()
+// postingFieldOpts compares the per-field content of two fully-specified
+// postings (cost and price annotations) numerically and free of source
+// location. Posting metadata is excluded from identity, mirroring
+// exactOpts.
+var postingFieldOpts = cmp.Options{
+	cmpopts.IgnoreTypes(ast.Span{}, ast.Metadata{}),
+	decimalCmp,
 }
 
-// writeMetaKeyPairs writes a deterministic encoding of a Metadata map
-// onto b: keys are sorted, and each value is rendered via
-// metaValueKey, which uses the same normalization as the comparator
-// (so encoding-equivalent values produce identical key bytes).
-func writeMetaKeyPairs(b *strings.Builder, props map[string]ast.MetaValue) {
-	if len(props) == 0 {
-		return
-	}
-	keys := make([]string, 0, len(props))
-	for k := range props {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		b.WriteString(k)
-		b.WriteByte('=')
-		b.WriteString(metaValueKey(props[k]))
-		b.WriteByte(';')
-	}
-}
-
-// metaValueKey renders a MetaValue into a string suitable for use in
-// postingKey. It uses normalizeFreeText for the MetaString variant so
-// that the sort order matches the equivalence relation enforced by
-// metaValueEqual; other variants are rendered byte-exact in their
-// natural form because metaValueEqual treats them structurally.
-func metaValueKey(mv ast.MetaValue) string {
-	var b strings.Builder
-	b.WriteByte('K')
-	b.WriteString(strconv.Itoa(int(mv.Kind)))
-	b.WriteByte(':')
-	switch mv.Kind {
-	case ast.MetaString:
-		b.WriteString(normalizeFreeText(mv.String))
-	case ast.MetaAccount, ast.MetaCurrency, ast.MetaTag, ast.MetaLink:
-		b.WriteString(mv.String)
-	case ast.MetaDate:
-		b.WriteString(mv.Date.Format(time.RFC3339))
-	case ast.MetaNumber:
-		b.WriteString(mv.Number.String())
-	case ast.MetaAmount:
-		b.WriteString(mv.Amount.Number.String())
-		b.WriteByte(':')
-		b.WriteString(mv.Amount.Currency)
-	case ast.MetaBool:
-		if mv.Bool {
-			b.WriteByte('1')
-		} else {
-			b.WriteByte('0')
-		}
-	default:
-		// A new MetaValueKind without a case here would fall through
-		// to an empty body and produce a weak ordering key. Panic so
-		// the omission is caught at the test boundary instead of
-		// silently mispairing postings.
-		panic("dedup: metaValueKey: unhandled MetaValueKind")
-	}
-	return b.String()
-}
-
-// freeTextCmp implements the package doc's free-text normalization
-// rule for Transaction.Narration, Transaction.Payee, and
-// Note.Comment. Free-text MetaValue contents (Kind == MetaString)
-// receive the same treatment via metadataEqual / metaMatch; that
-// path runs through the Metadata Comparer rather than this FilterPath
-// because the per-key walk there already discriminates by
-// MetaValueKind.
+// freeTextCmp implements the package doc's free-text normalization rule
+// for Transaction.Narration, Transaction.Payee, and Note.Comment.
 //
-// The predicate inspects the last two cmp.Path steps: p.Last() must
-// be a [cmp.StructField] (the leaf field) and p.Index(-2) must land
-// on [ast.Transaction] or [ast.Note] (the containing struct after any
+// The predicate inspects the last two cmp.Path steps: p.Last() must be a
+// [cmp.StructField] (the leaf field) and p.Index(-2) must land on
+// [ast.Transaction] or [ast.Note] (the containing struct after any
 // pointer indirection). The len(p) < 2 guard rules out paths shorter
 // than two steps, where p.Index(-2) would return an empty step.
 var freeTextCmp = cmp.FilterPath(func(p cmp.Path) bool {
@@ -253,46 +97,10 @@ func normalizeFreeText(s string) string {
 	return b.String()
 }
 
-// metadataEqual reports whether two Metadata values are equal after
-// stripping the override key. nil and empty maps compare equal.
-// Per-value comparison goes through metaValueEqual, so MetaString
-// values are normalized via normalizeFreeText while every other
-// MetaValueKind is compared structurally.
-func metadataEqual(a, b ast.Metadata, overrideMetaKey string) bool {
-	stripped := func(props map[string]ast.MetaValue) map[string]ast.MetaValue {
-		if overrideMetaKey == "" {
-			return props
-		}
-		if _, ok := props[overrideMetaKey]; !ok {
-			return props
-		}
-		out := make(map[string]ast.MetaValue, len(props))
-		for k, v := range props {
-			if k == overrideMetaKey {
-				continue
-			}
-			out[k] = v
-		}
-		return out
-	}
-	pa, pb := stripped(a.Props), stripped(b.Props)
-	if len(pa) != len(pb) {
-		return false
-	}
-	for k, va := range pa {
-		vb, ok := pb[k]
-		if !ok {
-			return false
-		}
-		if !metaValueEqual(va, vb) {
-			return false
-		}
-	}
-	return true
-}
-
 // metaValueEqual reports whether two MetaValue values are equal,
-// applying free-text normalization to the MetaString variant only.
+// applying free-text normalization to the MetaString variant only. It
+// is the value comparator for the id layer, so two importers stamping
+// the same stable id with different free-text formatting still match.
 func metaValueEqual(a, b ast.MetaValue) bool {
 	if a.Kind == ast.MetaString && b.Kind == ast.MetaString {
 		return normalizeFreeText(a.String) == normalizeFreeText(b.String)
@@ -300,38 +108,259 @@ func metaValueEqual(a, b ast.MetaValue) bool {
 	return cmp.Equal(a, b, decimalCmp)
 }
 
-// equivalent reports whether a and b are equivalent under the
-// package doc's OR-combined rule, returning MatchAST when AST
-// equality fires, MatchMeta when only metadata-key equality fires,
-// and MatchNone otherwise.
-func equivalent(a, b ast.Directive, overrideMetaKey string, eqKeys []string) MatchKind {
-	if cmp.Equal(a, b, equalityOpts(overrideMetaKey)...) {
-		return MatchAST
+// equivalent classifies the relationship between two directives under
+// the layered match rules, in priority order:
+//
+//  1. id conflict (a designated id key present on both with differing
+//     values) vetoes any match — the directives are proven distinct,
+//     so MatchNone is returned even if their content is identical.
+//  2. id equality (a designated id key present on both with equal
+//     values) yields MatchID.
+//  3. structural AST equality (modulo metadata, with auto-posting
+//     tolerance) yields MatchExact.
+//  4. transfer-aware structural similarity within the date window
+//     yields MatchStructural.
+//
+// MatchID and MatchExact are equivalence relations and are safe to
+// skip on; MatchStructural is non-transitive and callers must treat it
+// as review-only (see MatchKind.SkipCapable).
+func equivalent(a, b ast.Directive, p MatchParams) MatchKind {
+	switch idCompare(a, b, p.IDKeys) {
+	case idConflict:
+		return MatchNone
+	case idEqual:
+		return MatchID
 	}
-	if metaMatch(a, b, eqKeys) {
-		return MatchMeta
+	if cmp.Equal(a, b, exactOpts...) {
+		return MatchExact
+	}
+	if structuralMatch(a, b, p.DateWindowDays) {
+		return MatchStructural
 	}
 	return MatchNone
 }
 
-// metaMatch reports whether a and b carry the same value under any
-// key listed in eqKeys. The first match wins; values are compared
-// via metaValueEqual so that the cross-source path agrees with AST
-// equality on free-text normalization.
-func metaMatch(a, b ast.Directive, eqKeys []string) bool {
-	if len(eqKeys) == 0 {
-		return false
+// idVerdict is the result of comparing two directives over the
+// configured id keys.
+type idVerdict int
+
+const (
+	idNone idVerdict = iota
+	idEqual
+	idConflict
+)
+
+// idCompare evaluates the directive-level id keys (M4/M5). A key counts
+// only when present on both sides; an equal shared value is identity
+// evidence, an unequal shared value is a distinctness proof. A conflict
+// on any key wins over equality on any other, because contradictory id
+// data is safest resolved as "distinct".
+func idCompare(a, b ast.Directive, idKeys []string) idVerdict {
+	if len(idKeys) == 0 {
+		return idNone
 	}
 	ma, mb := a.DirMeta(), b.DirMeta()
-	for _, k := range eqKeys {
+	verdict := idNone
+	for _, k := range idKeys {
 		va, oka := ma.Props[k]
 		vb, okb := mb.Props[k]
 		if !oka || !okb {
 			continue
 		}
 		if metaValueEqual(va, vb) {
-			return true
+			verdict = idEqual
+		} else {
+			return idConflict
 		}
 	}
-	return false
+	return verdict
+}
+
+// structuralMatch implements the transfer-aware structural rule
+// (M8+M7): two transactions match when their postings form the same
+// multiset under account + absolute amount + currency (the absolute
+// value absorbs the sign flip between the two sides of a transfer) and
+// their dates fall within windowDays. It tolerates one auto-balanced
+// posting per side. windowDays <= 0 disables the rule. Only
+// Transactions participate; all other directive kinds return false.
+func structuralMatch(a, b ast.Directive, windowDays int) bool {
+	if windowDays <= 0 {
+		return false
+	}
+	ta, ok := a.(*ast.Transaction)
+	if !ok {
+		return false
+	}
+	tb, ok := b.(*ast.Transaction)
+	if !ok {
+		return false
+	}
+	if !withinDays(ta.Date, tb.Date, windowDays) {
+		return false
+	}
+	return matchPostings(ta.Postings, tb.Postings, structuralPostingEqual)
+}
+
+// withinDays reports whether a and b are at most days apart.
+func withinDays(a, b time.Time, days int) bool {
+	diff := a.Sub(b)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= time.Duration(days)*24*time.Hour
+}
+
+// postingsExactEqual reports whether two posting lists are the same
+// multiset of fully-specified postings, tolerating one auto-balanced
+// posting per side. It is the []ast.Posting comparator inside exactOpts.
+func postingsExactEqual(a, b []ast.Posting) bool {
+	return matchPostings(a, b, exactPostingEqual)
+}
+
+// exactPostingEqual compares two fully-specified postings (both Amount
+// non-nil) for MatchExact: account, flag, signed amount, currency,
+// cost, and price must all agree. Posting metadata is excluded.
+func exactPostingEqual(x, y ast.Posting) bool {
+	if x.Account != y.Account || x.Flag != y.Flag {
+		return false
+	}
+	if x.Amount.Currency != y.Amount.Currency || x.Amount.Number.Cmp(&y.Amount.Number) != 0 {
+		return false
+	}
+	return cmp.Equal(x.Cost, y.Cost, postingFieldOpts...) &&
+		cmp.Equal(x.Price, y.Price, postingFieldOpts...)
+}
+
+// structuralPostingEqual compares two fully-specified postings for
+// MatchStructural: account and currency must agree and the amounts must
+// be equal in absolute value, so the two legs of a transfer (which
+// differ only in sign) are treated as the same.
+func structuralPostingEqual(x, y ast.Posting) bool {
+	if x.Account != y.Account || x.Amount.Currency != y.Amount.Currency {
+		return false
+	}
+	return absEqual(&x.Amount.Number, &y.Amount.Number)
+}
+
+// absEqual reports whether x and y have equal absolute value.
+func absEqual(x, y *apd.Decimal) bool {
+	var ax, ay apd.Decimal
+	if _, err := apd.BaseContext.Abs(&ax, x); err != nil {
+		return false
+	}
+	if _, err := apd.BaseContext.Abs(&ay, y); err != nil {
+		return false
+	}
+	return ax.Cmp(&ay) == 0
+}
+
+// matchPostings reports whether a and b describe the same posting
+// multiset, tolerating the auto-balanced (Amount == nil) posting that
+// beancount permits at most once per transaction. keyedEqual compares
+// two fully-specified postings; an elided posting is matched by account
+// alone, which is sound because its amount is fixed by the balance
+// constraint once every other posting is matched.
+//
+// At most one elided posting is allowed per side (two would make the
+// balance ambiguous). The total posting count must agree, so a genuine
+// difference in shape never matches.
+func matchPostings(a, b []ast.Posting, keyedEqual func(x, y ast.Posting) bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	ka, ea := partitionElided(a)
+	kb, eb := partitionElided(b)
+	if len(ea) > 1 || len(eb) > 1 {
+		return false
+	}
+	switch {
+	case len(ea) == 0 && len(eb) == 0:
+		return multisetEqual(ka, kb, keyedEqual)
+	case len(ea) == 1 && len(eb) == 1:
+		// Both sides elide a leg: the keyed postings must match exactly
+		// and the elided legs must name the same account, which makes
+		// their (balance-determined) amounts equal too.
+		return ea[0] == eb[0] && multisetEqual(ka, kb, keyedEqual)
+	case len(ea) == 1:
+		// a elides a leg that b states explicitly: every keyed posting of
+		// a must match one of b, leaving exactly one b posting whose
+		// account is the elided account.
+		return subsetWithLeftoverAccount(ka, kb, keyedEqual, ea[0])
+	default:
+		return subsetWithLeftoverAccount(kb, ka, keyedEqual, eb[0])
+	}
+}
+
+// partitionElided splits ps into fully-specified postings and the
+// accounts of the amount-elided (auto-balanced) postings.
+func partitionElided(ps []ast.Posting) (keyed []ast.Posting, elided []ast.Account) {
+	for _, p := range ps {
+		if p.Amount == nil {
+			elided = append(elided, p.Account)
+		} else {
+			keyed = append(keyed, p)
+		}
+	}
+	return keyed, elided
+}
+
+// multisetEqual reports whether a and b are equal multisets under the
+// equivalence relation eq. Greedy first-match assignment is correct
+// because eq is an equivalence relation: any element equal to a[i] is
+// interchangeable.
+func multisetEqual(a, b []ast.Posting, eq func(x, y ast.Posting) bool) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	used := make([]bool, len(b))
+	for i := range a {
+		matched := false
+		for j := range b {
+			if !used[j] && eq(a[i], b[j]) {
+				used[j] = true
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
+}
+
+// subsetWithLeftoverAccount reports whether super equals sub plus
+// exactly one extra posting whose account is acct. It models the
+// auto-posting case where sub omits the leg that super states: the
+// leftover super posting is the stated counterpart of sub's elided leg,
+// and its amount is guaranteed correct by the balance constraint.
+func subsetWithLeftoverAccount(sub, super []ast.Posting, eq func(x, y ast.Posting) bool, acct ast.Account) bool {
+	if len(super) != len(sub)+1 {
+		return false
+	}
+	used := make([]bool, len(super))
+	for i := range sub {
+		matched := false
+		for j := range super {
+			if !used[j] && eq(sub[i], super[j]) {
+				used[j] = true
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	leftover := -1
+	for j := range super {
+		if used[j] {
+			continue
+		}
+		if leftover != -1 {
+			return false
+		}
+		leftover = j
+	}
+	return leftover != -1 && super[leftover].Account == acct
 }

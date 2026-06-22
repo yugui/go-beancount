@@ -15,16 +15,12 @@ import (
 
 // decisionCmp ignores the opaque Format closures (which cmp cannot
 // equate) and instead compares the resolved spacing fields and
-// Path/Order/EqMetaKeys directly.
+// Path/Order/DateWindowDays directly.
 var decisionCmp = cmpopts.IgnoreFields(Decision{}, "Format")
 
-// ptrStrSlice returns a pointer to a copy of ss. It mirrors the
-// *[]string shape used by EquivalenceMetaKeys to distinguish "absent"
-// from "explicitly empty".
-func ptrStrSlice(ss ...string) *[]string {
-	s := append([]string(nil), ss...)
-	return &s
-}
+// ptrInt returns a pointer to n. It mirrors the *int shape used by
+// DateWindowDays to distinguish "absent" from an explicit value.
+func ptrInt(n int) *int { return &n }
 
 // defaultDecision returns a Decision with the resolved spacing fields
 // set to formatopt.Default()'s values, the same defaults Decide returns
@@ -674,29 +670,29 @@ func TestDecide_CommodityOverride(t *testing.T) {
 	}
 }
 
-func TestDecide_EquivalenceMetaKeysFromSection(t *testing.T) {
+func TestDecide_DateWindowFromSection(t *testing.T) {
 	cfg := &Config{
 		Routes: Routes{
-			Account: AccountSection{EquivalenceMetaKeys: ptrStrSlice("import-id")},
+			Account: AccountSection{DateWindowDays: ptrInt(3)},
 		},
 	}
 	got, err := Decide(&ast.Open{Date: jan15, Account: ast.Assets}, cfg)
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if diff := cmp.Diff([]string{"import-id"}, got.EqMetaKeys); diff != "" {
-		t.Errorf("EqMetaKeys mismatch (-want +got):\n%s", diff)
+	if got.DateWindowDays != 3 {
+		t.Errorf("DateWindowDays = %d, want 3", got.DateWindowDays)
 	}
 }
 
-func TestDecide_EquivalenceMetaKeysOverrideReplaces(t *testing.T) {
+func TestDecide_DateWindowOverrideReplaces(t *testing.T) {
 	cfg := &Config{
 		Routes: Routes{
 			Account: AccountSection{
-				EquivalenceMetaKeys: ptrStrSlice("import-id"),
+				DateWindowDays: ptrInt(3),
 				Overrides: []AccountOverride{{
-					Prefix:              "Assets:JP",
-					EquivalenceMetaKeys: ptrStrSlice("receipt-id"),
+					Prefix:         "Assets:JP",
+					DateWindowDays: ptrInt(7),
 				}},
 			},
 		},
@@ -705,20 +701,21 @@ func TestDecide_EquivalenceMetaKeysOverrideReplaces(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if diff := cmp.Diff([]string{"receipt-id"}, got.EqMetaKeys); diff != "" {
-		t.Errorf("EqMetaKeys mismatch (-want +got):\n%s", diff)
+	if got.DateWindowDays != 7 {
+		t.Errorf("DateWindowDays = %d, want 7 (override replaces)", got.DateWindowDays)
 	}
 }
 
-func TestDecide_EquivalenceMetaKeysOverrideSilences(t *testing.T) {
-	// A non-nil but empty override slice silences inherited keys.
+func TestDecide_DateWindowOverrideSilences(t *testing.T) {
+	// An explicit 0 in an override disables the rule for matching
+	// accounts even though the section enables it.
 	cfg := &Config{
 		Routes: Routes{
 			Account: AccountSection{
-				EquivalenceMetaKeys: ptrStrSlice("import-id"),
+				DateWindowDays: ptrInt(3),
 				Overrides: []AccountOverride{{
-					Prefix:              "Assets:JP",
-					EquivalenceMetaKeys: ptrStrSlice(),
+					Prefix:         "Assets:JP",
+					DateWindowDays: ptrInt(0),
 				}},
 			},
 		},
@@ -727,8 +724,8 @@ func TestDecide_EquivalenceMetaKeysOverrideSilences(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decide: %v", err)
 	}
-	if len(got.EqMetaKeys) != 0 {
-		t.Errorf("EqMetaKeys = %v, want empty", got.EqMetaKeys)
+	if got.DateWindowDays != 0 {
+		t.Errorf("DateWindowDays = %d, want 0 (override silences)", got.DateWindowDays)
 	}
 }
 

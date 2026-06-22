@@ -16,7 +16,6 @@ go_library(
     deps = [
         "//pkg/ast",
         "//pkg/importer/hook",
-        "//pkg/importer/importerutil",
         "//pkg/loader",
         "@com_github_clipperhouse_uax29_v2//words",
         "@com_github_cockroachdb_apd_v3//:apd",

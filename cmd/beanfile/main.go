@@ -323,12 +323,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 // each source through the routing/three-way-decision loop, merge the
 // resulting plans into their destinations, and emit stats.
 func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error], stdout, stderr io.Writer) int {
-	index, ledgerDiags, err := dedup.BuildIndex(
-		ctx,
-		c.ledgerAbs,
-		c.route.Root,
-		dedup.WithOverrideMetaKey(c.route.Routes.Transaction.OverrideMetaKey),
-	)
+	index, ledgerDiags, err := dedup.BuildIndex(ctx, c.ledgerAbs, c.route.Root)
 	if err != nil {
 		fmt.Fprintf(stderr, "beanfile: %v\n", err)
 		return 2
@@ -387,11 +382,23 @@ func execute(ctx context.Context, c *cfg, sources iter.Seq2[*inputSource, error]
 				continue
 			}
 
-			if matched, _ := index.InDestination(decision.Path, d, decision.EqMetaKeys); matched {
+			params := dedup.MatchParams{
+				IDKeys:         c.route.Routes.Transaction.IDKeys,
+				DateWindowDays: decision.DateWindowDays,
+			}
+			// Skip only on an equivalence-relation match in the
+			// destination. A review-only (structural) match there is not a
+			// proven duplicate, so it is written commented for review
+			// instead of dropped.
+			matched, kind := index.InDestination(decision.Path, d, params)
+			if matched && kind.SkipCapable() {
 				skippedByPath[decision.Path]++
 				continue
 			}
-			commented, _ := index.InOtherActive(decision.Path, d, decision.EqMetaKeys)
+			commented := matched
+			if !commented {
+				commented, _ = index.InOtherActive(decision.Path, d, params)
+			}
 			planByPath[decision.Path] = append(planByPath[decision.Path], merge.Insert{
 				Directive:     d,
 				Commented:     commented,

@@ -71,6 +71,9 @@ func validate(cfg *route.Config) error {
 	if err := validateStrategy(cfg.Routes.Transaction.DefaultStrategy, "[routes.transaction].default_strategy"); err != nil {
 		return err
 	}
+	if err := validateDateWindow(cfg.Routes.Account.DateWindowDays, "[routes.account].date_window_days"); err != nil {
+		return err
+	}
 	for i, ro := range cfg.Routes.Account.Overrides {
 		ctx := fmt.Sprintf("[[routes.account.override]] #%d", i+1)
 		if err := validateOrder(ro.Order, ctx+".order"); err != nil {
@@ -80,6 +83,9 @@ func validate(cfg *route.Config) error {
 			return err
 		}
 		if err := validateStrategy(ro.TxnStrategy, ctx+".txn_strategy"); err != nil {
+			return err
+		}
+		if err := validateDateWindow(ro.DateWindowDays, ctx+".date_window_days"); err != nil {
 			return err
 		}
 	}
@@ -121,6 +127,19 @@ func validateFilePattern(pattern, where string) error {
 	default:
 		return fmt.Errorf("%s: %q is not a valid file pattern", where, pattern)
 	}
+}
+
+// validateDateWindow rejects a negative date window. A nil pointer
+// means "inherit" and is accepted; an explicit 0 disables the rule and
+// is accepted.
+func validateDateWindow(days *int, where string) error {
+	if days == nil {
+		return nil
+	}
+	if *days < 0 {
+		return fmt.Errorf("%s: %d is negative; must be >= 0", where, *days)
+	}
+	return nil
 }
 
 // validateStrategy accepts the four documented values; unset means

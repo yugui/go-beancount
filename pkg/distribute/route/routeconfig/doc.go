@@ -11,21 +11,21 @@
 // structures field-for-field. The four [routes.*] tables are:
 //
 //	[routes.account]
-//	template              = "transactions/{account}/{date}.beancount"
-//	file_pattern          = "YYYYmm"        # YYYY | YYYYmm | YYYYmmdd
-//	order                 = "ascending"     # ascending | descending | append
-//	equivalence_meta_keys = ["import-id"]   # cross-source dedup keys
+//	template         = "transactions/{account}/{date}.beancount"
+//	file_pattern     = "YYYYmm"        # YYYY | YYYYmm | YYYYmmdd
+//	order            = "ascending"     # ascending | descending | append
+//	date_window_days = 3               # structural-dedup window (0 = off)
 //
 //	[routes.price]
-//	template              = "quotes/{commodity}/{date}.beancount"
-//	file_pattern          = "YYYYmm"
-//	order                 = "ascending"
-//	equivalence_meta_keys = []
+//	template     = "quotes/{commodity}/{date}.beancount"
+//	file_pattern = "YYYYmm"
+//	order        = "ascending"
 //
 //	[routes.transaction]
 //	default_strategy  = "first-posting"     # first-posting | last-posting |
 //	                                        # first-debit | first-credit
 //	override_meta_key = "route-account"
+//	id_keys           = ["import-id"]       # stable dedup identity keys
 //
 //	[routes.format]                         # global format defaults
 //	comma_grouping                        = false
@@ -58,9 +58,9 @@
 //	file_pattern = "YYYY"
 //
 // Each override may set the same fields as its parent section
-// (template, file_pattern, order, equivalence_meta_keys, format,
-// and — for account overrides — txn_strategy); missing fields fall
-// through to the parent.
+// (template, file_pattern, order, format, and — for account overrides —
+// txn_strategy and date_window_days); missing fields fall through to the
+// parent.
 //
 // # Inheritance rules
 //
@@ -70,9 +70,11 @@
 //     defaults → [routes.format] → section-specific
 //     [routes.account.format] / [routes.price.format] → per-override
 //     format → caller-applied per-field overrides.
-//   - equivalence_meta_keys inherits by replacement, not concatenation.
-//     Use equivalence_meta_keys = [] in an override to silence
-//     inherited keys.
+//   - date_window_days inherits by replacement: an override value
+//     (including an explicit 0, which disables the structural rule)
+//     replaces the section value. id_keys are not per-route — identity
+//     is a property of the importing source, so they live once under
+//     [routes.transaction].
 //   - Account override prefixes are required to match on
 //     account-segment boundaries. Ties resolve in TOML order; longest
 //     prefix wins.

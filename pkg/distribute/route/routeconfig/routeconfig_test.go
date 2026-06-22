@@ -15,11 +15,6 @@ import (
 
 func ptrInt(n int) *int    { return &n }
 func ptrBool(b bool) *bool { return &b }
-func ptrStrSlice(ss ...string) *[]string {
-	s := make([]string, len(ss))
-	copy(s, ss)
-	return &s
-}
 
 func mustOpen(t *testing.T, account string) *ast.Open {
 	t.Helper()
@@ -45,20 +40,20 @@ func writeTOML(t *testing.T, body string) string {
 func TestLoad_FullSchemaRoundTrip(t *testing.T) {
 	body := `
 [routes.account]
-template              = "transactions/{account}/{date}.beancount"
-file_pattern          = "YYYYmm"
-order                 = "ascending"
-equivalence_meta_keys = ["import-id"]
+template         = "transactions/{account}/{date}.beancount"
+file_pattern     = "YYYYmm"
+order            = "ascending"
+date_window_days = 3
 
 [routes.price]
-template              = "quotes/{commodity}/{date}.beancount"
-file_pattern          = "YYYYmm"
-order                 = "ascending"
-equivalence_meta_keys = []
+template     = "quotes/{commodity}/{date}.beancount"
+file_pattern = "YYYYmm"
+order        = "ascending"
 
 [routes.transaction]
 default_strategy  = "first-posting"
 override_meta_key = "route-account"
+id_keys           = ["import-id"]
 
 [routes.format]
 comma_grouping                        = false
@@ -82,9 +77,9 @@ prefix = "Assets:JP"
 east_asian_ambiguous_width = 2
 
 [[routes.account.override]]
-prefix                = "Expenses:Food"
-template              = "transactions/expenses-food/{date}.beancount"
-equivalence_meta_keys = ["receipt-id"]
+prefix           = "Expenses:Food"
+template         = "transactions/expenses-food/{date}.beancount"
+date_window_days = 7
 
 [[routes.price.override]]
 commodity = "JPY"
@@ -99,29 +94,28 @@ amount_column = 24
 	want := &route.Config{
 		Routes: route.Routes{
 			Account: route.AccountSection{
-				Template:            "transactions/{account}/{date}.beancount",
-				FilePattern:         "YYYYmm",
-				Order:               "ascending",
-				EquivalenceMetaKeys: ptrStrSlice("import-id"),
-				Format:              route.FormatSection{IndentWidth: ptrInt(4)},
+				Template:       "transactions/{account}/{date}.beancount",
+				FilePattern:    "YYYYmm",
+				Order:          "ascending",
+				DateWindowDays: ptrInt(3),
+				Format:         route.FormatSection{IndentWidth: ptrInt(4)},
 				Overrides: []route.AccountOverride{
 					{
 						Prefix: "Assets:JP",
 						Format: route.FormatSection{EastAsianAmbiguousWidth: ptrInt(2)},
 					},
 					{
-						Prefix:              "Expenses:Food",
-						Template:            "transactions/expenses-food/{date}.beancount",
-						EquivalenceMetaKeys: ptrStrSlice("receipt-id"),
+						Prefix:         "Expenses:Food",
+						Template:       "transactions/expenses-food/{date}.beancount",
+						DateWindowDays: ptrInt(7),
 					},
 				},
 			},
 			Price: route.PriceSection{
-				Template:            "quotes/{commodity}/{date}.beancount",
-				FilePattern:         "YYYYmm",
-				Order:               "ascending",
-				EquivalenceMetaKeys: ptrStrSlice(),
-				Format:              route.FormatSection{AmountColumn: ptrInt(30)},
+				Template:    "quotes/{commodity}/{date}.beancount",
+				FilePattern: "YYYYmm",
+				Order:       "ascending",
+				Format:      route.FormatSection{AmountColumn: ptrInt(30)},
 				Overrides: []route.CommodityOverride{
 					{
 						Commodity: "JPY",
@@ -132,6 +126,7 @@ amount_column = 24
 			Transaction: route.TransactionSection{
 				DefaultStrategy: "first-posting",
 				OverrideMetaKey: "route-account",
+				IDKeys:          []string{"import-id"},
 			},
 			Format: route.FormatSection{
 				CommaGrouping:                     ptrBool(false),
@@ -172,28 +167,28 @@ template = "second/{account}/{date}.beancount"
 	}
 }
 
-func TestLoad_EquivalenceMetaKeysReplacementInheritance(t *testing.T) {
+func TestLoad_DateWindowReplacementInheritance(t *testing.T) {
 	body := `
 [routes.account]
-equivalence_meta_keys = ["import-id"]
+date_window_days = 3
 
 [[routes.account.override]]
-prefix                = "Assets:JP"
-equivalence_meta_keys = ["receipt-id"]
+prefix           = "Assets:JP"
+date_window_days = 7
 
 [[routes.account.override]]
-prefix                = "Assets:Silenced"
-equivalence_meta_keys = []
+prefix           = "Assets:Silenced"
+date_window_days = 0
 `
 	got, err := Load(writeTOML(t, body))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	want := route.AccountSection{
-		EquivalenceMetaKeys: ptrStrSlice("import-id"),
+		DateWindowDays: ptrInt(3),
 		Overrides: []route.AccountOverride{
-			{Prefix: "Assets:JP", EquivalenceMetaKeys: ptrStrSlice("receipt-id")},
-			{Prefix: "Assets:Silenced", EquivalenceMetaKeys: ptrStrSlice()},
+			{Prefix: "Assets:JP", DateWindowDays: ptrInt(7)},
+			{Prefix: "Assets:Silenced", DateWindowDays: ptrInt(0)},
 		},
 	}
 	if diff := cmp.Diff(want, got.Routes.Account); diff != "" {
