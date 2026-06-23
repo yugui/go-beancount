@@ -115,10 +115,10 @@
 //	                 (map-value (trim col) table :strict "csvsexp-unmapped"))))
 //	  (emit-transaction ... :account (mapped (column "Category") (dict ...))))
 //
-// emit-transaction wires resolved keys into one transaction per row; its
-// keywords mirror csvbase.TxConfig: :date and :amount are required, while
-// :currency, :account, :counter, :payee, :narration, :cost, :flag, :tags,
-// :links, :meta, and the :missing-*-code overrides are optional.
+// emit-transaction wires resolved keys into one transaction per row, assembling
+// a primary posting plus an optional balancing counter posting: :date and
+// :amount are required, while :currency, :account, :counter, :payee, :narration,
+// :cost, :flag, :tags, :links, and :meta are optional.
 //
 // # Naming differences from Scheme
 //

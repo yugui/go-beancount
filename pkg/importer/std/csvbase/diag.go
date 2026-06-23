@@ -42,6 +42,10 @@ const DiagBadTemplate = "csvbase-bad-template"
 // number, missing currency, or unparseable date. Severity: Error.
 const DiagBadCost = "csvbase-bad-cost"
 
+// DiagNoPostings signals that an assembled transaction had no postings.
+// Severity: Error.
+const DiagNoPostings = "csvbase-no-postings"
+
 // ErrorDiag builds an Error-severity ast.Diagnostic located at path:line.
 // The span covers only the start position; End is zero.
 func ErrorDiag(code, path string, line int, msg string) ast.Diagnostic {

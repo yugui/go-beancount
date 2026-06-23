@@ -134,5 +134,12 @@ func (p *Pipeline) Map(ctx context.Context, rec RowContext) ([]ast.Directive, []
 		}
 		c.results[s.name] = result{value: v, diag: diag}
 	}
-	return p.emit(ctx, c)
+	dirs, diags, err := p.emit(ctx, c)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(c.warnings) > 0 {
+		diags = append(c.warnings, diags...)
+	}
+	return dirs, diags, nil
 }

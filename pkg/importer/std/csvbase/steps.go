@@ -261,7 +261,7 @@ func MapEach(b *Builder, ins []Key[string], m map[string]string, mode csvkit.Map
 // DiagAsWarning rewrites the severity of in's soft-fail diagnostic to Warning
 // and replaces its Code with newCode. A successful value passes through
 // untouched. Use to convert an error-severity miss (e.g. MapValue strict) into
-// a warn-keep signal that EmitTransaction surfaces without dropping the row.
+// a warn-keep signal that DoubleEntry surfaces without dropping the row.
 func DiagAsWarning[T any](b *Builder, in Key[T], newCode string) Key[T] {
 	return AddStep(b, func(c *MappingState) (T, *ast.Diagnostic, error) {
 		v, d := Value(c, in)

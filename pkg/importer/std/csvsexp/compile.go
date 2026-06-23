@@ -715,37 +715,42 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 	}
 }
 
+// compileEmit translates an emit-transaction form into an EmitFunc, assembling
+// the primary posting, optional counter (via DoubleEntry), and transaction from
+// the csvbase construction primitives.
 func (c *compiler) compileEmit(n node, e *env) (csvbase.EmitFunc, error) {
 	kw, err := trailingKwargs(n.items[1:])
 	if err != nil {
 		return nil, err
 	}
-	var cfg csvbase.TxConfig
 
 	dn, ok := kw["date"]
 	if !ok {
 		return nil, fmt.Errorf("csvsexp: line %d: emit-transaction requires :date", n.line)
 	}
-	if cfg.Date, err = c.evalDateKey(dn, e); err != nil {
+	date, err := c.evalDateKey(dn, e)
+	if err != nil {
 		return nil, err
 	}
 	an, ok := kw["amount"]
 	if !ok {
 		return nil, fmt.Errorf("csvsexp: line %d: emit-transaction requires :amount", n.line)
 	}
-	if cfg.Amount, err = c.evalAmtKey(an, e); err != nil {
+	amount, err := c.evalAmtKey(an, e)
+	if err != nil {
 		return nil, err
 	}
 
+	var currency, account, counter, payee, narration csvbase.Key[string]
 	for _, f := range []struct {
 		name string
 		dst  *csvbase.Key[string]
 	}{
-		{"currency", &cfg.Currency},
-		{"account", &cfg.Account},
-		{"counter", &cfg.Counter},
-		{"payee", &cfg.Payee},
-		{"narration", &cfg.Narration},
+		{"currency", &currency},
+		{"account", &account},
+		{"counter", &counter},
+		{"payee", &payee},
+		{"narration", &narration},
 	} {
 		vn, ok := kw[f.name]
 		if !ok {
@@ -758,12 +763,14 @@ func (c *compiler) compileEmit(n node, e *env) (csvbase.EmitFunc, error) {
 		*f.dst = k
 	}
 
+	var cost csvbase.Key[*ast.CostSpec]
 	if cn, ok := kw["cost"]; ok {
-		if cfg.Cost, err = c.evalCostKey(cn, e); err != nil {
+		if cost, err = c.evalCostKey(cn, e); err != nil {
 			return nil, err
 		}
 	}
 
+	var flag byte
 	if fn, ok := kw["flag"]; ok {
 		s, err := c.evalString(fn, e)
 		if err != nil {
@@ -772,40 +779,55 @@ func (c *compiler) compileEmit(n node, e *env) (csvbase.EmitFunc, error) {
 		if len(s) != 1 {
 			return nil, fmt.Errorf("csvsexp: line %d: :flag must be a single ASCII character", fn.line)
 		}
-		cfg.Flag = s[0]
+		flag = s[0]
 	}
 
+	var tags, links csvbase.Key[[]string]
 	if tn, ok := kw["tags"]; ok {
-		if cfg.Tags, err = c.evalStrKeyList(tn, e); err != nil {
+		ks, err := c.evalStrKeyList(tn, e)
+		if err != nil {
 			return nil, err
 		}
+		tags = csvbase.StringList(c.b, ks...)
 	}
 	if ln, ok := kw["links"]; ok {
-		if cfg.Links, err = c.evalStrKeyList(ln, e); err != nil {
+		ks, err := c.evalStrKeyList(ln, e)
+		if err != nil {
 			return nil, err
 		}
+		links = csvbase.StringList(c.b, ks...)
 	}
+	var meta csvbase.Key[ast.Metadata]
 	if mn, ok := kw["meta"]; ok {
-		if cfg.Meta, err = c.evalMetaFields(mn, e); err != nil {
+		fields, err := c.evalMetaFields(mn, e)
+		if err != nil {
 			return nil, err
 		}
+		meta = csvbase.Meta(c.b, fields...)
 	}
 
-	for name, dst := range map[string]*string{
-		"missing-amount-code":   &cfg.MissingAmountCode,
-		"missing-currency-code": &cfg.MissingCurrencyCode,
-		"missing-account-code":  &cfg.MissingAccountCode,
-	} {
-		if vn, ok := kw[name]; ok {
-			s, err := c.evalString(vn, e)
-			if err != nil {
-				return nil, err
-			}
-			*dst = s
-		}
+	// :account is optional in the form but required at runtime; an absent
+	// :account drops every row with DiagMissingAccount, matching a blank value.
+	if account == (csvbase.Key[string]{}) {
+		account = csvbase.Const(c.b, "")
 	}
 
-	return csvbase.EmitTransaction(cfg), nil
+	primary := csvbase.Posting(c.b, csvbase.PostingSpec{
+		Account: account,
+		Amount:  csvbase.Amount(c.b, csvbase.RequireAmount(c.b, amount, ""), currency),
+		Cost:    cost,
+	})
+	txn := csvbase.Transaction(c.b, csvbase.TxnSpec{
+		Date:      date,
+		Flag:      flag,
+		Payee:     payee,
+		Narration: narration,
+		Tags:      tags,
+		Links:     links,
+		Meta:      meta,
+		Postings:  csvbase.DoubleEntry(c.b, primary, counter),
+	})
+	return csvbase.EmitTx(txn), nil
 }
 
 func (c *compiler) evalStrKeyList(n node, e *env) ([]csvbase.Key[string], error) {
