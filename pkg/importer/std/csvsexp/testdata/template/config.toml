@@ -1,0 +1,12 @@
+kind = "csv-sexp"
+name = "template"
+program = '''
+(csv-import
+  (let* ((date (parse-date (column "Date") "2006-01-02"))
+         (amt  (parse-amount (column "Amount"))))
+    (emit-transaction
+      :date date :amount amt :currency (const "USD")
+      :account (const "Assets:Checking")
+      :payee (column "Payee")
+      :narration (template "{{.Desc}}{{if .Memo}} ({{.Memo}}){{end}}" (row)))))
+'''

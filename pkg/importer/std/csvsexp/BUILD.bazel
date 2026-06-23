@@ -1,0 +1,38 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "csvsexp",
+    srcs = [
+        "compile.go",
+        "config.go",
+        "doc.go",
+        "sexp.go",
+        "value.go",
+    ],
+    importpath = "github.com/yugui/go-beancount/pkg/importer/std/csvsexp",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/importer",
+        "//pkg/importer/std/csvbase",
+        "//pkg/importer/std/csvkit",
+        "@org_golang_x_text//encoding/ianaindex",
+    ],
+)
+
+go_test(
+    name = "csvsexp_test",
+    srcs = [
+        "compile_test.go",
+        "csvsexp_test.go",
+    ],
+    data = glob(["testdata/**"]),
+    embed = [":csvsexp"],
+    deps = [
+        "//pkg/ast",
+        "//pkg/importer",
+        "//pkg/printer",
+        "@com_github_burntsushi_toml//:toml",
+        "@com_github_google_go_cmp//cmp",
+    ],
+)

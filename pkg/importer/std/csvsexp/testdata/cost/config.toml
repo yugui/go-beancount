@@ -1,0 +1,16 @@
+kind = "csv-sexp"
+name = "cost"
+program = '''
+(csv-import
+  (let* ((date (parse-date (column "Date") "2006-01-02"))
+         (amt  (parse-amount (column "Quantity")))
+         (cur  (coalesce (trim (column "Symbol")) (currency-hint amt))))
+    (emit-transaction
+      :date date :amount amt :currency cur
+      :account (const "Assets:Broker:Stock")
+      :counter (const "Assets:Broker:Cash")
+      :narration (column "Symbol")
+      :cost (cost :per-unit (column "Price")
+              :default-currency "USD"
+              :date (column "Date") :date-format "2006-01-02"))))
+'''

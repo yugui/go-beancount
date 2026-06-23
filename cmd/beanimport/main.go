@@ -21,6 +21,7 @@ import (
 	_ "github.com/yugui/go-beancount/pkg/importer/hook/std/classify"
 	_ "github.com/yugui/go-beancount/pkg/importer/hook/std/predict"
 	_ "github.com/yugui/go-beancount/pkg/importer/std/csvimp"
+	_ "github.com/yugui/go-beancount/pkg/importer/std/csvsexp"
 )
 
 // commaSlice accumulates repeated flag occurrences and splits each value

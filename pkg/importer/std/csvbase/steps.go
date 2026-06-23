@@ -384,6 +384,74 @@ func AddAmounts(b *Builder, lhs, rhs Key[*csvkit.Amount], code string) Key[*csvk
 	})
 }
 
+// SubAmounts returns lhs-rhs, treating nil as zero: a nil rhs yields lhs
+// unchanged, a nil lhs yields -rhs, and nil-nil yields nil. Conflicting
+// non-empty CurrencyHints soft-fail with code (default DiagBadAmount). A
+// soft-failed input propagates its diagnostic.
+func SubAmounts(b *Builder, lhs, rhs Key[*csvkit.Amount], code string) Key[*csvkit.Amount] {
+	if code == "" {
+		code = DiagBadAmount
+	}
+	return AddStep(b, func(c *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		lv, ld := Value(c, lhs)
+		if ld != nil {
+			return nil, ld, nil
+		}
+		rv, rd := Value(c, rhs)
+		if rd != nil {
+			return nil, rd, nil
+		}
+		if rv == nil {
+			return lv, nil, nil
+		}
+		var hint string
+		var lnum apd.Decimal
+		if lv != nil {
+			hint = lv.CurrencyHint
+			lnum = lv.Number
+		}
+		if rv.CurrencyHint != "" {
+			if hint != "" && hint != rv.CurrencyHint {
+				info := c.Info()
+				diag := ErrorDiag(code, info.Path, info.Line,
+					fmt.Sprintf("conflicting currency hints: %q vs %q", hint, rv.CurrencyHint))
+				return nil, &diag, nil
+			}
+			hint = rv.CurrencyHint
+		}
+		var diff apd.Decimal
+		if _, err := apd.BaseContext.Sub(&diff, &lnum, &rv.Number); err != nil {
+			info := c.Info()
+			diag := ErrorDiag(code, info.Path, info.Line,
+				fmt.Sprintf("cannot subtract amounts: %v", err))
+			return nil, &diag, nil
+		}
+		return &csvkit.Amount{Number: diff, CurrencyHint: hint}, nil, nil
+	})
+}
+
+// AbsAmount returns the absolute value of in (preserving CurrencyHint). A nil
+// input yields nil. A soft-failed input propagates its diagnostic.
+func AbsAmount(b *Builder, in Key[*csvkit.Amount]) Key[*csvkit.Amount] {
+	return AddStep(b, func(c *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			return nil, d, nil
+		}
+		if v == nil {
+			return nil, nil, nil
+		}
+		var abs apd.Decimal
+		if _, err := apd.BaseContext.Abs(&abs, &v.Number); err != nil {
+			info := c.Info()
+			diag := ErrorDiag(DiagBadAmount, info.Path, info.Line,
+				fmt.Sprintf("cannot take absolute value: %v", err))
+			return nil, &diag, nil
+		}
+		return &csvkit.Amount{Number: abs, CurrencyHint: v.CurrencyHint}, nil, nil
+	})
+}
+
 // isZeroKey reports whether k is the zero value (name == ""), meaning it was
 // not produced by any AddStep call.
 func isZeroKey[T any](k Key[T]) bool { return k.name == "" }

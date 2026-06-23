@@ -3,6 +3,7 @@ load("@rules_go//go:def.bzl", "go_library", "go_test")
 go_library(
     name = "csvbase",
     srcs = [
+        "cond.go",
         "diag.go",
         "doc.go",
         "driver.go",
@@ -26,6 +27,7 @@ go_library(
 go_test(
     name = "csvbase_test",
     srcs = [
+        "cond_test.go",
         "diag_test.go",
         "driver_test.go",
         "emit_test.go",

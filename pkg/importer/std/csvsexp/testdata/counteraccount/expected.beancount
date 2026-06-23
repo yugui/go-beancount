@@ -1,0 +1,9 @@
+2024-03-01 * "Diner"
+  Assets:Checking                         -12.50 USD
+  Expenses:Food                            12.50 USD
+2024-03-02 * "March rent"
+  Assets:Checking                        -800.00 USD
+  Expenses:Housing:Rent                   800.00 USD
+2024-03-03 * "Unknown"
+  Assets:Checking                          -5.00 USD
+  Expenses:Misc                             5.00 USD
