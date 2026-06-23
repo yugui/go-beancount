@@ -51,9 +51,12 @@
 //	:exclude      ((exclude :match "^Total") (exclude :col "Date" :match "^※"))
 //	:rowhash      "csvsexp-rowhash"        stamp an idempotency hash under this key
 //
-// BODY is a single (let* (BINDINGS) BODY) or (emit-transaction ...) form. let*
-// binds names sequentially in a fresh lexical scope; each binding may reference
-// the ones before it, and the body sees them all.
+// BODY is a single (let* (BINDINGS) BODY), (emit-transaction ...), or
+// (emit TXN) form. let* binds names sequentially in a fresh lexical scope; each
+// binding may reference the ones before it, and the body sees them all.
+// emit-transaction is the convenience for the primary+counter shape; emit takes
+// a transaction key built from the construction forms below and is the way to
+// produce three-or-more-posting, auto-balanced, or posting-annotated entries.
 //
 // # Forms
 //
@@ -95,6 +98,29 @@
 //	(amount<? a b "CODE") (amount>? ...) (amount=? ...) same-currency   -> bool-key
 //	(sub-amounts a b "CODE")                                          -> amount-key
 //	(abs-amount a)                                                    -> amount-key
+//
+// # Transaction construction
+//
+// These forms assemble an arbitrary transaction, decoupling construction from
+// emission so a program can express any grammatically valid entry. emit-transaction
+// remains the convenience for the common primary+counter shape:
+//
+//	(amount amt :currency cur)         amount-key + currency            -> amount-value-key
+//	(require-amount amt "CODE")        amount-key in, soft-fail if nil  -> amount-key
+//	(posting :account k :amount av :cost ck :flag "!" :meta (("n" k)))  -> posting-key
+//	(postings p1 p2 p3 ...)            gather posting legs              -> posting-list-key
+//	(double-entry primary counter)     primary + balancing counter leg  -> posting-list-key
+//	(tags a b ...) (links a b ...)     gather non-blank strings         -> string-list-key
+//	(meta ("name" k) ...)              string metadata                  -> metadata-key
+//	(transaction :date d :postings pl :flag "x" :payee p :narration n
+//	             :tags t :links l :meta m)                              -> transaction-key
+//	(emit txn)                         body terminal; emits the transaction
+//
+// In (posting ...), :amount takes an amount-value-key (from (amount ...)); a
+// missing :amount yields an auto-balanced posting. (double-entry ...) reproduces
+// emit-transaction's counter handling: a negated counter amount (or an elided
+// cash leg when the primary carries a cost), and a soft-failed counter account
+// surfaces a warning while keeping the row's single posting.
 //
 // # Conditionals and functions
 //

@@ -22,6 +22,12 @@ const (
 	kindRowKey
 	kindCostKey
 	kindBoolKey
+	kindAmountValueKey
+	kindPostingKey
+	kindPostingListKey
+	kindStrListKey
+	kindMetaKey
+	kindTxnKey
 	kindStrLit
 	kindIntLit
 	kindBoolLit
@@ -47,6 +53,18 @@ func (k valKind) String() string {
 		return "cost-key"
 	case kindBoolKey:
 		return "bool-key"
+	case kindAmountValueKey:
+		return "amount-value-key"
+	case kindPostingKey:
+		return "posting-key"
+	case kindPostingListKey:
+		return "posting-list-key"
+	case kindStrListKey:
+		return "string-list-key"
+	case kindMetaKey:
+		return "metadata-key"
+	case kindTxnKey:
+		return "transaction-key"
 	case kindStrLit:
 		return "string"
 	case kindIntLit:
@@ -149,6 +167,48 @@ func asBoolKey(v value) (csvbase.Key[bool], error) {
 		return csvbase.Key[bool]{}, err
 	}
 	return v.v.(csvbase.Key[bool]), nil
+}
+
+func asAmountValueKey(v value) (csvbase.Key[*ast.Amount], error) {
+	if err := wantKind(v, kindAmountValueKey); err != nil {
+		return csvbase.Key[*ast.Amount]{}, err
+	}
+	return v.v.(csvbase.Key[*ast.Amount]), nil
+}
+
+func asPostingKey(v value) (csvbase.Key[ast.Posting], error) {
+	if err := wantKind(v, kindPostingKey); err != nil {
+		return csvbase.Key[ast.Posting]{}, err
+	}
+	return v.v.(csvbase.Key[ast.Posting]), nil
+}
+
+func asPostingListKey(v value) (csvbase.Key[[]ast.Posting], error) {
+	if err := wantKind(v, kindPostingListKey); err != nil {
+		return csvbase.Key[[]ast.Posting]{}, err
+	}
+	return v.v.(csvbase.Key[[]ast.Posting]), nil
+}
+
+func asStrListKey(v value) (csvbase.Key[[]string], error) {
+	if err := wantKind(v, kindStrListKey); err != nil {
+		return csvbase.Key[[]string]{}, err
+	}
+	return v.v.(csvbase.Key[[]string]), nil
+}
+
+func asMetaKey(v value) (csvbase.Key[ast.Metadata], error) {
+	if err := wantKind(v, kindMetaKey); err != nil {
+		return csvbase.Key[ast.Metadata]{}, err
+	}
+	return v.v.(csvbase.Key[ast.Metadata]), nil
+}
+
+func asTxnKey(v value) (csvbase.Key[*ast.Transaction], error) {
+	if err := wantKind(v, kindTxnKey); err != nil {
+		return csvbase.Key[*ast.Transaction]{}, err
+	}
+	return v.v.(csvbase.Key[*ast.Transaction]), nil
 }
 
 func asString(v value) (string, error) {

@@ -116,17 +116,28 @@ func splitCsvImport(items []node) (map[string]node, node, error) {
 	return kw, body, nil
 }
 
+// compileBody compiles the single top-level body form — let*, emit-transaction,
+// or emit — into an EmitFunc.
 func (c *compiler) compileBody(n node, e *env) (csvbase.EmitFunc, error) {
 	if n.kind != nodeList || len(n.items) == 0 || n.items[0].kind != nodeSymbol {
-		return nil, fmt.Errorf("csvsexp: line %d: body must be a (let* ...) or (emit-transaction ...) form", n.line)
+		return nil, fmt.Errorf("csvsexp: line %d: body must be a (let* ...), (emit-transaction ...), or (emit ...) form", n.line)
 	}
 	switch n.items[0].text {
 	case "let*":
 		return c.compileLet(n, e)
 	case "emit-transaction":
 		return c.compileEmit(n, e)
+	case "emit":
+		if len(n.items) != 2 {
+			return nil, fmt.Errorf("csvsexp: line %d: emit expects exactly one transaction argument", n.line)
+		}
+		k, err := c.evalTxnKey(n.items[1], e)
+		if err != nil {
+			return nil, err
+		}
+		return csvbase.EmitTx(k), nil
 	default:
-		return nil, fmt.Errorf("csvsexp: line %d: body must be let* or emit-transaction, got %q", n.line, n.items[0].text)
+		return nil, fmt.Errorf("csvsexp: line %d: body must be let*, emit-transaction, or emit, got %q", n.line, n.items[0].text)
 	}
 }
 
@@ -687,6 +698,87 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 			panic("unreachable")
 		}
 
+	case "amount":
+		if err := arity(head, args, 1, -1); err != nil {
+			return value{}, err
+		}
+		amt, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		kw, err := trailingKwargs(args[1:])
+		if err != nil {
+			return value{}, err
+		}
+		var cur csvbase.Key[string]
+		if cn, ok := kw["currency"]; ok {
+			if cur, err = c.evalStrKey(cn, e); err != nil {
+				return value{}, err
+			}
+		}
+		return value{kind: kindAmountValueKey, v: csvbase.Amount(c.b, amt, cur)}, nil
+
+	case "require-amount":
+		if err := arity(head, args, 1, 2); err != nil {
+			return value{}, err
+		}
+		in, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		code, err := c.optString(args, 1, e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindAmtKey, v: csvbase.RequireAmount(c.b, in, code)}, nil
+
+	case "posting":
+		return c.compilePosting(head, args, e)
+
+	case "postings":
+		if err := arity(head, args, 1, -1); err != nil {
+			return value{}, err
+		}
+		ks, err := c.evalPostingKeys(args, e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindPostingListKey, v: csvbase.Postings(c.b, ks...)}, nil
+
+	case "double-entry":
+		if err := arity(head, args, 2, 2); err != nil {
+			return value{}, err
+		}
+		primary, err := c.evalPostingKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		counter, err := c.evalStrKey(args[1], e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindPostingListKey, v: csvbase.DoubleEntry(c.b, primary, counter)}, nil
+
+	case "tags", "links":
+		if err := arity(head, args, 1, -1); err != nil {
+			return value{}, err
+		}
+		ks, err := c.evalStrKeys(args, e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindStrListKey, v: csvbase.StringList(c.b, ks...)}, nil
+
+	case "meta":
+		fields, err := c.metaFieldsFrom(args, e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindMetaKey, v: csvbase.Meta(c.b, fields...)}, nil
+
+	case "transaction":
+		return c.compileTransaction(head, args, e)
+
 	case "if":
 		return c.compileIf(head, args, e)
 
@@ -707,7 +799,7 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 		}
 		return value{kind: kindFunction, v: funcValue{params: params, body: args[1], closure: e}}, nil
 
-	case "let*", "emit-transaction":
+	case "let*", "emit-transaction", "emit":
 		return value{}, fmt.Errorf("csvsexp: line %d: %s is only valid as the csv-import body", n.line, head.text)
 
 	default:
@@ -772,14 +864,9 @@ func (c *compiler) compileEmit(n node, e *env) (csvbase.EmitFunc, error) {
 
 	var flag byte
 	if fn, ok := kw["flag"]; ok {
-		s, err := c.evalString(fn, e)
-		if err != nil {
+		if flag, err = c.evalFlagByte(fn, e); err != nil {
 			return nil, err
 		}
-		if len(s) != 1 {
-			return nil, fmt.Errorf("csvsexp: line %d: :flag must be a single ASCII character", fn.line)
-		}
-		flag = s[0]
 	}
 
 	var tags, links csvbase.Key[[]string]
@@ -830,6 +917,99 @@ func (c *compiler) compileEmit(n node, e *env) (csvbase.EmitFunc, error) {
 	return csvbase.EmitTx(txn), nil
 }
 
+// compilePosting translates a (posting :account ... [:amount ...] [:cost ...]
+// [:flag "x"] [:meta ...]) form into a posting key.
+func (c *compiler) compilePosting(head node, args []node, e *env) (value, error) {
+	kw, err := trailingKwargs(args)
+	if err != nil {
+		return value{}, err
+	}
+	an, ok := kw["account"]
+	if !ok {
+		return value{}, fmt.Errorf("csvsexp: line %d: posting requires :account", head.line)
+	}
+	var spec csvbase.PostingSpec
+	if spec.Account, err = c.evalStrKey(an, e); err != nil {
+		return value{}, err
+	}
+	if amn, ok := kw["amount"]; ok {
+		if spec.Amount, err = c.evalAmountValueKey(amn, e); err != nil {
+			return value{}, err
+		}
+	}
+	if cn, ok := kw["cost"]; ok {
+		if spec.Cost, err = c.evalCostKey(cn, e); err != nil {
+			return value{}, err
+		}
+	}
+	if fn, ok := kw["flag"]; ok {
+		if spec.Flag, err = c.evalFlagByte(fn, e); err != nil {
+			return value{}, err
+		}
+	}
+	if mn, ok := kw["meta"]; ok {
+		if spec.Meta, err = c.evalMetaFields(mn, e); err != nil {
+			return value{}, err
+		}
+	}
+	return value{kind: kindPostingKey, v: csvbase.Posting(c.b, spec)}, nil
+}
+
+// compileTransaction translates a (transaction :date ... :postings ... [:flag]
+// [:payee] [:narration] [:tags] [:links] [:meta]) form into a transaction key.
+func (c *compiler) compileTransaction(head node, args []node, e *env) (value, error) {
+	kw, err := trailingKwargs(args)
+	if err != nil {
+		return value{}, err
+	}
+	var spec csvbase.TxnSpec
+	dn, ok := kw["date"]
+	if !ok {
+		return value{}, fmt.Errorf("csvsexp: line %d: transaction requires :date", head.line)
+	}
+	if spec.Date, err = c.evalDateKey(dn, e); err != nil {
+		return value{}, err
+	}
+	pn, ok := kw["postings"]
+	if !ok {
+		return value{}, fmt.Errorf("csvsexp: line %d: transaction requires :postings", head.line)
+	}
+	if spec.Postings, err = c.evalPostingListKey(pn, e); err != nil {
+		return value{}, err
+	}
+	if fn, ok := kw["flag"]; ok {
+		if spec.Flag, err = c.evalFlagByte(fn, e); err != nil {
+			return value{}, err
+		}
+	}
+	if vn, ok := kw["payee"]; ok {
+		if spec.Payee, err = c.evalStrKey(vn, e); err != nil {
+			return value{}, err
+		}
+	}
+	if vn, ok := kw["narration"]; ok {
+		if spec.Narration, err = c.evalStrKey(vn, e); err != nil {
+			return value{}, err
+		}
+	}
+	if vn, ok := kw["tags"]; ok {
+		if spec.Tags, err = c.evalStrListKey(vn, e); err != nil {
+			return value{}, err
+		}
+	}
+	if vn, ok := kw["links"]; ok {
+		if spec.Links, err = c.evalStrListKey(vn, e); err != nil {
+			return value{}, err
+		}
+	}
+	if vn, ok := kw["meta"]; ok {
+		if spec.Meta, err = c.evalMetaKey(vn, e); err != nil {
+			return value{}, err
+		}
+	}
+	return value{kind: kindTxnKey, v: csvbase.Transaction(c.b, spec)}, nil
+}
+
 func (c *compiler) evalStrKeyList(n node, e *env) ([]csvbase.Key[string], error) {
 	if n.kind != nodeList {
 		return nil, fmt.Errorf("csvsexp: line %d: expected a list of keys", n.line)
@@ -849,8 +1029,13 @@ func (c *compiler) evalMetaFields(n node, e *env) ([]csvbase.MetaField, error) {
 	if n.kind != nodeList {
 		return nil, fmt.Errorf("csvsexp: line %d: :meta expects a list of (\"name\" key) pairs", n.line)
 	}
-	out := make([]csvbase.MetaField, 0, len(n.items))
-	for _, pair := range n.items {
+	return c.metaFieldsFrom(n.items, e)
+}
+
+// metaFieldsFrom builds MetaFields from a slice of ("name" key) pair nodes.
+func (c *compiler) metaFieldsFrom(pairs []node, e *env) ([]csvbase.MetaField, error) {
+	out := make([]csvbase.MetaField, 0, len(pairs))
+	for _, pair := range pairs {
 		if pair.kind != nodeList || len(pair.items) != 2 {
 			return nil, fmt.Errorf("csvsexp: line %d: each meta entry must be (\"name\" key)", pair.line)
 		}
@@ -1110,6 +1295,18 @@ func (c *compiler) compileIf(head node, args []node, e *env) (value, error) {
 		return value{kind: kindCostKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[*ast.CostSpec]), elseV.v.(csvbase.Key[*ast.CostSpec]))}, nil
 	case kindBoolKey:
 		return boolKey(csvbase.If(c.b, cond, thenV.v.(csvbase.Key[bool]), elseV.v.(csvbase.Key[bool]))), nil
+	case kindAmountValueKey:
+		return value{kind: kindAmountValueKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[*ast.Amount]), elseV.v.(csvbase.Key[*ast.Amount]))}, nil
+	case kindPostingKey:
+		return value{kind: kindPostingKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[ast.Posting]), elseV.v.(csvbase.Key[ast.Posting]))}, nil
+	case kindPostingListKey:
+		return value{kind: kindPostingListKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[[]ast.Posting]), elseV.v.(csvbase.Key[[]ast.Posting]))}, nil
+	case kindStrListKey:
+		return value{kind: kindStrListKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[[]string]), elseV.v.(csvbase.Key[[]string]))}, nil
+	case kindMetaKey:
+		return value{kind: kindMetaKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[ast.Metadata]), elseV.v.(csvbase.Key[ast.Metadata]))}, nil
+	case kindTxnKey:
+		return value{kind: kindTxnKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[*ast.Transaction]), elseV.v.(csvbase.Key[*ast.Transaction]))}, nil
 	default:
 		return value{}, fmt.Errorf("csvsexp: line %d: if branches must be runtime keys, got %s", head.line, thenV.kind)
 	}
@@ -1211,6 +1408,90 @@ func (c *compiler) evalCostKey(n node, e *env) (csvbase.Key[*ast.CostSpec], erro
 	return k, nil
 }
 
+func (c *compiler) evalAmountValueKey(n node, e *env) (csvbase.Key[*ast.Amount], error) {
+	v, err := c.evalExpr(n, e)
+	if err != nil {
+		return csvbase.Key[*ast.Amount]{}, err
+	}
+	k, err := asAmountValueKey(v)
+	if err != nil {
+		return csvbase.Key[*ast.Amount]{}, errLine(n, err)
+	}
+	return k, nil
+}
+
+func (c *compiler) evalPostingKey(n node, e *env) (csvbase.Key[ast.Posting], error) {
+	v, err := c.evalExpr(n, e)
+	if err != nil {
+		return csvbase.Key[ast.Posting]{}, err
+	}
+	k, err := asPostingKey(v)
+	if err != nil {
+		return csvbase.Key[ast.Posting]{}, errLine(n, err)
+	}
+	return k, nil
+}
+
+func (c *compiler) evalPostingKeys(ns []node, e *env) ([]csvbase.Key[ast.Posting], error) {
+	out := make([]csvbase.Key[ast.Posting], 0, len(ns))
+	for _, n := range ns {
+		k, err := c.evalPostingKey(n, e)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+func (c *compiler) evalPostingListKey(n node, e *env) (csvbase.Key[[]ast.Posting], error) {
+	v, err := c.evalExpr(n, e)
+	if err != nil {
+		return csvbase.Key[[]ast.Posting]{}, err
+	}
+	k, err := asPostingListKey(v)
+	if err != nil {
+		return csvbase.Key[[]ast.Posting]{}, errLine(n, err)
+	}
+	return k, nil
+}
+
+func (c *compiler) evalStrListKey(n node, e *env) (csvbase.Key[[]string], error) {
+	v, err := c.evalExpr(n, e)
+	if err != nil {
+		return csvbase.Key[[]string]{}, err
+	}
+	k, err := asStrListKey(v)
+	if err != nil {
+		return csvbase.Key[[]string]{}, errLine(n, err)
+	}
+	return k, nil
+}
+
+func (c *compiler) evalMetaKey(n node, e *env) (csvbase.Key[ast.Metadata], error) {
+	v, err := c.evalExpr(n, e)
+	if err != nil {
+		return csvbase.Key[ast.Metadata]{}, err
+	}
+	k, err := asMetaKey(v)
+	if err != nil {
+		return csvbase.Key[ast.Metadata]{}, errLine(n, err)
+	}
+	return k, nil
+}
+
+func (c *compiler) evalTxnKey(n node, e *env) (csvbase.Key[*ast.Transaction], error) {
+	v, err := c.evalExpr(n, e)
+	if err != nil {
+		return csvbase.Key[*ast.Transaction]{}, err
+	}
+	k, err := asTxnKey(v)
+	if err != nil {
+		return csvbase.Key[*ast.Transaction]{}, errLine(n, err)
+	}
+	return k, nil
+}
+
 func (c *compiler) evalString(n node, e *env) (string, error) {
 	v, err := c.evalExpr(n, e)
 	if err != nil {
@@ -1280,6 +1561,19 @@ func (c *compiler) evalRowBindings(n node, e *env) (map[string]csvbase.Key[strin
 		return nil, errLine(n, err)
 	}
 	return m, nil
+}
+
+// evalFlagByte evaluates n as a single-character string and returns its byte,
+// the form used for transaction and posting flags.
+func (c *compiler) evalFlagByte(n node, e *env) (byte, error) {
+	s, err := c.evalString(n, e)
+	if err != nil {
+		return 0, err
+	}
+	if len(s) != 1 {
+		return 0, fmt.Errorf("csvsexp: line %d: :flag must be a single ASCII character", n.line)
+	}
+	return s[0], nil
 }
 
 // optString evaluates args[i] as a string literal, returning "" when args has
