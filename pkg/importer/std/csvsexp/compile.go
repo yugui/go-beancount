@@ -191,6 +191,13 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 	}
 	args := n.items[1:]
 
+	if v, ok := e.lookup(head.text); ok {
+		if v.kind != kindFunction {
+			return value{}, fmt.Errorf("csvsexp: line %d: %q is not callable (%s)", head.line, head.text, v.kind)
+		}
+		return c.applyFunction(v.v.(funcValue), head, args, e)
+	}
+
 	switch head.text {
 	case "column":
 		if err := arity(head, args, 1, 1); err != nil {
@@ -538,6 +545,168 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 	case "cost":
 		return c.compileCost(args, e)
 
+	case "sub-amounts":
+		if err := arity(head, args, 2, 3); err != nil {
+			return value{}, err
+		}
+		lhs, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		rhs, err := c.evalAmtKey(args[1], e)
+		if err != nil {
+			return value{}, err
+		}
+		code, err := c.optString(args, 2, e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindAmtKey, v: csvbase.SubAmounts(c.b, lhs, rhs, code)}, nil
+
+	case "abs-amount":
+		if err := arity(head, args, 1, 1); err != nil {
+			return value{}, err
+		}
+		a, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindAmtKey, v: csvbase.AbsAmount(c.b, a)}, nil
+
+	case "empty?":
+		if err := arity(head, args, 1, 1); err != nil {
+			return value{}, err
+		}
+		k, err := c.evalStrKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		return boolKey(csvbase.IsBlank(c.b, k)), nil
+
+	case "equal?":
+		if err := arity(head, args, 2, 2); err != nil {
+			return value{}, err
+		}
+		lhs, err := c.evalStrKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		rhs, err := c.evalStrKey(args[1], e)
+		if err != nil {
+			return value{}, err
+		}
+		return boolKey(csvbase.StrEqual(c.b, lhs, rhs)), nil
+
+	case "matches?":
+		if err := arity(head, args, 2, 2); err != nil {
+			return value{}, err
+		}
+		k, err := c.evalStrKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		re, err := c.evalRegex(args[1], e)
+		if err != nil {
+			return value{}, err
+		}
+		return boolKey(csvbase.MatchRegexp(c.b, k, re)), nil
+
+	case "and":
+		if err := arity(head, args, 1, -1); err != nil {
+			return value{}, err
+		}
+		ks, err := c.evalBoolKeys(args, e)
+		if err != nil {
+			return value{}, err
+		}
+		return boolKey(csvbase.And(c.b, ks...)), nil
+
+	case "or":
+		if err := arity(head, args, 1, -1); err != nil {
+			return value{}, err
+		}
+		ks, err := c.evalBoolKeys(args, e)
+		if err != nil {
+			return value{}, err
+		}
+		return boolKey(csvbase.Or(c.b, ks...)), nil
+
+	case "not":
+		if err := arity(head, args, 1, 1); err != nil {
+			return value{}, err
+		}
+		k, err := c.evalBoolKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		return boolKey(csvbase.Not(c.b, k)), nil
+
+	case "negative?", "positive?", "zero?":
+		if err := arity(head, args, 1, 1); err != nil {
+			return value{}, err
+		}
+		a, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		switch head.text {
+		case "negative?":
+			return boolKey(csvbase.IsNegative(c.b, a)), nil
+		case "positive?":
+			return boolKey(csvbase.IsPositive(c.b, a)), nil
+		case "zero?":
+			return boolKey(csvbase.IsZero(c.b, a)), nil
+		default:
+			panic("unreachable")
+		}
+
+	case "amount<?", "amount>?", "amount=?":
+		if err := arity(head, args, 2, 3); err != nil {
+			return value{}, err
+		}
+		lhs, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		rhs, err := c.evalAmtKey(args[1], e)
+		if err != nil {
+			return value{}, err
+		}
+		code, err := c.optString(args, 2, e)
+		if err != nil {
+			return value{}, err
+		}
+		switch head.text {
+		case "amount<?":
+			return boolKey(csvbase.AmountLess(c.b, lhs, rhs, code)), nil
+		case "amount>?":
+			return boolKey(csvbase.AmountGreater(c.b, lhs, rhs, code)), nil
+		case "amount=?":
+			return boolKey(csvbase.AmountEqual(c.b, lhs, rhs, code)), nil
+		default:
+			panic("unreachable")
+		}
+
+	case "if":
+		return c.compileIf(head, args, e)
+
+	case "lambda":
+		if err := arity(head, args, 2, 2); err != nil {
+			return value{}, err
+		}
+		plist := args[0]
+		if plist.kind != nodeList {
+			return value{}, fmt.Errorf("csvsexp: line %d: lambda parameters must be a list", plist.line)
+		}
+		params := make([]string, len(plist.items))
+		for i, p := range plist.items {
+			if p.kind != nodeSymbol {
+				return value{}, fmt.Errorf("csvsexp: line %d: lambda parameter must be a symbol", p.line)
+			}
+			params[i] = p.text
+		}
+		return value{kind: kindFunction, v: funcValue{params: params, body: args[1], closure: e}}, nil
+
 	case "let*", "emit-transaction":
 		return value{}, fmt.Errorf("csvsexp: line %d: %s is only valid as the csv-import body", n.line, head.text)
 
@@ -855,6 +1024,75 @@ func (c *compiler) evalNumberFormatForm(args []node, e *env) (csvkit.NumberForma
 	return nf, nil
 }
 
+// applyFunction evaluates a macro-style function: each argument is evaluated in
+// the caller's scope e and bound to the corresponding parameter in a child of
+// the function's captured closure, then body is evaluated there. Because body
+// is re-evaluated per call, each application emits its own pipeline steps.
+func (c *compiler) applyFunction(fn funcValue, head node, args []node, e *env) (value, error) {
+	if len(args) != len(fn.params) {
+		return value{}, fmt.Errorf("csvsexp: line %d: %s expects %d argument(s), got %d", head.line, head.text, len(fn.params), len(args))
+	}
+	callScope := newEnv(fn.closure)
+	for i, p := range fn.params {
+		v, err := c.evalExpr(args[i], e)
+		if err != nil {
+			return value{}, err
+		}
+		callScope.bind(p, v)
+	}
+	return c.evalExpr(fn.body, callScope)
+}
+
+// compileIf builds a per-row conditional. A literal condition folds at compile
+// time; otherwise the branches must share one runtime key kind, which selects
+// the typed csvbase.If instantiation.
+func (c *compiler) compileIf(head node, args []node, e *env) (value, error) {
+	if err := arity(head, args, 3, 3); err != nil {
+		return value{}, err
+	}
+	condV, err := c.evalExpr(args[0], e)
+	if err != nil {
+		return value{}, err
+	}
+	if condV.kind == kindBoolLit {
+		if condV.v.(bool) {
+			return c.evalExpr(args[1], e)
+		}
+		return c.evalExpr(args[2], e)
+	}
+	cond, err := asBoolKey(condV)
+	if err != nil {
+		return value{}, errLine(args[0], err)
+	}
+	thenV, err := c.evalExpr(args[1], e)
+	if err != nil {
+		return value{}, err
+	}
+	elseV, err := c.evalExpr(args[2], e)
+	if err != nil {
+		return value{}, err
+	}
+	if thenV.kind != elseV.kind {
+		return value{}, fmt.Errorf("csvsexp: line %d: if branches must have the same type, got %s and %s", head.line, thenV.kind, elseV.kind)
+	}
+	switch thenV.kind {
+	case kindStrKey:
+		return strKey(csvbase.If(c.b, cond, thenV.v.(csvbase.Key[string]), elseV.v.(csvbase.Key[string]))), nil
+	case kindDateKey:
+		return value{kind: kindDateKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[time.Time]), elseV.v.(csvbase.Key[time.Time]))}, nil
+	case kindAmtKey:
+		return value{kind: kindAmtKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[*csvkit.Amount]), elseV.v.(csvbase.Key[*csvkit.Amount]))}, nil
+	case kindRowKey:
+		return value{kind: kindRowKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[map[string]string]), elseV.v.(csvbase.Key[map[string]string]))}, nil
+	case kindCostKey:
+		return value{kind: kindCostKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[*ast.CostSpec]), elseV.v.(csvbase.Key[*ast.CostSpec]))}, nil
+	case kindBoolKey:
+		return boolKey(csvbase.If(c.b, cond, thenV.v.(csvbase.Key[bool]), elseV.v.(csvbase.Key[bool]))), nil
+	default:
+		return value{}, fmt.Errorf("csvsexp: line %d: if branches must be runtime keys, got %s", head.line, thenV.kind)
+	}
+}
+
 func (c *compiler) evalStrKey(n node, e *env) (csvbase.Key[string], error) {
 	v, err := c.evalExpr(n, e)
 	if err != nil {
@@ -871,6 +1109,30 @@ func (c *compiler) evalStrKeys(ns []node, e *env) ([]csvbase.Key[string], error)
 	out := make([]csvbase.Key[string], 0, len(ns))
 	for _, n := range ns {
 		k, err := c.evalStrKey(n, e)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, nil
+}
+
+func (c *compiler) evalBoolKey(n node, e *env) (csvbase.Key[bool], error) {
+	v, err := c.evalExpr(n, e)
+	if err != nil {
+		return csvbase.Key[bool]{}, err
+	}
+	k, err := asBoolKey(v)
+	if err != nil {
+		return csvbase.Key[bool]{}, errLine(n, err)
+	}
+	return k, nil
+}
+
+func (c *compiler) evalBoolKeys(ns []node, e *env) ([]csvbase.Key[bool], error) {
+	out := make([]csvbase.Key[bool], 0, len(ns))
+	for _, n := range ns {
+		k, err := c.evalBoolKey(n, e)
 		if err != nil {
 			return nil, err
 		}
@@ -1008,6 +1270,8 @@ func (c *compiler) optString(args []node, i int, e *env) (string, error) {
 }
 
 func strKey(k csvbase.Key[string]) value { return value{kind: kindStrKey, v: k} }
+
+func boolKey(k csvbase.Key[bool]) value { return value{kind: kindBoolKey, v: k} }
 
 func errLine(n node, err error) error {
 	return fmt.Errorf("csvsexp: line %d: %w", n.line, err)

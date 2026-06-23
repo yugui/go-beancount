@@ -109,6 +109,62 @@ func TestCompileErrors(t *testing.T) {
 				  :amount (parse-amount (column "A"))))`,
 			want: "mutually exclusive",
 		},
+		{
+			name: "if branch type mismatch",
+			program: `(csv-import (let* ((acct (if (empty? (column "C"))
+				  (const "Assets:Cash")
+				  (parse-amount (column "A")))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account acct)))`,
+			want: "if branches must have the same type",
+		},
+		{
+			name: "if cond wants bool-key",
+			program: `(csv-import (let* ((acct (if (column "C") (const "X") (const "Y"))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account acct)))`,
+			want: "expected bool-key, got string-key",
+		},
+		{
+			name: "empty? wants string-key",
+			program: `(csv-import (let* ((p (empty? (parse-amount (column "A")))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")))))`,
+			want: "expected string-key, got amount-key",
+		},
+		{
+			name: "negative? wants amount-key",
+			program: `(csv-import (let* ((p (negative? (column "A"))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")))))`,
+			want: "expected amount-key, got string-key",
+		},
+		{
+			name:    "lambda arity",
+			program: `(csv-import (let* ((f (lambda (x)))) (emit-transaction :date f :amount f)))`,
+			want:    "lambda expects exactly 2 arguments",
+		},
+		{
+			name: "lambda parameter must be symbol",
+			program: `(csv-import (let* ((f (lambda ("x") (const "y"))))
+				(emit-transaction :date f :amount f)))`,
+			want: "lambda parameter must be a symbol",
+		},
+		{
+			name: "function arity mismatch",
+			program: `(csv-import (let* ((f (lambda (a b) (const "y")))
+				  (acct (f (const "1"))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account acct)))`,
+			want: "f expects 2 argument(s), got 1",
+		},
+		{
+			name: "not callable",
+			program: `(csv-import (let* ((x (const "v")) (y (x (const "z"))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account y)))`,
+			want: `"x" is not callable`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

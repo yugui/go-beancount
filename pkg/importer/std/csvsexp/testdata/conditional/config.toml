@@ -1,0 +1,17 @@
+kind = "csv-sexp"
+name = "conditional"
+program = '''
+(csv-import
+  (let* ((amt     (parse-amount (column "Amount")))
+         (joined  (lambda (a b) (join-keys " - " (trim a) (trim b))))
+         (counter (if (negative? amt)
+                    (const "Expenses:General")
+                    (const "Income:General"))))
+    (emit-transaction
+      :date (parse-date (column "Date") "2006-01-02")
+      :amount amt :currency (const "USD")
+      :account (const "Assets:Checking")
+      :counter counter
+      :payee (column "Payee")
+      :narration (joined (column "Description") (column "Payee")))))
+'''

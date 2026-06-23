@@ -85,6 +85,36 @@
 //	(number-format :thousands-sep "," :decimal-sep "." :placeholders ("-"))
 //	:strict / :verbatim              map-lookup modes
 //
+// Predicates yield a bool-key and arithmetic extends the amount steps:
+//
+//	(empty? k)                        blank after trim                 -> bool-key
+//	(equal? a b)                      exact string equality            -> bool-key
+//	(matches? k (regex "..."))        regex match                      -> bool-key
+//	(and a b ...) (or a b ...) (not x)                                 -> bool-key
+//	(negative? amt) (positive? amt) (zero? amt)                        -> bool-key
+//	(amount<? a b "CODE") (amount>? ...) (amount=? ...) same-currency   -> bool-key
+//	(sub-amounts a b "CODE")                                          -> amount-key
+//	(abs-amount a)                                                    -> amount-key
+//
+// # Conditionals and functions
+//
+// (if cond then else) chooses a value per row: cond is a bool-key (a literal
+// #t/#f folds at compile time), and the two branches must share one runtime key
+// kind, which becomes the result kind. Only the chosen branch's value and
+// diagnostic propagate, so a soft-fail in the untaken branch is harmless.
+//
+//	(account (if (negative? amt) (const "Expenses:Misc") (const "Income:Misc")))
+//
+// (lambda (params...) body) is a compile-time, macro-style function: bind it
+// with let* and apply it as (f args...). Each application re-evaluates body with
+// the arguments bound to the parameters, emitting a fresh set of pipeline steps,
+// so functions factor out repeated sub-pipelines. Recursion is not supported —
+// a function cannot see its own let* name.
+//
+//	(let* ((mapped (lambda (col table)
+//	                 (map-value (trim col) table :strict "csvsexp-unmapped"))))
+//	  (emit-transaction ... :account (mapped (column "Category") (dict ...))))
+//
 // emit-transaction wires resolved keys into one transaction per row; its
 // keywords mirror csvbase.TxConfig: :date and :amount are required, while
 // :currency, :account, :counter, :payee, :narration, :cost, :flag, :tags,

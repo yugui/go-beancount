@@ -1,0 +1,9 @@
+2024-02-01 * "Cafe Mocha" "Morning coffee - Cafe Mocha"
+  Assets:Checking                          -3.50 USD
+  Expenses:General                          3.50 USD
+2024-02-02 * "Acme Corp" "Consulting invoice - Acme Corp"
+  Assets:Checking                        1200.00 USD
+  Income:General                        -1200.00 USD
+2024-02-03 * "Bookstore" "Paperback - Bookstore"
+  Assets:Checking                         -18.00 USD
+  Expenses:General                         18.00 USD

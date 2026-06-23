@@ -1225,6 +1225,145 @@ func TestAddAmounts_ConflictingHintSoftFails(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// SubAmounts / AbsAmount
+// ---------------------------------------------------------------------------
+
+func TestSubAmounts_Difference(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("A", "100", "B", "30"),
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			a := csvbase.ParseAmount(b, csvbase.Column(b, "A"), csvbase.ParseAmountConfig{})
+			bb := csvbase.ParseAmount(b, csvbase.Column(b, "B"), csvbase.ParseAmountConfig{})
+			return csvbase.SubAmounts(b, a, bb, "")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "70")
+	if v == nil || v.Number.Cmp(want) != 0 {
+		t.Errorf("SubAmounts(100,30) = %v, want 70", v)
+	}
+}
+
+func TestSubAmounts_NilLhsNegatesRhs(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("B", "30"),
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			nilKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			rhs := csvbase.ParseAmount(b, csvbase.Column(b, "B"), csvbase.ParseAmountConfig{})
+			return csvbase.SubAmounts(b, nilKey, rhs, "")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "-30")
+	if v == nil || v.Number.Cmp(want) != 0 {
+		t.Errorf("SubAmounts(nil,30) = %v, want -30", v)
+	}
+}
+
+func TestSubAmounts_NilRhsYieldsLhs(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("A", "30"),
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			lhs := csvbase.ParseAmount(b, csvbase.Column(b, "A"), csvbase.ParseAmountConfig{})
+			nilKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			return csvbase.SubAmounts(b, lhs, nilKey, "")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "30")
+	if v == nil || v.Number.Cmp(want) != 0 {
+		t.Errorf("SubAmounts(30,nil) = %v, want 30", v)
+	}
+}
+
+func TestSubAmounts_ConflictingHintSoftFails(t *testing.T) {
+	n, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "1")
+	_, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			aKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return &csvkit.Amount{Number: *n, CurrencyHint: "JPY"}, nil, nil
+			})
+			cKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return &csvkit.Amount{Number: *n, CurrencyHint: "EUR"}, nil, nil
+			})
+			return csvbase.SubAmounts(b, aKey, cKey, "sub-conflict")
+		})
+	if d == nil || d.Code != "sub-conflict" {
+		t.Errorf("conflicting hints diag = %v, want sub-conflict", d)
+	}
+}
+
+func TestSubAmounts_BothNilYieldsNil(t *testing.T) {
+	v, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			nilA := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			nilB := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			return csvbase.SubAmounts(b, nilA, nilB, "")
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != nil {
+		t.Errorf("SubAmounts(nil,nil) = %v, want nil", v)
+	}
+}
+
+func TestAbsAmount(t *testing.T) {
+	v, d := singlePtrAmount(t, rowCtx("A", "-42"),
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			return csvbase.AbsAmount(b, csvbase.ParseAmount(b, csvbase.Column(b, "A"), csvbase.ParseAmountConfig{}))
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	want, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "42")
+	if v == nil || v.Number.Cmp(want) != 0 {
+		t.Errorf("AbsAmount(-42) = %v, want 42", v)
+	}
+}
+
+func TestAbsAmount_PreservesHint(t *testing.T) {
+	n, _, _ := apd.BaseContext.SetString(new(apd.Decimal), "-7")
+	v, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			in := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return &csvkit.Amount{Number: *n, CurrencyHint: "JPY"}, nil, nil
+			})
+			return csvbase.AbsAmount(b, in)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v == nil || v.CurrencyHint != "JPY" {
+		t.Errorf("AbsAmount hint = %v, want JPY", v)
+	}
+}
+
+func TestAbsAmount_NilYieldsNil(t *testing.T) {
+	v, d := singlePtrAmount(t, csvbase.RowContext{Fields: []string{}, Index: map[string]int{}},
+		func(b *csvbase.Builder) csvbase.Key[*csvkit.Amount] {
+			nilKey := csvbase.AddStep(b, func(*csvbase.MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+				return nil, nil, nil
+			})
+			return csvbase.AbsAmount(b, nilKey)
+		})
+	if d != nil {
+		t.Fatalf("unexpected diag: %v", d)
+	}
+	if v != nil {
+		t.Errorf("AbsAmount(nil) = %v, want nil", v)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Trim
 // ---------------------------------------------------------------------------
 

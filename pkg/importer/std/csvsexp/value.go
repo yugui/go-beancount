@@ -21,6 +21,7 @@ const (
 	kindAmtKey
 	kindRowKey
 	kindCostKey
+	kindBoolKey
 	kindStrLit
 	kindIntLit
 	kindBoolLit
@@ -29,6 +30,7 @@ const (
 	kindNumberFormat
 	kindMapMode
 	kindRowBindings
+	kindFunction
 )
 
 func (k valKind) String() string {
@@ -43,6 +45,8 @@ func (k valKind) String() string {
 		return "row-key"
 	case kindCostKey:
 		return "cost-key"
+	case kindBoolKey:
+		return "bool-key"
 	case kindStrLit:
 		return "string"
 	case kindIntLit:
@@ -59,6 +63,8 @@ func (k valKind) String() string {
 		return "map-mode"
 	case kindRowBindings:
 		return "row-bindings"
+	case kindFunction:
+		return "function"
 	default:
 		return "unknown"
 	}
@@ -71,8 +77,8 @@ type value struct {
 	v    any
 }
 
-// env is a lexical scope mapping names to values. Child scopes (created by
-// let*) shadow parents; this threading leaves room for future lambda support.
+// env is a lexical scope mapping names to values. Child scopes (created by let*
+// and by function application) shadow parents.
 type env struct {
 	parent *env
 	vars   map[string]value
@@ -138,6 +144,13 @@ func asCostKey(v value) (csvbase.Key[*ast.CostSpec], error) {
 	return v.v.(csvbase.Key[*ast.CostSpec]), nil
 }
 
+func asBoolKey(v value) (csvbase.Key[bool], error) {
+	if err := wantKind(v, kindBoolKey); err != nil {
+		return csvbase.Key[bool]{}, err
+	}
+	return v.v.(csvbase.Key[bool]), nil
+}
+
 func asString(v value) (string, error) {
 	if err := wantKind(v, kindStrLit); err != nil {
 		return "", err
@@ -178,4 +191,13 @@ func asRowBindings(v value) (map[string]csvbase.Key[string], error) {
 		return nil, err
 	}
 	return v.v.(map[string]csvbase.Key[string]), nil
+}
+
+// funcValue is a compile-time, macro-style function: each application
+// re-evaluates body in a child scope of closure, emitting a fresh set of
+// pipeline steps. Recursion is not supported.
+type funcValue struct {
+	params  []string
+	body    node
+	closure *env
 }
