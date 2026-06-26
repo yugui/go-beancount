@@ -28,6 +28,9 @@ const (
 	kindStrListKey
 	kindMetaKey
 	kindTxnKey
+	kindPriceKey
+	kindBalanceKey
+	kindDirectiveKey
 	kindStrLit
 	kindIntLit
 	kindBoolLit
@@ -65,6 +68,12 @@ func (k valKind) String() string {
 		return "metadata-key"
 	case kindTxnKey:
 		return "transaction-key"
+	case kindPriceKey:
+		return "price-key"
+	case kindBalanceKey:
+		return "balance-key"
+	case kindDirectiveKey:
+		return "directive-key"
 	case kindStrLit:
 		return "string"
 	case kindIntLit:
@@ -209,6 +218,27 @@ func asTxnKey(v value) (csvbase.Key[*ast.Transaction], error) {
 		return csvbase.Key[*ast.Transaction]{}, err
 	}
 	return v.v.(csvbase.Key[*ast.Transaction]), nil
+}
+
+func asPriceKey(v value) (csvbase.Key[*ast.PriceAnnotation], error) {
+	if err := wantKind(v, kindPriceKey); err != nil {
+		return csvbase.Key[*ast.PriceAnnotation]{}, err
+	}
+	return v.v.(csvbase.Key[*ast.PriceAnnotation]), nil
+}
+
+func asBalanceKey(v value) (csvbase.Key[*ast.Balance], error) {
+	if err := wantKind(v, kindBalanceKey); err != nil {
+		return csvbase.Key[*ast.Balance]{}, err
+	}
+	return v.v.(csvbase.Key[*ast.Balance]), nil
+}
+
+func asDirectiveKey(v value) (csvbase.Key[ast.Directive], error) {
+	if err := wantKind(v, kindDirectiveKey); err != nil {
+		return csvbase.Key[ast.Directive]{}, err
+	}
+	return v.v.(csvbase.Key[ast.Directive]), nil
 }
 
 func asString(v value) (string, error) {

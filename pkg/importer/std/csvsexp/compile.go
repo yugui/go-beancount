@@ -129,13 +129,13 @@ func (c *compiler) compileBody(n node, e *env) (csvbase.EmitFunc, error) {
 		return c.compileEmit(n, e)
 	case "emit":
 		if len(n.items) != 2 {
-			return nil, fmt.Errorf("csvsexp: line %d: emit expects exactly one transaction argument", n.line)
+			return nil, fmt.Errorf("csvsexp: line %d: emit expects exactly one directive argument", n.line)
 		}
-		k, err := c.evalTxnKey(n.items[1], e)
+		k, err := c.evalDirectiveKey(n.items[1], e)
 		if err != nil {
 			return nil, err
 		}
-		return csvbase.EmitTx(k), nil
+		return csvbase.EmitDirective(k), nil
 	default:
 		return nil, fmt.Errorf("csvsexp: line %d: body must be let*, emit-transaction, or emit, got %q", n.line, n.items[0].text)
 	}
@@ -779,6 +779,45 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 	case "transaction":
 		return c.compileTransaction(head, args, e)
 
+	case "price":
+		if err := arity(head, args, 1, -1); err != nil {
+			return value{}, err
+		}
+		amt, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		kw, err := trailingKwargs(args[1:])
+		if err != nil {
+			return value{}, err
+		}
+		var cur csvbase.Key[string]
+		if cn, ok := kw["currency"]; ok {
+			if cur, err = c.evalStrKey(cn, e); err != nil {
+				return value{}, err
+			}
+		}
+		isTotal := false
+		if tn, ok := kw["total"]; ok {
+			if isTotal, err = c.evalBool(tn, e); err != nil {
+				return value{}, err
+			}
+		}
+		return value{kind: kindPriceKey, v: csvbase.Price(c.b, amt, cur, isTotal)}, nil
+
+	case "balance":
+		return c.compileBalance(head, args, e)
+
+	case "directive":
+		if err := arity(head, args, 1, 1); err != nil {
+			return value{}, err
+		}
+		k, err := c.evalDirectiveKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindDirectiveKey, v: k}, nil
+
 	case "if":
 		return c.compileIf(head, args, e)
 
@@ -942,6 +981,11 @@ func (c *compiler) compilePosting(head node, args []node, e *env) (value, error)
 			return value{}, err
 		}
 	}
+	if pn, ok := kw["price"]; ok {
+		if spec.Price, err = c.evalPriceKey(pn, e); err != nil {
+			return value{}, err
+		}
+	}
 	if fn, ok := kw["flag"]; ok {
 		if spec.Flag, err = c.evalFlagByte(fn, e); err != nil {
 			return value{}, err
@@ -953,6 +997,43 @@ func (c *compiler) compilePosting(head node, args []node, e *env) (value, error)
 		}
 	}
 	return value{kind: kindPostingKey, v: csvbase.Posting(c.b, spec)}, nil
+}
+
+// compileBalance translates a (balance :date ... :account ... :amount ...
+// [:meta ...]) form into a balance key.
+func (c *compiler) compileBalance(head node, args []node, e *env) (value, error) {
+	kw, err := trailingKwargs(args)
+	if err != nil {
+		return value{}, err
+	}
+	var spec csvbase.BalanceSpec
+	dn, ok := kw["date"]
+	if !ok {
+		return value{}, fmt.Errorf("csvsexp: line %d: balance requires :date", head.line)
+	}
+	if spec.Date, err = c.evalDateKey(dn, e); err != nil {
+		return value{}, err
+	}
+	an, ok := kw["account"]
+	if !ok {
+		return value{}, fmt.Errorf("csvsexp: line %d: balance requires :account", head.line)
+	}
+	if spec.Account, err = c.evalStrKey(an, e); err != nil {
+		return value{}, err
+	}
+	amn, ok := kw["amount"]
+	if !ok {
+		return value{}, fmt.Errorf("csvsexp: line %d: balance requires :amount", head.line)
+	}
+	if spec.Amount, err = c.evalAmountValueKey(amn, e); err != nil {
+		return value{}, err
+	}
+	if mn, ok := kw["meta"]; ok {
+		if spec.Meta, err = c.evalMetaFields(mn, e); err != nil {
+			return value{}, err
+		}
+	}
+	return value{kind: kindBalanceKey, v: csvbase.Balance(c.b, spec)}, nil
 }
 
 // compileTransaction translates a (transaction :date ... :postings ... [:flag]
@@ -1307,6 +1388,12 @@ func (c *compiler) compileIf(head node, args []node, e *env) (value, error) {
 		return value{kind: kindMetaKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[ast.Metadata]), elseV.v.(csvbase.Key[ast.Metadata]))}, nil
 	case kindTxnKey:
 		return value{kind: kindTxnKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[*ast.Transaction]), elseV.v.(csvbase.Key[*ast.Transaction]))}, nil
+	case kindPriceKey:
+		return value{kind: kindPriceKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[*ast.PriceAnnotation]), elseV.v.(csvbase.Key[*ast.PriceAnnotation]))}, nil
+	case kindBalanceKey:
+		return value{kind: kindBalanceKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[*ast.Balance]), elseV.v.(csvbase.Key[*ast.Balance]))}, nil
+	case kindDirectiveKey:
+		return value{kind: kindDirectiveKey, v: csvbase.If(c.b, cond, thenV.v.(csvbase.Key[ast.Directive]), elseV.v.(csvbase.Key[ast.Directive]))}, nil
 	default:
 		return value{}, fmt.Errorf("csvsexp: line %d: if branches must be runtime keys, got %s", head.line, thenV.kind)
 	}
@@ -1480,16 +1567,43 @@ func (c *compiler) evalMetaKey(n node, e *env) (csvbase.Key[ast.Metadata], error
 	return k, nil
 }
 
-func (c *compiler) evalTxnKey(n node, e *env) (csvbase.Key[*ast.Transaction], error) {
+func (c *compiler) evalPriceKey(n node, e *env) (csvbase.Key[*ast.PriceAnnotation], error) {
 	v, err := c.evalExpr(n, e)
 	if err != nil {
-		return csvbase.Key[*ast.Transaction]{}, err
+		return csvbase.Key[*ast.PriceAnnotation]{}, err
 	}
-	k, err := asTxnKey(v)
+	k, err := asPriceKey(v)
 	if err != nil {
-		return csvbase.Key[*ast.Transaction]{}, errLine(n, err)
+		return csvbase.Key[*ast.PriceAnnotation]{}, errLine(n, err)
 	}
 	return k, nil
+}
+
+// evalDirectiveKey evaluates n to a directive key, lifting a transaction or
+// balance key into Key[ast.Directive] so heterogeneous rows can be unified.
+func (c *compiler) evalDirectiveKey(n node, e *env) (csvbase.Key[ast.Directive], error) {
+	v, err := c.evalExpr(n, e)
+	if err != nil {
+		return csvbase.Key[ast.Directive]{}, err
+	}
+	switch v.kind {
+	case kindDirectiveKey:
+		return asDirectiveKey(v)
+	case kindTxnKey:
+		k, err := asTxnKey(v)
+		if err != nil {
+			return csvbase.Key[ast.Directive]{}, errLine(n, err)
+		}
+		return csvbase.AsDirective(c.b, k), nil
+	case kindBalanceKey:
+		k, err := asBalanceKey(v)
+		if err != nil {
+			return csvbase.Key[ast.Directive]{}, errLine(n, err)
+		}
+		return csvbase.AsDirective(c.b, k), nil
+	default:
+		return csvbase.Key[ast.Directive]{}, errLine(n, fmt.Errorf("expected a directive, transaction, or balance, got %s", v.kind))
+	}
 }
 
 func (c *compiler) evalString(n node, e *env) (string, error) {

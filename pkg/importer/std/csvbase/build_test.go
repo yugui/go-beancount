@@ -534,6 +534,114 @@ func TestDoubleEntry_ZeroCounterNoWarning(t *testing.T) {
 	}
 }
 
+func runDir(t *testing.T, b *csvbase.Builder, k csvbase.Key[ast.Directive]) ([]ast.Directive, []ast.Diagnostic) {
+	t.Helper()
+	p := b.Emit(csvbase.EmitDirective(k))
+	dirs, diags, err := p.Map(context.Background(), buildRec())
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	return dirs, diags
+}
+
+// ---------------------------------------------------------------------------
+// Price annotations
+// ---------------------------------------------------------------------------
+
+func TestPosting_WithPrice(t *testing.T) {
+	b := csvbase.NewBuilder()
+	p := csvbase.Posting(b, csvbase.PostingSpec{
+		Account: csvbase.Const(b, "Assets:Stock"),
+		Amount:  csvbase.Amount(b, amtKey(b, "-2"), csvbase.Const(b, "ACME")),
+		Price:   csvbase.Price(b, amtKey(b, "12090"), csvbase.Const(b, "JPY"), false),
+	})
+	tx := csvbase.Transaction(b, csvbase.TxnSpec{Date: dateKey(b, someDate), Postings: csvbase.Postings(b, p)})
+	dirs, _ := runEmit(t, b, tx)
+	got := dirs[0].(*ast.Transaction).Postings[0]
+	if got.Price == nil {
+		t.Fatal("Price = nil, want annotation")
+	}
+	if got.Price.IsTotal {
+		t.Error("IsTotal = true, want false (@ per-unit)")
+	}
+	if !decEq(got.Price.Amount.Number, "12090") || got.Price.Amount.Currency != "JPY" {
+		t.Errorf("price amount = %v, want 12090 JPY", got.Price.Amount)
+	}
+}
+
+func TestPrice_NilAmountYieldsNoAnnotation(t *testing.T) {
+	b := csvbase.NewBuilder()
+	p := csvbase.Posting(b, csvbase.PostingSpec{
+		Account: csvbase.Const(b, "Assets:Stock"),
+		Amount:  csvbase.Amount(b, amtKey(b, "-2"), csvbase.Const(b, "ACME")),
+		Price:   csvbase.Price(b, nilAmtKey(b), csvbase.Const(b, "JPY"), false),
+	})
+	tx := csvbase.Transaction(b, csvbase.TxnSpec{Date: dateKey(b, someDate), Postings: csvbase.Postings(b, p)})
+	dirs, _ := runEmit(t, b, tx)
+	if got := dirs[0].(*ast.Transaction).Postings[0].Price; got != nil {
+		t.Errorf("Price = %v, want nil", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Balance assertions via the generic directive terminal
+// ---------------------------------------------------------------------------
+
+func balanceKey(t *testing.T, b *csvbase.Builder, account, num, cur string) csvbase.Key[*ast.Balance] {
+	t.Helper()
+	return csvbase.Balance(b, csvbase.BalanceSpec{
+		Date:    dateKey(b, someDate),
+		Account: csvbase.Const(b, account),
+		Amount:  csvbase.Amount(b, amtKey(b, num), csvbase.Const(b, cur)),
+	})
+}
+
+func TestBalance_EmittedViaDirective(t *testing.T) {
+	b := csvbase.NewBuilder()
+	dir := csvbase.AsDirective(b, balanceKey(t, b, "Assets:Cash", "1000", "JPY"))
+	dirs, diags := runDir(t, b, dir)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diags: %v", diags)
+	}
+	got, ok := dirs[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("directive = %T, want *ast.Balance", dirs[0])
+	}
+	if string(got.Account) != "Assets:Cash" || !decEq(got.Amount.Number, "1000") || got.Amount.Currency != "JPY" {
+		t.Errorf("balance = %+v", got)
+	}
+}
+
+func TestBalance_MissingAmountDrops(t *testing.T) {
+	b := csvbase.NewBuilder()
+	bal := csvbase.Balance(b, csvbase.BalanceSpec{
+		Date:    dateKey(b, someDate),
+		Account: csvbase.Const(b, "Assets:Cash"),
+		Amount:  csvbase.Amount(b, nilAmtKey(b), csvbase.Const(b, "JPY")),
+	})
+	dirs, diags := runDir(t, b, csvbase.AsDirective(b, bal))
+	if len(dirs) != 0 {
+		t.Errorf("got %d dirs, want 0", len(dirs))
+	}
+	if len(diags) != 1 || diags[0].Code != csvbase.DiagMissingAmount {
+		t.Errorf("diags = %v, want DiagMissingAmount", diags)
+	}
+}
+
+// TestAsDirective_NilLiftsToNil pins the interface-nil guard: a nil typed value
+// must lift to a true nil directive, so EmitDirective skips rather than emitting
+// a non-nil interface wrapping a nil pointer.
+func TestAsDirective_NilLiftsToNil(t *testing.T) {
+	b := csvbase.NewBuilder()
+	nilTx := csvbase.AddStep(b, func(*csvbase.MappingState) (*ast.Transaction, *ast.Diagnostic, error) {
+		return nil, nil, nil
+	})
+	dirs, diags := runDir(t, b, csvbase.AsDirective(b, nilTx))
+	if len(dirs) != 0 || len(diags) != 0 {
+		t.Errorf("got dirs=%v diags=%v, want empty (nil lifts to nil)", dirs, diags)
+	}
+}
+
 func TestDoubleEntry_PrimarySoftFailDrops(t *testing.T) {
 	b := csvbase.NewBuilder()
 	bad := csvbase.Posting(b, csvbase.PostingSpec{Account: csvbase.Const(b, "")})

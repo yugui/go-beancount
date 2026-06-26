@@ -168,6 +168,81 @@ func TestIfOverPosting(t *testing.T) {
 	}
 }
 
+// TestPostingForm_Price builds a securities-sale entry: cash, a stock leg with a
+// per-unit price annotation, and an auto-balanced fee leg.
+func TestPostingForm_Price(t *testing.T) {
+	const prog = `(csv-import
+  (let* ((d    (parse-date (column "Date") "2006-01-02"))
+         (qty  (negate-amount (parse-amount (column "Qty"))))
+         (unit (parse-amount (column "Unit")))
+         (cash (parse-amount (column "Proceeds")))
+         (jpy  (const "JPY")))
+    (emit
+      (transaction :date d :narration (const "sale")
+        :postings (postings
+          (posting :account (const "Assets:Cash") :amount (amount cash :currency jpy))
+          (posting :account (const "Assets:Stock") :amount (amount qty :currency (const "ACME"))
+                   :price (price unit :currency jpy))
+          (posting :account (const "Expenses:Fees")))))))`
+	out := extractProgram(t, prog, "Date,Qty,Unit,Proceeds\n2024-01-01,2,12090,24043\n")
+	tx := firstTxn(t, out)
+	if len(tx.Postings) != 3 {
+		t.Fatalf("got %d postings, want 3", len(tx.Postings))
+	}
+	stock := tx.Postings[1]
+	if stock.Price == nil {
+		t.Fatal("stock price = nil, want annotation")
+	}
+	if stock.Price.Amount.Number.String() != "12090" || stock.Price.Amount.Currency != "JPY" {
+		t.Errorf("price = %+v, want 12090 JPY", stock.Price.Amount)
+	}
+	if stock.Amount.Number.String() != "-2" || stock.Amount.Currency != "ACME" {
+		t.Errorf("stock amount = %+v, want -2 ACME", stock.Amount)
+	}
+	if tx.Postings[2].Amount != nil {
+		t.Errorf("fee leg amount = %v, want nil (auto)", tx.Postings[2].Amount)
+	}
+}
+
+// TestEmitHeterogeneous routes each row to a balance assertion or a transaction
+// by type, unified through (directive ...) and a single (emit ...) terminal.
+func TestEmitHeterogeneous(t *testing.T) {
+	const prog = `(csv-import
+  (let* ((d    (parse-date (column "Date") "2006-01-02"))
+         (kind (column "Kind"))
+         (amt  (parse-amount (column "Amount")))
+         (jpy  (const "JPY")))
+    (emit
+      (if (equal? kind (const "BAL"))
+          (directive (balance :date d :account (const "Assets:Cash")
+                              :amount (amount amt :currency jpy)))
+          (directive (transaction :date d :narration (column "Memo")
+                       :postings (postings
+                         (posting :account (const "Assets:Cash") :amount (amount amt :currency jpy))
+                         (posting :account (const "Income:Misc")))))))))`
+	out := extractProgram(t, prog, "Date,Kind,Amount,Memo\n2024-01-01,BAL,1000,\n2024-01-02,TXN,50,pay\n")
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	if len(out.Directives) != 2 {
+		t.Fatalf("got %d directives, want 2", len(out.Directives))
+	}
+	bal, ok := out.Directives[0].(*ast.Balance)
+	if !ok {
+		t.Fatalf("directive 0 = %T, want *ast.Balance", out.Directives[0])
+	}
+	if string(bal.Account) != "Assets:Cash" || bal.Amount.Number.String() != "1000" || bal.Amount.Currency != "JPY" {
+		t.Errorf("balance = %+v", bal)
+	}
+	tx, ok := out.Directives[1].(*ast.Transaction)
+	if !ok {
+		t.Fatalf("directive 1 = %T, want *ast.Transaction", out.Directives[1])
+	}
+	if len(tx.Postings) != 2 || tx.Narration != "pay" {
+		t.Errorf("txn = %+v", tx)
+	}
+}
+
 func TestForms_CompileErrors(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -185,9 +260,9 @@ func TestForms_CompileErrors(t *testing.T) {
 			"transaction requires :postings",
 		},
 		{
-			"emit of non-transaction",
+			"emit of non-directive",
 			`(csv-import (emit (const "x")))`,
-			"expected transaction-key",
+			"expected a directive, transaction, or balance",
 		},
 		{
 			"emit as expression",
@@ -198,6 +273,16 @@ func TestForms_CompileErrors(t *testing.T) {
 			"posting amount expects amount-value-key",
 			`(csv-import (emit (transaction :date (parse-date (column "D") "2006-01-02") :postings (postings (posting :account (const "Assets:X") :amount (parse-amount (column "A")))))))`,
 			"expected amount-value-key",
+		},
+		{
+			"balance without amount",
+			`(csv-import (emit (balance :date (parse-date (column "D") "2006-01-02") :account (const "Assets:X"))))`,
+			"balance requires :amount",
+		},
+		{
+			"directive of non-directive",
+			`(csv-import (emit (directive (const "x"))))`,
+			"expected a directive, transaction, or balance",
 		},
 	}
 	for _, tc := range cases {

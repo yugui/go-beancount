@@ -53,6 +53,41 @@ func Amount(b *Builder, amt Key[*csvkit.Amount], cur Key[string]) Key[*ast.Amoun
 	})
 }
 
+// Price builds a posting price annotation (@ or @@) from amt and a currency. A
+// nil amt value yields nil — no annotation. The currency is cur's trimmed value
+// when non-blank, else amt's CurrencyHint; when both are empty the step
+// soft-fails with DiagMissingCurrency. isTotal selects @@ (total) over @
+// (per-unit). A soft-failed amt or cur propagates (amt first). cur may be a zero
+// Key, in which case only the CurrencyHint is consulted.
+func Price(b *Builder, amt Key[*csvkit.Amount], cur Key[string], isTotal bool) Key[*ast.PriceAnnotation] {
+	return AddStep(b, func(c *MappingState) (*ast.PriceAnnotation, *ast.Diagnostic, error) {
+		v, d := Value(c, amt)
+		if d != nil {
+			return nil, d, nil
+		}
+		if v == nil {
+			return nil, nil, nil
+		}
+		currency := ""
+		if !isZeroKey(cur) {
+			cv, cd := Value(c, cur)
+			if cd != nil {
+				return nil, cd, nil
+			}
+			currency = strings.TrimSpace(cv)
+		}
+		if currency == "" {
+			currency = v.CurrencyHint
+		}
+		if currency == "" {
+			info := c.Info()
+			diag := ErrorDiag(DiagMissingCurrency, info.Path, info.Line, "no currency resolved")
+			return nil, &diag, nil
+		}
+		return &ast.PriceAnnotation{Amount: ast.Amount{Number: v.Number, Currency: currency}, IsTotal: isTotal}, nil, nil
+	})
+}
+
 // RequireAmount soft-fails with code (default DiagAllBlankAmount) when in's value
 // is nil, marking an absent amount where one is required (e.g. a primary posting
 // leg). A non-nil value passes through unchanged; a soft-failed input propagates
@@ -84,14 +119,16 @@ type PostingSpec struct {
 	Account Key[string]
 	Amount  Key[*ast.Amount]
 	Cost    Key[*ast.CostSpec]
+	Price   Key[*ast.PriceAnnotation]
 	Flag    byte
 	Meta    []MetaField
 }
 
 // Posting assembles one ast.Posting from spec. It panics if Account is a zero
-// Key. Sub-keys are read in the order account, amount, cost; the first soft-fail
-// propagates and drops the posting (and thus its transaction). Meta fields are
-// decorative: blank or soft-failed fields are skipped, never dropping the row.
+// Key. Sub-keys are read in the order account, amount, cost, price; the first
+// soft-fail propagates and drops the posting (and thus its transaction). Meta
+// fields are decorative: blank or soft-failed fields are skipped, never dropping
+// the row.
 func Posting(b *Builder, spec PostingSpec) Key[ast.Posting] {
 	if isZeroKey(spec.Account) {
 		panic("csvbase: Posting: Account key is zero")
@@ -124,6 +161,13 @@ func Posting(b *Builder, spec PostingSpec) Key[ast.Posting] {
 			if cost != nil {
 				p.Cost = cost
 			}
+		}
+		if !isZeroKey(spec.Price) {
+			price, d := Value(c, spec.Price)
+			if d != nil {
+				return zero, d, nil
+			}
+			p.Price = price
 		}
 		if len(spec.Meta) > 0 {
 			p.Meta = collectMeta(c, spec.Meta)
@@ -336,5 +380,101 @@ func EmitTx(k Key[*ast.Transaction]) EmitFunc {
 			return nil, nil, nil
 		}
 		return []ast.Directive{tx}, nil, nil
+	}
+}
+
+// BalanceSpec wires resolved keys into a balance assertion. Date, Account, and
+// Amount are required (a zero Key for any of the three panics in Balance). Meta
+// is optional.
+type BalanceSpec struct {
+	Date    Key[time.Time]
+	Account Key[string]
+	Amount  Key[*ast.Amount]
+	Meta    []MetaField
+}
+
+// Balance assembles a *ast.Balance from spec. It panics if Date or Account is a
+// zero Key. A blank account soft-fails with DiagMissingAccount; a nil amount
+// soft-fails with DiagMissingAmount (a balance must assert an amount). A
+// soft-failed sub-key propagates and drops the row.
+func Balance(b *Builder, spec BalanceSpec) Key[*ast.Balance] {
+	if isZeroKey(spec.Date) {
+		panic("csvbase: Balance: Date key is zero")
+	}
+	if isZeroKey(spec.Account) {
+		panic("csvbase: Balance: Account key is zero")
+	}
+	if isZeroKey(spec.Amount) {
+		panic("csvbase: Balance: Amount key is zero")
+	}
+	return AddStep(b, func(c *MappingState) (*ast.Balance, *ast.Diagnostic, error) {
+		date, d := Value(c, spec.Date)
+		if d != nil {
+			return nil, d, nil
+		}
+		account, d := Value(c, spec.Account)
+		if d != nil {
+			return nil, d, nil
+		}
+		if strings.TrimSpace(account) == "" {
+			info := c.Info()
+			diag := ErrorDiag(DiagMissingAccount, info.Path, info.Line, "no account resolved")
+			return nil, &diag, nil
+		}
+		amt, d := Value(c, spec.Amount)
+		if d != nil {
+			return nil, d, nil
+		}
+		if amt == nil {
+			info := c.Info()
+			diag := ErrorDiag(DiagMissingAmount, info.Path, info.Line, "balance has no amount")
+			return nil, &diag, nil
+		}
+		return &ast.Balance{
+			Date:    date,
+			Account: ast.Account(account),
+			Amount:  *amt,
+			Meta:    collectMeta(c, spec.Meta),
+		}, nil, nil
+	})
+}
+
+// AsDirective lifts a typed directive key into a Key[ast.Directive], so rows
+// that produce different directive types (e.g. a transaction or a balance) can
+// be unified — for instance selected by If — before EmitDirective. A zero T
+// value lifts to a nil directive (not a non-nil interface wrapping a typed nil);
+// a soft-fail propagates.
+func AsDirective[T ast.Directive](b *Builder, k Key[T]) Key[ast.Directive] {
+	return AddStep(b, func(c *MappingState) (ast.Directive, *ast.Diagnostic, error) {
+		v, d := Value(c, k)
+		if d != nil {
+			return nil, d, nil
+		}
+		var zero T
+		if any(v) == any(zero) {
+			return nil, nil, nil
+		}
+		return v, nil, nil
+	})
+}
+
+// EmitDirective returns an EmitFunc that emits the directive produced by k. It
+// panics if k is a zero Key. A soft-failed directive drops the row with its
+// diagnostic; a nil value skips the row; otherwise the directive is emitted.
+// Warnings recorded via MappingState.Warn are surfaced by the pipeline alongside
+// the result.
+func EmitDirective(k Key[ast.Directive]) EmitFunc {
+	if isZeroKey(k) {
+		panic("csvbase: EmitDirective: key is zero")
+	}
+	return func(_ context.Context, c *MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		dir, d := Value(c, k)
+		if d != nil {
+			return nil, []ast.Diagnostic{*d}, nil
+		}
+		if dir == nil {
+			return nil, nil, nil
+		}
+		return []ast.Directive{dir}, nil, nil
 	}
 }

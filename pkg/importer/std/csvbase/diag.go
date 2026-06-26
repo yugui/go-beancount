@@ -46,6 +46,10 @@ const DiagBadCost = "csvbase-bad-cost"
 // Severity: Error.
 const DiagNoPostings = "csvbase-no-postings"
 
+// DiagMissingAmount signals that a directive requiring an amount (e.g. a balance
+// assertion) resolved to a nil amount. Severity: Error.
+const DiagMissingAmount = "csvbase-missing-amount"
+
 // ErrorDiag builds an Error-severity ast.Diagnostic located at path:line.
 // The span covers only the start position; End is zero.
 func ErrorDiag(code, path string, line int, msg string) ast.Diagnostic {
