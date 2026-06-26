@@ -141,6 +141,16 @@
 //
 //	(account (if (negative? amt) (const "Expenses:Misc") (const "Income:Misc")))
 //
+// (cond (test result)... (else result)) is the multi-way conditional: the tests
+// are bool-keys tried in order, the first true clause's result is chosen, and the
+// mandatory final (else result) clause supplies the value when none hold. It
+// desugars to right-nested if, so every result must share one runtime key kind
+// and a literal test folds at compile time.
+//
+//	(account (cond ((negative? amt)        (const "Expenses:Misc"))
+//	               ((matches? payee (regex "(?i)salary")) (const "Income:Salary"))
+//	               (else                   (const "Income:Misc"))))
+//
 // (lambda (params...) body) is a compile-time, macro-style function: bind it
 // with let* and apply it as (f args...). Each application re-evaluates body with
 // the arguments bound to the parameters, emitting a fresh set of pipeline steps,

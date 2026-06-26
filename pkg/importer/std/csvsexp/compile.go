@@ -821,6 +821,9 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 	case "if":
 		return c.compileIf(head, args, e)
 
+	case "cond":
+		return c.compileCond(head, args, e)
+
 	case "lambda":
 		if err := arity(head, args, 2, 2); err != nil {
 			return value{}, err
@@ -1397,6 +1400,46 @@ func (c *compiler) compileIf(head node, args []node, e *env) (value, error) {
 	default:
 		return value{}, fmt.Errorf("csvsexp: line %d: if branches must be runtime keys, got %s", head.line, thenV.kind)
 	}
+}
+
+// compileCond builds a multi-way conditional. Each clause is (test result); the
+// tests are tried in order and the first true clause's result wins. The final
+// clause must be (else result), supplying the value when no earlier test holds,
+// which guarantees a defined result type just as if's mandatory else branch
+// does. cond desugars to right-nested if forms, so it inherits if's compile-time
+// folding of literal tests and the rule that every result share one key kind.
+func (c *compiler) compileCond(head node, args []node, e *env) (value, error) {
+	if err := arity(head, args, 1, -1); err != nil {
+		return value{}, err
+	}
+	for i, cl := range args {
+		if cl.kind != nodeList || len(cl.items) != 2 {
+			return value{}, fmt.Errorf("csvsexp: line %d: each cond clause must be (test result)", cl.line)
+		}
+		if cl.items[0].kind == nodeSymbol && cl.items[0].text == "else" && i != len(args)-1 {
+			return value{}, fmt.Errorf("csvsexp: line %d: else must be the last cond clause", cl.line)
+		}
+	}
+	last := args[len(args)-1]
+	if last.items[0].kind != nodeSymbol || last.items[0].text != "else" {
+		return value{}, fmt.Errorf("csvsexp: line %d: cond requires a final (else result) clause", head.line)
+	}
+
+	expr := last.items[1]
+	for i := len(args) - 2; i >= 0; i-- {
+		cl := args[i]
+		expr = node{
+			kind: nodeList,
+			line: cl.line,
+			items: []node{
+				{kind: nodeSymbol, text: "if", line: cl.line},
+				cl.items[0],
+				cl.items[1],
+				expr,
+			},
+		}
+	}
+	return c.evalExpr(expr, e)
 }
 
 func (c *compiler) evalStrKey(n node, e *env) (csvbase.Key[string], error) {
