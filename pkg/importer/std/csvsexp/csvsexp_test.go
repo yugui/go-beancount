@@ -79,6 +79,7 @@ func TestGolden(t *testing.T) {
 		"exclude",
 		"headerless",
 		"conditional",
+		"multidirective",
 	}
 	for _, shape := range shapes {
 		t.Run(shape, func(t *testing.T) {

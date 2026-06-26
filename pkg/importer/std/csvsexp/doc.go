@@ -52,12 +52,13 @@
 //	:rowhash      "csvsexp-rowhash"        stamp an idempotency hash under this key
 //
 // BODY is a single (let* (BINDINGS) BODY), (emit-transaction ...), or
-// (emit TXN) form. let* binds names sequentially in a fresh lexical scope; each
+// (emit ...) form. let* binds names sequentially in a fresh lexical scope; each
 // binding may reference the ones before it, and the body sees them all.
 // emit-transaction is the convenience for the primary+counter shape; emit takes
-// a transaction, balance, or directive key built from the construction forms
-// below and is the way to produce three-or-more-posting, auto-balanced, or
-// posting-annotated entries, and balance assertions.
+// zero or more transaction, balance, or directive keys built from the
+// construction forms below and is the way to produce three-or-more-posting,
+// auto-balanced, or posting-annotated entries, balance assertions, and rows that
+// yield several directives at once (or none).
 //
 // # Forms
 //
@@ -118,8 +119,11 @@
 //	             :tags t :links l :meta m)                              -> transaction-key
 //	(balance :date d :account a :amount av :meta m)  balance assertion   -> balance-key
 //	(directive X)                      lift a transaction/balance key    -> directive-key
-//	(emit X)                           body terminal; X is a transaction,
-//	                                   balance, or directive key
+//	(emit X ...)                       body terminal; each X is a transaction,
+//	                                   balance, or directive key. Emits one
+//	                                   directive per non-nil argument, in order;
+//	                                   a nil argument contributes nothing, and a
+//	                                   soft-failed argument drops the whole row.
 //
 // In (posting ...), :amount takes an amount-value-key (from (amount ...)); a
 // missing :amount yields an auto-balanced posting. (double-entry ...) reproduces
@@ -129,8 +133,8 @@
 //
 // Rows that produce different directive kinds (some transactions, some balances)
 // are unified by wrapping each branch in (directive ...) so an (if ...) yields a
-// single directive-key, which (emit ...) emits. A nil-valued directive skips the
-// row.
+// single directive-key, which (emit ...) emits. A nil-valued directive
+// contributes no output; when emit's every argument is nil the row is skipped.
 //
 // # Conditionals and functions
 //
@@ -140,6 +144,13 @@
 // diagnostic propagate, so a soft-fail in the untaken branch is harmless.
 //
 //	(account (if (negative? amt) (const "Expenses:Misc") (const "Income:Misc")))
+//
+// (when cond X) and (unless cond X) gate a single directive: they yield X's
+// directive when the condition holds (fails) and a nil directive otherwise. As a
+// directive-key they slot directly into a variadic emit, so a row can carry an
+// optional second entry or be conditionally suppressed without an else branch.
+//
+//	(emit txn (when (positive? amt) (balance :date d :account a :amount av)))
 //
 // (lambda (params...) body) is a compile-time, macro-style function: bind it
 // with let* and apply it as (f args...). Each application re-evaluates body with

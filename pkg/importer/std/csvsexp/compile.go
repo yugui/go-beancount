@@ -128,14 +128,15 @@ func (c *compiler) compileBody(n node, e *env) (csvbase.EmitFunc, error) {
 	case "emit-transaction":
 		return c.compileEmit(n, e)
 	case "emit":
-		if len(n.items) != 2 {
-			return nil, fmt.Errorf("csvsexp: line %d: emit expects exactly one directive argument", n.line)
+		keys := make([]csvbase.Key[ast.Directive], 0, len(n.items)-1)
+		for _, arg := range n.items[1:] {
+			k, err := c.evalDirectiveKey(arg, e)
+			if err != nil {
+				return nil, err
+			}
+			keys = append(keys, k)
 		}
-		k, err := c.evalDirectiveKey(n.items[1], e)
-		if err != nil {
-			return nil, err
-		}
-		return csvbase.EmitDirective(k), nil
+		return csvbase.EmitDirectives(keys...), nil
 	default:
 		return nil, fmt.Errorf("csvsexp: line %d: body must be let*, emit-transaction, or emit, got %q", n.line, n.items[0].text)
 	}
@@ -821,6 +822,9 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 	case "if":
 		return c.compileIf(head, args, e)
 
+	case "when", "unless":
+		return c.compileWhen(head, args, e, head.text == "unless")
+
 	case "lambda":
 		if err := arity(head, args, 2, 2); err != nil {
 			return value{}, err
@@ -1397,6 +1401,46 @@ func (c *compiler) compileIf(head node, args []node, e *env) (value, error) {
 	default:
 		return value{}, fmt.Errorf("csvsexp: line %d: if branches must be runtime keys, got %s", head.line, thenV.kind)
 	}
+}
+
+// compileWhen builds a conditionally-present directive: (when cond x) yields x's
+// directive when cond holds and a nil directive (a skipped emit slot) otherwise;
+// unless inverts the condition. x is a transaction, balance, or directive. A
+// literal condition folds at compile time, selecting x or a nil directive
+// directly. The result is a directive-key, so it composes with variadic emit.
+func (c *compiler) compileWhen(head node, args []node, e *env, unless bool) (value, error) {
+	if err := arity(head, args, 2, 2); err != nil {
+		return value{}, err
+	}
+	condV, err := c.evalExpr(args[0], e)
+	if err != nil {
+		return value{}, err
+	}
+	if condV.kind == kindBoolLit {
+		present := condV.v.(bool) != unless
+		if present {
+			k, err := c.evalDirectiveKey(args[1], e)
+			if err != nil {
+				return value{}, err
+			}
+			return value{kind: kindDirectiveKey, v: k}, nil
+		}
+		return value{kind: kindDirectiveKey, v: csvbase.NilDirective(c.b)}, nil
+	}
+	cond, err := asBoolKey(condV)
+	if err != nil {
+		return value{}, errLine(args[0], err)
+	}
+	dir, err := c.evalDirectiveKey(args[1], e)
+	if err != nil {
+		return value{}, err
+	}
+	nilDir := csvbase.NilDirective(c.b)
+	then, els := dir, nilDir
+	if unless {
+		then, els = nilDir, dir
+	}
+	return value{kind: kindDirectiveKey, v: csvbase.If(c.b, cond, then, els)}, nil
 }
 
 func (c *compiler) evalStrKey(n node, e *env) (csvbase.Key[string], error) {

@@ -1,0 +1,16 @@
+kind = "csv-sexp"
+name = "multidirective"
+program = '''
+(csv-import
+  (let* ((d   (parse-date (column "Date") "2006-01-02"))
+         (amt (parse-amount (column "Amount")))
+         (usd (const "USD")))
+    (emit
+      (transaction :date d :narration (column "Memo")
+        :postings (double-entry
+          (posting :account (const "Assets:Checking") :amount (amount amt :currency usd))
+          (const "Expenses:Misc")))
+      (when (not (empty? (column "Balance")))
+        (balance :date d :account (const "Assets:Checking")
+                 :amount (amount (parse-amount (column "Balance")) :currency usd))))))
+'''
