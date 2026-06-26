@@ -441,7 +441,7 @@ func Balance(b *Builder, spec BalanceSpec) Key[*ast.Balance] {
 
 // AsDirective lifts a typed directive key into a Key[ast.Directive], so rows
 // that produce different directive types (e.g. a transaction or a balance) can
-// be unified — for instance selected by If — before EmitDirective. A zero T
+// be unified — for instance selected by If — before EmitDirectives. A zero T
 // value lifts to a nil directive (not a non-nil interface wrapping a typed nil);
 // a soft-fail propagates.
 func AsDirective[T ast.Directive](b *Builder, k Key[T]) Key[ast.Directive] {
@@ -456,27 +456,6 @@ func AsDirective[T ast.Directive](b *Builder, k Key[T]) Key[ast.Directive] {
 		}
 		return v, nil, nil
 	})
-}
-
-// EmitDirective returns an EmitFunc that emits the directive produced by k. It
-// panics if k is a zero Key. A soft-failed directive drops the row with its
-// diagnostic; a nil value skips the row; otherwise the directive is emitted.
-// Warnings recorded via MappingState.Warn are surfaced by the pipeline alongside
-// the result.
-func EmitDirective(k Key[ast.Directive]) EmitFunc {
-	if isZeroKey(k) {
-		panic("csvbase: EmitDirective: key is zero")
-	}
-	return func(_ context.Context, c *MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		dir, d := Value(c, k)
-		if d != nil {
-			return nil, []ast.Diagnostic{*d}, nil
-		}
-		if dir == nil {
-			return nil, nil, nil
-		}
-		return []ast.Directive{dir}, nil, nil
-	}
 }
 
 // EmitDirectives returns an EmitFunc that emits, in order, the non-nil directive

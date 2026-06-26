@@ -45,8 +45,8 @@
 // Postings may carry a price annotation built with [Price]. Beyond transactions,
 // [Balance] builds a balance-assertion key; [AsDirective] lifts a transaction or
 // balance key into a [Key] of [ast.Directive] so rows producing different
-// directive kinds can be unified, and [EmitDirective] is the terminal that emits
-// any such directive key.
+// directive kinds can be unified, and [EmitDirectives] is the terminal that emits
+// any number of such directive keys per row.
 //
 // # Leaf-only invariant
 //

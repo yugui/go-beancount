@@ -536,7 +536,7 @@ func TestDoubleEntry_ZeroCounterNoWarning(t *testing.T) {
 
 func runDir(t *testing.T, b *csvbase.Builder, k csvbase.Key[ast.Directive]) ([]ast.Directive, []ast.Diagnostic) {
 	t.Helper()
-	p := b.Emit(csvbase.EmitDirective(k))
+	p := b.Emit(csvbase.EmitDirectives(k))
 	dirs, diags, err := p.Map(context.Background(), buildRec())
 	if err != nil {
 		t.Fatalf("Map: %v", err)
@@ -629,7 +629,7 @@ func TestBalance_MissingAmountDrops(t *testing.T) {
 }
 
 // TestAsDirective_NilLiftsToNil pins the interface-nil guard: a nil typed value
-// must lift to a true nil directive, so EmitDirective skips rather than emitting
+// must lift to a true nil directive, so EmitDirectives skips rather than emitting
 // a non-nil interface wrapping a nil pointer.
 func TestAsDirective_NilLiftsToNil(t *testing.T) {
 	b := csvbase.NewBuilder()
