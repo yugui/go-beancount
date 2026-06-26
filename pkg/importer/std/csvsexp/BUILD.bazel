@@ -16,6 +16,7 @@ go_library(
         "//pkg/importer",
         "//pkg/importer/std/csvbase",
         "//pkg/importer/std/csvkit",
+        "@com_github_cockroachdb_apd_v3//:apd",
         "@org_golang_x_text//encoding/ianaindex",
     ],
 )
@@ -23,6 +24,7 @@ go_library(
 go_test(
     name = "csvsexp_test",
     srcs = [
+        "arith_test.go",
         "compile_test.go",
         "csvsexp_test.go",
         "forms_test.go",

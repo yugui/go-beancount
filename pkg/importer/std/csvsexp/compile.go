@@ -7,6 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/cockroachdb/apd/v3"
 	"golang.org/x/text/encoding/ianaindex"
 
 	"github.com/yugui/go-beancount/pkg/ast"
@@ -363,6 +364,20 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 		}
 		return value{kind: kindDateKey, v: csvbase.ParseDate(c.b, k, layout, code)}, nil
 
+	case "date-offset":
+		if err := arity(head, args, 2, 2); err != nil {
+			return value{}, err
+		}
+		k, err := c.evalDateKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		days, err := evalDaysOffset(args[1])
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindDateKey, v: csvbase.OffsetDate(c.b, k, days)}, nil
+
 	case "parse-amount":
 		if err := arity(head, args, 1, -1); err != nil {
 			return value{}, err
@@ -584,6 +599,80 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 			return value{}, err
 		}
 		return value{kind: kindAmtKey, v: csvbase.AbsAmount(c.b, a)}, nil
+
+	case "scale-amount":
+		if err := arity(head, args, 2, 3); err != nil {
+			return value{}, err
+		}
+		a, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		factor, err := evalScalar(args[1])
+		if err != nil {
+			return value{}, err
+		}
+		code, err := c.optString(args, 2, e)
+		if err != nil {
+			return value{}, err
+		}
+		return value{kind: kindAmtKey, v: csvbase.ScaleAmount(c.b, a, factor, code)}, nil
+
+	case "divide-amount":
+		if err := arity(head, args, 2, -1); err != nil {
+			return value{}, err
+		}
+		a, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		divisor, err := evalScalar(args[1])
+		if err != nil {
+			return value{}, err
+		}
+		if divisor.IsZero() {
+			return value{}, fmt.Errorf("csvsexp: line %d: divide-amount by zero", head.line)
+		}
+		kw, err := trailingKwargs(args[2:])
+		if err != nil {
+			return value{}, err
+		}
+		scale := -1
+		if sn, ok := kw["scale"]; ok {
+			scale, err = evalDigits(sn)
+			if err != nil {
+				return value{}, err
+			}
+		}
+		code := ""
+		if cn, ok := kw["code"]; ok {
+			code, err = c.evalString(cn, e)
+			if err != nil {
+				return value{}, err
+			}
+		}
+		return value{kind: kindAmtKey, v: csvbase.DivideAmount(c.b, a, divisor, scale, code)}, nil
+
+	case "round-amount", "floor-amount", "ceil-amount":
+		if err := arity(head, args, 2, 2); err != nil {
+			return value{}, err
+		}
+		a, err := c.evalAmtKey(args[0], e)
+		if err != nil {
+			return value{}, err
+		}
+		digits, err := evalDigits(args[1])
+		if err != nil {
+			return value{}, err
+		}
+		switch head.text {
+		case "round-amount":
+			return value{kind: kindAmtKey, v: csvbase.RoundAmount(c.b, a, digits)}, nil
+		case "floor-amount":
+			return value{kind: kindAmtKey, v: csvbase.FloorAmount(c.b, a, digits)}, nil
+		default:
+			return value{kind: kindAmtKey, v: csvbase.CeilAmount(c.b, a, digits)}, nil
+		}
 
 	case "empty?":
 		if err := arity(head, args, 1, 1); err != nil {
@@ -1784,6 +1873,44 @@ func (c *compiler) optString(args []node, i int, e *env) (string, error) {
 		return "", nil
 	}
 	return c.evalString(args[i], e)
+}
+
+// evalScalar parses n as a compile-time apd.Decimal: a string literal ("1.5")
+// or an integer literal (2).
+func evalScalar(n node) (apd.Decimal, error) {
+	switch n.kind {
+	case nodeString:
+		var d apd.Decimal
+		if _, _, err := apd.BaseContext.SetString(&d, n.text); err != nil {
+			return apd.Decimal{}, fmt.Errorf("csvsexp: line %d: invalid scalar %q: %v", n.line, n.text, err)
+		}
+		return d, nil
+	case nodeInt:
+		return *apd.New(n.num, 0), nil
+	default:
+		return apd.Decimal{}, fmt.Errorf("csvsexp: line %d: scalar must be a number literal", n.line)
+	}
+}
+
+// evalDigits parses n as a non-negative integer literal, used for rounding
+// precision.
+func evalDigits(n node) (int, error) {
+	if n.kind != nodeInt {
+		return 0, fmt.Errorf("csvsexp: line %d: digits must be an integer", n.line)
+	}
+	if n.num < 0 {
+		return 0, fmt.Errorf("csvsexp: line %d: digits must be non-negative", n.line)
+	}
+	return int(n.num), nil
+}
+
+// evalDaysOffset parses n as an integer literal day count, which may be
+// negative to shift a date backwards.
+func evalDaysOffset(n node) (int, error) {
+	if n.kind != nodeInt {
+		return 0, fmt.Errorf("csvsexp: line %d: date-offset days must be an integer", n.line)
+	}
+	return int(n.num), nil
 }
 
 func strKey(k csvbase.Key[string]) value { return value{kind: kindStrKey, v: k} }

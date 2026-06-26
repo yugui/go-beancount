@@ -452,6 +452,138 @@ func AbsAmount(b *Builder, in Key[*csvkit.Amount]) Key[*csvkit.Amount] {
 	})
 }
 
+// OffsetDate returns in shifted by days calendar days (negative to shift
+// backwards), following [time.Time.AddDate] normalization. A soft-failed input
+// propagates its diagnostic.
+func OffsetDate(b *Builder, in Key[time.Time], days int) Key[time.Time] {
+	return AddStep(b, func(c *MappingState) (time.Time, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			return time.Time{}, d, nil
+		}
+		return v.AddDate(0, 0, days), nil, nil
+	})
+}
+
+// divCtx carries the precision required for division, which apd's exact
+// BaseContext (precision 0) cannot perform.
+var divCtx = apd.BaseContext.WithPrecision(34)
+
+// ScaleAmount returns in multiplied by the scalar factor (preserving
+// CurrencyHint). The multiplication is exact. A nil input yields nil; a
+// soft-failed input propagates its diagnostic. code defaults to DiagBadAmount.
+func ScaleAmount(b *Builder, in Key[*csvkit.Amount], factor apd.Decimal, code string) Key[*csvkit.Amount] {
+	if code == "" {
+		code = DiagBadAmount
+	}
+	return AddStep(b, func(c *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			return nil, d, nil
+		}
+		if v == nil {
+			return nil, nil, nil
+		}
+		var prod apd.Decimal
+		if _, err := apd.BaseContext.Mul(&prod, &v.Number, &factor); err != nil {
+			info := c.Info()
+			diag := ErrorDiag(code, info.Path, info.Line,
+				fmt.Sprintf("cannot scale amount: %v", err))
+			return nil, &diag, nil
+		}
+		return &csvkit.Amount{Number: prod, CurrencyHint: v.CurrencyHint}, nil, nil
+	})
+}
+
+// DivideAmount returns in divided by the scalar divisor (preserving
+// CurrencyHint). The quotient is computed at 34-digit precision; when scale is
+// non-negative it is then rounded to scale fractional places using half-even
+// rounding. A nil input yields nil; a soft-failed input propagates its
+// diagnostic. The divisor must be non-zero. code defaults to DiagBadAmount.
+func DivideAmount(b *Builder, in Key[*csvkit.Amount], divisor apd.Decimal, scale int, code string) Key[*csvkit.Amount] {
+	if code == "" {
+		code = DiagBadAmount
+	}
+	return AddStep(b, func(c *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			return nil, d, nil
+		}
+		if v == nil {
+			return nil, nil, nil
+		}
+		var quo apd.Decimal
+		if _, err := divCtx.Quo(&quo, &v.Number, &divisor); err != nil {
+			info := c.Info()
+			diag := ErrorDiag(code, info.Path, info.Line,
+				fmt.Sprintf("cannot divide amount: %v", err))
+			return nil, &diag, nil
+		}
+		if scale >= 0 {
+			if _, err := quantizeCtx(apd.RoundHalfEven).Quantize(&quo, &quo, -int32(scale)); err != nil {
+				info := c.Info()
+				diag := ErrorDiag(code, info.Path, info.Line,
+					fmt.Sprintf("cannot round amount: %v", err))
+				return nil, &diag, nil
+			}
+		} else {
+			quo.Reduce(&quo)
+		}
+		return &csvkit.Amount{Number: quo, CurrencyHint: v.CurrencyHint}, nil, nil
+	})
+}
+
+// quantizeCtx returns a 34-digit context that rounds with the given mode.
+func quantizeCtx(rounding apd.Rounder) *apd.Context {
+	c := apd.BaseContext.WithPrecision(34)
+	c.Rounding = rounding
+	return c
+}
+
+// quantizeAmount returns in rounded to digits fractional places using the given
+// rounding mode (preserving CurrencyHint). A nil input yields nil; a soft-failed
+// input propagates its diagnostic.
+func quantizeAmount(b *Builder, in Key[*csvkit.Amount], digits int, rounding apd.Rounder) Key[*csvkit.Amount] {
+	return AddStep(b, func(c *MappingState) (*csvkit.Amount, *ast.Diagnostic, error) {
+		v, d := Value(c, in)
+		if d != nil {
+			return nil, d, nil
+		}
+		if v == nil {
+			return nil, nil, nil
+		}
+		var q apd.Decimal
+		if _, err := quantizeCtx(rounding).Quantize(&q, &v.Number, -int32(digits)); err != nil {
+			info := c.Info()
+			diag := ErrorDiag(DiagBadAmount, info.Path, info.Line,
+				fmt.Sprintf("cannot round amount: %v", err))
+			return nil, &diag, nil
+		}
+		return &csvkit.Amount{Number: q, CurrencyHint: v.CurrencyHint}, nil, nil
+	})
+}
+
+// RoundAmount returns in rounded to digits fractional places using half-even
+// rounding (preserving CurrencyHint). A nil input yields nil; a soft-failed
+// input propagates its diagnostic.
+func RoundAmount(b *Builder, in Key[*csvkit.Amount], digits int) Key[*csvkit.Amount] {
+	return quantizeAmount(b, in, digits, apd.RoundHalfEven)
+}
+
+// FloorAmount returns in rounded down (toward negative infinity) to digits
+// fractional places (preserving CurrencyHint). A nil input yields nil; a
+// soft-failed input propagates its diagnostic.
+func FloorAmount(b *Builder, in Key[*csvkit.Amount], digits int) Key[*csvkit.Amount] {
+	return quantizeAmount(b, in, digits, apd.RoundFloor)
+}
+
+// CeilAmount returns in rounded up (toward positive infinity) to digits
+// fractional places (preserving CurrencyHint). A nil input yields nil; a
+// soft-failed input propagates its diagnostic.
+func CeilAmount(b *Builder, in Key[*csvkit.Amount], digits int) Key[*csvkit.Amount] {
+	return quantizeAmount(b, in, digits, apd.RoundCeiling)
+}
+
 // isZeroKey reports whether k is the zero value (name == ""), meaning it was
 // not produced by any AddStep call.
 func isZeroKey[T any](k Key[T]) bool { return k.name == "" }

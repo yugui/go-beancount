@@ -76,9 +76,13 @@
 //	(map-value k (dict ...) :strict "CODE")                           -> string-key
 //	(diag-as-warning k "CODE")                                        -> string-key
 //	(parse-date k "layout" "CODE")                                    -> date-key
+//	(date-offset d N)                  shift a date by N days, N<0 back -> date-key
 //	(parse-amount k :format nf :split-currency #t :code "C")          -> amount-key
 //	(negate-amount a)                                                 -> amount-key
 //	(add-amounts a b "CODE")                                          -> amount-key
+//	(scale-amount a S "CODE")          multiply by scalar S          -> amount-key
+//	(divide-amount a S :scale N :code "C")  divide by scalar S       -> amount-key
+//	(round-amount a N) (floor-amount a N) (ceil-amount a N)          -> amount-key
 //	(currency-hint a)                                                 -> string-key
 //	(split k (regex "..."))            named groups of a match         -> row-key
 //	(group split "name")                                              -> string-key
