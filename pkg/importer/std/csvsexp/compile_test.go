@@ -201,6 +201,41 @@ func TestCompileErrors(t *testing.T) {
 				  :amount (parse-amount (column "A")) :account y)))`,
 			want: `"x" is not callable`,
 		},
+		{
+			name: "divide-amount by zero",
+			program: `(csv-import (emit-transaction
+				:date (parse-date (column "D") "2006-01-02")
+				:amount (divide-amount (parse-amount (column "A")) 0)))`,
+			want: "divide-amount by zero",
+		},
+		{
+			name: "scale-amount bad scalar",
+			program: `(csv-import (emit-transaction
+				:date (parse-date (column "D") "2006-01-02")
+				:amount (scale-amount (parse-amount (column "A")) "x")))`,
+			want: "invalid scalar",
+		},
+		{
+			name: "round-amount negative digits",
+			program: `(csv-import (emit-transaction
+				:date (parse-date (column "D") "2006-01-02")
+				:amount (round-amount (parse-amount (column "A")) -1)))`,
+			want: "digits must be non-negative",
+		},
+		{
+			name: "round-amount non-integer digits",
+			program: `(csv-import (emit-transaction
+				:date (parse-date (column "D") "2006-01-02")
+				:amount (round-amount (parse-amount (column "A")) "2")))`,
+			want: "digits must be an integer",
+		},
+		{
+			name: "date-offset wants date-key",
+			program: `(csv-import (emit-transaction
+				:date (date-offset (column "D") 2)
+				:amount (parse-amount (column "A"))))`,
+			want: "expected date-key, got string-key",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
