@@ -119,6 +119,42 @@ func TestCompileErrors(t *testing.T) {
 			want: "if branches must have the same type",
 		},
 		{
+			name: "cond requires else clause",
+			program: `(csv-import (let* ((acct (cond ((empty? (column "C")) (const "X")))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account acct)))`,
+			want: "cond requires a final (else result) clause",
+		},
+		{
+			name: "cond else must be last",
+			program: `(csv-import (let* ((acct (cond (else (const "X")) ((empty? (column "C")) (const "Y")))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account acct)))`,
+			want: "else must be the last cond clause",
+		},
+		{
+			name: "cond clause must be (test result)",
+			program: `(csv-import (let* ((acct (cond ((empty? (column "C")))  (else (const "Y")))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account acct)))`,
+			want: "each cond clause must be (test result)",
+		},
+		{
+			name: "cond result type mismatch",
+			program: `(csv-import (let* ((acct (cond ((empty? (column "C")) (const "X"))
+				  (else (parse-amount (column "A"))))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account acct)))`,
+			want: "if branches must have the same type",
+		},
+		{
+			name: "cond test wants bool-key",
+			program: `(csv-import (let* ((acct (cond ((column "C") (const "X")) (else (const "Y")))))
+				(emit-transaction :date (parse-date (column "D") "2006-01-02")
+				  :amount (parse-amount (column "A")) :account acct)))`,
+			want: "expected bool-key, got string-key",
+		},
+		{
 			name: "if cond wants bool-key",
 			program: `(csv-import (let* ((acct (if (column "C") (const "X") (const "Y"))))
 				(emit-transaction :date (parse-date (column "D") "2006-01-02")

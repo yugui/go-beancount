@@ -1,0 +1,18 @@
+kind = "csv-sexp"
+name = "cond"
+program = '''
+(csv-import
+  (let* ((amt     (parse-amount (column "Amount")))
+         (cat     (trim (column "Category")))
+         (counter (cond ((equal? cat (const "Salary"))    (const "Income:Salary"))
+                        ((equal? cat (const "Groceries")) (const "Expenses:Food:Groceries"))
+                        ((equal? cat (const "Dining"))    (const "Expenses:Food:Dining"))
+                        (else                             (const "Expenses:Misc")))))
+    (emit-transaction
+      :date (parse-date (column "Date") "2006-01-02")
+      :amount amt :currency (const "USD")
+      :account (const "Assets:Checking")
+      :counter counter
+      :payee (column "Payee")
+      :narration (trim (column "Category")))))
+'''

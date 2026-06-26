@@ -145,6 +145,16 @@
 //
 //	(account (if (negative? amt) (const "Expenses:Misc") (const "Income:Misc")))
 //
+// (cond (test result)... (else result)) is the multi-way conditional: the tests
+// are bool-keys tried in order, the first true clause's result is chosen, and the
+// mandatory final (else result) clause supplies the value when none hold. It
+// desugars to right-nested if, so every result must share one runtime key kind
+// and a literal test folds at compile time.
+//
+//	(account (cond ((negative? amt)        (const "Expenses:Misc"))
+//	               ((matches? payee (regex "(?i)salary")) (const "Income:Salary"))
+//	               (else                   (const "Income:Misc"))))
+//
 // (when cond X) and (unless cond X) gate a single directive: they yield X's
 // directive when the condition holds (fails) and a nil directive otherwise. As a
 // directive-key they slot directly into a variadic emit, so a row can carry an
