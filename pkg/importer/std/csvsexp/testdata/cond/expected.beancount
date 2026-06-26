@@ -1,0 +1,12 @@
+2024-03-01 * "SuperMart" "Groceries"
+  Assets:Checking                         -50.00 USD
+  Expenses:Food:Groceries                  50.00 USD
+2024-03-02 * "Employer" "Salary"
+  Assets:Checking                        3000.00 USD
+  Income:Salary                         -3000.00 USD
+2024-03-03 * "Cafe" "Dining"
+  Assets:Checking                         -12.00 USD
+  Expenses:Food:Dining                     12.00 USD
+2024-03-04 * "Corner Shop" "Misc"
+  Assets:Checking                          -5.00 USD
+  Expenses:Misc                             5.00 USD
