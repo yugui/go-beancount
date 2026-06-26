@@ -536,7 +536,7 @@ func TestDoubleEntry_ZeroCounterNoWarning(t *testing.T) {
 
 func runDir(t *testing.T, b *csvbase.Builder, k csvbase.Key[ast.Directive]) ([]ast.Directive, []ast.Diagnostic) {
 	t.Helper()
-	p := b.Emit(csvbase.EmitDirective(k))
+	p := b.Emit(csvbase.EmitDirectives(k))
 	dirs, diags, err := p.Map(context.Background(), buildRec())
 	if err != nil {
 		t.Fatalf("Map: %v", err)
@@ -629,7 +629,7 @@ func TestBalance_MissingAmountDrops(t *testing.T) {
 }
 
 // TestAsDirective_NilLiftsToNil pins the interface-nil guard: a nil typed value
-// must lift to a true nil directive, so EmitDirective skips rather than emitting
+// must lift to a true nil directive, so EmitDirectives skips rather than emitting
 // a non-nil interface wrapping a nil pointer.
 func TestAsDirective_NilLiftsToNil(t *testing.T) {
 	b := csvbase.NewBuilder()
@@ -639,6 +639,104 @@ func TestAsDirective_NilLiftsToNil(t *testing.T) {
 	dirs, diags := runDir(t, b, csvbase.AsDirective(b, nilTx))
 	if len(dirs) != 0 || len(diags) != 0 {
 		t.Errorf("got dirs=%v diags=%v, want empty (nil lifts to nil)", dirs, diags)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// EmitDirectives (variadic terminal) and NilDirective
+// ---------------------------------------------------------------------------
+
+func runDirs(t *testing.T, b *csvbase.Builder, ks ...csvbase.Key[ast.Directive]) ([]ast.Directive, []ast.Diagnostic) {
+	t.Helper()
+	p := b.Emit(csvbase.EmitDirectives(ks...))
+	dirs, diags, err := p.Map(context.Background(), buildRec())
+	if err != nil {
+		t.Fatalf("Map: %v", err)
+	}
+	return dirs, diags
+}
+
+func txnDir(t *testing.T, b *csvbase.Builder) csvbase.Key[ast.Directive] {
+	t.Helper()
+	tx := csvbase.Transaction(b, csvbase.TxnSpec{
+		Date:     dateKey(b, someDate),
+		Postings: csvbase.Postings(b, primaryPosting(b, "Assets:Bank", "50", "USD")),
+	})
+	return csvbase.AsDirective(b, tx)
+}
+
+func TestEmitDirectives_EmitsInOrder(t *testing.T) {
+	b := csvbase.NewBuilder()
+	tx := txnDir(t, b)
+	bal := csvbase.AsDirective(b, balanceKey(t, b, "Assets:Cash", "1000", "JPY"))
+	dirs, diags := runDirs(t, b, tx, bal)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diags: %v", diags)
+	}
+	if len(dirs) != 2 {
+		t.Fatalf("got %d dirs, want 2", len(dirs))
+	}
+	if _, ok := dirs[0].(*ast.Transaction); !ok {
+		t.Errorf("dir 0 = %T, want *ast.Transaction", dirs[0])
+	}
+	if _, ok := dirs[1].(*ast.Balance); !ok {
+		t.Errorf("dir 1 = %T, want *ast.Balance", dirs[1])
+	}
+}
+
+func TestEmitDirectives_NilSlotSkipped(t *testing.T) {
+	b := csvbase.NewBuilder()
+	tx := txnDir(t, b)
+	dirs, diags := runDirs(t, b, csvbase.NilDirective(b), tx, csvbase.NilDirective(b))
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diags: %v", diags)
+	}
+	if len(dirs) != 1 {
+		t.Fatalf("got %d dirs, want 1 (nil slots skipped)", len(dirs))
+	}
+}
+
+func TestEmitDirectives_SoftFailDropsRow(t *testing.T) {
+	b := csvbase.NewBuilder()
+	tx := txnDir(t, b)
+	badBal := csvbase.AsDirective(b, csvbase.Balance(b, csvbase.BalanceSpec{
+		Date:    dateKey(b, someDate),
+		Account: csvbase.Const(b, "Assets:Cash"),
+		Amount:  csvbase.Amount(b, nilAmtKey(b), csvbase.Const(b, "JPY")),
+	}))
+	dirs, diags := runDirs(t, b, tx, badBal)
+	if len(dirs) != 0 {
+		t.Errorf("got %d dirs, want 0 (row dropped on soft-fail)", len(dirs))
+	}
+	if len(diags) != 1 || diags[0].Code != csvbase.DiagMissingAmount {
+		t.Errorf("diags = %v, want one DiagMissingAmount", diags)
+	}
+}
+
+func TestEmitDirectives_NoKeysSkips(t *testing.T) {
+	b := csvbase.NewBuilder()
+	dirs, diags := runDirs(t, b)
+	if len(dirs) != 0 || len(diags) != 0 {
+		t.Errorf("got dirs=%v diags=%v, want both empty", dirs, diags)
+	}
+}
+
+func TestEmitDirectives_PanicOnZeroKey(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic on zero directive key")
+		}
+	}()
+	b := csvbase.NewBuilder()
+	var zero csvbase.Key[ast.Directive]
+	csvbase.EmitDirectives(txnDir(t, b), zero)
+}
+
+func TestNilDirective_Skips(t *testing.T) {
+	b := csvbase.NewBuilder()
+	dirs, diags := runDir(t, b, csvbase.NilDirective(b))
+	if len(dirs) != 0 || len(diags) != 0 {
+		t.Errorf("got dirs=%v diags=%v, want both empty (nil directive skips)", dirs, diags)
 	}
 }
 

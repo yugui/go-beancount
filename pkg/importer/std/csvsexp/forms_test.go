@@ -243,6 +243,135 @@ func TestEmitHeterogeneous(t *testing.T) {
 	}
 }
 
+// TestEmitMultiple emits two directives from one row: a transaction and a
+// trailing balance assertion, in argument order.
+func TestEmitMultiple(t *testing.T) {
+	const prog = `(csv-import
+  (let* ((d   (parse-date (column "Date") "2006-01-02"))
+         (amt (parse-amount (column "Amount")))
+         (jpy (const "JPY")))
+    (emit
+      (transaction :date d :narration (column "Memo")
+        :postings (postings
+          (posting :account (const "Assets:Cash") :amount (amount amt :currency jpy))
+          (posting :account (const "Income:Misc"))))
+      (balance :date d :account (const "Assets:Cash") :amount (amount amt :currency jpy)))))`
+	out := extractProgram(t, prog, "Date,Amount,Memo\n2024-01-01,1000,pay\n")
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	if len(out.Directives) != 2 {
+		t.Fatalf("got %d directives, want 2", len(out.Directives))
+	}
+	if _, ok := out.Directives[0].(*ast.Transaction); !ok {
+		t.Errorf("directive 0 = %T, want *ast.Transaction", out.Directives[0])
+	}
+	bal, ok := out.Directives[1].(*ast.Balance)
+	if !ok {
+		t.Fatalf("directive 1 = %T, want *ast.Balance", out.Directives[1])
+	}
+	if string(bal.Account) != "Assets:Cash" || bal.Amount.Number.String() != "1000" {
+		t.Errorf("balance = %+v", bal)
+	}
+}
+
+// TestEmitWhenOptionalSecond carries a transaction on every row and an optional
+// trailing balance gated by (when ...): present when the condition holds, absent
+// otherwise.
+func TestEmitWhenOptionalSecond(t *testing.T) {
+	const prog = `(csv-import
+  (let* ((d    (parse-date (column "Date") "2006-01-02"))
+         (kind (column "Kind"))
+         (amt  (parse-amount (column "Amount")))
+         (jpy  (const "JPY")))
+    (emit
+      (transaction :date d
+        :postings (postings
+          (posting :account (const "Assets:Cash") :amount (amount amt :currency jpy))
+          (posting :account (const "Income:Misc"))))
+      (when (equal? kind (const "BAL"))
+        (balance :date d :account (const "Assets:Cash") :amount (amount amt :currency jpy))))))`
+	out := extractProgram(t, prog, "Date,Kind,Amount\n2024-01-01,BAL,1000\n2024-01-02,PLAIN,50\n")
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	if len(out.Directives) != 3 {
+		t.Fatalf("got %d directives, want 3 (txn, balance, txn)", len(out.Directives))
+	}
+	if _, ok := out.Directives[0].(*ast.Transaction); !ok {
+		t.Errorf("directive 0 = %T, want *ast.Transaction", out.Directives[0])
+	}
+	if _, ok := out.Directives[1].(*ast.Balance); !ok {
+		t.Errorf("directive 1 = %T, want *ast.Balance", out.Directives[1])
+	}
+	if _, ok := out.Directives[2].(*ast.Transaction); !ok {
+		t.Errorf("directive 2 = %T, want *ast.Transaction", out.Directives[2])
+	}
+}
+
+// TestEmitWhenSkipsRow suppresses a row entirely when its sole (when ...)
+// argument's condition fails.
+func TestEmitWhenSkipsRow(t *testing.T) {
+	const prog = `(csv-import
+  (let* ((d    (parse-date (column "Date") "2006-01-02"))
+         (kind (column "Kind"))
+         (amt  (parse-amount (column "Amount"))))
+    (emit
+      (when (equal? kind (const "KEEP"))
+        (transaction :date d
+          :postings (postings
+            (posting :account (const "Assets:Cash") :amount (amount amt :currency (const "USD")))
+            (posting :account (const "Income:Misc"))))))))`
+	out := extractProgram(t, prog, "Date,Kind,Amount\n2024-01-01,KEEP,1000\n2024-01-02,DROP,50\n")
+	if len(out.Diagnostics) != 0 {
+		t.Fatalf("unexpected diagnostics: %+v", out.Diagnostics)
+	}
+	if len(out.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1 (DROP row skipped)", len(out.Directives))
+	}
+}
+
+// TestEmitUnless mirrors when with the inverted condition.
+func TestEmitUnless(t *testing.T) {
+	const prog = `(csv-import
+  (let* ((d    (parse-date (column "Date") "2006-01-02"))
+         (kind (column "Kind"))
+         (amt  (parse-amount (column "Amount"))))
+    (emit
+      (unless (equal? kind (const "SKIP"))
+        (transaction :date d
+          :postings (postings
+            (posting :account (const "Assets:Cash") :amount (amount amt :currency (const "USD")))
+            (posting :account (const "Income:Misc"))))))))`
+	out := extractProgram(t, prog, "Date,Kind,Amount\n2024-01-01,SKIP,1000\n2024-01-02,KEEP,50\n")
+	if len(out.Directives) != 1 {
+		t.Fatalf("got %d directives, want 1 (SKIP row skipped)", len(out.Directives))
+	}
+}
+
+// TestEmitSoftFailDropsRow checks that a soft-fail in any emit slot drops the
+// whole row: the valid transaction is not emitted on its own.
+func TestEmitSoftFailDropsRow(t *testing.T) {
+	const prog = `(csv-import
+  (let* ((d   (parse-date (column "Date") "2006-01-02"))
+         (amt (parse-amount (column "Amount")))
+         (jpy (const "JPY")))
+    (emit
+      (transaction :date d
+        :postings (postings
+          (posting :account (const "Assets:Cash") :amount (amount amt :currency jpy))
+          (posting :account (const "Income:Misc"))))
+      (balance :date (parse-date (column "BalDate") "2006-01-02")
+               :account (const "Assets:Cash") :amount (amount amt :currency jpy)))))`
+	out := extractProgram(t, prog, "Date,Amount,BalDate\n2024-01-01,1000,not-a-date\n")
+	if len(out.Directives) != 0 {
+		t.Fatalf("got %d directives, want 0 (row dropped on soft-fail)", len(out.Directives))
+	}
+	if len(out.Diagnostics) == 0 {
+		t.Fatal("want a diagnostic for the soft-failed balance, got none")
+	}
+}
+
 func TestForms_CompileErrors(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -282,6 +411,16 @@ func TestForms_CompileErrors(t *testing.T) {
 		{
 			"directive of non-directive",
 			`(csv-import (emit (directive (const "x"))))`,
+			"expected a directive, transaction, or balance",
+		},
+		{
+			"when wrong arity",
+			`(csv-import (emit (when (empty? (column "K")))))`,
+			"when expects exactly 2 arguments",
+		},
+		{
+			"when of non-directive",
+			`(csv-import (emit (when (empty? (column "K")) (const "x"))))`,
 			"expected a directive, transaction, or balance",
 		},
 	}

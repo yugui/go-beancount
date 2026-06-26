@@ -441,7 +441,7 @@ func Balance(b *Builder, spec BalanceSpec) Key[*ast.Balance] {
 
 // AsDirective lifts a typed directive key into a Key[ast.Directive], so rows
 // that produce different directive types (e.g. a transaction or a balance) can
-// be unified — for instance selected by If — before EmitDirective. A zero T
+// be unified — for instance selected by If — before EmitDirectives. A zero T
 // value lifts to a nil directive (not a non-nil interface wrapping a typed nil);
 // a soft-fail propagates.
 func AsDirective[T ast.Directive](b *Builder, k Key[T]) Key[ast.Directive] {
@@ -458,23 +458,46 @@ func AsDirective[T ast.Directive](b *Builder, k Key[T]) Key[ast.Directive] {
 	})
 }
 
-// EmitDirective returns an EmitFunc that emits the directive produced by k. It
-// panics if k is a zero Key. A soft-failed directive drops the row with its
-// diagnostic; a nil value skips the row; otherwise the directive is emitted.
-// Warnings recorded via MappingState.Warn are surfaced by the pipeline alongside
-// the result.
-func EmitDirective(k Key[ast.Directive]) EmitFunc {
-	if isZeroKey(k) {
-		panic("csvbase: EmitDirective: key is zero")
+// EmitDirectives returns an EmitFunc that emits, in order, the non-nil directive
+// produced by each key. A nil-valued key contributes nothing — an emit slot that
+// skips. If any key soft-fails, the whole row is dropped with the collected
+// diagnostics and no directive is emitted: a partial directive set is never
+// produced, since emitting only some of an intended group could leave the ledger
+// inconsistent. With no keys, every row is skipped. Warnings recorded via
+// MappingState.Warn are surfaced by the pipeline alongside the result. It panics
+// if any key is a zero Key.
+func EmitDirectives(ks ...Key[ast.Directive]) EmitFunc {
+	for _, k := range ks {
+		if isZeroKey(k) {
+			panic("csvbase: EmitDirectives: key is zero")
+		}
 	}
 	return func(_ context.Context, c *MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
-		dir, d := Value(c, k)
-		if d != nil {
-			return nil, []ast.Diagnostic{*d}, nil
+		var dirs []ast.Directive
+		var diags []ast.Diagnostic
+		for _, k := range ks {
+			dir, d := Value(c, k)
+			if d != nil {
+				diags = append(diags, *d)
+				continue
+			}
+			if dir == nil {
+				continue
+			}
+			dirs = append(dirs, dir)
 		}
-		if dir == nil {
-			return nil, nil, nil
+		if len(diags) > 0 {
+			return nil, diags, nil
 		}
-		return []ast.Directive{dir}, nil, nil
+		return dirs, nil, nil
 	}
+}
+
+// NilDirective returns a key whose value is always a nil directive — the neutral
+// element for conditional emission. Selected by an If branch, it makes that
+// branch contribute no directive (a skip) without a diagnostic.
+func NilDirective(b *Builder) Key[ast.Directive] {
+	return AddStep(b, func(*MappingState) (ast.Directive, *ast.Diagnostic, error) {
+		return nil, nil, nil
+	})
 }
