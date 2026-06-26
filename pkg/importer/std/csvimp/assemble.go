@@ -95,7 +95,7 @@ func compile(name string, s *shape) (*csvbase.Driver, error) {
 	mapped := csvbase.MapValue(a.b, joined, s.accountMap, mapMode(s.accountMap), csvbase.DiagUnmappedAccount)
 	account := csvbase.Else(a.b, hint, csvbase.Else(a.b, mapped, csvbase.Const(a.b, s.accountDefault)))
 
-	// zero Key = unconfigured counter; EmitTransaction emits a single posting.
+	// zero Key = unconfigured counter; DoubleEntry emits a single posting.
 	var counter csvbase.Key[string]
 	switch {
 	case len(s.counterAccountCols) == 0 && s.counterAccountDefault == "":
@@ -139,16 +139,18 @@ func compile(name string, s *shape) (*csvbase.Driver, error) {
 		cost = a.costKey()
 	}
 
-	pipeline := a.b.Emit(csvbase.EmitTransaction(csvbase.TxConfig{
+	primary := csvbase.Posting(a.b, csvbase.PostingSpec{
+		Account: account,
+		Amount:  csvbase.Amount(a.b, csvbase.RequireAmount(a.b, sum, ""), currency),
+		Cost:    cost,
+	})
+	txn := csvbase.Transaction(a.b, csvbase.TxnSpec{
 		Date:      date,
-		Amount:    sum,
-		Currency:  currency,
-		Account:   account,
-		Counter:   counter,
 		Payee:     payee,
 		Narration: narration,
-		Cost:      cost,
-	}))
+		Postings:  csvbase.DoubleEntry(a.b, primary, counter),
+	})
+	pipeline := a.b.Emit(csvbase.EmitTx(txn))
 
 	var gate csvbase.Gate = csvbase.DefaultGate
 	if s.compiledMatch != nil {

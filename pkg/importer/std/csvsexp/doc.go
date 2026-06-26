@@ -51,9 +51,13 @@
 //	:exclude      ((exclude :match "^Total") (exclude :col "Date" :match "^※"))
 //	:rowhash      "csvsexp-rowhash"        stamp an idempotency hash under this key
 //
-// BODY is a single (let* (BINDINGS) BODY) or (emit-transaction ...) form. let*
-// binds names sequentially in a fresh lexical scope; each binding may reference
-// the ones before it, and the body sees them all.
+// BODY is a single (let* (BINDINGS) BODY), (emit-transaction ...), or
+// (emit TXN) form. let* binds names sequentially in a fresh lexical scope; each
+// binding may reference the ones before it, and the body sees them all.
+// emit-transaction is the convenience for the primary+counter shape; emit takes
+// a transaction, balance, or directive key built from the construction forms
+// below and is the way to produce three-or-more-posting, auto-balanced, or
+// posting-annotated entries, and balance assertions.
 //
 // # Forms
 //
@@ -96,6 +100,38 @@
 //	(sub-amounts a b "CODE")                                          -> amount-key
 //	(abs-amount a)                                                    -> amount-key
 //
+// # Transaction construction
+//
+// These forms assemble an arbitrary transaction, decoupling construction from
+// emission so a program can express any grammatically valid entry. emit-transaction
+// remains the convenience for the common primary+counter shape:
+//
+//	(amount amt :currency cur)         amount-key + currency            -> amount-value-key
+//	(require-amount amt "CODE")        amount-key in, soft-fail if nil  -> amount-key
+//	(price amt :currency cur :total #t)  @ (or @@ when :total) annotation -> price-key
+//	(posting :account k :amount av :cost ck :price pk :flag "!" :meta (("n" k))) -> posting-key
+//	(postings p1 p2 p3 ...)            gather posting legs              -> posting-list-key
+//	(double-entry primary counter)     primary + balancing counter leg  -> posting-list-key
+//	(tags a b ...) (links a b ...)     gather non-blank strings         -> string-list-key
+//	(meta ("name" k) ...)              string metadata                  -> metadata-key
+//	(transaction :date d :postings pl :flag "x" :payee p :narration n
+//	             :tags t :links l :meta m)                              -> transaction-key
+//	(balance :date d :account a :amount av :meta m)  balance assertion   -> balance-key
+//	(directive X)                      lift a transaction/balance key    -> directive-key
+//	(emit X)                           body terminal; X is a transaction,
+//	                                   balance, or directive key
+//
+// In (posting ...), :amount takes an amount-value-key (from (amount ...)); a
+// missing :amount yields an auto-balanced posting. (double-entry ...) reproduces
+// emit-transaction's counter handling: a negated counter amount (or an elided
+// cash leg when the primary carries a cost), and a soft-failed counter account
+// surfaces a warning while keeping the row's single posting.
+//
+// Rows that produce different directive kinds (some transactions, some balances)
+// are unified by wrapping each branch in (directive ...) so an (if ...) yields a
+// single directive-key, which (emit ...) emits. A nil-valued directive skips the
+// row.
+//
 // # Conditionals and functions
 //
 // (if cond then else) chooses a value per row: cond is a bool-key (a literal
@@ -115,10 +151,10 @@
 //	                 (map-value (trim col) table :strict "csvsexp-unmapped"))))
 //	  (emit-transaction ... :account (mapped (column "Category") (dict ...))))
 //
-// emit-transaction wires resolved keys into one transaction per row; its
-// keywords mirror csvbase.TxConfig: :date and :amount are required, while
-// :currency, :account, :counter, :payee, :narration, :cost, :flag, :tags,
-// :links, :meta, and the :missing-*-code overrides are optional.
+// emit-transaction wires resolved keys into one transaction per row, assembling
+// a primary posting plus an optional balancing counter posting: :date and
+// :amount are required, while :currency, :account, :counter, :payee, :narration,
+// :cost, :flag, :tags, :links, and :meta are optional.
 //
 // # Naming differences from Scheme
 //

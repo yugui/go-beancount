@@ -20,10 +20,20 @@ type result struct {
 // pipeline's steps so far. Step eval functions and the emit callback read it;
 // it is created fresh per row and is not safe for concurrent use.
 type MappingState struct {
-	raw     []string
-	index   map[string]int
-	info    RowInfo
-	results map[string]result
+	raw      []string
+	index    map[string]int
+	info     RowInfo
+	results  map[string]result
+	warnings []ast.Diagnostic
+}
+
+// Warn records d as a non-fatal diagnostic, surfaced alongside the row's
+// emitted directives. Unlike a step soft-fail (which drops the value), Warn
+// keeps the row; use it when a step succeeds with a caveat, e.g. a counter
+// account that could not be resolved. Recorded warnings precede the emit
+// callback's own diagnostics in the row's reported result.
+func (c *MappingState) Warn(d ast.Diagnostic) {
+	c.warnings = append(c.warnings, d)
 }
 
 // Value returns the value stored for k. It returns (value, nil) when the step

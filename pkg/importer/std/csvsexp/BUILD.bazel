@@ -25,6 +25,7 @@ go_test(
     srcs = [
         "compile_test.go",
         "csvsexp_test.go",
+        "forms_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":csvsexp"],
