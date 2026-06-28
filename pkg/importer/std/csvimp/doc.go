@@ -12,6 +12,7 @@
 //	delimiter   = ","                  # default ","; one rune only
 //	skip_lines  = 1                    # banner lines before the header; default 0
 //	encoding    = "Shift_JIS"          # optional IANA charset; default UTF-8/pass-through
+//	rowhash_key = "mybank-rowhash"     # idempotency key; default "csvimp-rowhash-<name>"
 //
 //	# Optional numeric parsing rules applied to every [[amount]] cell.
 //	# Absent, amounts parse exactly as apd does (commas rejected, '.'
@@ -316,15 +317,30 @@
 //
 // # Identity metadata
 //
-// Every emitted Transaction is stamped with the metadata key
-// "csvimp-rowhash": the first 8 bytes of SHA-256 over
+// Every emitted Transaction is stamped with a per-row idempotency hash:
+// the first 8 bytes of SHA-256 over
 // instance-name || RS || trimmed-field0 || US || trimmed-field1 || …,
-// hex-encoded as 16 lowercase characters. Callers using
-// pkg/distribute/dedup may list this key in id_keys
-// ([routes.transaction] in the route config) for cross-run
-// deduplication. The hash is computed over the raw CSV row before any
-// translation map is applied, so toggling a map does not invalidate
-// existing rowhashes.
+// hex-encoded as 16 lowercase characters. The hash is computed over the
+// raw CSV row before any translation map is applied, so toggling a map
+// does not invalidate existing rowhashes.
+//
+// By default the hash is stamped under an instance-scoped key,
+// "csvimp-rowhash-<name>", where <name> is the importer instance name.
+// Set rowhash_key to override it with an explicit key (used verbatim).
+// Either way the key must be a valid beancount metadata key
+// ([a-z][A-Za-z0-9_-]*); an instance name that cannot form a valid key
+// is rejected at configuration time with a request to set rowhash_key.
+//
+// The key is instance-scoped on purpose. A row hash is only meaningfully
+// comparable within the same importer instance, so two instances must
+// not share a key: pkg/distribute/dedup treats an id key present on both
+// directives with conflicting values as proof that they are distinct
+// (its veto rule). When a bank statement and a credit-card statement
+// both record the same underlying transaction, each importer stamps
+// under its own key, so the veto never fires across sources and
+// structural matching is left to decide. List the relevant keys in
+// id_keys ([routes.transaction] in the route config) for cross-run
+// deduplication.
 //
 // # Hints
 //

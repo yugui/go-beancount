@@ -63,7 +63,18 @@ type shapeConfig struct {
 	Cost           costConfig      `toml:"cost"`
 	Amount         []amountColumn  `toml:"amount"`
 	Exclude        []excludeConfig `toml:"exclude"`
+	RowhashKey     string          `toml:"rowhash_key"`
 }
+
+// rowhashKeyPrefix is prepended to the instance name to form the default
+// idempotency metadata key when rowhash_key is unset. The instance-scoped
+// key keeps distinct importer instances from sharing a dedup id key; the
+// legacy "csvimp-rowhash" substring is retained so existing greps still hit.
+const rowhashKeyPrefix = "csvimp-rowhash-"
+
+// metaKeyRE matches a syntactically valid beancount metadata key: a
+// lowercase-initial identifier over [A-Za-z0-9_-] (see pkg/syntax scanIdent).
+var metaKeyRE = regexp.MustCompile(`^[a-z][A-Za-z0-9_-]*$`)
 
 // costConfig is the on-disk shape of the optional [cost] block. Exactly one
 // of PerUnit / Total names the cost-number column; the cost currency comes
@@ -214,6 +225,12 @@ type shape struct {
 	// filters drop statement noise (footnotes, totals) before a row
 	// becomes a directive; empty means no filtering.
 	filters []csvkit.RowFilter
+
+	// rowhashKey is the metadata key under which the per-row idempotency
+	// hash is stamped. It defaults to rowhashKeyPrefix+name so distinct
+	// importer instances never share a key, keeping pkg/distribute/dedup
+	// from vetoing genuinely-equal transactions from different sources.
+	rowhashKey string
 }
 
 // costRule is the compiled form of [cost]: numberCol holds the cost number
@@ -355,8 +372,21 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		headerMatch = headerMatcher([]string(sc.HeaderMatch))
 	}
 
+	// Instance-scoped by default so two sources never share a dedup id key.
+	rhKey := sc.RowhashKey
+	if rhKey == "" {
+		rhKey = rowhashKeyPrefix + name
+	}
+	if !metaKeyRE.MatchString(rhKey) {
+		if sc.RowhashKey == "" {
+			return nil, fmt.Errorf("shape %q: default rowhash key %q (derived from the instance name) is not a valid beancount metadata key; set rowhash_key explicitly to a key matching [a-z][A-Za-z0-9_-]*", name, rhKey)
+		}
+		return nil, fmt.Errorf("shape %q: rowhash_key %q is not a valid beancount metadata key (must match [a-z][A-Za-z0-9_-]*)", name, rhKey)
+	}
+
 	// nil == "no map configured" (see shape.accountMap doc).
 	s := &shape{
+		rowhashKey:            rhKey,
 		delimiter:             ',',
 		skipLines:             sc.SkipLines,
 		headerMatch:           headerMatch,

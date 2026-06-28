@@ -27,6 +27,7 @@ go_test(
         "csvimp_test.go",
         "encoding_test.go",
         "idempotency_test.go",
+        "rowhash_test.go",
     ],
     data = glob(["testdata/**"]),
     embed = [":csvimp"],

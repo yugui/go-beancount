@@ -11,8 +11,6 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
 
-const rowhashKey = "csvimp-rowhash"
-
 // mapMode selects strict resolution when a translation table is configured and
 // pass-through resolution otherwise.
 func mapMode(m map[string]string) csvkit.MapMode {
@@ -169,7 +167,7 @@ func compile(name string, s *shape) (*csvbase.Driver, error) {
 		Gate:    gate,
 		Mapper:  pipeline,
 		Filters: s.filters,
-		RowHash: &csvbase.RowHash{Key: rowhashKey},
+		RowHash: &csvbase.RowHash{Key: s.rowhashKey},
 	})
 }
 
