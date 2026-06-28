@@ -11,7 +11,10 @@ import (
 	"github.com/yugui/go-beancount/pkg/importer/std/csvkit"
 )
 
-const rowhashKey = "csvimp-rowhash"
+// rowhashKeyPrefix prefixes the default rowhash metadata key. The instance name
+// is appended so each importer namespaces its hash, keeping look-alike rows from
+// distinct sources from colliding under one key during dedup.
+const rowhashKeyPrefix = "csvimp-rowhash-"
 
 // mapMode selects strict resolution when a translation table is configured and
 // pass-through resolution otherwise.
@@ -169,8 +172,39 @@ func compile(name string, s *shape) (*csvbase.Driver, error) {
 		Gate:    gate,
 		Mapper:  pipeline,
 		Filters: s.filters,
-		RowHash: &csvbase.RowHash{Key: rowhashKey},
+		RowHash: &csvbase.RowHash{KeyFunc: rowhashKeyFunc(name, s)},
 	})
+}
+
+// rowhashKeyFunc returns the per-row metadata-key resolver for the rowhash
+// stamp. With [rowhash] unconfigured every row uses "csvimp-rowhash-<name>".
+// With col/map set, a hit supplies the key and a miss or blank falls back to
+// [rowhash].default then to the per-instance default; a missing mapping never
+// drops the row.
+func rowhashKeyFunc(name string, s *shape) func(csvbase.RowContext) string {
+	fallback := s.rowhashDefault
+	if fallback == "" {
+		fallback = rowhashKeyPrefix + name
+	}
+	if len(s.rowhashCols) == 0 {
+		return csvbase.StaticRowHashKey(fallback)
+	}
+	cols, sep, m := s.rowhashCols, s.rowhashSep, s.rowhashMap
+	return func(rec csvbase.RowContext) string {
+		joined := csvkit.Join(cols, sep, func(col string) string {
+			i, ok := rec.Index[col]
+			if !ok || i >= len(rec.Fields) {
+				return ""
+			}
+			return rec.Fields[i]
+		})
+		if joined != "" {
+			if v, ok := m[joined]; ok {
+				return v
+			}
+		}
+		return fallback
+	}
 }
 
 // costKey builds the Key producing a per-row *ast.CostSpec from s.cost. A blank

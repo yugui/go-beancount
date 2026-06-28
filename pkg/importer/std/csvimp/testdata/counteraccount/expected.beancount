@@ -1,12 +1,12 @@
 2024-03-01 * "Diner"
-  csvimp-rowhash: "5c5dbecbc30d747b"
+  csvimp-rowhash-counteraccount: "5c5dbecbc30d747b"
   Assets:Checking                         -12.50 USD
   Expenses:Food                            12.50 USD
 2024-03-02 * "March rent"
-  csvimp-rowhash: "cdaf0b9556ce35a9"
+  csvimp-rowhash-counteraccount: "cdaf0b9556ce35a9"
   Assets:Checking                        -800.00 USD
   Expenses:Housing:Rent                   800.00 USD
 2024-03-03 * "Unknown"
-  csvimp-rowhash: "c86149b7c5049599"
+  csvimp-rowhash-counteraccount: "c86149b7c5049599"
   Assets:Checking                          -5.00 USD
   Expenses:Misc                             5.00 USD

@@ -2,6 +2,7 @@ package csvbase_test
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -43,7 +44,7 @@ func TestRowHash_StampsDefaultKey(t *testing.T) {
 func TestRowHash_StampsCustomKey(t *testing.T) {
 	d, err := csvbase.New("rh-test", csvbase.Config{
 		Mapper:  csvbase.MapperFunc([]string{"A"}, emitNote),
-		RowHash: &csvbase.RowHash{Key: "my-hash"},
+		RowHash: &csvbase.RowHash{KeyFunc: csvbase.StaticRowHashKey("my-hash")},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -195,6 +196,90 @@ func TestRowHash_FieldBoundarySeparatorPreventsCollision(t *testing.T) {
 	h2 := out2.Directives[0].(*ast.Note).Meta.Props[csvbase.DefaultRowHashKey].String
 	if h1 == h2 {
 		t.Errorf("hashes should differ at the field boundary, both = %q", h1)
+	}
+}
+
+func TestRowHash_KeyFuncResolvesPerRow(t *testing.T) {
+	// KeyFunc picks the metadata key from the row's first cell, so different
+	// rows are stamped under different keys.
+	d, err := csvbase.New("rh-test", csvbase.Config{
+		Mapper: csvbase.MapperFunc([]string{"Kind"}, emitNote),
+		RowHash: &csvbase.RowHash{KeyFunc: func(rec csvbase.RowContext) string {
+			return rec.Fields[rec.Index["Kind"]] + "-rowhash"
+		}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	out, err := d.Extract(context.Background(), inputStr("/f.csv", "Kind\nbank\ncard\n"))
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if len(out.Directives) != 2 {
+		t.Fatalf("Extract: got %d directives, want 2", len(out.Directives))
+	}
+	want := []struct {
+		i   int
+		key string
+	}{{0, "bank-rowhash"}, {1, "card-rowhash"}}
+	for _, w := range want {
+		note, ok := out.Directives[w.i].(*ast.Note)
+		if !ok {
+			t.Fatalf("Extract: directive %d is %T, want *ast.Note", w.i, out.Directives[w.i])
+		}
+		if _, ok := note.Meta.Props[w.key]; !ok {
+			t.Errorf("Extract: row %d missing key %q; got %v", w.i, w.key, note.Meta.Props)
+		}
+	}
+}
+
+func TestRowHashValue_MatchesStampedHash(t *testing.T) {
+	// RowHashValue exposed as a pipeline Key must equal the value RowHash stamps
+	// for the same instance name and raw row.
+	in := inputStr("/f.csv", "A\nval\n")
+
+	stamped, err := func() (string, error) {
+		d, err := csvbase.New("rh-test", csvbase.Config{
+			Mapper:  csvbase.MapperFunc([]string{"A"}, emitNote),
+			RowHash: &csvbase.RowHash{KeyFunc: csvbase.StaticRowHashKey("k")},
+		})
+		if err != nil {
+			return "", err
+		}
+		out, err := d.Extract(context.Background(), in)
+		if err != nil {
+			return "", err
+		}
+		note, ok := out.Directives[0].(*ast.Note)
+		if !ok {
+			return "", fmt.Errorf("directive 0 is %T, want *ast.Note", out.Directives[0])
+		}
+		return note.Meta.Props["k"].String, nil
+	}()
+	if err != nil {
+		t.Fatalf("stamped extract: %v", err)
+	}
+
+	b := csvbase.NewBuilder()
+	hk := csvbase.RowHashValue(b, "rh-test")
+	pipeline := b.Emit(func(_ context.Context, c *csvbase.MappingState) ([]ast.Directive, []ast.Diagnostic, error) {
+		v, _ := csvbase.Value(c, hk)
+		return []ast.Directive{&ast.Note{Comment: v}}, nil, nil
+	})
+	d, err := csvbase.New("rh-test", csvbase.Config{Mapper: pipeline})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	out, err := d.Extract(context.Background(), in)
+	if err != nil {
+		t.Fatalf("value extract: %v", err)
+	}
+	note, ok := out.Directives[0].(*ast.Note)
+	if !ok {
+		t.Fatalf("value extract: directive 0 is %T, want *ast.Note", out.Directives[0])
+	}
+	if got := note.Comment; got != stamped {
+		t.Errorf("RowHashValue = %q, stamped = %q; must match", got, stamped)
 	}
 }
 

@@ -1,6 +1,6 @@
 2024-06-01 * "ATM" "Cash withdrawal"
-  csvimp-rowhash: "36a1e8d567af95cc"
+  csvimp-rowhash-placeholder: "36a1e8d567af95cc"
   Assets:JapaneseBank                      -5000 JPY
 2024-06-02 * "Employer" "Salary"
-  csvimp-rowhash: "6fb892c0ce602bd8"
+  csvimp-rowhash-placeholder: "6fb892c0ce602bd8"
   Assets:JapaneseBank                     300000 JPY

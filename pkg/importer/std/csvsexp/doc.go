@@ -49,7 +49,14 @@
 //	:columns      (("Date" 0) ("Amt" 3))  headerless column index (exclusive with :header-match)
 //	:number       (number-format ...)     default number format for parse-amount and cost
 //	:exclude      ((exclude :match "^Total") (exclude :col "Date" :match "^※"))
-//	:rowhash      "csvsexp-rowhash"        stamp an idempotency hash under this key
+//	:rowhash      "csvsexp-rowhash"        stamp an idempotency hash under this key on every directive
+//
+// :rowhash stamps the hash globally on every directive a row emits. For
+// per-directive control — choosing the key at construction, or stamping only
+// some directives — omit :rowhash and place the (rowhash) form's value under a
+// key with (meta ...) instead. Using a distinct key per instance avoids the
+// dedup veto that a shared key would trigger across sources (see csvimp's
+// "Identity metadata").
 //
 // BODY is a single (let* (BINDINGS) BODY), (emit-transaction ...), or
 // (emit ...) form. let* binds names sequentially in a fresh lexical scope; each
@@ -66,6 +73,7 @@
 //
 //	(column "N")                       raw cell of column N            -> string-key
 //	(row)                              the whole row as a map          -> row-key
+//	(rowhash)                          this row's content hash          -> string-key
 //	(const "x")                        constant string                 -> string-key
 //	(hint "account")                   caller Hints[name]              -> string-key
 //	(trim k)                                                           -> string-key

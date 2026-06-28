@@ -1,9 +1,9 @@
 2024-02-01 * "ATM" "Cash withdrawal / Branch 5"
-  csvimp-rowhash: "4291beffde6bb2f4"
+  csvimp-rowhash-debitcredit: "4291beffde6bb2f4"
   Assets:JapaneseBank                      -5000 JPY
 2024-02-02 * "Employer" "Salary / February"
-  csvimp-rowhash: "d7bf30346d3c6355"
+  csvimp-rowhash-debitcredit: "d7bf30346d3c6355"
   Assets:JapaneseBank                     300000 JPY
 2024-02-15 * "Utility" "Electric bill"
-  csvimp-rowhash: "3cff7f495078c32a"
+  csvimp-rowhash-debitcredit: "3cff7f495078c32a"
   Assets:JapaneseBank                      -8500 JPY

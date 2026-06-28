@@ -4,19 +4,41 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strings"
+
+	"github.com/yugui/go-beancount/pkg/ast"
 )
 
-// DefaultRowHashKey is the metadata key used when RowHash.Key is empty.
+// DefaultRowHashKey is the metadata key used when a RowHash resolves an empty
+// key (a nil KeyFunc, or one returning "").
 const DefaultRowHashKey = "csvbase-rowhash"
 
 // RowHash configures idempotency stamping. When set on a Config, the Driver
 // stamps every directive a row produces with a stable content hash so a
 // re-import can be deduplicated. The hash is computed over the raw record
 // fields before the mapper sees them, so mapper transformations do not affect
-// the key.
+// the value. The metadata key is resolved per row by KeyFunc, which lets a
+// caller namespace or vary the key by data; a constant key is wrapped with
+// StaticRowHashKey.
 type RowHash struct {
-	// Key is the metadata key to stamp. Empty selects DefaultRowHashKey.
-	Key string
+	// KeyFunc resolves the metadata key for one row. A nil KeyFunc, or one
+	// returning "", selects DefaultRowHashKey.
+	KeyFunc func(RowContext) string
+}
+
+// StaticRowHashKey wraps a constant key as a RowHash.KeyFunc, for callers that
+// do not vary the key per row.
+func StaticRowHashKey(key string) func(RowContext) string {
+	return func(RowContext) string { return key }
+}
+
+// RowHashValue returns a Key whose per-row value is the same content hash that
+// RowHash stamps: a stable hash over the raw record fields namespaced by name.
+// Use it to place the hash under a caller-chosen metadata key (for example via
+// Meta) for per-directive idempotency stamping.
+func RowHashValue(b *Builder, name string) Key[string] {
+	return AddStep(b, func(c *MappingState) (string, *ast.Diagnostic, error) {
+		return computeHash(name, c.raw), nil, nil
+	})
 }
 
 const (

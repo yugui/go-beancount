@@ -588,7 +588,7 @@ func TestExample_RowHashStability(t *testing.T) {
 
 	d, err := csvbase.New("hash-stable", csvbase.Config{
 		Mapper:  pipeline,
-		RowHash: &csvbase.RowHash{Key: "import-hash"},
+		RowHash: &csvbase.RowHash{KeyFunc: csvbase.StaticRowHashKey("import-hash")},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)

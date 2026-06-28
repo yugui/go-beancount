@@ -1,6 +1,6 @@
 2024-08-01 * "Coffee Shop" "Latte"
-  csvimp-rowhash: "c617ccf9a4a1c05f"
+  csvimp-rowhash-exclude: "c617ccf9a4a1c05f"
   Assets:Checking                          -4.50 USD
 2024-08-02 * "Grocery" "Weekly shop"
-  csvimp-rowhash: "68e6dbae6fe42f5d"
+  csvimp-rowhash-exclude: "68e6dbae6fe42f5d"
   Assets:Checking                         -87.32 USD

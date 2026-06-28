@@ -1,9 +1,9 @@
 2024-04-01 * "Amazon" "ATM withdrawal"
-  csvimp-rowhash: "89b4fdecf8f43a5c"
+  csvimp-rowhash-translations: "89b4fdecf8f43a5c"
   Assets:Checking                         -20.00 USD
 2024-04-02 * "Local Cafe" "Lunch"
-  csvimp-rowhash: "e6c39d567456a8e9"
+  csvimp-rowhash-translations: "e6c39d567456a8e9"
   Assets:Checking                          -1500 JPY
 2024-04-03 * "Unknown Vendor" "Generic note"
-  csvimp-rowhash: "d8edd0d43f5d56f8"
+  csvimp-rowhash-translations: "d8edd0d43f5d56f8"
   Assets:Checking                           5.00 USD
