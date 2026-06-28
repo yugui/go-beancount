@@ -390,6 +390,41 @@ date_format      = "01-02"
 `,
 			wantIn: "must include year, month and day",
 		},
+		{
+			name: "rowhash map without rowhash.col",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[rowhash.map]
+"x" = "x-rowhash"
+`,
+			wantIn: "[rowhash.map] is set but [rowhash].col is not",
+		},
+		{
+			name: "rowhash col without map",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[rowhash]
+col = "Source"
+`,
+			wantIn: "[rowhash].col requires [rowhash.map]",
+		},
+		{
+			name: "rowhash default invalid metadata key",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[rowhash]
+default = "Not A Key"
+`,
+			wantIn: "[rowhash].default",
+		},
+		{
+			name: "rowhash map value invalid metadata key",
+			src: minimalDate + minimalAccount + minimalCurrency + minimalAmount + `
+[rowhash]
+col = "Source"
+
+[rowhash.map]
+"bank" = "Bad Key"
+`,
+			wantIn: "[rowhash.map][\"bank\"]",
+		},
 	}
 
 	for _, tc := range cases {

@@ -63,6 +63,19 @@ type shapeConfig struct {
 	Cost           costConfig      `toml:"cost"`
 	Amount         []amountColumn  `toml:"amount"`
 	Exclude        []excludeConfig `toml:"exclude"`
+	Rowhash        rowhashConfig   `toml:"rowhash"`
+}
+
+// rowhashConfig is the on-disk shape of the optional [rowhash] block. It
+// mirrors accountConfig's col/separator/default/map but resolves a metadata
+// *key* (not an account): the per-row idempotency hash is stamped under it. Col
+// references raw header columns only ([split] groups are not visible here). An
+// empty block selects the default key "csvimp-rowhash-<name>".
+type rowhashConfig struct {
+	Col       stringList        `toml:"col"`
+	Separator string            `toml:"separator"`
+	Default   string            `toml:"default"`
+	Map       map[string]string `toml:"map"`
 }
 
 // costConfig is the on-disk shape of the optional [cost] block. Exactly one
@@ -214,6 +227,14 @@ type shape struct {
 	// filters drop statement noise (footnotes, totals) before a row
 	// becomes a directive; empty means no filtering.
 	filters []csvkit.RowFilter
+
+	// rowhash key resolution. All zero means "[rowhash] unconfigured": the
+	// default key "csvimp-rowhash-<name>" is used. rowhashMap == nil follows
+	// the same nil-means-no-table convention as accountMap.
+	rowhashCols    []string
+	rowhashSep     string
+	rowhashDefault string
+	rowhashMap     map[string]string
 }
 
 // costRule is the compiled form of [cost]: numberCol holds the cost number
@@ -280,6 +301,10 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		return nil, err
 	}
 	if err := validateAccountSection(name, "counter_account", sc.CounterAccount, true); err != nil {
+		return nil, err
+	}
+
+	if err := validateRowhashSection(name, sc.Rowhash); err != nil {
 		return nil, err
 	}
 
@@ -381,6 +406,10 @@ func validateShape(name string, sc shapeConfig) (*shape, error) {
 		narrationCols:         []string(sc.Narration.Col),
 		narrationSep:          sc.Narration.Separator,
 		narrationMap:          nilIfEmpty(sc.Narration.Map),
+		rowhashCols:           []string(sc.Rowhash.Col),
+		rowhashSep:            sc.Rowhash.Separator,
+		rowhashDefault:        sc.Rowhash.Default,
+		rowhashMap:            nilIfEmpty(sc.Rowhash.Map),
 		amounts:               amounts,
 		numberFormat: csvkit.NumberFormat{
 			ThousandsSep: sc.Number.ThousandsSep,
@@ -541,6 +570,41 @@ func validateAccountSection(name, section string, cfg accountConfig, optional bo
 		}
 	}
 	return nil
+}
+
+// validateRowhashSection enforces the rules for the optional [rowhash] block.
+// An entirely empty block is accepted (the default key applies). It mirrors the
+// account block's col/map relationship but resolves a metadata key, so its map
+// values and default must be valid metadata keys, and col requires map (a raw
+// cell used verbatim could be an invalid key).
+func validateRowhashSection(name string, cfg rowhashConfig) error {
+	hasCol := len(cfg.Col) > 0
+	hasDefault := cfg.Default != ""
+	hasMap := len(cfg.Map) > 0
+
+	if hasMap && !hasCol {
+		return fmt.Errorf("shape %q: [rowhash.map] is set but [rowhash].col is not; the map would never be consulted", name)
+	}
+	if hasCol && !hasMap {
+		return fmt.Errorf("shape %q: [rowhash].col requires [rowhash.map]; a raw cell could be an invalid metadata key", name)
+	}
+	if hasDefault && !isValidMetaKey(cfg.Default) {
+		return fmt.Errorf("shape %q: [rowhash].default %q is not a valid metadata key", name, cfg.Default)
+	}
+	for k, v := range cfg.Map {
+		if !isValidMetaKey(v) {
+			return fmt.Errorf("shape %q: [rowhash.map][%q] = %q is not a valid metadata key", name, k, v)
+		}
+	}
+	return nil
+}
+
+// metaKeyRe matches a beancount metadata key: a lowercase letter followed by
+// zero or more letters (any case), digits, hyphens, or underscores.
+var metaKeyRe = regexp.MustCompile(`^[a-z][a-zA-Z0-9_-]*$`)
+
+func isValidMetaKey(s string) bool {
+	return metaKeyRe.MatchString(s)
 }
 
 // headerMatcher returns a predicate accepting any row that contains every

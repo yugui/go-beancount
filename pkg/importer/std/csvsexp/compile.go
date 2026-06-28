@@ -20,6 +20,7 @@ import (
 // unless a form overrides it.
 type compiler struct {
 	b      *csvbase.Builder
+	name   string
 	numFmt csvkit.NumberFormat
 }
 
@@ -43,7 +44,7 @@ func compileProgram(name, src string) (*csvbase.Driver, error) {
 		return nil, err
 	}
 
-	c := &compiler{b: csvbase.NewBuilder()}
+	c := &compiler{b: csvbase.NewBuilder(), name: name}
 
 	if nfNode, ok := kw["number"]; ok {
 		nf, err := c.evalNumberFormat(nfNode, newEnv(nil))
@@ -77,7 +78,7 @@ func compileProgram(name, src string) (*csvbase.Driver, error) {
 		if err != nil {
 			return nil, err
 		}
-		rowhash = &csvbase.RowHash{Key: key}
+		rowhash = &csvbase.RowHash{KeyFunc: csvbase.StaticRowHashKey(key)}
 	}
 
 	return csvbase.New(name, csvbase.Config{
@@ -227,6 +228,12 @@ func (c *compiler) evalList(n node, e *env) (value, error) {
 			return value{}, err
 		}
 		return value{kind: kindRowKey, v: csvbase.Row(c.b)}, nil
+
+	case "rowhash":
+		if err := arity(head, args, 0, 0); err != nil {
+			return value{}, err
+		}
+		return strKey(csvbase.RowHashValue(c.b, c.name)), nil
 
 	case "const":
 		if err := arity(head, args, 1, 1); err != nil {

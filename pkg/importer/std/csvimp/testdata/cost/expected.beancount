@@ -1,8 +1,8 @@
 2024-01-15 * "AAPL"
-  csvimp-rowhash: "a33e0b28e95dd836"
+  csvimp-rowhash-cost: "a33e0b28e95dd836"
   Assets:Broker:Stock                        10 AAPL {150.00 USD, 2024-01-15}
   Assets:Broker:Cash
 2024-01-20 * "GOOG"
-  csvimp-rowhash: "2df1ddf31f206bec"
+  csvimp-rowhash-cost: "2df1ddf31f206bec"
   Assets:Broker:Stock                         5 GOOG {140.50 USD, 2024-01-20}
   Assets:Broker:Cash

@@ -41,6 +41,36 @@ func firstTxn(t *testing.T, out importer.Output) *ast.Transaction {
 	return tx
 }
 
+// TestRowhashForm_MatchesGlobalRowhash verifies that the (rowhash) form yields
+// the same content hash that the global :rowhash option stamps, so a caller can
+// place it under a per-directive metadata key via (meta ...).
+func TestRowhashForm_MatchesGlobalRowhash(t *testing.T) {
+	const csv = "Date,Amount\n2024-01-01,100\n"
+	const formProg = `(csv-import
+  (let* ((d (parse-date (column "Date") "2006-01-02"))
+         (amt (parse-amount (column "Amount"))))
+    (emit-transaction :date d :amount amt :currency (const "USD")
+      :account (const "Assets:Bank")
+      :meta (("bank-rowhash" (rowhash))))))`
+	const globalProg = `(csv-import :rowhash "bank-rowhash"
+  (let* ((d (parse-date (column "Date") "2006-01-02"))
+         (amt (parse-amount (column "Amount"))))
+    (emit-transaction :date d :amount amt :currency (const "USD")
+      :account (const "Assets:Bank"))))`
+
+	formOut := extractProgram(t, formProg, csv)
+	globalOut := extractProgram(t, globalProg, csv)
+
+	formVal := firstTxn(t, formOut).Meta.Props["bank-rowhash"].String
+	globalVal := firstTxn(t, globalOut).Meta.Props["bank-rowhash"].String
+	if formVal == "" {
+		t.Fatal("(rowhash) form produced no bank-rowhash metadata")
+	}
+	if formVal != globalVal {
+		t.Errorf("(rowhash) form = %q, global :rowhash = %q; must match", formVal, globalVal)
+	}
+}
+
 // TestTransactionForm_ThreePostings exercises a transaction with more legs than
 // the primary+counter shape, including a final auto-balanced posting.
 func TestTransactionForm_ThreePostings(t *testing.T) {

@@ -316,15 +316,43 @@
 //
 // # Identity metadata
 //
-// Every emitted Transaction is stamped with the metadata key
-// "csvimp-rowhash": the first 8 bytes of SHA-256 over
+// Every emitted Transaction is stamped with a row-hash metadata key whose
+// value is the first 8 bytes of SHA-256 over
 // instance-name || RS || trimmed-field0 || US || trimmed-field1 || …,
-// hex-encoded as 16 lowercase characters. Callers using
-// pkg/distribute/dedup may list this key in id_keys
-// ([routes.transaction] in the route config) for cross-run
-// deduplication. The hash is computed over the raw CSV row before any
-// translation map is applied, so toggling a map does not invalidate
-// existing rowhashes.
+// hex-encoded as 16 lowercase characters. The hash is computed over the raw
+// CSV row before any translation map is applied, so toggling a map does not
+// invalidate existing rowhashes. Callers using pkg/distribute/dedup may list
+// the key in id_keys ([routes.transaction] in the route config) for cross-run
+// deduplication.
+//
+// The metadata key defaults to "csvimp-rowhash-<name>", namespaced by the
+// instance name. The namespacing matters for dedup: its veto rule treats one
+// id key present on two directives with differing values as proof they are
+// distinct. Two instances importing the same real transaction from different
+// sources (say a bank statement and a card statement) produce different
+// hashes, so a shared key would wrongly veto the match; distinct per-instance
+// keys let the structural rules dedup them instead.
+//
+// The optional [rowhash] block overrides the key. It mirrors the [account]
+// block's col/separator/default/map but resolves a metadata *key*:
+//
+//	[rowhash]
+//	default = "shared-id"              # constant key for every row, or:
+//	col       = "Source"              # raw header column(s); scalar or list
+//	separator = "-"                   # used only when col is a list
+//	default   = "fallback-id"         # key when the cell is blank or unmapped
+//
+//	[rowhash.map]                     # required when col is set
+//	"bank" = "bank-rowhash"           # map a cell value to its key
+//	"card" = "card-rowhash"
+//
+// With col set, the joined raw cells are looked up in [rowhash.map]; a hit
+// supplies the key and a miss or blank cell falls back to [rowhash].default
+// and then to "csvimp-rowhash-<name>" — an unmapped cell never drops the row.
+// [rowhash].col references raw header columns only; [split] synthetic columns
+// are not visible to it. [rowhash].default and every [rowhash.map] value must
+// be a valid metadata key; col without map is rejected (a raw cell could be an
+// invalid key).
 //
 // # Hints
 //

@@ -227,7 +227,10 @@ func (d *Driver) Extract(ctx context.Context, in importer.Input) (importer.Outpu
 		}
 		diags = append(diags, rowDiags...)
 		if d.cfg.RowHash != nil {
-			key := d.cfg.RowHash.Key
+			key := ""
+			if d.cfg.RowHash.KeyFunc != nil {
+				key = d.cfg.RowHash.KeyFunc(rctx)
+			}
 			if key == "" {
 				key = DefaultRowHashKey
 			}
